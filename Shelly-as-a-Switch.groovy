@@ -82,7 +82,8 @@ metadata {
 	definition (
 		name: "Shelly Switch Relay",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-as-a-Switch.groovy"
 		)
 	{
         capability "Actuator"

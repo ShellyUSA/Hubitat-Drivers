@@ -1,7 +1,6 @@
 /**
  *  Shelly Duo Device Handler
  *
- *  Copyright © 2018-2019 Scott Grayban
  *  Copyright © 2020 Allterco Robotics US
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
@@ -30,7 +29,8 @@ metadata {
 	definition (
 		name: "Shelly Duo",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Duo.groovy"
 		)
 	{
         capability "Actuator"

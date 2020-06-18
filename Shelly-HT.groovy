@@ -1,7 +1,5 @@
 /**
- *  Shelly MQTT Device Handler
- *
- *  Raw import code located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly_TandH_MQTT.groovy
+ *  Shelly HT MQTT Device Handler
  *
  *  Copyright © 2018-2019 Scott Grayban
  *  Copyright © 2020 Allterco Robotics US
@@ -38,9 +36,11 @@
 
 metadata {
 definition (
-    name: "Shelly MQTT",
+    name: "Shelly HT",
     namespace: "sgrayban",
-    author: "Scott Grayban"
+    author: "Scott Grayban",
+    importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-HT.groovy"
+
 )
 
     {

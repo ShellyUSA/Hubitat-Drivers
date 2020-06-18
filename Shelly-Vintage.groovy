@@ -1,7 +1,19 @@
 /**
  *  Shelly Vintage Device Handler
  *
- *  Raw code located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly-Bulb.groovy
+ *  Copyright © 2020 Allterco Robotics US
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
+ *
+ * Hubitat is the Trademark and intellectual Property of Hubitat Inc.
+ * Shelly is the Trademark and Intellectual Property of Allterco Robotics Ltd
  *
  *-------------------------------------------------------------------------------------------------------------------
  *
@@ -17,7 +29,8 @@ metadata {
 	definition (
 		name: "Shelly Vintage",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Vintage.groovy"
 		)
 	{
         capability "Actuator"

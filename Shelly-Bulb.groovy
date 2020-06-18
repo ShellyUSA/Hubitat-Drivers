@@ -1,8 +1,6 @@
 ﻿/**
  *  Shelly Bulb Device Handler
  *
- *  Raw code located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly-Bulb.groovy
- *
  *  Copyright © 2018-2019 Scott Grayban
  *  Copyright © 2020 Allterco Robotics US
  *
@@ -48,7 +46,8 @@ metadata {
 	definition (
 		name: "Shelly Bulb",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Bulb.groovy"
 		)
 	{
         capability "Actuator"

@@ -40,7 +40,8 @@ metadata {
 	definition (
         name: "Shelly RGBW White",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-RGBW-White.groovy"
 		)
 	{
         capability "Actuator"

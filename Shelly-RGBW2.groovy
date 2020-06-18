@@ -1,7 +1,6 @@
 /**
  *
  *  Shelly RGBW[2]/RGBW+ Device Handler
- *  Raw code is located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly-RGBW2.groovy
  *
  *  Copyright © 2018-2019 Scott Grayban
  *  Copyright © 2020 Allterco Robotics US
@@ -79,7 +78,8 @@ metadata {
 	definition (
         name: "Shelly ${deviceType()}",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-RGBW2.groovy"
 		)
 	{
         capability "Actuator"

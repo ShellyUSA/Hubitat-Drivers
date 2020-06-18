@@ -42,7 +42,8 @@ metadata {
 	definition (
 		name: "Shelly 2/2.5 as Roller Shutter",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+		importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly2-as-Roller-Shutter.groovy"
 		)
 	{
         capability "Actuator"
