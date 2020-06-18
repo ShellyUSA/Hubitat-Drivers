@@ -436,7 +436,7 @@ def version(){
 
 def updatecheck(){
 	setVersion()
-	 def paramsUD = [uri: "http://sgrayban.borgnet.online:8081/scotts-projects/version.json"]
+	 def paramsUD = [uri: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/resources/version.json"]
 	  try {
 			httpGet(paramsUD) { respUD ->
 				  logJSON " Version Checking - Response Data: ${respUD.data}"
@@ -447,7 +447,7 @@ def updatecheck(){
 				  def currentVer = state.Version.replace(".", "")
 				  state.UpdateInfo = (respUD.data.versions.UpdateInfo.Driver.(state.InternalName))
 				  state.author = (respUD.data.author)
-                  state.icon = "<img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAMAAAC7IEhfAAAC9FBMVEUdFwIoGQM4JgE5NABELwBJMwBOMwBEOwBKOQJNOAJSNgBNQABXOwBKQgBUPQBRPwBPRABVQgBZQQBcRABZRgBiQgBTSgBXSQBoRABiSABfSgBgSwBeTgBXUgBbUABqSgBuSQBoTQBbVgFfVAFmUQFuTQNjUwFqUwB4TABuUgBnVgBkWABhWgB0UgB4UQBtWwFzWAFmXwFqXQF9VgB4WgCDVQBvYQB+WgBzYAB3XgBsZAB8XgCEWgGJWQJzZQB4ZAGLWwCIXQBxaQJ2aAR4aQB1bAB9aQCBZwCFZQCNYgCRYACLZQB9bgCUYwONZwKCbQGKaQJ7cQGHbAKQaQCWaQCDcwCIcQCBdgCNcQCRbwCeagGHdgCibQCKeQKOdwOHewKOfACWeACadgCicwCmcQCTewCMfwCgdgCTgQCXfwCgewKRhAGtdgCdfgKzdgCkfgChgQCtewCZhgCdhACpfgCSigCYigCxfwC1fQCeigCnhgCxhADBfACdjgKthgS7ggCojQCljwCikgC6hgDCggCflQCwjgCilwDJgwS7jAOolwG5kAC1kgSylQDPiADFjwCsnACzmwDQjQDFlADNkQKyoAC+mgDDmAK7nQLGmgC+nwDSlQCxpQXXkwDckgDEnwC2qADSmgC7qADglQLBpwDRnwDGpQDNogDkmADZnwDdnQC/rAK+sADHrADMqgDErwDlnwDUqADtnQHGtwDTsQH1oADbrQPkqQDMtgPkrgDxqADMvADQugD2pwDatgDisgDetQDqsADwrQDZuwD/qADSwQDWvwD8rAD1sQD6sADwtgD/rwDgwQDnvwDuvAD7tgD/tAD3uQDgxwD2vQHlxgD+uQLZzQDrxQD/uwDgzQTd0AD/vwDvyADsywDpzgD6xgD+xADl0QD/xgD0zADxzwD6ywD+ygDp1QDv0wDn2AD/zAD40AP/zAb20wD/0ADz1wDv2gD90wD/1gD13gD53AD+2gD34QD/3QL05AP+4AD/4gD85QC9W0cbAAAACXBIWXMAAC4jAAAuIwF4pT92AAAAB3RJTUUH4wwICSkZc7wKxgAAAdpJREFUGBmdwV1rUmEAwPH/d+pLdLO77rvpoogMYuRi1S7mxdwummmRRgiicxS4DoozECeItuIMxGyzrIMKqQjZybLBuum8PL6c9aiw34/zHty9ykLFZkf/+7urVqPMU9Q/Y9tMqWFm0o+ZoqQhHlcSIc7Tkzj4D/xAIvFdxUHHYc3DcgxLtptlooODC4N/FZumMZJRkVhHaJYQVGQ8jOgIVUaSEST2dCypBMKfs+EREjqWPII26PdaSBQrmMIIX3qN+j4Tt25gy1QwHYDHgyH4/vA1E296wyo2DdNDvxeJl7VW//Q6ll+YFC8yu+V6+ye2Lob0VgCpd7UPW9gKwNM4swQQQgUgB6wwn+qDfBjDNebKAQXm2wBCObhXZYHHoABqFCHodyPz/IqCIZvBluo1PnqQCaxiKCGc9tu1F0i4Y5hK2J6cDXqNAP97ROwyhmwEW+n0m8LExn0Ml1xAENOnCjK7b8uHCAlMN3Uk1sq1elvBlsfSRGK/3uoNfNhOsCR1RlyMHQ2GKkIOW7OCsMLEHUa+MqJnEAKYlpj2rMqYpiKsw8oSDhpTKt0IlmWvG6cuToXCSSJuuB1kWqTDTOkdxirHzLGTy0V9m75XpZK+zQLRwg9tb5sL+QdvDc0dp1ZEdQAAAABJRU5ErkJggg=='>"
+				  state.icon = (respUD.data.icon)
 				  if(newVer == "NLS"){
 					   state.Status = "<b>** This driver is no longer supported by $state.author  **</b>"       
 					   log.warn "** This driver is no longer supported by $state.author **"      
