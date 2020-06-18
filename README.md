@@ -22,7 +22,7 @@ Different Shelly devices require varied settings. Device handlers for Shelly sen
 
 The instructions assume you've already added the device handler using the steps above.
 
-1. Navigate to your Hubitat's IP address in your web browser 
+1. Navigate to your Hubitat's IP address in your web browser
 2. Click Devices
 3. Click the Add Virtual Device button
 4. Enter a Device Name and Device Label for the Shelly module
