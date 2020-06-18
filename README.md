@@ -30,10 +30,7 @@ The instructions assume you've already added the device handler using the steps 
 6. Click the "Save Device" button
 7. Enter valid settings for any field marked with an asterisk. 
 
-      For example:
-      A. Shelly As A Switch, for use with a Shelly 2.5 relay
-      B.Enter valid values for IP address and Relay Channel (choices will be o or 1 for the Shelly 2.5).
-      C. *Note:* For the Shelly 2.5, you will set up a second instance of the device handler for the second relay channel.
+      For example: Shelly As A Switch, for use with a Shelly 2.5 relay. Enter valid values for IP address and Relay Channel (choices will be o or 1 for the Shelly 2.5).  *Note:* For the Shelly 2.5, you will set up a second instance of the device handler for the second relay channel.
       
 8. Click Save Preferences
 9. When "Cuurent States" populates with valid data for your device, the device handler is configured properly.
