@@ -38,7 +38,7 @@ metadata {
 		name: "Shelly Alarm",
 		namespace: "sgrayban",
 		author: "Scott Grayban",
-                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/contribs/master/Shelly-Alarm.groovy"
+                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/contribs/Shelly-Alarm.groovy"
 		)
 	{
         capability "Actuator"
