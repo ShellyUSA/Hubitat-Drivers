@@ -13,8 +13,7 @@ Device Handler Installation instructions:
 4. Navigate to your Hubitat's IP address in your web browser
 5. Click Drivers Code
 6. Click the New Driver button
-7. Paste the code copied in step 3
-8. Click Save
+7. Paste the code copied in step 38. Click Save
 
 Using Device Handlers With Shelly products
 
