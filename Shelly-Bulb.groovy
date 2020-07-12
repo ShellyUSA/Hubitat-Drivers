@@ -47,7 +47,7 @@ import hubitat.helper.ColorUtils
 @Field static Map lightEffects = [1:"Meteor Shower",2:"Gradual Change",3:"Breath",4:"Flash",5:"Gradual On/Off",6:"Red/Green Change"]
 
 def setVersion(){
-	state.Version = "2.1.4"
+	state.Version = "2.1.5"
 	state.InternalName = "ShellyBulb"
 }
 
