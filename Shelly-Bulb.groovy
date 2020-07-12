@@ -1,4 +1,4 @@
-﻿/**
+/**
  *  Shelly Bulb Device Handler
  *
  *  Copyright © 2018-2019 Scott Grayban
@@ -81,6 +81,9 @@ metadata {
         attribute "colorMode", "string"
         attribute "HEX", "string"
         attribute "RGB", "string"
+        attribute "hue", "number"
+        attribute "saturation", "number"
+        attribute "huelevel", "number"
         attribute "level", "number"
         attribute "effectName", "string"
         attribute "lightEffects", "string"
@@ -260,6 +263,11 @@ try {
         if (colorMode == "color") sendEvent(name: "RGB", value: rgbCode)
         if (colorMode == "color") Hex = ColorUtils.rgbToHEX( [red, blue, green] )
         if (colorMode == "color") sendEvent(name: "HEX", value: Hex)
+            
+        hsvColors = ColorUtils.rgbToHSV([red.toInteger(), green.toInteger(), blue.toInteger()])
+        sendEvent(name: "hue", value: hsvColors[0])
+        sendEvent(name: "saturation", value: hsvColors[1])
+        sendEvent(name: "huelevel", value: hsvColors[2])
 
         if (ison == true) {
             sendEvent(name: "switch", value: "on")
@@ -433,16 +441,24 @@ def CustomRGBColor(r,g,b) {
     }
 }
 
-// Not used so lets null the actions
-def setHue(value) {return null}
-def setSaturation(value) {return null}
+def setHue(value)
+{
+    refresh()
+    setColor([hue: value, saturation: device.currentValue("saturation").toInteger(), level: device.currentValue("huelevel").toInteger()])
+}
+
+def setSaturation(value)
+{
+    refresh()
+    setColor([hue: device.currentValue("hue").toInteger(), saturation: value, level: device.currentValue("huelevel").toInteger()])
+}
 
 def setColor( parameters ){
     logDebug "Color set to ${parameters}"
     
 	sendEvent(name: "hue", value: parameters.hue)
 	sendEvent(name: "saturation", value: parameters.saturation)
-	sendEvent(name: "level", value: parameters.level)
+	sendEvent(name: "huelevel", value: parameters.level)    
 	rgbColors = ColorUtils.hsvToRGB( [parameters.hue, parameters.saturation, parameters.level] )
     r = rgbColors[0].toInteger()
     g = rgbColors[1].toInteger()
