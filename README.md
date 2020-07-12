@@ -5,6 +5,15 @@ Thanks to Scott Grayban for his time and effort developing these device handlers
 
 Shelly smart home products are available for European customers at https://shop.shelly.cloud/ and for US customers at https://shopusa.shelly.cloud/
 
+Shelly-Bulb.groovy - for use with the original Shelly Bulb
+Shelly-Duo.groovy - for use with the Shelly Duo bulb
+Shelly-HT.groovy - for use with the Shelly HT and Flood sensors, requires the use of an MQTT broker
+Shelly-RGBW-White.groovy - for use with the Shelly RGBW2 using White firmware
+Shelly=RGBW.groovy - for use with the Shelly RGW2 using Color firmware
+Shelly-Vintage.groovy - for use with the Shelly Vintage bulbs (compatible with all models)
+Shelly-as-a-Switch.groovy - for use with Shelly 1, Shelly 1PM, Shelly 2, Shelly 2.5, and Shelly Plug/Plug S/Plug US products
+Shelly2-as-Roller-Shutter - for use with Shelly 2 or Shelly 2.5 in Roller Shutter mode
+
 Device Handler Installation instructions:
 
 1. Click the appropriate Groovy file for your device type.
