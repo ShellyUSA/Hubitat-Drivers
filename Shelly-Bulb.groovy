@@ -1,34 +1,20 @@
 /**
  *  Shelly Bulb Device Handler
  *
- *  Raw code located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly-Bulb.groovy
+ *  Copyright © 2018-2019 Scott Grayban
+ *  Copyright © 2020 Allterco Robotics US
  *
- *  Copyright © 2019 Scott Grayban
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
  *
- * Please Note: This app is NOT released under any open-source license.
- * Please be sure to read the license agreement before installing this code.
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * This software package is created and licensed by Scott Grayban.
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
  *
- * This software, along with associated elements, including but not limited to online and/or electronic documentation are
- * protected by international laws and treaties governing intellectual property rights.
- *
- * This software has been licensed to you. All rights are reserved. You may use and/or modify the software.
- * You may not sublicense or distribute this software or any modifications to third parties in any way.
- *
- * You may not distribute any part of this software without the author's express permission
- *
- * By downloading, installing, and/or executing this software you hereby agree to the terms and conditions set forth
- * in the Software license agreement.
- * This agreement can be found on-line at: http://sgrayban.borgnet.online:8081/scotts-projects/software_License_Agreement.txt
- * 
  * Hubitat is the Trademark and intellectual Property of Hubitat Inc.
  * Shelly is the Trademark and Intellectual Property of Allterco Robotics Ltd
- * Scott Grayban has no formal or informal affiliations or relationships with Hubitat or Allterco Robotics Ltd.
- *
- * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License Agreement
- * for the specific language governing permissions and limitations under the License.
  *
  *-------------------------------------------------------------------------------------------------------------------
  *
@@ -67,7 +53,8 @@ metadata {
 	definition (
 		name: "Shelly Bulb",
 		namespace: "sgrayban",
-		author: "Scott Grayban"
+		author: "Scott Grayban",
+		importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Bulb.groovy"
 		)
 	{
         capability "Actuator"
