@@ -24,6 +24,8 @@
  *  TODO - Finish up code for White mode to control all 4 channels 0-3
  *
  *  Changes:
+ *  1.5.7 - Thanks to @tomw for the HUE fixes.
+ *          - Fixed Hue commands.
  *  1.5.6 - Changed Copyright to new company
  *        - Removed all white settings as Shelly uses 2 different FW for colour and white now
  *        - Added NTP server preference
@@ -70,7 +72,7 @@ def deviceType() { return "rgbw2" }
 //	==========================================================
 
 def setVersion(){
-	state.Version = "1.5.6"
+	state.Version = "1.5.7"
 	state.InternalName = "ShellyRGBW"
 }
 
@@ -146,6 +148,7 @@ metadata {
         attribute "HSV", "string"
         attribute "hue", "number"
         attribute "saturation", "number"
+        attribute "huelevel", "number"
         attribute "level", "number"
         attribute "cloud_connected", "string"
         attribute "DeviceType", "string"
@@ -400,6 +403,12 @@ try {
         sendEvent(name: "RGB", value: rgbCode)
         Hex = ColorUtils.rgbToHEX( [red, blue, green] )
         sendEvent(name: "HEX", value: Hex)
+        
+        hsvColors = ColorUtils.rgbToHSV([red.toInteger(), green.toInteger(), blue.toInteger()])
+        sendEvent(name: "hue", value: hsvColors[0])
+        sendEvent(name: "saturation", value: hsvColors[1])
+        sendEvent(name: "huelevel", value: hsvColors[2])
+        sendEvent(name: "HSV", value: hsvColors)
 
         if (ison == true) {
             sendEvent(name: "switch", value: "on")
@@ -629,25 +638,35 @@ def CustomRGBwColor(r,g,b,w=null) {
     b = b.toInteger()
 	hsvColors = ColorUtils.rgbToHSV([r,g,b])
     sendEvent(name: "HSV", value: hsvColors)
-    h = hvsColors[0]
+    h = hsvColors[0]
     s = hsvColors[1]
     huelevel = hsvColors[2]
+    state.hue = h
+    state.saturation = s
+    state.huelevel = huelevel
 	sendEvent(name: "hue", value: h)
 	sendEvent(name: "saturation", value: s)
 	sendEvent(name: "huelevel", value: huelevel)
 }
 
-// Not used so lets null the actions
-def setHue(value) {return null}
-def setSaturation(value) {return null}
-//
+def setHue(value)
+{
+    PollShellyStatus()
+    setColor([hue: value, saturation: device.currentValue("saturation").toInteger(), level: device.currentValue("huelevel").toInteger()])
+}
+
+def setSaturation(value)
+{
+    PollShellyStatus()
+    setColor([hue: device.currentValue("hue").toInteger(), saturation: value, level: device.currentValue("huelevel").toInteger()])
+}
 
 def setColor(parameters){
     logDebug "Color set to ${parameters}"
     
 	sendEvent(name: "hue", value: parameters.hue)
 	sendEvent(name: "saturation", value: parameters.saturation)
-	sendEvent(name: "level", value: parameters.level)
+	sendEvent(name: "huelevel", value: parameters.level)
 	rgbColors = ColorUtils.hsvToRGB( [parameters.hue, parameters.saturation, parameters.level] )
     r = rgbColors[0].toInteger()
     g = rgbColors[1].toInteger()
