@@ -1,24 +1,40 @@
-﻿/**
+/**
  *  Shelly Bulb Device Handler
  *
- *  Copyright © 2018-2019 Scott Grayban
- *  Copyright © 2020 Allterco Robotics US
+ *  Raw code located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly-Bulb.groovy
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *  in compliance with the License. You may obtain a copy of the License at:
+ *  Copyright © 2019 Scott Grayban
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * Please Note: This app is NOT released under any open-source license.
+ * Please be sure to read the license agreement before installing this code.
  *
- *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
- *  for the specific language governing permissions and limitations under the License.
+ * This software package is created and licensed by Scott Grayban.
  *
+ * This software, along with associated elements, including but not limited to online and/or electronic documentation are
+ * protected by international laws and treaties governing intellectual property rights.
+ *
+ * This software has been licensed to you. All rights are reserved. You may use and/or modify the software.
+ * You may not sublicense or distribute this software or any modifications to third parties in any way.
+ *
+ * You may not distribute any part of this software without the author's express permission
+ *
+ * By downloading, installing, and/or executing this software you hereby agree to the terms and conditions set forth
+ * in the Software license agreement.
+ * This agreement can be found on-line at: http://sgrayban.borgnet.online:8081/scotts-projects/software_License_Agreement.txt
+ * 
  * Hubitat is the Trademark and intellectual Property of Hubitat Inc.
  * Shelly is the Trademark and Intellectual Property of Allterco Robotics Ltd
+ * Scott Grayban has no formal or informal affiliations or relationships with Hubitat or Allterco Robotics Ltd.
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License Agreement
+ * for the specific language governing permissions and limitations under the License.
  *
  *-------------------------------------------------------------------------------------------------------------------
  *
  *  Changes:
+ *  2.1.4 - Re-add capability "Switch"
+ *        - Added PowerMeter for future FW support
  *  2.1.3 - Added code that will allow you to upgrade the device firmware and will auto-refresh in 30 seconds.
  *  2.1.2 - RSSI value is definded as exelent, good or poor. The actual rssi reading is under state variables.
  *  2.1.1 - New code location - https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly-Bulb.groovy
@@ -42,22 +58,28 @@ import hubitat.helper.ColorUtils
 
 @Field static Map lightEffects = [1:"Meteor Shower",2:"Gradual Change",3:"Breath",4:"Flash",5:"Gradual On/Off",6:"Red/Green Change"]
 
+def setVersion(){
+	state.Version = "2.1.4"
+	state.InternalName = "ShellyBulb"
+}
+
 metadata {
 	definition (
 		name: "Shelly Bulb",
 		namespace: "sgrayban",
-		author: "Scott Grayban",
-                importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Bulb.groovy"
+		author: "Scott Grayban"
 		)
 	{
         capability "Actuator"
         capability "Sensor"
         capability "Refresh" // refresh command
+        capability "Switch"
         capability "Bulb"
         capability "Polling"
         capability "Change Level"
         capability "Switch Level"
         capability "Color Control"
+        capability "PowerMeter"
 
         command "Red"
         command "Blue"
@@ -106,23 +128,19 @@ metadata {
         Color_Mode << ["color" : "Color"]
         Color_Mode << ["white" : "White"]
         
-	input("ip", "string", title:"Shelly IP Address:", description:"EG; 192.168.0.100", defaultValue:"" , required: true, displayDuringSetup: true) 
+ 	input("ip", "string", title:"Shelly IP Address:", description:"EG; 192.168.0.100", defaultValue:"" , required: true, displayDuringSetup: true)
 	input name: "username", type: "text", title: "Username:", description: "(blank if none)", required: false
 	input name: "password", type: "password", title: "Password:", description: "(blank if none)", required: false
-	input ("ColorMode", "enum", title: "Colour Mode", options: Color_Mode, defaultValue: "color")
-	input ("refresh_Rate", "enum", title: "Device Refresh Rate", options: refreshRate, defaultValue: "30 min")
+    input ("ColorMode", "enum", title: "Colour Mode", options: Color_Mode, defaultValue: "color")
+    input ("refresh_Rate", "enum", title: "Device Refresh Rate", options: refreshRate, defaultValue: "30 min")
 	input "locale", "enum", title: "Choose refresh date format", required: true, defaultValue: true, //RK
 			options: [US:"US MM/DD/YYYY",UK:"UK DD/MM/YYYY"] //RK
 	input name: "debugOutput", type: "bool", title: "Enable debug logging?", defaultValue: true
 	input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true //RK
 	input name: "debugParse", type: "bool", title: "Enable JSON parse logging?", defaultValue: false
-	input name: "Shellyinfo", type: "text", title: "<center><font color=blue>Info Box</font><br>Shelly API docs located</center>", description: "<center><a href='http://shelly-api-docs.shelly.cloud/' target='_blank'>[here]</a></center>"
+	input name: "Shellyinfo", type: "text", title: "<center><font color=blue>Info Box</font><br>Shelly API docs located</center>", description: "<center><a href='http://shelly-api-docs.shelly.cloud/'>[here]</a></center>"
+	input name: "Donate", type: "text", title: "<center><font color=blue>Donate</font><br>If you like my drivers please donate</center>", description: "<center><a href='https://paypal.me/sgrayban'>[here]</a></center>"
 	}
-}
-
-def setVersion(){
-        state.Version = "2.1.3"
-        state.InternalName = "ShellyBulb"
 }
 
 def ping() {
@@ -231,6 +249,7 @@ try {
         sendEvent(name: "level", value: obs1.lights.gain[0])
         sendEvent(name: "colorMode", value: colorMode)
         sendEvent(name: "IP", value: obs1.wifi_sta.ip)
+        sendEvent(name: "power", value: obs1.meters.power[0])
 
 /*
 -30 dBm	Excellent | -67 dBm	Good | -70 dBm	Poor | -80 dBm	Weak | -90 dBm	Dead
@@ -672,7 +691,7 @@ def version(){
 
 def updatecheck(){
     setVersion()
-	 def paramsUD = [uri: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/resources/version.json"]
+	 def paramsUD = [uri: "http://sgrayban.borgnet.online:8081/scotts-projects/version.json"]
 	  try {
 			httpGet(paramsUD) { respUD ->
 				  if (txtEnable) log.warn " Version Checking - Response Data: ${respUD.data}"   // Troubleshooting Debug Code - Uncommenting this line should show the JSON response from your webserver
