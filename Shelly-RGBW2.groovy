@@ -143,7 +143,6 @@ metadata {
         attribute "RGBw", "string"
         attribute "RGB", "string"
         attribute "HEX", "string"
-        attribute "HSV", "string"
         attribute "hue", "number"
         attribute "saturation", "number"
         attribute "huelevel", "number"
@@ -403,7 +402,6 @@ try {
         sendEvent(name: "HEX", value: Hex)
         
         hsvColors = ColorUtils.rgbToHSV([red.toInteger(), green.toInteger(), blue.toInteger()])
-        sendEvent(name: "HSV", value: hsvColors)
         sendEvent(name: "hue", value: hsvColors[0])
         sendEvent(name: "saturation", value: hsvColors[1])
         sendEvent(name: "huelevel", value: hsvColors[2])
@@ -631,12 +629,6 @@ def CustomRGBwColor(r,g,b,w=null) {
     } else {
         sendSwitchCommand "/color/0?red=${r}&green=${g}&blue=${b}&white=${w}"
     }
-    
-    hsvColors = ColorUtils.rgbToHSV([r.toInteger(), g.toInteger(), b.toInteger()])
-    sendEvent(name: "HSV", value: hsvColors)
-    sendEvent(name: "hue", value: hsvColors[0])
-    sendEvent(name: "saturation", value: hsvColors[1])
-    sendEvent(name: "huelevel", value: hsvColors[2])
 }
 
 def setHue(value)
