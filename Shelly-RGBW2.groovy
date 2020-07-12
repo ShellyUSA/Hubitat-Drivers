@@ -146,6 +146,7 @@ metadata {
         attribute "HSV", "string"
         attribute "hue", "number"
         attribute "saturation", "number"
+        attribute "huelevel", "number"
         attribute "level", "number"
         attribute "cloud_connected", "string"
         attribute "DeviceType", "string"
@@ -400,6 +401,12 @@ try {
         sendEvent(name: "RGB", value: rgbCode)
         Hex = ColorUtils.rgbToHEX( [red, blue, green] )
         sendEvent(name: "HEX", value: Hex)
+        
+        hsvColors = ColorUtils.rgbToHSV([red.toInteger(), green.toInteger(), blue.toInteger()])
+        sendEvent(name: "HSV", value: hsvColors)
+        sendEvent(name: "hue", value: hsvColors[0])
+        sendEvent(name: "saturation", value: hsvColors[1])
+        sendEvent(name: "huelevel", value: hsvColors[2])
 
         if (ison == true) {
             sendEvent(name: "switch", value: "on")
@@ -624,30 +631,32 @@ def CustomRGBwColor(r,g,b,w=null) {
     } else {
         sendSwitchCommand "/color/0?red=${r}&green=${g}&blue=${b}&white=${w}"
     }
-    r = r.toInteger()
-    g = g.toInteger()
-    b = b.toInteger()
-	hsvColors = ColorUtils.rgbToHSV([r,g,b])
+    
+    hsvColors = ColorUtils.rgbToHSV([r.toInteger(), g.toInteger(), b.toInteger()])
     sendEvent(name: "HSV", value: hsvColors)
-    h = hvsColors[0]
-    s = hsvColors[1]
-    huelevel = hsvColors[2]
-	sendEvent(name: "hue", value: h)
-	sendEvent(name: "saturation", value: s)
-	sendEvent(name: "huelevel", value: huelevel)
+    sendEvent(name: "hue", value: hsvColors[0])
+    sendEvent(name: "saturation", value: hsvColors[1])
+    sendEvent(name: "huelevel", value: hsvColors[2])
 }
 
-// Not used so lets null the actions
-def setHue(value) {return null}
-def setSaturation(value) {return null}
-//
+def setHue(value)
+{
+    PollShellyStatus()
+    setColor([hue: value, saturation: device.currentValue("saturation").toInteger(), level: device.currentValue("huelevel").toInteger()])
+}
+
+def setSaturation(value)
+{
+    PollShellyStatus()
+    setColor([hue: device.currentValue("hue").toInteger(), saturation: value, level: device.currentValue("huelevel").toInteger()])
+}
 
 def setColor(parameters){
     logDebug "Color set to ${parameters}"
     
 	sendEvent(name: "hue", value: parameters.hue)
 	sendEvent(name: "saturation", value: parameters.saturation)
-	sendEvent(name: "level", value: parameters.level)
+	sendEvent(name: "huelevel", value: parameters.level)
 	rgbColors = ColorUtils.hsvToRGB( [parameters.hue, parameters.saturation, parameters.level] )
     r = rgbColors[0].toInteger()
     g = rgbColors[1].toInteger()
