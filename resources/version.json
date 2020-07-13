@@ -5,6 +5,7 @@
 "icon":"<img src='https://shopusa.shelly.cloud/image/catalog/web/Shelly.png' width='20' height='20'>",
 "versions":{
 "Application":{
+"SmartTiles": "NLS",
 "ExampleApp1":"1.4.0"
 	},
 
@@ -24,6 +25,7 @@
 
 "UpdateInfo":{
 "Application":{
+"SmartTiles": "NLS - No longer supported",
 "ExampleApp1":"<b>Update Information: </b> Updated: 08/08/2018 - Fixed typo"
 	},
 
