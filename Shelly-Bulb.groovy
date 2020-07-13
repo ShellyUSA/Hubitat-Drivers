@@ -123,15 +123,14 @@ metadata {
  	input("ip", "string", title:"Shelly IP Address:", description:"EG; 192.168.0.100", defaultValue:"" , required: true, displayDuringSetup: true)
 	input name: "username", type: "text", title: "Username:", description: "(blank if none)", required: false
 	input name: "password", type: "password", title: "Password:", description: "(blank if none)", required: false
-    input ("ColorMode", "enum", title: "Colour Mode", options: Color_Mode, defaultValue: "color")
-    input ("refresh_Rate", "enum", title: "Device Refresh Rate", options: refreshRate, defaultValue: "30 min")
+	input ("ColorMode", "enum", title: "Colour Mode", options: Color_Mode, defaultValue: "color")
+	input ("refresh_Rate", "enum", title: "Device Refresh Rate", options: refreshRate, defaultValue: "30 min")
 	input "locale", "enum", title: "Choose refresh date format", required: true, defaultValue: true, //RK
 			options: [US:"US MM/DD/YYYY",UK:"UK DD/MM/YYYY"] //RK
 	input name: "debugOutput", type: "bool", title: "Enable debug logging?", defaultValue: true
 	input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true //RK
 	input name: "debugParse", type: "bool", title: "Enable JSON parse logging?", defaultValue: false
 	input name: "Shellyinfo", type: "text", title: "<center><font color=blue>Info Box</font><br>Shelly API docs located</center>", description: "<center><a href='http://shelly-api-docs.shelly.cloud/'>[here]</a></center>"
-	input name: "Donate", type: "text", title: "<center><font color=blue>Donate</font><br>If you like my drivers please donate</center>", description: "<center><a href='https://paypal.me/sgrayban'>[here]</a></center>"
 	}
 }
 
