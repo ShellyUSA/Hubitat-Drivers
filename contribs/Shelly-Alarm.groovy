@@ -443,7 +443,7 @@ def version(){
 
 def updatecheck(){
 	setVersion()
-	 def paramsUD = [uri: "http://sgrayban.borgnet.online:8081/scotts-projects/version.json"]
+	 def paramsUD = [uri: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/resources/version.json", contentType: "application/json; charset=utf-8"]
 	  try {
 			httpGet(paramsUD) { respUD ->
 				  if (debugParse) log.warn " Version Checking - Response Data: ${respUD.data}"   // Troubleshooting Debug Code - Uncommenting this line should show the JSON response from your webserver
