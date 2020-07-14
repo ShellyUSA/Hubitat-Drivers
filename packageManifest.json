@@ -32,6 +32,7 @@
       "namespace": "sgrayban",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-RGBW-White.groovy",
       "required": false
+      "description": "Must use this if RGBW2 is set to white mode"
     },
     {
       "id": "c1db31cf-c97d-4225-acca-26251ad59299",
@@ -53,6 +54,7 @@
       "namespace": "sgrayban",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-as-a-Switch.groovy",
       "required": false
+      "description": "Supports 1/1PM/2/2.5/EM/Plug/PlugS/4Pro/EM3 devices"
     },
     {
       "id": "89068f06-ecd9-4e04-9973-b4660fd21b47",
