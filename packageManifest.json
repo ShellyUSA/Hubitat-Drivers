@@ -1,0 +1,65 @@
+{
+  "packageName": "Shelly Drivers",
+  "author": "Scott Grayban",
+  "version": "1.0",
+  "minimumHEVersion": "2.2.1",
+  "dateReleased": "2020-07-14",
+  "drivers": [
+    {
+      "id": "2c2d9f8d-10b3-4538-b336-f27c96db2d62",
+      "name": "Shelly Bulb",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Bulb.groovy",
+      "required": false
+    },
+    {
+      "id": "9fe99a39-cedc-4060-bf6e-1d140e11ed3e",
+      "name": "Shelly Duo",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Duo.groovy",
+      "required": false
+    },
+    {
+      "id": "02afb7b4-ce1e-4cb5-8422-56cf3732c271",
+      "name": "Shelly HT",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-HT.groovy",
+      "required": false
+    },
+    {
+      "id": "e1a0a91d-1b92-44a0-a493-51fecf9fb60c",
+      "name": "Shelly RGBW White",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-RGBW-White.groovy",
+      "required": false
+    },
+    {
+      "id": "c1db31cf-c97d-4225-acca-26251ad59299",
+      "name": "Shelly RGBW2",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-RGBW2.groovy",
+      "required": false
+    },
+    {
+      "id": "379f2c70-ac93-4667-b567-7bc0f47de697",
+      "name": "Shelly Vintage",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-Vintage.groovy",
+      "required": false
+    },
+    {
+      "id": "71e88a38-6022-4772-955e-7c03492d02fd",
+      "name": "Shelly Switch Relay",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-as-a-Switch.groovy",
+      "required": false
+    },
+    {
+      "id": "89068f06-ecd9-4e04-9973-b4660fd21b47",
+      "name": "Shelly 2/2.5 as Roller Shutter",
+      "namespace": "sgrayban",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly2-as-Roller-Shutter.groovy",
+      "required": false
+    }
+  ]
+}
