@@ -1,0 +1,14 @@
+{
+  "author": "Scott Grayban",
+  "gitHubUrl": "https://github.com/ShellyUSA/Hubitat-Drivers",
+	"packages": [
+		{
+			"name": "Shelly Drivers",
+			"category": "Integrations",
+			"location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/packageManifest.json",
+			"description": "Shelly Device Drivers",
+			"tags": "Lights & Switches"
+		}
+	]
+
+}
