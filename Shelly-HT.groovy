@@ -1,8 +1,6 @@
 /**
  *  Shelly MQTT Device Handler
  *
- *  Raw import code located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly_TandH_MQTT.groovy
- *
  *  Copyright 2019 Scott Grayban
  *
  * Please Note: This app is NOT released under any open-source license.
@@ -53,7 +51,8 @@ metadata {
 definition (
     name: "Shelly MQTT",
     namespace: "sgrayban",
-    author: "Scott Grayban"
+    author: "Scott Grayban",
+    importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-HT.groovy"
 )
 
     {
@@ -370,7 +369,7 @@ def version(){
 
 def updatecheck(){
     setVersion()
-	 def paramsUD = [uri: "http://sgrayban.borgnet.online:8081/scotts-projects/version.json"]
+	 def paramsUD = [uri: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/resources/version.json", contentType: "application/json; charset=utf-8"]
 	  try {
 			httpGet(paramsUD) { respUD ->
 				  logJSON " Version Checking - Response Data: ${respUD.data}"   // Troubleshooting Debug Code - Uncommenting this line should show the JSON response from your webserver
