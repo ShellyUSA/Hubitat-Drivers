@@ -1,24 +1,39 @@
 /**
- *  Shelly HT MQTT Device Handler
+ *  Shelly MQTT Device Handler
  *
- *  Copyright © 2018-2019 Scott Grayban
- *  Copyright © 2020 Allterco Robotics US
+ *  Raw import code located at https://gitlab.borgnet.us:8443/sgrayban/shelly-drivers/raw/master/Drivers/Shelly/Shelly_TandH_MQTT.groovy
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *  in compliance with the License. You may obtain a copy of the License at:
+ *  Copyright 2019 Scott Grayban
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * Please Note: This app is NOT released under any open-source license.
+ * Please be sure to read the license agreement before installing this code.
  *
- *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
- *  for the specific language governing permissions and limitations under the License.
+ * This software package is created and licensed by Scott Grayban.
  *
+ * This software, along with associated elements, including but not limited to online and/or electronic documentation are
+ * protected by international laws and treaties governing intellectual property rights.
+ *
+ * This software has been licensed to you. All rights are reserved. You may use and/or modify the software.
+ * You may not sublicense or distribute this software or any modifications to third parties in any way.
+ *
+ * You may not distribute any part of this software without the author's express permission
+ *
+ * By downloading, installing, and/or executing this software you hereby agree to the terms and conditions set forth
+ * in the Software license agreement.
+ * This agreement can be found on-line at: http://sgrayban.borgnet.online:8081/scotts-projects/software_License_Agreement.txt
+ * 
  * Hubitat is the Trademark and intellectual Property of Hubitat Inc.
- * Shelly is the Trademark and Intellectual Property of Allterco Robotics Ltd.
+ * Shelly is the Trademark and Intellectual Property of Allterco Robotics Ltd
+ * Scott Grayban has no formal or informal affiliations or relationships with Hubitat or Allterco Robotics Ltd.
+ *
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License Agreement
+ * for the specific language governing permissions and limitations under the License.
  *
  *-------------------------------------------------------------------------------------------------------------------
  *
  *  Changes:
+ *  3.1.2 - Corrected code for getting device settings and current status
  *  3.1.1 - Added code to pull settings and status when the device wakes up.
  *        - RSSI value is definded as exelent, good or poor. The actual rssi reading is under state variables.
  *  3.1.0 - Removed MQTT alpha code
@@ -36,11 +51,9 @@
 
 metadata {
 definition (
-    name: "Shelly HT",
+    name: "Shelly MQTT",
     namespace: "sgrayban",
-    author: "Scott Grayban",
-    importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-HT.groovy"
-
+    author: "Scott Grayban"
 )
 
     {
@@ -71,7 +84,6 @@ definition (
         attribute "WiFiSignal", "string"
 
         command "initialize"
-        command "uninstalled"
         command "ReconnectMQTT"
    }
 
@@ -92,7 +104,8 @@ preferences {
 	input("ip", "string", title:"Shelly IP Address", description:"Required to pull stats", defaultValue:"" , required: true)
 	input name: "username", type: "text", title: "Shelly Username:", description: "(blank if none)", required: false
 	input name: "password", type: "password", title: "Shelly Password:", description: "(blank if none)", required: false
-	input name: "Shellyinfo", type: "text", title: "<center><font color=blue>Info Box</font><br>Shelly API docs located</center>", description: "<center><a href='http://shelly-api-docs.shelly.cloud/' target='_blank'>[here]</a></center>"
+	input name: "Shellyinfo", type: "text", title: "<center><font color=blue>Info Box</font><br>Shelly API docs located</center>", description: "<center><a href='http://shelly-api-docs.shelly.cloud/'>[here]</a></center>"
+	input name: "Donate", type: "text", title: "<center><font color=blue>Donate</font><br>If you like my drivers please donate</center>", description: "<center><a href='https://paypal.me/sgrayban'>[here]</a></center>"
         }
 }
 
@@ -101,7 +114,7 @@ def installed() {
 }
 
 def setVersion(){
-	state.Version = "3.1.1"
+	state.Version = "3.1.2"
 	state.InternalName = "ShellyHTMQTT"
 }
 
@@ -112,8 +125,6 @@ def parse(String description) {
 	payload = interfaces.mqtt.parseMessage(description).payload
 	if (txtEnable) log.info topic
 	if (txtEnable) log.info payload
-    getSettings()
-    getStatus()
     sendEvent(name: "${topic}", value: "${payload}", displayed: true)
 	state."${topic}" = "${payload}"
     if (DeviceType == "flood") {
@@ -122,6 +133,15 @@ def parse(String description) {
     } else {
         sendEvent (name: "water", value: "---")
     }
+    
+    if (state.act_reasons == '["sensor"]') {
+        for (i = 0; i <1; i++) { // checks only once
+            getSettings()
+            getStatus()
+            state.act_reasons = "0" // Now we change the reason to stop getting stats
+        }
+    }
+
     if (debugOutput) sendEvent(name: "Last_Payload_Received", value: "Topic: ${topic}: ${payload} - ${date.toString()}", displayed: true)
 	state.LastUpdateTime = "${date.toString()}"
     sendEvent (name: "LastUpdateTime", value: state.LastUpdateTime)
@@ -350,7 +370,7 @@ def version(){
 
 def updatecheck(){
     setVersion()
-	 def paramsUD = [uri: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/resources/version.json", contentType: "application/json; charset=utf-8"]
+	 def paramsUD = [uri: "http://sgrayban.borgnet.online:8081/scotts-projects/version.json"]
 	  try {
 			httpGet(paramsUD) { respUD ->
 				  logJSON " Version Checking - Response Data: ${respUD.data}"   // Troubleshooting Debug Code - Uncommenting this line should show the JSON response from your webserver
