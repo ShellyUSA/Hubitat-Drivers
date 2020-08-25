@@ -104,7 +104,6 @@ preferences {
 	input name: "username", type: "text", title: "Shelly Username:", description: "(blank if none)", required: false
 	input name: "password", type: "password", title: "Shelly Password:", description: "(blank if none)", required: false
 	input name: "Shellyinfo", type: "text", title: "<center><font color=blue>Info Box</font><br>Shelly API docs located</center>", description: "<center><a href='http://shelly-api-docs.shelly.cloud/'>[here]</a></center>"
-	input name: "Donate", type: "text", title: "<center><font color=blue>Donate</font><br>If you like my drivers please donate</center>", description: "<center><a href='https://paypal.me/sgrayban'>[here]</a></center>"
         }
 }
 
