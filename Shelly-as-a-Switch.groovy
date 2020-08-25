@@ -21,9 +21,10 @@
  *
  * See all the Shelly Products at https://shelly.cloud/
  * Supported devices are:
- *   1/1PM/2/2.5/EM/Plug/PlugS/4Pro/EM3
+ *   1/1PM/2/2.5/EM/Plug/PlugS/4Pro/EM3/SHPLG-U1
  *
  *  Changes:
+ *  3.0.5 - Added support for the Shelly Plug US
  *  3.0.4 - Added support for External Sensor Hat for the Shelly1 and 1PM
  *  3.0.3 - Added support for the ShellEM 3 phase
  *  3.0.2 - Fixed a bug with Shelly EM/4PRO to not set a relayname for the second EM channel
@@ -74,7 +75,7 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "3.0.4"
+	state.Version = "3.0.5"
 	state.InternalName = "ShellyAsASwitch"
 }
 
@@ -155,7 +156,7 @@ metadata {
     // Only show for channel 0 since the device name is for the entire device
 	if (channel < 1) input name: "devicename", type: "text", title: "Give your device a name:", description: "EG; Location/Room<br>NO SPACES in name", required: false
 
-    if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3") { // The Plug devices do not offer a relay name
+    if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHPLG-U1") { // The Plug devices do not offer a relay name
         input name: "relayname", type: "text", title: "Label your relay control:", description: "EG; Light/Appliance<br>NO SPACES in name", required: false
     }
     if (channel != 1 && getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3")
@@ -176,7 +177,7 @@ metadata {
     if (getDataValue("model") == "SHSW-1" || getDataValue("model") == "SHSW-PM") {
         input name: "external_sensors", type: "bool", title: "Use External Sensor?", defaultValue: false
     }
-    if (getDataValue("model") == "SHPLG-S" || getDataValue("model") == "SHPLG-1") {
+    if (getDataValue("model") == "SHPLG-S" || getDataValue("model") == "SHPLG-1" || getDataValue("model") == "SHPLG-U1") {
         input("led_status", "enum", title:"LED indication for network status", description:"Enable/Disable", defaultValue: false, options: [false:"Enable",true:"Disable"])
         input("led_power", "enum", title:"LED indication for output status", description:"Enable/Disable", defaultValue: false, options: [false:"Enable",true:"Disable"])
         input("maxpower", "number", title:"Max Power", description:"Max power allowed for this relay is 2500W", defaultValue:"2500" , required: true)
@@ -184,7 +185,7 @@ metadata {
         sendEvent(name: "RelayName", value: state.RelayName)
         updateDataValue("RelayName", state.RelayName)
     }
-    if (getDataValue("model") != "SHSW-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHDM-1" && getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1") {
+    if (getDataValue("model") != "SHSW-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHDM-1" && getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHPLG-U1") {
         input("maxpower", "number", title:"Max Power", description:"Max power allowed for this relay is 2300W", defaultValue:"2300" , required: true)
     }
     if (getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3") input("refresh_Rate", "enum", title: "Device Refresh Rate", description:"<font color=red>!!WARNING!!</font><br>DO NOT USE if you have over 50 Shelly devices.", options: refreshRate, defaultValue: "manual")
@@ -227,7 +228,7 @@ def updated() {
     if (getDataValue("model") != "SHSW-1" && getDataValue("model") != "SHEM") {
         sendSwitchCommand "/settings/relay/${channel}?max_power=${maxpower}"
     }
-    if (getDataValue("model") == "SHPLG-1" || getDataValue("model") == "SHPLG-S") {
+    if (getDataValue("model") == "SHPLG-1" || getDataValue("model") == "SHPLG-S" || getDataValue("model") == "SHPLG-U1") {
         logDebug "LED setting ${led_status} and ${led_power}"
         sendSwitchCommand "/settings?led_status_disable=${led_status}"
         sendSwitchCommand "/settings?led_power_disable=${led_power}"
@@ -235,7 +236,7 @@ def updated() {
     sendSwitchCommand "/settings?sntp_server=${ntp_server}"
 // Set device and relay name
     sendSwitchCommand "/settings?name=${devicename}"
-    if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1") sendSwitchCommand "/settings/relay/${channel}?name=${relayname}"
+    if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHPLG-U1") sendSwitchCommand "/settings/relay/${channel}?name=${relayname}"
 
     if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") sendSwitchCommand "/settings/relay/${channel}?ctraf_type=${ctraf_type}"
     }
@@ -453,6 +454,10 @@ try {
             state.powerSource = "mains"
             sendEvent(name: "powerSource", value: "mains")
         }
+        if (getDataValue("model") == "SHPLG-U1") {
+            state.powerSource = "mains"
+            sendEvent(name: "powerSource", value: "mains")
+        }
 
 // Externel Sensors Shelly 1 and 1PM only
         if (external_sensors) {
@@ -505,6 +510,7 @@ try {
         if (state.DeviceType == "SHEM-3") sendEvent(name: "DeviceType", value: "Shelly EM3")
         if (state.DeviceType == "SHPLG-1") sendEvent(name: "DeviceType", value: "Shelly Plug")
         if (state.DeviceType == "SHPLG-S") sendEvent(name: "DeviceType", value: "Shelly PlugS")
+        if (state.DeviceType == "SHPLG-U1") sendEvent(name: "DeviceType", value: "Shelly Plug US")
 
 
         state.ShellyHostname = obsSettings.device.hostname
@@ -537,7 +543,7 @@ try {
            if (txtEnable) log.info "DeviceName is ${obsSettings.name}"
        }
 //Get Relay name
-        if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHEM") {
+        if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHPLG-U1" && getDataValue("model") != "SHEM") {
             if (obsSettings.relays != null) {
                 if (channel == 0) relay_name = obsSettings.relays.name[0]
                 if (channel == 1) relay_name = obsSettings.relays.name[1]
