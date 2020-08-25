@@ -10,7 +10,7 @@
 
 "Driver":{
 "ShellyAsARoller":"2.0.2",
-"ShellyAsASwitch":"3.0.4",
+"ShellyAsASwitch":"3.0.5",
 "ShellyBulb":"2.1.5",
 "ShellyHTMQTT":"3.1.1",
 "ShellyRGBW":"1.5.7",
@@ -29,7 +29,7 @@
 
 "Driver":{
 "ShellyAsARoller":"<br>- Fixed login bug",
-"ShellyAsASwitch":"<br>- Added support for External Sensor Hat for the Shelly1 and 1PM",
+"ShellyAsASwitch":"<br>- Added support for the Shelly Plug US",
 "ShellyBulb":"<br>- Fixes for proper HUE commands (tomw)",
 "ShellyHTMQTT":"<br>- Added code to pull settings and status when the device wakes up.<br>- RSSI value is definded as exelent, good or poor. The actual rssi reading is under state variables.",
 "ShellyRGBW":"<br>- Fixes for proper HUE commands (tomw)",
