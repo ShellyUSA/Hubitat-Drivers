@@ -19,7 +19,8 @@
 "ShellyAlarm":"1.0.1",
 "ShellyVintage":"1.0.0",
 "ShellyDuo":"1.0.0",
-"ShellyRGBWhite":"1.0.0"
+"ShellyRGBWhite":"1.0.0",
+"ShellyContactMQTT":"1.0.0"
 	},
 
 "UpdateInfo":{
@@ -38,7 +39,8 @@
 "ShellyAlarm":"<br>- Added code that will allow you to upgrade the device firmware.",
 "ShellyVintage":"<br>- Initial release.",
 "ShellyDuo":"<br>- Initial release.",
-"ShellyRGBWhite":"<br>- Initial release."
+"ShellyRGBWhite":"<br>- Initial release.",
+"ShellyContactMQTT":"New device"
 	}
      }
   }
