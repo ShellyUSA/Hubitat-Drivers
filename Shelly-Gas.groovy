@@ -1,4 +1,4 @@
-/**
+/*
  *  Shelly Gas Device Handler
  *
  *  Copyright © 2020 Allterco Robotics US
@@ -16,6 +16,10 @@
  * Shelly is the Trademark and Intellectual Property of Allterco Robotics Ltd
  *
  *-------------------------------------------------------------------------------------------------------------------
+ *
+ *  Notes: This devices registers as both a CarbonMonoxideDetector and a CarbonDioxideMeasurement devices for two reasons:
+ *         1) As a Carbon Monoxide Detector it will allow you to add it to HSM and rules since HE does not support propane or natual gas yet...
+ *         2) Will give you the PPM reading as a Carbon Dioxide Measurement
  *
  *  Changes:
  *  1.0.0 - Initial release
