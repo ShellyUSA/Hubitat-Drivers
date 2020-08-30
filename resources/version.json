@@ -21,7 +21,8 @@
 "ShellyDuo":"1.0.0",
 "ShellyRGBWhite":"1.0.0",
 "ShellyContactMQTT":"1.0.0",
-"ShellyButton1MQTT":"1.0.0"
+"ShellyButton1MQTT":"1.0.0",
+"ShellyGas":"1.0.0"
 	},
 
 "UpdateInfo":{
@@ -42,7 +43,8 @@
 "ShellyDuo":"<br>- Initial release.",
 "ShellyRGBWhite":"<br>- Initial release.",
 "ShellyContactMQTT":"<br>- New device.",
-"ShellyButton1MQTT":"<br>- New device."
+"ShellyButton1MQTT":"<br>- New device.",
+"ShellyGas":"<br>- Initial release."
 	}
      }
   }
