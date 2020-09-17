@@ -25,7 +25,7 @@
  * It is based on the project by Jason Churchward --> http://blog.smarterhome.club/2019/09/07/shelly1strobealarm/
  *
  *  Changes:
- *  1.0.2 - Presense senosr added
+ *  1.0.2 - Presense sensor added
  *  1.0.1 - Added code that will allow you to upgrade the device firmware and will auto-refresh in 30 seconds.
  *  1.0.0 - Initial port of Shelly Alarm
  *
