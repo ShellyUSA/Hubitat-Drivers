@@ -10,7 +10,7 @@
 
 "Driver":{
 "ShellyAsARoller":"2.0.2",
-"ShellyAsASwitch":"3.0.5",
+"ShellyAsASwitch":"3.0.6",
 "ShellyBulb":"2.1.5",
 "ShellyHTMQTT":"3.1.2",
 "ShellyRGBW":"1.5.7",
@@ -32,7 +32,7 @@
 
 "Driver":{
 "ShellyAsARoller":"<br>- Fixed login bug",
-"ShellyAsASwitch":"<br>- Added support for the Shelly Plug US",
+"ShellyAsASwitch":"<br>- Added VoltageMeasurement for the 4Pro input voltage<br>- Fixed a issue where the ntp server and devicename would be deleted if the relay # was not 0",
 "ShellyBulb":"<br>- Fixes for proper HUE commands (tomw)",
 "ShellyHTMQTT":"<br> - Corrected code for getting device settings and current status",
 "ShellyRGBW":"<br>- Fixes for proper HUE commands (tomw)",
