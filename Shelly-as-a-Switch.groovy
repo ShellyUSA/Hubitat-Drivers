@@ -24,6 +24,8 @@
  *   1/1PM/2/2.5/EM/Plug/PlugS/4Pro/EM3/SHPLG-U1
  *
  *  Changes:
+ *  3.0.6 - Added VoltageMeasurement for the 4Pro input voltage
+ *        - Fixed a issue where the ntp server and devicename would be deleted if the relay # was not 0
  *  3.0.5 - Added support for the Shelly Plug US
  *  3.0.4 - Added support for External Sensor Hat for the Shelly1 and 1PM
  *  3.0.3 - Added support for the ShellEM 3 phase
@@ -75,7 +77,7 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "3.0.5"
+	state.Version = "3.0.6"
 	state.InternalName = "ShellyAsASwitch"
 }
 
@@ -100,6 +102,7 @@ metadata {
         capability "PowerSource"
         capability "TemperatureMeasurement"
         capability "RelativeHumidityMeasurement"
+        capability "VoltageMeasurement"
         
         attribute "FW_Update_Needed", "string"
         attribute "LastRefresh", "string"
@@ -155,7 +158,7 @@ metadata {
 
     // Only show for channel 0 since the device name is for the entire device
 	if (channel < 1) input name: "devicename", type: "text", title: "Give your device a name:", description: "EG; Location/Room<br>NO SPACES in name", required: false
-
+        
     if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHPLG-U1") { // The Plug devices do not offer a relay name
         input name: "relayname", type: "text", title: "Label your relay control:", description: "EG; Light/Appliance<br>NO SPACES in name", required: false
     }
@@ -233,9 +236,9 @@ def updated() {
         sendSwitchCommand "/settings?led_status_disable=${led_status}"
         sendSwitchCommand "/settings?led_power_disable=${led_power}"
     }
-    sendSwitchCommand "/settings?sntp_server=${ntp_server}"
+    if (channel < 1) sendSwitchCommand "/settings?sntp_server=${ntp_server}"
 // Set device and relay name
-    sendSwitchCommand "/settings?name=${devicename}"
+    if (channel < 1) sendSwitchCommand "/settings?name=${devicename}"
     if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHPLG-U1") sendSwitchCommand "/settings/relay/${channel}?name=${relayname}"
 
     if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") sendSwitchCommand "/settings/relay/${channel}?ctraf_type=${ctraf_type}"
@@ -423,7 +426,7 @@ try {
         if (channel ==0) overpower = obs.relays.overpower[0]
         if (channel ==1) overpower = obs.relays.overpower[1]
         if (channel ==2) overpower = obs.relays.overpower[2]
-        if (channel ==3) overpower = obs.relays.overpower[]
+        if (channel ==3) overpower = obs.relays.overpower[3]
         if (overpower != null) sendEvent(name: "overpower", value: overpower)
         }
 
@@ -436,6 +439,7 @@ try {
         }
         if (getDataValue("model") == "SHSW-44") {
             state.powerSource = "mains"
+            sendEvent(name: "voltage", value: obs.voltage)
             sendEvent(name: "powerSource", value: "mains")
         }
         if (getDataValue("model") == "SHSW-PM") {
