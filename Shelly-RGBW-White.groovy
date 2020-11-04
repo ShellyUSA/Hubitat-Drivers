@@ -128,6 +128,11 @@ metadata {
 	input name: "debugParse", type: "bool", title: "Enable JSON parse logging?", defaultValue: true
 	input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
 	input name: "Shellyinfo", type: "text", title: "<center><font color=blue>Info Box</font><br>Shelly API docs located</center>", description: "<center><a href='http://shelly-api-docs.shelly.cloud/' target='_blank'>[here]</a></center>"
+    
+	input name: "ch0Enabled", type: "bool", title: "Channel 0 enabled?", defaultValue: true
+	input name: "ch1Enabled", type: "bool", title: "Channel 1 enabled?", defaultValue: true
+	input name: "ch2Enabled", type: "bool", title: "Channel 2 enabled?", defaultValue: true
+	input name: "ch3Enabled", type: "bool", title: "Channel 3 enabled?", defaultValue: true
 	}
 }
 
@@ -437,10 +442,10 @@ try {
 //switch.on
 def on() {
     if (txtEnable) log.info "Executing switch.on"
-    sendSwitchCommand "/white/0?turn=on"
-    sendSwitchCommand "/white/1?turn=on"
-    sendSwitchCommand "/white/2?turn=on"
-    sendSwitchCommand "/white/3?turn=on"
+    if (ch0Enabled) CH0On()
+    if (ch1Enabled) CH1On()
+    if (ch2Enabled) CH2On()
+    if (ch3Enabled) CH3On()
 }
 
 def CH0On() {
@@ -463,10 +468,10 @@ def CH3On() {
 //switch.off
 def off() {
     if (txtEnable) log.info "Executing switch.off"
-    sendSwitchCommand "/white/0?turn=off"
-    sendSwitchCommand "/white/1?turn=off"
-    sendSwitchCommand "/white/2?turn=off"
-    sendSwitchCommand "/white/3?turn=off"
+    if (ch0Enabled) CH0Off()
+    if (ch1Enabled) CH1Off()
+    if (ch2Enabled) CH2Off()
+    if (ch3Enabled) CH3Off()
 }
 
 def CH0Off() {
@@ -488,6 +493,14 @@ def CH3Off() {
 
 //switch.level
 def setLevel(percent) {
+    if (txtEnable) log.info "Executing setLevel"
+    if (ch0Enabled) setLevel0(percent)
+    if (ch1Enabled) setLevel1(percent)
+    if (ch2Enabled) setLevel2(percent)
+    if (ch3Enabled) setLevel3(percent)
+}
+
+def setLevel0(percent) {
     sendSwitchCommand "/white/0?turn=on&brightness=${percent}"
 }
 
