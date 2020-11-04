@@ -492,6 +492,11 @@ def CH3Off() {
 }
 
 //switch.level
+def setLevel(percent, duration) {
+    // some automations make the call with a duration
+    setLevel(percent)
+}
+
 def setLevel(percent) {
     if (txtEnable) log.info "Executing setLevel"
     if (ch0Enabled) setLevel0(percent)
