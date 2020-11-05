@@ -21,6 +21,9 @@
  *-------------------------------------------------------------------------------------------------------------------
  *
  * See all the Shelly Products at https://shelly.cloud/
+ *  1.0.1 - Added chXEnabled for each channel (defaults to true for all changgels).
+            Calling on, off, or setLevel only affects the channels that are enabled
+          - Added override for setLevel to add a duration parameter used by Groups & Scenes.  duration is ignored.
  *  1.0.0 - Initial release
  *
  */
@@ -32,7 +35,7 @@ import groovy.json.*
 //	==========================================================
 
 def setVersion(){
-	state.Version = "1.0.0"
+	state.Version = "1.0.1"
 	state.InternalName = "ShellyRGBWhite"
 }
 
@@ -62,6 +65,7 @@ metadata {
         command "CH1Off"
         command "CH2Off"
         command "CH3Off"
+        command "setLevel0", ["Level"]
         command "setLevel1", ["Level"]
         command "setLevel2", ["Level"]
         command "setLevel3", ["Level"]
