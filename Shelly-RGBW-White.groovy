@@ -21,8 +21,8 @@
  *-------------------------------------------------------------------------------------------------------------------
  *
  * See all the Shelly Products at https://shelly.cloud/
- *  1.0.1 - Added chXEnabled for each channel (defaults to true for all changgels).
-            Calling on, off, or setLevel only affects the channels that are enabled
+ *  1.0.1 - Added chXEnabled for each channel (defaults to true for all channels).
+            Calling on, off, or setLevel only affects the channels that are enabled.
           - Added override for setLevel to add a duration parameter used by Groups & Scenes.  duration is ignored.
  *  1.0.0 - Initial release
  *
