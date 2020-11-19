@@ -12,7 +12,7 @@
 "ShellyAsARoller":"2.0.2",
 "ShellyAsASwitch":"3.0.6",
 "ShellyBulb":"2.1.5",
-"ShellyHTMQTT":"3.1.2",
+"ShellyHTMQTT":"3.1.3",
 "ShellyRGBW":"1.5.7",
 "Shellyrgbw2Plus":"BETA",
 "ShellyDimmer":"BETA",
@@ -20,7 +20,7 @@
 "ShellyVintage":"1.0.0",
 "ShellyDuo":"1.0.0",
 "ShellyRGBWhite":"1.0.1",
-"ShellyContactMQTT":"1.0.0",
+"ShellyContactMQTT":"1.0.1",
 "ShellyButton1MQTT":"1.0.0",
 "ShellyGas":"1.0.0"
 	},
@@ -34,7 +34,7 @@
 "ShellyAsARoller":"<br>- Fixed login bug",
 "ShellyAsASwitch":"<br>- Added VoltageMeasurement for the 4Pro input voltage<br>- Fixed a issue where the ntp server and devicename would be deleted if the relay # was not 0",
 "ShellyBulb":"<br>- Fixes for proper HUE commands (tomw)",
-"ShellyHTMQTT":"<br> - Corrected code for getting device settings and current status",
+"ShellyHTMQTT":"<br> - Change the names of inputs for MQTT Username and Password to avoid conflict with API Shelly username and password.",
 "ShellyRGBW":"<br>- Fixes for proper HUE commands (tomw)",
 "Shellyrgbw2Plus":"<br>- BETA",
 "ShellyDimmer":"<br>- Added code that will allow you to upgrade the device firmware.",
@@ -42,7 +42,7 @@
 "ShellyVintage":"<br>- Initial release.",
 "ShellyDuo":"<br>- Initial release.",
 "ShellyRGBWhite":"<br>- See https://github.com/ShellyUSA/Hubitat-Drivers/pull/3 for changes.",
-"ShellyContactMQTT":"<br>- New device.",
+"ShellyContactMQTT":"<br>- Change the names of inputs for MQTT Username and Password to avoid conflict with API Shelly username and password.",
 "ShellyButton1MQTT":"<br>- New device.",
 "ShellyGas":"<br>- Initial release."
 	}

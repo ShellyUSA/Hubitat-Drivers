@@ -31,6 +31,8 @@
  *-------------------------------------------------------------------------------------------------------------------
  *
  *  Changes:
+ *  3.1.3 - Merged PR #5 - Change the names of inputs for MQTT Username and Password
+            to avoid conflict with API Shelly username and password.
  *  3.1.2 - Corrected code for getting device settings and current status
  *  3.1.1 - Added code to pull settings and status when the device wakes up.
  *        - RSSI value is definded as exelent, good or poor. The actual rssi reading is under state variables.
@@ -112,7 +114,7 @@ def installed() {
 }
 
 def setVersion(){
-	state.Version = "3.1.2"
+	state.Version = "3.1.3"
 	state.InternalName = "ShellyHTMQTT"
 }
 

@@ -19,6 +19,8 @@
  *-------------------------------------------------------------------------------------------------------------------
  *
  *  Changes:
+ *  1.0.1 - Merged PR #6 Change the names of inputs for MQTT Username and Password
+ *          to avoid conflict with API Shelly username and password.
  *  1.0.0 - Initial port
  *
  */
@@ -89,7 +91,7 @@ def installed() {
 }
 
 def setVersion(){
-        state.Version = "1.0.0"
+        state.Version = "1.0.1"
         state.InternalName = "ShellyContactMQTT"
 }
 
