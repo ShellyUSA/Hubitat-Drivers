@@ -93,8 +93,8 @@ preferences {
     
 	input name: "MQTTBroker", type: "text", title: "MQTT Broker Address:", required: true
 	input name: "MQTTBrokerPort", type: "text", title: "MQTT Broker Port:", required: true
-	input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)"
-	input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)"
+	input name: "MQTTUsername", type: "text", title: "MQTT Username:", description: "(blank if none)"
+	input name: "MQTTPassword", type: "password", title: "MQTT Password:", description: "(blank if none)"
     input ("DeviceType", "enum", title: "Device Mode", options: device, defaultValue: "ht")
 	input name: "shellyId", type: "text", title: "Your Shelly Device ID:", description: "EG; Y8AFD0", required: true
 	input name: "debugOutput", type: "bool", title: "Enable debug logging?", defaultValue: true
@@ -320,7 +320,7 @@ try {
 def initialize() {
 	try {
         mqttbroker = "tcp://" + settings?.MQTTBroker + ":" + settings?.MQTTBrokerPort
-        interfaces.mqtt.connect(mqttbroker, "hubitat" + settings?.shellyId, settings?.username,settings?.password)
+        interfaces.mqtt.connect(mqttbroker, "hubitat" + settings?.shellyId, settings?.MQTTUsername,settings?.MQTTPassword)
         if (debugOutput) {
             state.MTQQbrokerURL= "${mqttbroker}"
             state.shellyId = "${shellyId}"
