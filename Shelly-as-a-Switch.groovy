@@ -77,7 +77,7 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "3.0.6"
+	state.Version = "3.0.6-patch"
 	state.InternalName = "ShellyAsASwitch"
 }
 
@@ -131,6 +131,10 @@ metadata {
         attribute "DeviceName", "string"
         attribute "RelayName", "string"
         attribute "NTPServer", "string"
+        attribute "pf", "number"
+        attribute "current", "number"
+        attribute "is_valid", "bool"
+        attribute "total_returned", "number"
         
         command "RebootDevice"
         command "UpdateDeviceFW" // ota?update=1
@@ -170,9 +174,13 @@ metadata {
     if (getDataValue("model") != "SHDM-1" && getDataValue("model") != "SHSW-PM" && getDataValue("model") != "SHSW-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3") {
         input("channel", "number", title:"Relay Channel", description:"0,1,2,or 3 :", defaultValue:"0" , required: true)
     }
-    if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") {
+    if (getDataValue("model") == "SHEM") {
+        input("eMeter", "number", title:"eMeter Channel", description:"0 or 1 :", defaultValue:"0" , required: true)
+        input("ctraf", "number", title:"Current Amperage(ctraf_type)", description:"50 or 120:", defaultValue:"50" , required: true)
+    }
+// SHEM-3 Doesn't have ctraf_type parameter since FW ver. 1.7.0  
+    if (getDataValue("model") == "SHEM-3") {
         input("eMeter", "number", title:"eMeter Channel", description:"0, 1 or 2 :", defaultValue:"0" , required: true)
-        input("ctraf", "number", title:"Current Amperage(ctraf)", description:"50 or 120:", defaultValue:"50" , required: true)
     }
     if (getDataValue("model") == "SHSW-25" || getDataValue("model") == "SHSW-1") {
         input("powersource", "enum", title:"Mains/Battery", description:"Shelly Power Source", defaultValue: true, options: [mains:"Mains",battery:"Battery"], required: true)
@@ -241,7 +249,10 @@ def updated() {
     if (channel < 1) sendSwitchCommand "/settings?name=${devicename}"
     if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHPLG-U1") sendSwitchCommand "/settings/relay/${channel}?name=${relayname}"
 
-    if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") sendSwitchCommand "/settings/relay/${channel}?ctraf_type=${ctraf_type}"
+
+// SHEM-3 Doesn't have ctraf_type parameter since FW ver. 1.7.0
+// SHEM ctraf_type is parameter of emeters not relays; but currently unused (https://shelly-api-docs.shelly.cloud/#shelly-em-settings-emeter-index); can be set only via Shelly WEB GUI
+//    if (getDataValue("model") == "SHEM") sendSwitchCommand "/settings/emeters/${channel}?ctraf_type=${ctraf}"
     }
     
     switch(refresh_Rate) {
@@ -346,24 +357,51 @@ try {
         
 // Shelly EM emeters
         if (state.DeviceType == "SHEM") {
-        if (eMeter == 0 )sendEvent(name: "power", value: obs.emeters.power[0])
-        if (eMeter == 0 )sendEvent(name: "voltage", value: obs.emeters.voltage[0])
-        if (eMeter == 0 )sendEvent(name: "reactive", value: obs.emeters.reactive[0])
-        if (eMeter == 0 )sendEvent(name: "energy", value: obs.emeters.total[0])
+            if (eMeter == 0 )sendEvent(name: "power", unit: "W", value: obs.emeters.power[0])
+            if (eMeter == 0 )sendEvent(name: "reactive", unit: "var", value: obs.emeters.reactive[0])
+            if (eMeter == 0 )sendEvent(name: "voltage", unit: "V", value: obs.emeters.voltage[0])
+            if (eMeter == 0 )sendEvent(name: "is_valid", value: obs.emeters.is_valid[0])
+            if (eMeter == 0 )sendEvent(name: "energy", unit: "Wh", value: obs.emeters.total[0])
+            if (eMeter == 0 )sendEvent(name: "total_returned", unit: "Wh", value: obs.emeters.total_returned[0])
 
-        if (eMeter == 1 )sendEvent(name: "power", value: obs.emeters.power[1])
-        if (eMeter == 1 )sendEvent(name: "voltage", value: obs.emeters.voltage[1])
-        if (eMeter == 1 )sendEvent(name: "reactive", value: obs.emeters.reactive[1])
-        if (eMeter == 1 )sendEvent(name: "energy", value: obs.emeters.total[1])
+            if (eMeter == 1 )sendEvent(name: "power", unit: "W", value: obs.emeters.power[1])
+            if (eMeter == 1 )sendEvent(name: "reactive", unit: "var", value: obs.emeters.reactive[1])
+            if (eMeter == 1 )sendEvent(name: "voltage", unit: "V", value: obs.emeters.voltage[1])
+            if (eMeter == 1 )sendEvent(name: "is_valid", value: obs.emeters.is_valid[1])
+            if (eMeter == 1 )sendEvent(name: "energy", unit: "Wh", value: obs.emeters.total[1])
+            if (eMeter == 1 )sendEvent(name: "total_returned", unit: "Wh", value: obs.emeters.total_returned[1])
+
+            state.eMeter = eMeter
+            sendEvent(name: "eMeter", value: state.eMeter)
+        }
 
         if (state.DeviceType == "SHEM-3") {
-        if (eMeter == 2 )sendEvent(name: "power", value: obs.emeters.power[2])
-        if (eMeter == 2 )sendEvent(name: "voltage", value: obs.emeters.voltage[2])
-        if (eMeter == 2 )sendEvent(name: "reactive", value: obs.emeters.reactive[2])
-        if (eMeter == 2 )sendEvent(name: "energy", value: obs.emeters.total[2])
-        }
-        state.eMeter = eMeter
-        sendEvent(name: "eMeter", value: state.eMeter)
+            if (eMeter == 0 )sendEvent(name: "power", unit: "W", value: obs.emeters.power[0])
+            if (eMeter == 0 )sendEvent(name: "pf", unit: "cos φ", value: obs.emeters.pf[0])
+            if (eMeter == 0 )sendEvent(name: "current", unit: "A", value: obs.emeters.current[0])
+            if (eMeter == 0 )sendEvent(name: "voltage", unit: "V", value: obs.emeters.voltage[0])
+            if (eMeter == 0 )sendEvent(name: "is_valid", value: obs.emeters.is_valid[0])
+            if (eMeter == 0 )sendEvent(name: "energy", unit: "Wh", value: obs.emeters.total[0])
+            if (eMeter == 0 )sendEvent(name: "total_returned", unit: "Wh", value: obs.emeters.total_returned[0])
+
+            if (eMeter == 1 )sendEvent(name: "power", unit: "W", value: obs.emeters.power[1])
+            if (eMeter == 1 )sendEvent(name: "pf", unit: "cos φ", value: obs.emeters.pf[1])
+            if (eMeter == 1 )sendEvent(name: "current", unit: "A", value: obs.emeters.current[1])
+            if (eMeter == 1 )sendEvent(name: "voltage", unit: "V", value: obs.emeters.voltage[1])
+            if (eMeter == 1 )sendEvent(name: "is_valid", value: obs.emeters.is_valid[1])
+            if (eMeter == 1 )sendEvent(name: "energy", unit: "Wh", value: obs.emeters.total[1])
+            if (eMeter == 1 )sendEvent(name: "total_returned", unit: "Wh", value: obs.emeters.total_returned[1])
+
+            if (eMeter == 2 )sendEvent(name: "power", unit: "W", value: obs.emeters.power[2])
+            if (eMeter == 2 )sendEvent(name: "pf", unit: "cos φ", value: obs.emeters.pf[2])
+            if (eMeter == 2 )sendEvent(name: "current", unit: "A", value: obs.emeters.current[2])
+            if (eMeter == 2 )sendEvent(name: "voltage", unit: "V", value: obs.emeters.voltage[2])
+            if (eMeter == 2 )sendEvent(name: "is_valid", value: obs.emeters.is_valid[2])
+            if (eMeter == 2 )sendEvent(name: "energy", unit: "Wh", value: obs.emeters.total[2])
+            if (eMeter == 2 )sendEvent(name: "total_returned", unit: "Wh", value: obs.emeters.total_returned[2])
+            
+            state.eMeter = eMeter
+            sendEvent(name: "eMeter", value: state.eMeter)
         }
 
 // Device FW Updates
@@ -597,8 +635,8 @@ try {
             if (channel ==0) ctraf_type = obsSettings.emeters.ctraf_type[0]
             if (channel ==1) ctraf_type = obsSettings.emeters.ctraf_type[1]
 
-            if (txtEnable) log.info "Circuit Amperage is set to ${ctraf} Amps"
-            sendEvent(name: "CircuitAmp", unit: "amp" , value: "${ctraf}")
+            if (txtEnable) log.info "Circuit Amperage is set to ${ctraf_type} Amps"
+            sendEvent(name: "CircuitAmp", unit: "amp" , value: "${ctraf_type}")
             state.ctraf_type = ctraf_type
         }
         
