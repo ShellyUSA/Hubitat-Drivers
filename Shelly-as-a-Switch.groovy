@@ -345,7 +345,7 @@ try {
         sendEvent(name: "rssi", value: state.rssi)
         
 // Shelly EM emeters
-        if (state.DeviceType == "SHEM") {
+        if (state.DeviceType == "SHEM" || state.DeviceType == "SHEM-3") {
         if (eMeter == 0 )sendEvent(name: "power", value: obs.emeters.power[0])
         if (eMeter == 0 )sendEvent(name: "voltage", value: obs.emeters.voltage[0])
         if (eMeter == 0 )sendEvent(name: "reactive", value: obs.emeters.reactive[0])
