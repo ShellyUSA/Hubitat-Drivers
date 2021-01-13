@@ -24,6 +24,9 @@
  *   1/1PM/2/2.5/EM/Plug/PlugS/4Pro/EM3/SHPLG-U1
  *
  *  Changes:
+ *  3.0.8 - Fixed missing directive for EM3 meters
+ *  3.0.7 - Added external temperature and humidity attributes.
+ *        - ctraf settings removed from EM3
  *  3.0.6 - Added VoltageMeasurement for the 4Pro input voltage
  *        - Fixed a issue where the ntp server and devicename would be deleted if the relay # was not 0
  *  3.0.5 - Added support for the Shelly Plug US
@@ -77,14 +80,14 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "3.0.6"
+	state.Version = "3.0.8"
 	state.InternalName = "ShellyAsASwitch"
 }
 
 metadata {
 	definition (
 		name: "Shelly Switch Relay",
-		namespace: "sgrayban",
+		namespace: "ShellyUSA",
 		author: "Scott Grayban",
                 importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Shelly-as-a-Switch.groovy"
 		)
@@ -108,8 +111,8 @@ metadata {
         attribute "LastRefresh", "string"
         attribute "power", "number"
         attribute "overpower", "string"
-        attribute "internal_tempC", "string"
-        attribute "internal_tempF", "string"
+        attribute "internal_tempC", "number"
+        attribute "internal_tempF", "number"
         attribute "DeviceOverTemp", "string"
         attribute "MAC", "string"
         attribute "RelayChannel", "number"
@@ -131,10 +134,15 @@ metadata {
         attribute "DeviceName", "string"
         attribute "RelayName", "string"
         attribute "NTPServer", "string"
+        attribute "ext2_temperature", "number"
+        attribute "ext2_humidity", "number"
+        attribute "ext3_temperature", "number"
+        attribute "ext3_humidity", "number"
         
         command "RebootDevice"
         command "UpdateDeviceFW" // ota?update=1
         //command "updatecheck" // Only used for development
+        command "getSettings"
 	}
 
 	preferences {
@@ -152,35 +160,37 @@ metadata {
 
     if (ip != null) { // show settings *after* IP is set as some settings do not apply to all devices
 
-    if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") channel = 0 // The EM devices only have 1 relay
+    if (getDataValue("model") in ["SHEM","SHEM-3"]) channel = 0 // The EM devices only have 1 relay
 
 	if (channel < 1) input name: "ntp_server", type: "text", title: "NTP time server:", description: "E.G. time.google.com or 192.168.0.59", defaultValue: "time.google.com", required: true
 
     // Only show for channel 0 since the device name is for the entire device
 	if (channel < 1) input name: "devicename", type: "text", title: "Give your device a name:", description: "EG; Location/Room<br>NO SPACES in name", required: false
         
-    if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHPLG-U1") { // The Plug devices do not offer a relay name
+    if (!(getDataValue("model") in ["SHPLG-S","SHPLG-1","SHEM","SHEM-3","SHPLG-U1"])) { // The Plug devices do not offer a relay name
         input name: "relayname", type: "text", title: "Label your relay control:", description: "EG; Light/Appliance<br>NO SPACES in name", required: false
     }
-    if (channel != 1 && getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3")
+    if (channel != 1 && getDataValue("model") in ["SHEM","SHEM-3"])
         input name: "relayname", type: "text", title: "Label your relay control:", description: "EG; Light/Appliance<br>NO SPACES in name", required: false
 
     input "protect", "enum", title:"Prevent accidental off/on", defaultValue: true, options: [Yes:"Yes",No:"No"], required: true
         
-    if (getDataValue("model") != "SHDM-1" && getDataValue("model") != "SHSW-PM" && getDataValue("model") != "SHSW-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3") {
+    if (!(getDataValue("model") in ["SHDM-1","SHSW-PM","SHSW-1","SHEM","SHEM-3"])) {
         input("channel", "number", title:"Relay Channel", description:"0,1,2,or 3 :", defaultValue:"0" , required: true)
     }
-    if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") {
+    if (getDataValue("model") in ["SHEM","SHEM-3"]) {
         input("eMeter", "number", title:"eMeter Channel", description:"0, 1 or 2 :", defaultValue:"0" , required: true)
+    }
+    if (getDataValue("model") == "SHEM") {
         input("ctraf", "number", title:"Current Amperage(ctraf)", description:"50 or 120:", defaultValue:"50" , required: true)
     }
-    if (getDataValue("model") == "SHSW-25" || getDataValue("model") == "SHSW-1") {
+    if (getDataValue("model") in ["SHSW-25","SHSW-1"]) {
         input("powersource", "enum", title:"Mains/Battery", description:"Shelly Power Source", defaultValue: true, options: [mains:"Mains",battery:"Battery"], required: true)
     }
-    if (getDataValue("model") == "SHSW-1" || getDataValue("model") == "SHSW-PM") {
+    if (getDataValue("model") in ["SHSW-1","SHSW-PM"]) {
         input name: "external_sensors", type: "bool", title: "Use External Sensor?", defaultValue: false
     }
-    if (getDataValue("model") == "SHPLG-S" || getDataValue("model") == "SHPLG-1" || getDataValue("model") == "SHPLG-U1") {
+    if (getDataValue("model") in ["SHPLG-S","SHPLG-1","SHPLG-U1"]) {
         input("led_status", "enum", title:"LED indication for network status", description:"Enable/Disable", defaultValue: false, options: [false:"Enable",true:"Disable"])
         input("led_power", "enum", title:"LED indication for output status", description:"Enable/Disable", defaultValue: false, options: [false:"Enable",true:"Disable"])
         input("maxpower", "number", title:"Max Power", description:"Max power allowed for this relay is 2500W", defaultValue:"2500" , required: true)
@@ -188,11 +198,12 @@ metadata {
         sendEvent(name: "RelayName", value: state.RelayName)
         updateDataValue("RelayName", state.RelayName)
     }
-    if (getDataValue("model") != "SHSW-1" && getDataValue("model") != "SHEM" && getDataValue("model") != "SHDM-1" && getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHPLG-U1") {
+    if (!(getDataValue("model") in ["SHSW-1","SHEM","SHDM-1","SHPLG-S","SHPLG-1","SHPLG-U1"])) {
         input("maxpower", "number", title:"Max Power", description:"Max power allowed for this relay is 2300W", defaultValue:"2300" , required: true)
     }
-    if (getDataValue("model") != "SHEM" && getDataValue("model") != "SHEM-3") input("refresh_Rate", "enum", title: "Device Refresh Rate", description:"<font color=red>!!WARNING!!</font><br>DO NOT USE if you have over 50 Shelly devices.", options: refreshRate, defaultValue: "manual")
-    if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") input("refresh_Rate", "enum", title: "Device Refresh Rate", options: refreshRate, defaultValue: "1 min")
+    if (!(getDataValue("model") in ["SHEM","SHEM-3"]))
+        input("refresh_Rate", "enum", title: "Device Refresh Rate", description:"<font color=red>!!WARNING!!</font><br>DO NOT USE if you have over 50 Shelly devices.", options: refreshRate, defaultValue: "manual")
+    if (getDataValue("model") in ["SHEM","SHEM-3"]) input("refresh_Rate", "enum", title: "Device Refresh Rate", options: refreshRate, defaultValue: "1 min")
         input "locale", "enum", title: "Choose refresh date format", required: true, defaultValue: true, options: [US:"US MM/DD/YYYY",UK:"UK DD/MM/YYYY"]
 } // END IP check
 
@@ -228,10 +239,10 @@ def updated() {
     dbCleanUp()
     
     if (ip != null) { // Don't set until IP is saved
-    if (getDataValue("model") != "SHSW-1" && getDataValue("model") != "SHEM") {
+    if (!(getDataValue("model") in ["SHSW-1","SHEM"])) {
         sendSwitchCommand "/settings/relay/${channel}?max_power=${maxpower}"
     }
-    if (getDataValue("model") == "SHPLG-1" || getDataValue("model") == "SHPLG-S" || getDataValue("model") == "SHPLG-U1") {
+    if (getDataValue("model") in ["SHPLG-1","SHPLG-S","SHPLG-U1"]) {
         logDebug "LED setting ${led_status} and ${led_power}"
         sendSwitchCommand "/settings?led_status_disable=${led_status}"
         sendSwitchCommand "/settings?led_power_disable=${led_power}"
@@ -239,9 +250,9 @@ def updated() {
     if (channel < 1) sendSwitchCommand "/settings?sntp_server=${ntp_server}"
 // Set device and relay name
     if (channel < 1) sendSwitchCommand "/settings?name=${devicename}"
-    if (getDataValue("model") != "SHPLG-S" && getDataValue("model") != "SHPLG-1" && getDataValue("model") != "SHPLG-U1") sendSwitchCommand "/settings/relay/${channel}?name=${relayname}"
+    if (!(getDataValue("model") in ["SHPLG-S","SHPLG-1","SHPLG-U1"])) sendSwitchCommand "/settings/relay/${channel}?name=${relayname}"
 
-    if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") sendSwitchCommand "/settings/relay/${channel}?ctraf_type=${ctraf_type}"
+    if (getDataValue("model") == "SHEM") sendSwitchCommand "/settings/relay/${channel}?ctraf_type=${ctraf_type}"
     }
     
     switch(refresh_Rate) {
@@ -271,6 +282,7 @@ def updated() {
 
     version()
     refresh()
+    getSettings()
 }
 
 private dbCleanUp() {
@@ -345,7 +357,7 @@ try {
         sendEvent(name: "rssi", value: state.rssi)
         
 // Shelly EM emeters
-        if (state.DeviceType == "SHEM") {
+        if (state.DeviceType == "SHEM" || state.DeviceType == "SHEM-3") {
         if (eMeter == 0 )sendEvent(name: "power", value: obs.emeters.power[0])
         if (eMeter == 0 )sendEvent(name: "voltage", value: obs.emeters.voltage[0])
         if (eMeter == 0 )sendEvent(name: "reactive", value: obs.emeters.reactive[0])
@@ -433,7 +445,7 @@ try {
 // These devices don't offer the
 // battery or mains option
 // so the default is set to mains
-        if (getDataValue("model") == "SHEM" || getDataValue("model") == "SHEM-3") {
+        if (getDataValue("model") in ["SHEM","SHEM-3"]) {
             state.powerSource = "mains"
             sendEvent(name: "powerSource", value: "mains")
         }
@@ -469,13 +481,13 @@ try {
                 t_unit = obs.ext_sensors.temperature_unit
                 state.temperature_unit = t_unit
 
-                if (obs.ext_temperature['0'] != null) sendEvent(name: "temperature", value: obs.ext_temperature['0']."t${t_unit}")
+                if (obs.ext_temperature['0'] != null) sendEvent(name: "temperature", unit: t_unit, value: obs.ext_temperature['0']."t${t_unit}")
                 if (obs.ext_humidity['0'] != null) sendEvent(name: "humidity", value: obs.ext_humidity['0'].hum)
 
-                if (obs.ext_temperature['1'] != null) sendEvent(name: "ext2_temperature", value: obs.ext_temperature['1']."t${t_unit}")
+                if (obs.ext_temperature['1'] != null) sendEvent(name: "ext2_temperature", unit: t_unit, value: obs.ext_temperature['1']."t${t_unit}")
                 if (obs.ext_humidity['1'] != null) sendEvent(name: "ext2_humidity", value: obs.ext_humidity['1'].hum)
 
-                if (obs.ext_temperature['2'] != null) sendEvent(name: "ext3_temperature", value: obs.ext_temperature['2']."t${t_unit}")
+                if (obs.ext_temperature['2'] != null) sendEvent(name: "ext3_temperature", unit: t_unit, value: obs.ext_temperature['2']."t${t_unit}")
                 if (obs.ext_humidity['2'] != null) sendEvent(name: "ext3_humidity", value: obs.ext_humidity['2'].hum)
             }
         }
@@ -602,9 +614,10 @@ try {
             state.ctraf_type = ctraf_type
         }
         
+        logDebug "updating data values"
         updateDataValue("model", state.DeviceType)
         updateDataValue("ShellyHostname", state.ShellyHostname)
-        updateDataValue("ShellyIP", obsSettings.wifi_sta.ip)
+        updateDataValue("ShellyIP", state.ip)
         updateDataValue("ShellySSID", obsSettings.wifi_sta.ssid)
         updateDataValue("manufacturer", "Allterco Robotics")
         updateDataValue("MAC", state.mac)
