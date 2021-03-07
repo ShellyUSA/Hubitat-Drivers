@@ -22,7 +22,8 @@
 "ShellyRGBWhite":"1.0.1",
 "ShellyContactMQTT":"1.0.1",
 "ShellyButton1MQTT":"1.0.0",
-"ShellyGas":"1.0.0"
+"ShellyGas":"1.0.0",
+"ShellyMotion":"1.0.0"
 	},
 
 "UpdateInfo":{
@@ -44,7 +45,8 @@
 "ShellyRGBWhite":"<br>- See https://github.com/ShellyUSA/Hubitat-Drivers/pull/3 for changes.",
 "ShellyContactMQTT":"<br>- Change the names of inputs for MQTT Username and Password to avoid conflict with API Shelly username and password.",
 "ShellyButton1MQTT":"<br>- New device.",
-"ShellyGas":"<br>- Initial release."
+"ShellyGas":"<br>- Initial release.",
+"ShellyMotion":"<br>- Initial release."
 	}
      }
   }
