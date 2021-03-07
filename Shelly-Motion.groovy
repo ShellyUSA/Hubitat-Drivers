@@ -19,7 +19,9 @@
  *
  * NOTES: In the Shelly MQTT Settings make sure - Clean Session is checked and Retain is UNchecked
  *        These settings are found via the web settings for the device
- * 
+ * IMPORTANT NOTE!! Shelly Motion IS NOT SUITABLE as a security device
+ *        Please read this comment why --> https://www.facebook.com/groups/shellyforhubitat/permalink/3827955923960766/?comment_id=3827983480624677
+ *
  *  Changes:
  *  1.0.0 - Initial release
  *
