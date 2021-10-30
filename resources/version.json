@@ -10,7 +10,7 @@
 
 "Driver":{
 "ShellyAsARoller":"2.0.2",
-"ShellyAsASwitch":"3.0.8",
+"ShellyAsASwitch":"3.0.9",
 "ShellyBulb":"2.1.5",
 "ShellyHTMQTT":"3.1.3",
 "ShellyRGBW":"1.5.7",
@@ -33,7 +33,7 @@
 
 "Driver":{
 "ShellyAsARoller":"<br>- Fixed login bug",
-"ShellyAsASwitch":"<br>- Fixed missing directive for EM3 meters",
+"ShellyAsASwitch":"<br>- Added external switch control (diondp)",
 "ShellyBulb":"<br>- Fixes for proper HUE commands (tomw)",
 "ShellyHTMQTT":"<br> - Change the names of inputs for MQTT Username and Password to avoid conflict with API Shelly username and password.",
 "ShellyRGBW":"<br>- Fixes for proper HUE commands (tomw)",

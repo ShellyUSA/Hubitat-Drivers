@@ -25,7 +25,7 @@
  *
  *  Changes:
 
- *  Diondp: Added ContactSensor function for external swith module, note must use black and yellow wire, selection of reversed as in native shelly-app
+ *  3.0.9 - Diondp: Added ContactSensor function for external swith module, note must use black and yellow wire, selection of reversed as in native shelly-app
  *  To get instant response from the Shelly Contact Sensor, go to the shelly App, and setup a HTTP call for MakerAPI, otherwise there is a need for manual refresh
  *  Only testet with Shelly1 and the Extension kit, capable as ContactSensor for use with virtual garage driver
 
@@ -85,7 +85,7 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "3.0.8"
+	state.Version = "3.0.9"
 	state.InternalName = "ShellyAsASwitch"
 }
 
