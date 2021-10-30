@@ -43,7 +43,7 @@ The instructions assume you've already added the device handler using the steps 
 8. Click Save Preferences
 9. When "Current States" populates with valid data for your device, the device handler is configured properly.
 
-Shelly-as-a-switch notes:
+##Shelly-as-a-switch notes:
 
 Please note that for using the external temp monitor add-on as a switch, you must use the black and yellow wire.
 
