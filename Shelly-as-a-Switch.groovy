@@ -24,6 +24,11 @@
  *   1/1PM/2/2.5/EM/Plug/PlugS/4Pro/EM3/SHPLG-U1
  *
  *  Changes:
+
+ *  Diondp: Added ContactSensor function for external swith module, note must use black and yellow wire, selection of reversed as in native shelly-app
+ *  To get instant response from the Shelly Contact Sensor, go to the shelly App, and setup a HTTP call for MakerAPI, otherwise there is a need for manual refresh
+ *  Only testet with Shelly1 and the Extension kit, capable as ContactSensor for use with virtual garage driver
+
  *  3.0.8 - Fixed missing directive for EM3 meters
  *  3.0.7 - Added external temperature and humidity attributes.
  *        - ctraf settings removed from EM3
@@ -94,6 +99,7 @@ metadata {
 	{
         capability "Actuator"
         capability "Sensor"
+        capability "ContactSensor"
         capability "Refresh"
         capability "Switch"
         capability "RelaySwitch"
@@ -138,6 +144,7 @@ metadata {
         attribute "ext2_humidity", "number"
         attribute "ext3_temperature", "number"
         attribute "ext3_humidity", "number"
+        attribute "ext_switch_state", "number"
         
         command "RebootDevice"
         command "UpdateDeviceFW" // ota?update=1
@@ -189,7 +196,11 @@ metadata {
     }
     if (getDataValue("model") in ["SHSW-1","SHSW-PM"]) {
         input name: "external_sensors", type: "bool", title: "Use External Sensor?", defaultValue: false
+        input "external_contact_reversed", "enum", title:"Is the external contact sensor reversed?", defaultValue: false, options: [Yes:"Yes",No:"No"], required: true
     }
+        
+        
+        
     if (getDataValue("model") in ["SHPLG-S","SHPLG-1","SHPLG-U1"]) {
         input("led_status", "enum", title:"LED indication for network status", description:"Enable/Disable", defaultValue: false, options: [false:"Enable",true:"Disable"])
         input("led_power", "enum", title:"LED indication for output status", description:"Enable/Disable", defaultValue: false, options: [false:"Enable",true:"Disable"])
@@ -480,7 +491,29 @@ try {
             if (obs.ext_sensors != null) {
                 t_unit = obs.ext_sensors.temperature_unit
                 state.temperature_unit = t_unit
+                ext_switch = obs.ext_switch
 
+                if (obs.ext_switch['0'] != null) {
+                    sendEvent(name: "ext_switch_state", value:obs.ext_switch['0'].input)
+                    
+                    if (external_contact_reversed == "No")
+                    {
+                    if (obs.ext_switch['0'].input == 0)
+                        sendEvent(name:"contact", value: "open", isStateChange: false, descriptionText: "Contact was Opened")
+                    
+                    if (obs.ext_switch['0'].input == 1)
+                        sendEvent(name:"contact", value: "closed", isStateChange: false, descriptionText: "Contact was Closed")
+                    }
+                  if (external_contact_reversed == "Yes")
+                    {
+                    if (obs.ext_switch['0'].input == 1)
+                        sendEvent(name:"contact", value: "open", isStateChange: false, descriptionText: "Contact was Opened")
+                    
+                    if (obs.ext_switch['0'].input == 0)
+                        sendEvent(name:"contact", value: "closed", isStateChange: false, descriptionText: "Contact was Closed")
+                    }
+                }
+                
                 if (obs.ext_temperature['0'] != null) sendEvent(name: "temperature", unit: t_unit, value: obs.ext_temperature['0']."t${t_unit}")
                 if (obs.ext_humidity['0'] != null) sendEvent(name: "humidity", value: obs.ext_humidity['0'].hum)
 
