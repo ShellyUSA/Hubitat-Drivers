@@ -1,6 +1,6 @@
 /**
  *
- *  Shelly PLUS Switch Relay Driver
+ *  Shelly PLUS 4pm Driver
  *
  *  Copyright © 2018-2019 Scott Grayban
  *  Copyright © 2020 Allterco Robotics US
