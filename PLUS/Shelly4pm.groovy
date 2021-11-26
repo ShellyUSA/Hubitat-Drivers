@@ -54,7 +54,7 @@ metadata {
         capability "TemperatureMeasurement"
         capability "VoltageMeasurement"
         
-        attribute "FW_Update_Needed", "string"
+        attribute "StableFW_Update", "string"
         attribute "BetaFW_Update", "string"
         attribute "LastRefresh", "string"
         attribute "power", "number"
@@ -332,10 +332,10 @@ try {
 	    logJSON "response data: ${resp.data}"
         
         if(response.contains("stable")) {
-            sendEvent(name:  "FW_Update_Needed", value: "<font color='green'>Available</font>", isStateChange: true);
+            sendEvent(name:  "StableFW_Update", value: "<font color='green'>Available</font>", isStateChange: true);
         }else
         if(!(response.contains("stable"))) {
-            sendEvent(name:  "FW_Update_Needed", value: "Current", isStateChange: true);
+            sendEvent(name:  "StableFW_Update", value: "Current", isStateChange: true);
         }
         
         if(response.contains("beta")) {
