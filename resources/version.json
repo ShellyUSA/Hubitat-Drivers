@@ -24,7 +24,7 @@
 "ShellyButton1MQTT":"1.0.0",
 "ShellyGas":"1.0.0",
 "ShellyMotion":"1.0.0",
-"Shelly4pm":"1.0.0"
+"Shelly4pm":"1.0.1"
 	},
 
 "UpdateInfo":{
@@ -48,7 +48,7 @@
 "ShellyButton1MQTT":"<br>- New device.",
 "ShellyGas":"<br>- Initial release.",
 "ShellyMotion":"<br>- Initial release.",
-"Shelly4pm":"<br>- Initial release."
+"Shelly4pm":"<br>- Added temperature scale set from local hub and fixed bad on/off code"
 	}
      }
   }

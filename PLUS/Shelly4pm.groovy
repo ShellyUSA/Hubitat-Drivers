@@ -22,6 +22,8 @@
  * See all the Shelly Products at https://shelly.cloud/
  *
  *  Changes:
+ *  1.0.1 - Added temperature scale set from local hub
+ *        - WHOOPS on/off code was completely wrong
  *  1.0.0 - Initial port
  *
  */
@@ -30,7 +32,7 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "1.0.0"
+	state.Version = "1.0.1"
 	state.InternalName = "Shelly4pm"
 }
 
@@ -59,8 +61,6 @@ metadata {
         attribute "LastRefresh", "string"
         attribute "power", "number"
         attribute "overpower", "string"
-//        attribute "internal_tempC", "number"
-        attribute "internal_tempF", "number"
         attribute "DeviceOverTemp", "string"
         attribute "MAC", "string"
         attribute "RelayChannel", "number"
@@ -203,8 +203,8 @@ try {
         sendEvent(name: "voltage", value: obs.voltage)
 
         if (obs.temperature.tC != null){
-        sendEvent(name: "internal_tempC", value: obs.temperature.tC)
-        sendEvent(name: "internal_tempF", value: obs.temperature.tF)
+        if (state.temp_scale == "C") sendEvent(name: "temperature", value: obs.temperature.tC)
+        if (state.temp_scale == "F") sendEvent(name: "temperature", value: obs.temperature.tF)
         }
 
         ison = obs.output
@@ -225,7 +225,8 @@ try {
 // Over Power
 //        overpower = obs.relays.overpower
 //        sendEvent(name: "overpower", value: overpower)
-
+        state.temp_scale = location.getTemperatureScale()
+        
         updateDataValue("DeviceName", state.DeviceName)
         updateDataValue("RelayName", state.RelayName)
         updateDataValue("ShellyIP", state.ip)
@@ -356,7 +357,7 @@ try {
 def on() {
     if (protect == "No") {
         logDebug "Executing switch.on"
-        sendSwitchCommand "/rpc/Switch.Set?id=0&on=true"
+        sendSwitchCommand "/rpc/Switch.Set?id=${channel}&on=true"
     }
     if (protect == "Yes") {
         sendEvent(name: "switch", value: "<font color='red'>LOCKED</font>")
@@ -368,7 +369,7 @@ def on() {
 def off() {
     if (protect == "No") {
         logDebug "Executing switch.off"
-        sendSwitchCommand "/rpc/Switch.Set?id=0&on=false"
+        sendSwitchCommand "/rpc/Switch.Set?id=${channel}&on=false"
     }
     if (protect == "Yes") {
         sendEvent(name: "switch", value: "<font color='red'>LOCKED</font>")
