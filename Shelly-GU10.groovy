@@ -19,6 +19,8 @@
  *-------------------------------------------------------------------------------------------------------------------
  *
  *  Changes:
+ *  1.0.1 - Change in color lighteffects code
+ *        - Change how dbCleanUp works
  *  1.0.0 - Initial release
  *
  */
@@ -27,10 +29,10 @@ import groovy.transform.Field
 import groovy.json.*
 import hubitat.helper.ColorUtils
 
-@Field static Map lightEffects = [1:"Meteor Shower",2:"Gradual Change",3:"Breath",4:"Flash",5:"Gradual On/Off",6:"Red/Green Change"]
+@Field static Map lightEffects = [1:"Meteor Shower",2:"Gradual Change",3:"Flash"]
 
 def setVersion(){
-	state.Version = "1.0.0"
+	state.Version = "1.0.1"
 	state.InternalName = "ShellyGU10"
 }
 
@@ -68,8 +70,8 @@ metadata {
         command "CoolWhite"
         command "Daylight"
         command "CustomRGBColor", ["r","g","b"]
-        command "setCustomEffect", [[name:"Effect to use (0=OFF)", type: "ENUM", description: "Effect to use (0=OFF)", constraints: ["0","1","2","3","4","5","6",]]]
-        command "Effect", [[name:"Effect to use", type: "ENUM", description: "Effect to use", constraints: ["0","1","2","3","4","5","6"] ] ]
+        command "setCustomEffect", [[name:"Effect to use (0=OFF)", type: "ENUM", description: "Effect to use (0=OFF)", constraints: ["0","1","2","3"]]]
+        command "Effect", [[name:"Effect to use", type: "ENUM", description: "Effect to use", constraints: ["0","1","2","3"] ] ]
         command "UpdateDeviceFW" // ota?update=1
 
         attribute "switch", "string"
@@ -81,7 +83,7 @@ metadata {
         attribute "huelevel", "number"
         attribute "level", "number"
         attribute "effectName", "string"
-        attribute "lightEffects", "string"
+        attribute "ColorLightEffects", "string"
         attribute "WhiteModeOnly", "tring"
         attribute "MAC", "string"
         attribute "FW_Update_Needed", "string"
@@ -128,9 +130,6 @@ def initialize() {
 }
 
 def installed() {
-    def le = new groovy.json.JsonBuilder(lightEffects)
-    sendEvent(name:"lightEffects",value:le)
-//    sendEvent(name: "WhiteModeOnly", value:le)
     log.debug "Installed"
 }
 
@@ -144,6 +143,10 @@ def updated() {
     log.info "Preferences updated..."
     log.warn "Debug logging is: ${debugOutput == true}"
     unschedule()
+    dbCleanUp()
+
+    def le = new groovy.json.JsonBuilder(lightEffects)
+    sendEvent(name:"ColorLightEffects",value:le)
 
     switch(ColorMode) {
       case "color" :
@@ -176,14 +179,13 @@ def updated() {
     if (debugOutput) runIn(1800,logsOff)
     if (debugParse) runIn(1800,logsOff)
     
-    state.lightEffects = [1:"Meteor Shower",2:"Gradual Change",3:"Breath",4:"Flash",5:"Gradual On/Off",6:"Red/Green Change"]
+    state.lightEffects = [1:"Meteor Shower",2:"Gradual Change",3:"Flash"]
     sendEvent(name: "lightEffects", value: "${state.lightEffects}")
     state.WhiteModeOnly = ["WarmWhite, CoolWhite & Daylight"]
     sendEvent(name: "WhiteModeOnly", value:"${state.WhiteModeOnly}")
     
     state.LastRefresh = new Date().format("YYYY/MM/dd \n HH:mm:ss", location.timeZone)
 
-    dbCleanUp()
     version()
     refresh()
 }
@@ -606,7 +608,7 @@ try {
 }
 
 def setModeColor() {
-    if (txtEnable) log.info "color mode white"
+    if (txtEnable) log.info "color mode color"
     def params = [uri: "http://${username}:${password}@${ip}/settings?mode=color"]
 try {
     httpGet(params) {
@@ -694,12 +696,7 @@ def parse(description) {
 
 private dbCleanUp() {
 //	unschedule()
-    state.remove("UpdateInfo")
-    state.remove("Current")
-	state.remove("InternalName")
-	state.remove("version")
-	state.remove("Version")
-	state.remove("Status")
+    state.clear()
 }
 
 // Check Version   ***** with great thanks and acknowlegment to Cobra (github CobraVmax) for his original code **************
