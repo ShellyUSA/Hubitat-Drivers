@@ -86,7 +86,7 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "3.0.9"
+	state.Version = "3.0.10"
 	state.InternalName = "ShellyAsASwitch"
 }
 
