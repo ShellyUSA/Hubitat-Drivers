@@ -25,6 +25,7 @@
  *
  *  Changes:
 
+ *  3.0.10  schellem: the ext_switch check in the code fails if the element is not present in the http response. This makes the external temperature values not be read. 
  *  3.0.9 - Diondp: Added ContactSensor function for external swith module, note must use black and yellow wire, selection of reversed as in native shelly-app
  *  To get instant response from the Shelly Contact Sensor, go to the shelly App, and setup a HTTP call for MakerAPI, otherwise there is a need for manual refresh
  *  Only testet with Shelly1 and the Extension kit, capable as ContactSensor for use with virtual garage driver
@@ -493,7 +494,7 @@ try {
                 state.temperature_unit = t_unit
                 ext_switch = obs.ext_switch
 
-                if (obs.ext_switch['0'] != null) {
+                if (ext_switch != null) {
                     sendEvent(name: "ext_switch_state", value:obs.ext_switch['0'].input)
                     
                     if (external_contact_reversed == "No")
