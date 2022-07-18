@@ -20,12 +20,12 @@ Below are the drivers for the **old GEN1 devices**
 * and more
 
 
-##GEN2 or PLUS devices use this single driver.
+## GEN2 or PLUS devices use this single driver.
 
 https://github.com/ShellyUSA/Hubitat-Drivers/tree/master/PLUS
 
 
-#Device Handler Installation instructions:
+# Device Handler Installation instructions:
 
 1. Click the appropriate Groovy file for your device type.
 2. Click the Raw button 
@@ -36,7 +36,7 @@ https://github.com/ShellyUSA/Hubitat-Drivers/tree/master/PLUS
 7. Paste the code copied in step 3
 8. Click Save
 
-#Using Device Handlers With Shelly products
+# Using Device Handlers With Shelly products
 
 Different Shelly devices require varied settings. Device handlers for Shelly sensors require the use of an MQTT broker. Shelly modules with multiple relays or channels - Shelly 2.5, Shelly 4Pro, & Shelly RGBW2, for example - require that you select the specific channel for the device handler to work with.
 
