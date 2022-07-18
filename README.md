@@ -43,9 +43,9 @@ The instructions assume you've already added the device handler using the steps 
 8. Click Save Preferences
 9. When "Current States" populates with valid data for your device, the device handler is configured properly.
 
-## Shelly-as-a-switch notes:
+## Using the Shelly temperature addon as a extra switch notes:
 
-!!Please note!! **IF** you are using the _external temp monitor add-on_ as a switch, you must use the black and yellow wire.
+**IF** you are using the **_external temp monitor add-on_** as a switch, you must use the black and yellow wire.
 
 For optimum results, please enable MakerAPI App in hubitat, add the shelly device. (this will enable live update of the external switch state in hubitat)
 
@@ -53,3 +53,5 @@ When you have the MakerAPI URL string for "refresh" of your shelly device, go in
 
 The below URL must be adjusted to what you get from the MakerAPI App<br>
 http://[HUBITAT-IP-ADDRESS]/apps/api/[API_ID]/devices/[DEVICEID]/refresh?access_token=[TOKENI_ID]
+
+**If you don't understand what this is then it probably does not apply to you and you can ignore this section.**
