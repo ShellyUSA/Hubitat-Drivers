@@ -45,7 +45,7 @@ The instructions assume you've already added the device handler using the steps 
 
 ## Shelly-as-a-switch notes:
 
-Please note that for using the external temp monitor add-on as a switch, you must use the black and yellow wire.
+!!Please note!! **IF** you are using the _external temp monitor add-on_ as a switch, you must use the black and yellow wire.
 
 For optimum results, please enable MakerAPI App in hubitat, add the shelly device. (this will enable live update of the external switch state in hubitat)
 
