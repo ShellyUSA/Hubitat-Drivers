@@ -5,6 +5,8 @@ Thanks to Scott Grayban for his time and effort developing these device handlers
 
 Shelly smart home products are available for European customers at https://shop.shelly.cloud/ and for US customers at https://shopusa.shelly.cloud/
 
+Below are the drivers for the **old GEN1 devices**
+
 * Shelly-Bulb.groovy - for use with the original Shelly Bulb
 * Shelly-Duo.groovy - for use with the Shelly Duo bulb
 * Shelly-HT.groovy - for use with the Shelly HT and Flood sensors, requires the use of an MQTT broker
@@ -15,8 +17,15 @@ Shelly smart home products are available for European customers at https://shop.
 * Shelly2-as-Roller-Shutter - for use with Shelly 2 or Shelly 2.5 in Roller Shutter mode
 * Shelly-Gas.groovy - for use with the Shelly Gas device
 * Shelly-Contact.groovy - for use with the Shelly Window/Door sensor
+* and more
 
-Device Handler Installation instructions:
+
+##GEN2 or PLUS devices use this single driver.
+
+https://github.com/ShellyUSA/Hubitat-Drivers/tree/master/PLUS
+
+
+#Device Handler Installation instructions:
 
 1. Click the appropriate Groovy file for your device type.
 2. Click the Raw button 
@@ -27,7 +36,7 @@ Device Handler Installation instructions:
 7. Paste the code copied in step 3
 8. Click Save
 
-Using Device Handlers With Shelly products
+#Using Device Handlers With Shelly products
 
 Different Shelly devices require varied settings. Device handlers for Shelly sensors require the use of an MQTT broker. Shelly modules with multiple relays or channels - Shelly 2.5, Shelly 4Pro, & Shelly RGBW2, for example - require that you select the specific channel for the device handler to work with.
 
