@@ -1,5 +1,5 @@
 /*
- *  Shelly Motion Device Handler
+ *  Shelly Plus H&T Device Handler
  *
  *  Copyright © 2020 Allterco Robotics US
  *
@@ -19,8 +19,6 @@
  *
  * NOTES: In the Shelly MQTT Settings make sure - Clean Session is checked and Retain is UNchecked
  *        These settings are found via the web settings for the device
- * IMPORTANT NOTE!! Shelly Motion IS NOT SUITABLE as a security device
- *        Please read this comment why --> https://www.facebook.com/groups/shellyforhubitat/permalink/3827955923960766/?comment_id=3827983480624677
  *
  *  Changes:
  *  1.0.0 - Initial release
@@ -57,8 +55,6 @@ metadata {
           description: "(blank if none)", required: false, displayDuringSetup: true
       input name: "password", type: "password", title: "MQTT Password:", 
           description: "(blank if none)", required: false, displayDuringSetup: true
-      input(name: "resetTimeSetting", type: "number", title: "Reset Motion Timer", 
-            description: "After X number of seconds, reset motion to inactive (1 to 3600, default: 60)", defaultValue: "60", range: "1..3600")
       input name: "topicSub", type: "text", title: "Topic to Subscribe:", 
           description: "Example Topic (shellymotionsensor-60A423). Please don't use a #", 
           required: true, displayDuringSetup: true
@@ -83,7 +79,8 @@ def parse(String description) {
   if (topic == "${settings?.topicSub}/status/temperature:0") {
       def pr_vals = parser.parseText(payload)
 
-      sendEvent(name: "temperature", unit: F, value: pr_vals['tF'], displayed: true)
+      if (state.temp_scale == "C") sendEvent(name: "temperature", value: pr_vals['tC'], displayed: true)
+      if (state.temp_scale == "F") sendEvent(name: "temperature", value: pr_vals['tF'], displayed: true)
   }
   if (topic == "${settings?.topicSub}/status/humidity:0") {
       def pr_vals = parser.parseText(payload)
@@ -116,12 +113,13 @@ def updated() {
   if (logEnable) log.info "Updated..."
     initialize()
     unschedule()
-    updateDataValue("model", "SHPlusHT-01")
+    updateDataValue("model", "SHPLUSHT-01")
     //updateDataValue("ShellyHostname", state.ShellyHostname)
     updateDataValue("ShellyIP", state.sta_ip)
     updateDataValue("ShellySSID", state.ssid)
     updateDataValue("manufacturer", "Allterco Robotics")
     updateDataValue("MAC", state.mac)
+    state.temp_scale = location.getTemperatureScale()
     setVersion()
     version()
 }
