@@ -31,7 +31,7 @@ import groovy.json.JsonSlurper
 import java.util.GregorianCalendar
 
 def setVersion(){
-	state.Version = "1.0.0"
+	state.Version = "1.1.0"
 	state.InternalName = "ShellyMotion"
 }
 
@@ -63,8 +63,6 @@ metadata {
           description: "(blank if none)", required: false, displayDuringSetup: true
       input name: "password", type: "password", title: "MQTT Password:", 
           description: "(blank if none)", required: false, displayDuringSetup: true
-      input(name: "resetTimeSetting", type: "number", title: "Reset Motion Timer", 
-            description: "After X number of seconds, reset motion to inactive (1 to 3600, default: 60)", defaultValue: "60", range: "1..3600")
       input name: "topicSub", type: "text", title: "Topic to Subscribe:", 
           description: "Example Topic (shellymotionsensor-60A423). Please don't use a #", 
           required: true, displayDuringSetup: true
@@ -86,26 +84,22 @@ def parse(String description) {
   payload = msg.get('payload')
   if (logEnable) log.info "${payload}"
   def parser = new JsonSlurper()
-  if (topic == "shellies/${settings?.topicSub}/status") {
+  if (topic == "shellies/${settings?.topicSub}/info") {
       def pr_vals = parser.parseText(payload)
-      if (pr_vals['motion'] == true) {
-          sendEvent(name: "motion", value: "active", displayed: true)
-          Integer resetTime = resetTimeSetting != null ? resetTimeSetting : 61
-          runIn(resetTime, "resetMotionEvent")
-      }
-      if (pr_vals['motion'] == false) sendEvent(name: "motion", value: "inactive", displayed: true)
-      
-      if (pr_vals['vibration'] == true) sendEvent(name: "tamper", value: "detected", displayed: true)
-      if (pr_vals['vibration'] == false) sendEvent(name: "tamper", value: "clear", displayed: true)
-      if (pr_vals['vibration'] == true) sendEvent(name: "shock", value: "detected", displayed: true)
-      if (pr_vals['vibration'] == false) sendEvent(name: "shock", value: "clear", displayed: true)
-      sendEvent(name: "illuminance", value: pr_vals['lux'], displayed: true)
-      sendEvent(name: "battery", value: pr_vals['bat'], displayed: true)
+      if (pr_vals.sensor.motion == true) sendEvent(name: "motion", value: "active", displayed: true)
+      if (pr_vals.sensor.motion == false) sendEvent(name: "motion", value: "inactive", displayed: true)
+      if (pr_vals.sensor.vibration == true) sendEvent(name: "tamper", value: "detected", displayed: true)
+      if (pr_vals.sensor.vibration == false) sendEvent(name: "tamper", value: "clear", displayed: true)
+      if (pr_vals.sensor.vibration == true) sendEvent(name: "shock", value: "detected", displayed: true)
+      if (pr_vals.sensor.vibration == false) sendEvent(name: "shock", value: "clear", displayed: true)
+      sendEvent(name: "lux", value: pr_vals.lux.value, displayed: true)
+      sendEvent(name: "illuminance", value: pr_vals.lux.illumination, displayed: true)
+      sendEvent(name: "battery", value: pr_vals.bat.value, displayed: true)
   }
 }
 
 def resetToInactive(){
-sendEvent(name: "motion", value: "inactive", displayed: true)
+  sendEvent(name: "motion", value: "inactive", displayed: true)
 }
 
 def updated() {
@@ -138,7 +132,7 @@ def initialize() {
     //give it a chance to start
     pauseExecution(1000)
     log.info "Connection established"
-    def topic = "shellies/" + settings?.topicSub + "/status/#"
+    def topic = "shellies/" + settings?.topicSub + "/info/#"
     mqttInt.subscribe(topic)
         if (logEnable) log.debug "Subscribed to: ${topic}"
   } catch(e) {
