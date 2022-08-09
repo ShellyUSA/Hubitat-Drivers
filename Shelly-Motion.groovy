@@ -23,6 +23,7 @@
  *        Please read this comment why --> https://www.facebook.com/groups/shellyforhubitat/permalink/3827955923960766/?comment_id=3827983480624677
  *
  *  Changes:
+ *  1.1.0 - Updated for new FW where parsing had been changed
  *  1.0.0 - Initial release
  *
  */
