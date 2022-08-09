@@ -24,7 +24,7 @@
  *   1/1PM/2/2.5/EM/Plug/PlugS/4Pro/EM3/SHPLG-U1
  *
  *  Changes:
-
+ *  3.0.11  schellem: Allow user to add offset to the enrgy meter and copmate consumption with the provider energy meter. Also swhitch the measuring from Wh to kWh on the `energy` field. 
  *  3.0.10  schellem: the ext_switch check in the code fails if the element is not present in the http response. This makes the external temperature values not be read. 
  *  3.0.9 - Diondp: Added ContactSensor function for external swith module, note must use black and yellow wire, selection of reversed as in native shelly-app
  *  To get instant response from the Shelly Contact Sensor, go to the shelly App, and setup a HTTP call for MakerAPI, otherwise there is a need for manual refresh
@@ -188,6 +188,9 @@ metadata {
     }
     if (getDataValue("model") in ["SHEM","SHEM-3"]) {
         input("eMeter", "number", title:"eMeter Channel", description:"0, 1 or 2 :", defaultValue:"0" , required: true)
+        input("PowerOfset0", "number", title:"Power ofset in kWh for ch 0", description:"Add a number here. Ex: 4697 :", defaultValue:"0" , required: false)
+        input("PowerOfset1", "number", title:"Power ofset in kWh for ch 1", description:"Add a number here. Ex: 5435 :", defaultValue:"0" , required: false)
+        input("PowerOfset2", "number", title:"Power ofset in kWh for ch 2", description:"Add a number here. Ex: 3435 :", defaultValue:"0" , required: false)
     }
     if (getDataValue("model") == "SHEM") {
         input("ctraf", "number", title:"Current Amperage(ctraf)", description:"50 or 120:", defaultValue:"50" , required: true)
@@ -373,18 +376,18 @@ try {
         if (eMeter == 0 )sendEvent(name: "power", value: obs.emeters.power[0])
         if (eMeter == 0 )sendEvent(name: "voltage", value: obs.emeters.voltage[0])
         if (eMeter == 0 )sendEvent(name: "reactive", value: obs.emeters.reactive[0])
-        if (eMeter == 0 )sendEvent(name: "energy", value: obs.emeters.total[0])
+        if (eMeter == 0 )sendEvent(name: "energy", value: obs.emeters.total[0]/1000+PowerOfset0)
 
         if (eMeter == 1 )sendEvent(name: "power", value: obs.emeters.power[1])
         if (eMeter == 1 )sendEvent(name: "voltage", value: obs.emeters.voltage[1])
         if (eMeter == 1 )sendEvent(name: "reactive", value: obs.emeters.reactive[1])
-        if (eMeter == 1 )sendEvent(name: "energy", value: obs.emeters.total[1])
+        if (eMeter == 1 )sendEvent(name: "energy", value: obs.emeters.total[1]/1000+PowerOfset1)
 
         if (state.DeviceType == "SHEM-3") {
         if (eMeter == 2 )sendEvent(name: "power", value: obs.emeters.power[2])
         if (eMeter == 2 )sendEvent(name: "voltage", value: obs.emeters.voltage[2])
         if (eMeter == 2 )sendEvent(name: "reactive", value: obs.emeters.reactive[2])
-        if (eMeter == 2 )sendEvent(name: "energy", value: obs.emeters.total[2])
+        if (eMeter == 2 )sendEvent(name: "energy", value: obs.emeters.total[2]/1000+PowerOfset2)
         }
         state.eMeter = eMeter
         sendEvent(name: "eMeter", value: state.eMeter)
