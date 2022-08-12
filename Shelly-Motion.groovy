@@ -23,6 +23,7 @@
  *        Please read this comment why --> https://www.facebook.com/groups/shellyforhubitat/permalink/3827955923960766/?comment_id=3827983480624677
  *
  *  Changes:
+ *  1.1.1 - Show device IP in data section
  *  1.1.0 - Updated for new FW where parsing had been changed
  *  1.0.0 - Initial release
  *
@@ -32,7 +33,7 @@ import groovy.json.JsonSlurper
 import java.util.GregorianCalendar
 
 def setVersion(){
-	state.Version = "1.1.0"
+	state.Version = "1.1.1"
 	state.InternalName = "ShellyMotion"
 }
 
@@ -93,9 +94,11 @@ def parse(String description) {
       if (pr_vals.sensor.vibration == false) sendEvent(name: "tamper", value: "clear", displayed: true)
       if (pr_vals.sensor.vibration == true) sendEvent(name: "shock", value: "detected", displayed: true)
       if (pr_vals.sensor.vibration == false) sendEvent(name: "shock", value: "clear", displayed: true)
+      
       sendEvent(name: "lux", value: pr_vals.lux.value, displayed: true)
       sendEvent(name: "illuminance", value: pr_vals.lux.illumination, displayed: true)
       sendEvent(name: "battery", value: pr_vals.bat.value, displayed: true)
+      updateDataValue("ShellyIP", pr_vals.wifi_sta.ip)
   }
 }
 
