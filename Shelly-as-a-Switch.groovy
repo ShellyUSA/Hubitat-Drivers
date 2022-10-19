@@ -190,6 +190,8 @@ metadata {
         input("eMeter", "number", title:"eMeter Channel", description:"0, 1 or 2 :", defaultValue:"0" , required: true)
         input("PowerOfset0", "number", title:"Power ofset in kWh for ch 0", description:"Add a number here. Ex: 4697 :", defaultValue:"0" , required: false)
         input("PowerOfset1", "number", title:"Power ofset in kWh for ch 1", description:"Add a number here. Ex: 5435 :", defaultValue:"0" , required: false)
+    }
+    if (getDataValue("model") == "SHEM-3") {
         input("PowerOfset2", "number", title:"Power ofset in kWh for ch 2", description:"Add a number here. Ex: 3435 :", defaultValue:"0" , required: false)
     }
     if (getDataValue("model") == "SHEM") {
