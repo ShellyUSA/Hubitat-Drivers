@@ -2,7 +2,7 @@
 "Comment":"Last updated: 07/12/2020",
 "copyright":"© 2020 Allterco Robotics US",
 "author":"Scott Grayban",
-"icon":"<img src='https://shopusa.shelly.cloud/image/catalog/web/Shelly.png' width='20' height='20'>",
+"icon":"<img src='https://github.com/ShellyUSA/Hubitat-Drivers/raw/master/resources/Shelly.png' width='20' height='20'>",
 "versions":{
 "Application":{
 "ExampleApp1":"1.4.0"
@@ -27,7 +27,8 @@
 "Shelly4pm":"1.0.2",
 "ShellyPlus":"1.0.2",
 "ShellyGU10":"1.0.1",
-"ShellyPlusH&T":"1.0.0"
+"ShellyPlusH&T":"1.0.0",
+"ShellyPlusDimmer":"1.0.0"
 	},
 
 "UpdateInfo":{
@@ -54,7 +55,8 @@
 "Shelly4pm":"<br>- Driver name change. Use ShellyPlus.groovy now",
 "ShellyPlus":"<br>- Driver name change from Shelly4pm to ShellyPlus.<br>- Use ShellyPlus.groovy driver now",
 "ShellyGU10":"<br>- Change in color lighteffects code. Change how dbCleanUp works.",
-"ShellyPlusH&T":"New device"
+"ShellyPlusH&T":"New device",
+"ShellyPlusDimmer":"New device"
 	}
      }
   }
