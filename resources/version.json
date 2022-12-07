@@ -28,7 +28,7 @@
 "ShellyPlus":"1.0.2",
 "ShellyGU10":"1.0.1",
 "ShellyPlusH&T":"1.0.0",
-"ShellyPlusDimmer":"1.0.0"
+"ShellyPlusDimmer":"1.0.1"
 	},
 
 "UpdateInfo":{
@@ -56,7 +56,7 @@
 "ShellyPlus":"<br>- Driver name change from Shelly4pm to ShellyPlus.<br>- Use ShellyPlus.groovy driver now",
 "ShellyGU10":"<br>- Change in color lighteffects code. Change how dbCleanUp works.",
 "ShellyPlusH&T":"New device",
-"ShellyPlusDimmer":"New device"
+"ShellyPlusDimmer":"Fixed channel number issues"
 	}
      }
   }

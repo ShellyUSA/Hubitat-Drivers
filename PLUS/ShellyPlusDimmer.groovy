@@ -22,6 +22,7 @@
  * See all the Shelly Products at https://shelly.cloud/
  *
  *  Changes:
+ *  1.0.1 - fixed channel number issues
  *  1.0.0 - Initial code
  *
  */
@@ -36,7 +37,7 @@ def setVersion(){
 
 metadata {
 	definition (
-		name: "Shelly Plus Dimmer",
+		name: "Shelly Plus Wall Dimmer",
 		namespace: "ShellyUSA",
 		author: "Scott Grayban",
                 importUrl: "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/PLUS/ShellyPlusDimmer.groovy"
@@ -66,6 +67,7 @@ metadata {
        
         command "RebootDevice"
         command "UpdateDeviceFW"
+        command "initialize"
         //command "CheckForUpdate" // Only used for development
 	}
 
@@ -138,6 +140,8 @@ def updated() {
     if (debugParse) runIn(300,logsOff) //Off in 5 minutes
     
     state.LastRefresh = new Date().format("YYYY/MM/dd \n HH:mm:ss", location.timeZone)
+    channel = "0"
+    state.RelayChannel = channel
 
     version()
     refresh()
@@ -337,7 +341,7 @@ try {
 def on() {
     if (protect == "No") {
         logDebug "Executing light on"
-        sendSwitchCommand "/rpc/Light.Set?id=${channel}&on=true"
+        sendSwitchCommand "/rpc/Light.Set?id=0&on=true"
         sendEvent(name: "switch", value: "on")
     }
     if (protect == "Yes") {
@@ -351,7 +355,7 @@ def off() {
     
     if (protect == "No") {
         logDebug "Executing light off"
-        sendSwitchCommand "/rpc/Light.Set?id=${channel}&on=false"
+        sendSwitchCommand "/rpc/Light.Set?id=0&on=false"
         sendEvent(name: "switch", value: "off")
     }
     if (protect == "Yes") {
@@ -361,7 +365,7 @@ def off() {
 }
 
 def setLevel(percent) {
-    sendSwitchCommand "/rpc/Light.Set?id=${channel}&on=true&brightness=${percent}"
+    sendSwitchCommand "/rpc/Light.Set?id=0&on=true&brightness=${percent}"
 }
 
 def ping() {
