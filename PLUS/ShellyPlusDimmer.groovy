@@ -31,7 +31,7 @@ import groovy.json.*
 import groovy.transform.Field
 
 def setVersion(){
-	state.Version = "1.0.0"
+	state.Version = "1.0.1"
 	state.InternalName = "ShellyPlusDimmer"
 }
 
