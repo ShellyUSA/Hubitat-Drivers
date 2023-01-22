@@ -90,7 +90,7 @@ def parse(String description) {
   if (topic == "${settings?.topicSub}/status/devicepower:0") {
       def pr_vals = parser.parseText(payload)
 
-      sendEvent(name: "battery", value: pr_vals['battery'], displayed: true)
+      sendEvent(name: "battery", value: pr_vals['battery']['percent'], displayed: true)
   }
   if (topic == "${settings?.topicSub}/status/wifi") {
       def pr_vals = parser.parseText(payload)
