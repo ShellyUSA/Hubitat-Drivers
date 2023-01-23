@@ -21,6 +21,8 @@
  *        These settings are found via the web settings for the device
  *
  *  Changes:
+ *  1.0.1 - Added unit for dashboard temps/humidity
+ *        - Fixed battery/voltage readings GH PR#22
  *  1.0.0 - Initial release
  *
  */
@@ -29,7 +31,7 @@ import groovy.json.JsonSlurper
 import java.util.GregorianCalendar
 
 def setVersion(){
-	state.Version = "1.0.0"
+	state.Version = "1.0.1"
 	state.InternalName = "ShellyPlusH&T"
 }
 
@@ -43,8 +45,8 @@ metadata {
         capability "TemperatureMeasurement"
         capability "RelativeHumidityMeasurement"
         capability "Battery"
+        capability "VoltageMeasurement"
         
-        //attribute "switch","ENUM",["on","off"]
         attribute "DriverStatus", "string"
     }
 
@@ -79,8 +81,8 @@ def parse(String description) {
   if (topic == "${settings?.topicSub}/status/temperature:0") {
       def pr_vals = parser.parseText(payload)
 
-      if (state.temp_scale == "C") sendEvent(name: "temperature", value: pr_vals['tC'], displayed: true)
-      if (state.temp_scale == "F") sendEvent(name: "temperature", value: pr_vals['tF'], displayed: true)
+      if (state.temp_scale == "C") sendEvent(name: "temperature", value: pr_vals['tC'], unit: " \u00B0" +state.temp_scale, displayed: true)
+      if (state.temp_scale == "F") sendEvent(name: "temperature", value: pr_vals['tF'], unit: " \u00B0" +state.temp_scale, displayed: true)
   }
   if (topic == "${settings?.topicSub}/status/humidity:0") {
       def pr_vals = parser.parseText(payload)
@@ -90,7 +92,8 @@ def parse(String description) {
   if (topic == "${settings?.topicSub}/status/devicepower:0") {
       def pr_vals = parser.parseText(payload)
 
-      sendEvent(name: "battery", value: pr_vals['battery'], displayed: true)
+      sendEvent(name: "battery", value: pr_vals['battery']['percent'], displayed: true)
+      sendEvent(name: "voltage", value: pr_vals['battery']['V'], displayed: true)
   }
   if (topic == "${settings?.topicSub}/status/wifi") {
       def pr_vals = parser.parseText(payload)

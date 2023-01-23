@@ -27,7 +27,7 @@
 "Shelly4pm":"1.0.2",
 "ShellyPlus":"1.0.2",
 "ShellyGU10":"1.0.1",
-"ShellyPlusH&T":"1.0.0",
+"ShellyPlusH&T":"1.0.1",
 "ShellyPlusDimmer":"1.0.1"
 	},
 
@@ -55,7 +55,7 @@
 "Shelly4pm":"<br>- Driver name change. Use ShellyPlus.groovy now",
 "ShellyPlus":"<br>- Driver name change from Shelly4pm to ShellyPlus.<br>- Use ShellyPlus.groovy driver now",
 "ShellyGU10":"<br>- Change in color lighteffects code. Change how dbCleanUp works.",
-"ShellyPlusH&T":"New device",
+"ShellyPlusH&T":"Added unit for dashboard temps/humidity.<br>- Fixed battery/voltage readings GH PR#22",
 "ShellyPlusDimmer":"Fixed channel number issues"
 	}
      }
