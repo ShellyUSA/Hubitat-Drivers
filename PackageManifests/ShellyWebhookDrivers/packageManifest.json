@@ -1,0 +1,19 @@
+{
+  "packageName": "Shelly Webhook/Websocket Drivers",
+  "author": "ShellyUSA, Daniel Winks",
+  "version": "0.0.1",
+  "releaseNotes": "0.0.1: Prerelease of 'Shelly Plug US' Driver",
+  "minimumHEVersion": "2.3.7.114",
+  "dateReleased": "2024-02-10",
+  "gitHubUrl": "https://github.com/ShellyUSA/Hubitat-Drivers",
+  "payPalUrl": "https://paypal.me/winksd?country.x=US&locale.x=en_US",
+  "drivers": [
+    {
+      "id": "3fa628de-65bb-4f3d-a140-d5f35427f764",
+      "name": "Shelly Plug US",
+      "namespace": "ShellyUSA",
+      "location": "",
+      "required": false
+    }
+  ]
+}
