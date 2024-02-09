@@ -8,14 +8,15 @@ metadata {
     capability 'PowerMeter' //power - NUMBER, unit:W
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
-    command 'test'
+
+    command 'resetEnergyMonitors'
   }
 }
 
 if (device != null) {
   preferences {
     input 'ipAddress', 'string', title: 'IP Address', required: true, defaultValue: ''
-    input 'devicePassword', 'password', title: 'Device Password (if enabled, set to blank to disable auth)', required: false, defaultValue: ''
+    input 'devicePassword', 'password', title: 'Device Password (if enabled on device)', required: false, defaultValue: ''
     preferenceMap.each{ k,v ->
       if(getDeviceSettings().containsKey(k)) {
         if(v.type == 'enum') {
@@ -35,13 +36,6 @@ if (device != null) {
     input 'traceLogEnable', 'bool', title: 'Enable trace logging (warning: causes high hub load)', required: false, defaultValue: false
     input 'descriptionTextEnable', 'bool', title: 'Enable descriptionText logging', required: false, defaultValue: false
   }
-}
-void test() {
-  Map json = postCommandSync(switchGetConfigCommand())
-  if(json != null && json?.result != null) {setDevicePreferences(json.result)}
-  Map json2 = postCommandSync(shellyGetDeviceInfoCommand())
-  if(json2 != null && json2?.result != null) {setDeviceInfo(json2.result)}
-
 }
 
 // =============================================================================
@@ -168,6 +162,9 @@ void updateDeviceWithPreferences() {
   sendPrefsToDevice()
 }
 
+void resetEnergyMonitors() {
+  switchResetCounters()
+}
 // =============================================================================
 // End Custom Commands
 // =============================================================================
@@ -327,18 +324,14 @@ BigDecimal getEnergy() {
 
 
 
-
-
-
-
 // =============================================================================
 // Device Commands
 // =============================================================================
 @CompileStatic
-void on() { switchSet(true) }
+void on() { postCommandSync(switchSetCommand(true)) }
 
 @CompileStatic
-void off() { switchSet(false) }
+void off() { postCommandSync(switchSetCommand(false)) }
 
 void refresh() {
   refreshDeviceSpecificInfo()
