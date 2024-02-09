@@ -1,0 +1,25 @@
+{
+  "author": "ShellyUSA, Daniel Winks",
+  "gitHubUrl": "https://github.com/ShellyUSA/Hubitat-Drivers",
+  "packages": [
+    {
+      "name": "Shelly Webhook/Websocket Drivers",
+      "category": "Integrations",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/packageManifest.json",
+      "description": "Shelly device drivers. Using Webhook/Websocket, no MQTT necessary.",
+      "tags": [
+        "Buttons",
+        "Climate Control",
+        "Doors & Windows",
+        "Energy Monitoring",
+        "LAN",
+        "Lights & Switches",
+        "Motion Control",
+        "Presence & Location",
+        "Temperature & Humidity",
+        "Valves"
+      ],
+      "id": "a3893ae0-b99e-4508-a357-48397cc6a20f"
+    }
+  ]
+}
