@@ -15,7 +15,7 @@ metadata {
 if (device != null) {
   preferences {
     input 'ipAddress', 'string', title: 'IP Address', required: true, defaultValue: ''
-    input 'devicePassword', 'password', title: 'Device Password (if enabled, set to blank to disable auth)', required: false, defaultValue: ''
+    input 'devicePassword', 'password', title: 'Device Password (if enabled on device)', required: false, defaultValue: ''
     preferenceMap.each{ k,v ->
       if(getDeviceSettings().containsKey(k)) {
         if(v.type == 'enum') {
