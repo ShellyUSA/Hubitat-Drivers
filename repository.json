@@ -5,7 +5,7 @@
     {
       "name": "Shelly Webhook/Websocket Drivers",
       "category": "Integrations",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/packageManifest.json",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/PackageManifests/ShellyWebhookDrivers/packageManifest.json",
       "description": "Shelly device drivers. Using Webhook/Websocket, no MQTT necessary.",
       "tags": [
         "Buttons",
