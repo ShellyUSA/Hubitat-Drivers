@@ -9,10 +9,10 @@
   "payPalUrl": "https://paypal.me/winksd?country.x=US&locale.x=en_US",
   "drivers": [
     {
-      "id": "3fa628de-65bb-4f3d-a140-d5f35427f764",
+      "id": "ccc859a9-4be3-45d4-bc09-9fa393a4fd3e",
       "name": "Shelly Plug US",
       "namespace": "ShellyUSA",
-      "location": "",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlugUS.groovy",
       "required": false
     }
   ]
