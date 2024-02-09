@@ -8,7 +8,6 @@ metadata {
     capability 'PowerMeter' //power - NUMBER, unit:W
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
-    command 'test'
   }
 }
 
@@ -35,13 +34,6 @@ if (device != null) {
     input 'traceLogEnable', 'bool', title: 'Enable trace logging (warning: causes high hub load)', required: false, defaultValue: false
     input 'descriptionTextEnable', 'bool', title: 'Enable descriptionText logging', required: false, defaultValue: false
   }
-}
-void test() {
-  Map json = postCommandSync(switchGetConfigCommand())
-  if(json != null && json?.result != null) {setDevicePreferences(json.result)}
-  Map json2 = postCommandSync(shellyGetDeviceInfoCommand())
-  if(json2 != null && json2?.result != null) {setDeviceInfo(json2.result)}
-
 }
 
 // =============================================================================
