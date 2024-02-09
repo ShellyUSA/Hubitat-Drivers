@@ -8,6 +8,8 @@ metadata {
     capability 'PowerMeter' //power - NUMBER, unit:W
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
+
+    command 'resetEnergyMonitors'
   }
 }
 
@@ -160,6 +162,9 @@ void updateDeviceWithPreferences() {
   sendPrefsToDevice()
 }
 
+void resetEnergyMonitors() {
+  switchResetCounters()
+}
 // =============================================================================
 // End Custom Commands
 // =============================================================================
@@ -319,18 +324,14 @@ BigDecimal getEnergy() {
 
 
 
-
-
-
-
 // =============================================================================
 // Device Commands
 // =============================================================================
 @CompileStatic
-void on() { switchSet(true) }
+void on() { postCommandSync(switchSetCommand(true)) }
 
 @CompileStatic
-void off() { switchSet(false) }
+void off() { postCommandSync(switchSetCommand(false)) }
 
 void refresh() {
   refreshDeviceSpecificInfo()
