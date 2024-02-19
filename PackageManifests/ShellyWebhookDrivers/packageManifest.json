@@ -13,7 +13,7 @@
       "id": "55d66a6b-1e7b-46ef-aae0-9491ee6e4009",
       "name": "ShellyUSA Driver Library",
       "namespace": "ShellyUSA",
-      "location": "https://github.com/ShellyUSA/Hubitat-Drivers/raw/master/ShellyDriverLibrary/ShellyUSA_Driver_Library.zip",
+      "location": "https://github.com/ShellyUSA/Hubitat-Drivers/raw/master/ShellyUSA_Driver_Library.zip",
       "required": true
     }
   ],
