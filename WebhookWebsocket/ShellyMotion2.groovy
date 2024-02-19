@@ -49,6 +49,13 @@ void getBatteryStatus() {
   setBatteryPercent(percent)
   Integer lux = ((LinkedHashMap)response?.lux)?.value as Integer
   setIlluminance(lux)
+  BigDecimal temp = (BigDecimal)(((LinkedHashMap)response?.tmp)?.value)
+  String tempUnits = (((LinkedHashMap)response?.tmp)?.units).toString()
+  if(tempUnits == 'C') {
+    setTemperatureC(temp)
+  } else if(tempUnits == 'F') {
+    setTemperatureF(temp)
+  }
 }
 
 @CompileStatic
