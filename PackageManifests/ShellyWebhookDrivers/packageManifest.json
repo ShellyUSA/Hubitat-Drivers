@@ -13,7 +13,7 @@
       "id": "55d66a6b-1e7b-46ef-aae0-9491ee6e4009",
       "name": "ShellyUSA Driver Library",
       "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyUSA_Driver_Library.zip",
+      "location": "https://github.com/ShellyUSA/Hubitat-Drivers/raw/master/ShellyDriverLibrary/ShellyUSA_Driver_Library.zip",
       "required": true
     }
   ],
@@ -23,6 +23,27 @@
       "name": "Shelly Plug US",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlugUS.groovy",
+      "required": false
+    },
+    {
+      "id": "4c1c0bb2-175e-4a28-9f57-7c1503382d3c",
+      "name": "Shelly H&T (gen 2 and 3)",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlusH%26T.groovy",
+      "required": false
+    },
+    {
+      "id": "d85b455a-37a7-4cdd-b619-ea5ca6057152",
+      "name": "Shelly Motion 2",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyMotion2.groovy",
+      "required": false
+    },
+    {
+      "id": "3ac0da6f-7d13-4ef8-83c3-37762d31a618",
+      "name": "Shelly Button 1",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyButton1.groovy",
       "required": false
     }
   ]
