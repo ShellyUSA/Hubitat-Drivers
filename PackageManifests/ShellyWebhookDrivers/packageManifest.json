@@ -8,6 +8,15 @@
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
   "gitHubUrl": "https://github.com/ShellyUSA/Hubitat-Drivers",
   "payPalUrl": "https://paypal.me/winksd?country.x=US&locale.x=en_US",
+  "bundles": [
+    {
+      "id": "55d66a6b-1e7b-46ef-aae0-9491ee6e4009",
+      "name": "ShellyUSA Driver Library",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyUSA_Driver_Library.zip",
+      "required": true
+    }
+  ],
   "drivers": [
     {
       "id": "ccc859a9-4be3-45d4-bc09-9fa393a4fd3e",
