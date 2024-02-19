@@ -1,0 +1,32 @@
+name: Build Library Bundle
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - ShellyUSA_Driver_Library.groovy
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Copy ShellyUSA_Driver_Library Files To Bundle Directory
+    runs-on: [ubuntu-latest]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout 🛎️
+        uses: actions/checkout@v4
+
+      - name: Make copy of files
+        run: |
+          mkdir -p ShellyDriverLibrary
+          cp ShellyUSA_Driver_Library.groovy ShellyDriverLibrary/ShellyUSA.ShellyUSA_Driver_Library.groovy
+
+      - name: Zip Bundle
+        uses: thedoctor0/zip-release@0.7.5
+        with:
+          type: 'zip'
+          filename: 'ShellyUSA_Driver_Library.zip'
+          directory: 'ShellyDriverLibrary'
+
+      - name: Commit changes
+        uses: EndBug/add-and-commit@v9
