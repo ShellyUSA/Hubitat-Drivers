@@ -37,6 +37,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 if (device != null) {
   preferences {
     input 'ipAddress', 'string', title: 'IP Address', required: true, defaultValue: ''
+    if(GEN1 != null && GEN1 == true) {
+      input 'deviceUsername', 'string', title: 'Device Username (if enabled on device)', required: false, defaultValue: 'admin'
+    }
     input 'devicePassword', 'password', title: 'Device Password (if enabled on device)', required: false, defaultValue: ''
     preferenceMap.each{ k,v ->
       if(getDeviceSettings().containsKey(k)) {
@@ -105,13 +108,6 @@ void updated() {
 // =============================================================================
 // Fields
 // =============================================================================
-@Field static String ON = 'rpc/Switch.Set?id=0&on=true'
-@Field static String OFF = 'rpc/Switch.Set?id=0&on=false'
-@Field static String WEBHOOK_LIST = 'rpc/Webhook.List'
-@Field static String WEBHOOK_LIST_SUPPORTED = 'rpc/Webhook.ListSupported'
-@Field static String WEBHOOK_CREATE = 'rpc/Webhook.Create?enable=true&cid=0&'
-@Field static String WEBHOOK_UPDATE = 'rpc/Webhook.Update?enable=true&'
-
 @Field static Integer WS_CONNECT_INTERVAL = 600
 @Field static ConcurrentHashMap<String, MessageDigest> messageDigests = new java.util.concurrent.ConcurrentHashMap<String, MessageDigest>()
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
@@ -129,6 +125,9 @@ void updated() {
 ]
 @Field static List powerMonitoringDevices = [
   "SNPL-00116US"
+]
+@Field static List gen1Devices = [
+
 ]
 @Field static ConcurrentHashMap<String, ArrayList<BigDecimal>> movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>()
 // =============================================================================
@@ -402,8 +401,25 @@ void setAuthIsEnabled(Boolean auth) {
 }
 
 @CompileStatic
+Boolean authIsEnabledGen1() {
+  return (
+    getDeviceSettings()?.deviceUsername != null &&
+    getDeviceSettings()?.devicePassword != null &&
+    getDeviceSettings()?.deviceUsername != '' &&
+    getDeviceSettings()?.devicePassword != ''
+  )
+}
+
+@CompileStatic
 void performAuthCheck() {
   shellyGetStatus('authCheck')
+}
+
+@CompileStatic
+String getBasicAuthHeader() {
+  if(getDeviceSettings()?.deviceUsername != null && getDeviceSettings()?.devicePassword != null) {
+    return base64Encode("${getDeviceSettings().deviceUsername}:${getDeviceSettings().devicePassword}".toString())
+  }
 }
 // =============================================================================
 // End Auth
@@ -497,6 +513,37 @@ void shellyCommandCallback(AsyncResponse response, Map data = null) {
   logJson(response.getJson() as LinkedHashMap)
 }
 
+LinkedHashMap sendGen1Command(String command, String queryString = null) {
+  LinkedHashMap json
+  LinkedHashMap params = [:]
+  if(queryString != null && queryString != '') {
+    params.uri = "${getBaseUri()}/${command}?${queryString}".toString()
+  } else {
+    params.uri = "${getBaseUri()}/${command}".toString()
+  }
+  params.contentType = 'application/json'
+  params.requestContentType = 'application/json'
+  if(authIsEnabledGen1() == true) {
+    params.headers = ['Authorization': "Basic ${getBasicAuthHeader()}"]
+  }
+  logTrace("sendGen1Command sending: ${prettyJson(params)}")
+  httpGet(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+  return json
+}
+
+LinkedHashMap getDeviceActionsGen1() {
+  LinkedHashMap json
+  String command = 'settings/actions'
+  LinkedHashMap params = [uri: "${getBaseUri()}/${command}".toString()]
+  params.contentType = 'application/json'
+  params.requestContentType = 'application/json'
+  if(authIsEnabledGen1() == true) {
+    params.headers = ['Authorization': "Basic ${getBasicAuthHeader()}"]
+  }
+  httpGet(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+  if(json?.actions != null) {json = json.actions}
+  return json
+}
 // =============================================================================
 // End HTTP Methods
 // =============================================================================
@@ -725,6 +772,7 @@ void setDeviceWebhooks() {
   }
 }
 
+
 @CompileStatic
 LinkedHashMap<String,List> getCurrentWebhooks() {
   return postCommandSync(webhookListCommand())
@@ -885,6 +933,39 @@ void setTemperatureF(BigDecimal tempF) {
     getDevice().sendEvent(name: 'temperature', value: fToC(tempF).setScale(1, BigDecimal.ROUND_HALF_UP))
   }
 }
+
+@CompileStatic
+void setPushedButton(Integer buttonPushed) {
+  getDevice().sendEvent(name: 'pushed', value: buttonPushed)
+}
+
+@CompileStatic
+void setHeldButton(Integer buttonHeld) {
+  getDevice().sendEvent(name: 'held', value: buttonHeld)
+}
+
+@CompileStatic
+void setMotionOn(Boolean motion) {
+  if(motion == true) {
+    getDevice().sendEvent(name: 'motion', value: 'active')
+  } else {
+    getDevice().sendEvent(name: 'motion', value: 'inactive')
+  }
+}
+
+@CompileStatic
+void setTamperOn(Boolean tamper) {
+  if(tamper == true) {
+    getDevice().sendEvent(name: 'tamper', value: 'detected')
+  } else {
+    getDevice().sendEvent(name: 'tamper', value: 'clear')
+  }
+}
+
+@CompileStatic
+void setIlluminance(Integer illuminance) {
+  getDevice().sendEvent(name: 'illuminance', value: illuminance)
+}
 // /////////////////////////////////////////////////////////////////////////////
 // End Power Monitoring Getters and Setters
 // /////////////////////////////////////////////////////////////////////////////
@@ -979,6 +1060,11 @@ void setSwitchState(Boolean on) {
 @CompileStatic
 Boolean getSwitchState() {
   return getDevice().currentValue('switch', true) == 'on'
+}
+
+@CompileStatic
+void setLastUpdated() {
+  getDevice().sendEvent(name: 'lastUpdated', value: nowFormatted())
 }
 // /////////////////////////////////////////////////////////////////////////////
 // End Generic Getters and Setters
@@ -1133,6 +1219,11 @@ BigDecimal cToF(BigDecimal val) {
 
 BigDecimal fToC(BigDecimal val) {
   return fahrenheitToCelsius(val)
+}
+
+@CompileStatic
+String base64Encode(String toEncode) {
+  return toEncode.bytes.encodeBase64().toString()
 }
 // =============================================================================
 // End Formatters, Custom 'RunEvery', and other helpers
