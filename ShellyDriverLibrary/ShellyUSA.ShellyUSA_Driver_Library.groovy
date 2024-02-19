@@ -936,12 +936,12 @@ void setTemperatureF(BigDecimal tempF) {
 
 @CompileStatic
 void setPushedButton(Integer buttonPushed) {
-  getDevice().sendEvent(name: 'pushed', value: buttonPushed)
+  getDevice().sendEvent(name: 'pushed', value: buttonPushed, , isStateChange: true)
 }
 
 @CompileStatic
 void setHeldButton(Integer buttonHeld) {
-  getDevice().sendEvent(name: 'held', value: buttonHeld)
+  getDevice().sendEvent(name: 'held', value: buttonHeld, isStateChange: true)
 }
 
 @CompileStatic
