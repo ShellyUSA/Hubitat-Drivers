@@ -26,6 +26,7 @@ jobs:
         with:
           type: 'zip'
           filename: 'ShellyUSA_Driver_Library.zip'
+          directory: 'ShellyDriverLibrary'
 
       - name: Commit changes
         uses: EndBug/add-and-commit@v9
