@@ -6,12 +6,12 @@ metadata {
     capability "Battery" //battery - NUMBER, unit:%
     capability "RelativeHumidityMeasurement" //humidity - NUMBER, unit:%rh
     capability "TemperatureMeasurement" //temperature - NUMBER, unit:°F || °C
+
+    attribute 'lastUpdated', 'string'
   }
 }
 
-if (device != null) {
-  preferences {}
-}
+if(device != null) {preferences{}}
 
 // =============================================================================
 // Initialize And Configure
@@ -32,6 +32,7 @@ void parse(String raw) {
   if(query[0] == 'humidity.change') {setHumidityPercent(new BigDecimal(query[2]))}
   else if(query[0] == 'temperature.change' && query[1] == 'tC' && isCelciusScale()) {setTemperatureC(new BigDecimal(query[2]))}
   else if(query[0] == 'temperature.change' && query[1] == 'tF' && !isCelciusScale()) {setTemperatureF(new BigDecimal(query[2]))}
+  setLastUpdated()
 }
 
 @CompileStatic
