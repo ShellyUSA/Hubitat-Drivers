@@ -9,6 +9,8 @@ metadata {
     capability "IlluminanceMeasurement" //illuminance - NUMBER, unit:lx
     capability "TemperatureMeasurement" //temperature - NUMBER, unit:°F || °C
     attribute 'lastUpdated', 'string'
+
+    command 'getPrefsFromDevice'
   }
 }
 
@@ -22,6 +24,40 @@ void configure() {
   this.device.setDeviceNetworkId(convertIPToHex(settings?.ipAddress))
   this.device.sendEvent(name: 'numberOfButtons', value: 3)
   setDeviceActionsGen1()
+
+  if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
+    getPrefsFromDevice()
+  } else if(getDeviceDataValue('ipAddress') == getIpAddress()) {
+    sendPrefsToDevice()
+  }
+  setDeviceDataValue('ipAddress', getIpAddress())
+}
+
+@CompileStatic
+void sendPrefsToDevice() {
+  if(
+    getDeviceSettings().gen1_motion_sensitivity != null &&
+    getDeviceSettings().gen1_motion_blind_time_minutes != null &&
+    getDeviceSettings().gen1_tamper_sensitivity != null
+  ) {
+    String queryString = "motion_sensitivity=${getDeviceSettings().gen1_motion_sensitivity}".toString()
+    queryString += "&motion_blind_time_minutes${getDeviceSettings().gen1_motion_blind_time_minutes}".toString()
+    queryString += "&tamper_sensitivity${getDeviceSettings().gen1_tamper_sensitivity}".toString()
+    sendGen1Command('settings', queryString)
+  }
+}
+
+@CompileStatic
+void getPrefsFromDevice() {
+  LinkedHashMap response = (LinkedHashMap)sendGen1Command('settings')
+  logJson(response)
+  LinkedHashMap prefs = [
+    'gen1_motion_sensitivity': ((LinkedHashMap)response?.motion)?.sensitivity as Integer,
+    'gen1_motion_blind_time_minutes': ((LinkedHashMap)response?.motion)?.blind_time_minutes as Integer,
+    'gen1_tamper_sensitivity': response?.tamper_sensitivity as Integer
+  ]
+  logJson(prefs)
+  setDevicePreferences(prefs)
 }
 
 @CompileStatic
