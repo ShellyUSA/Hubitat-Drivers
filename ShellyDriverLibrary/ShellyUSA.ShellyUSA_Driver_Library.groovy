@@ -36,11 +36,15 @@ import java.util.concurrent.ConcurrentLinkedQueue
 // =============================================================================
 if (device != null) {
   preferences {
-    input 'ipAddress', 'string', title: 'IP Address', required: true, defaultValue: ''
-    if(GEN1 != null && GEN1 == true) {
-      input 'deviceUsername', 'string', title: 'Device Username (if enabled on device)', required: false, defaultValue: 'admin'
+    if(BLU == null) {
+      input 'ipAddress', 'string', title: 'IP Address', required: true, defaultValue: ''
+      if(GEN1 != null && GEN1 == true) {
+        input 'deviceUsername', 'string', title: 'Device Username (if enabled on device)', required: false, defaultValue: 'admin'
+      }
+      input 'devicePassword', 'password', title: 'Device Password (if enabled on device)', required: false, defaultValue: ''
+    } else {
+      input 'macAddress', 'string', title: 'MAC Address', required: true, defaultValue: ''
     }
-    input 'devicePassword', 'password', title: 'Device Password (if enabled on device)', required: false, defaultValue: ''
 
     preferenceMap.each{ k,v ->
       if(getDeviceSettings().containsKey(k)) {
