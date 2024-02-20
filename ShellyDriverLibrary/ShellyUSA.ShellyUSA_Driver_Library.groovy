@@ -275,32 +275,7 @@ LinkedHashMap switchSetConfigCommand(
 // Parse
 // =============================================================================
 @CompileStatic
-void processWebsocketMessages(LinkedHashMap json) {
-  LinkedHashMap params = (LinkedHashMap)json?.params
-  if(json?.method == 'NotifyStatus' || json?.dst == 'switchGetStatus') {
-    if(params != null && params.containsKey('switch:0')) {
-      LinkedHashMap switch0 = (LinkedHashMap)params['switch:0']
-
-      Boolean switchState = switch0?.output
-      if(switchState != null) { setSwitchState(switchState) }
-
-      if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
-        BigDecimal current =  (BigDecimal)switch0?.current
-        if(current != null) { setCurrent(current) }
-
-        BigDecimal apower =  (BigDecimal)switch0?.apower
-        if(apower != null) { setPower(apower) }
-
-        BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(switch0?.aenergy))?.total
-        if(aenergy != null) { setEnergy(aenergy/1000) }
-      }
-
-    } else if (json?.result != null) {
-      Boolean switchState = ((LinkedHashMap)json.result)?.output
-      if(switchState != null) { setSwitchState(switchState) }
-    }
-  }
-
+void processWebsocketMessagesConnectivity(LinkedHashMap json) {
   if(((String)json?.dst).startsWith('connectivityCheck-') && json?.result != null) {
     logDebug("JSON: ${json}")
     Long checkStarted = Long.valueOf(((String)json?.dst).split('-')[1])
@@ -315,7 +290,10 @@ void processWebsocketMessages(LinkedHashMap json) {
       shellyGetStatus('authCheck')
     }
   }
+}
 
+@CompileStatic
+void processWebsocketMessagesAuth(LinkedHashMap json) {
   if(json?.error != null ) {
     logInfo(prettyJson(json))
     LinkedHashMap error = (LinkedHashMap)json.error
@@ -324,6 +302,35 @@ void processWebsocketMessages(LinkedHashMap json) {
     }
   }
 }
+
+@CompileStatic
+void processWebsocketMessagesPowerMonitoring(LinkedHashMap json, String switchName) {
+  LinkedHashMap params = (LinkedHashMap)json?.params
+  if(json?.method == 'NotifyStatus' || json?.dst == 'switchGetStatus') {
+    if(params != null && params.containsKey(switchName)) {
+      LinkedHashMap sw = (LinkedHashMap)params[switchName]
+
+      Boolean switchState = sw?.output
+      if(switchState != null) { setSwitchState(switchState) }
+
+      if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
+        BigDecimal current =  (BigDecimal)sw?.current
+        if(current != null) { setCurrent(current) }
+
+        BigDecimal apower =  (BigDecimal)sw?.apower
+        if(apower != null) { setPower(apower) }
+
+        BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(sw?.aenergy))?.total
+        if(aenergy != null) { setEnergy(aenergy/1000) }
+      }
+
+    } else if (json?.result != null) {
+      Boolean switchState = ((LinkedHashMap)json.result)?.output
+      if(switchState != null) { setSwitchState(switchState) }
+    }
+  }
+}
+
 // =============================================================================
 // End Parse
 // =============================================================================
@@ -768,10 +775,10 @@ void setDeviceWebhooks() {
           if(currentWebhook != null) {
             webhookUpdate(type, event, (currentWebhook?.id).toString())
           } else {
-            // webhookCreate(type, event)
+            webhookCreate(type, event)
           }
         } else {
-          // webhookCreate(type, event)
+          webhookCreate(type, event)
         }
       }
     }
