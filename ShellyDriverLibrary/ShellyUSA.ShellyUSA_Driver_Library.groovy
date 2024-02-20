@@ -126,7 +126,8 @@ void updated() {
   voltage_limit: [type: 'number', title: 'Overvoltage protection in volts'],
   gen1_motion_sensitivity: [type: 'number', title: 'Motion sensitivity (1-256, lower is more sensitive)'],
   gen1_motion_blind_time_minutes: [type: 'number', title: 'Motion cool down in minutes'],
-  gen1_tamper_sensitivity: [type: 'number', title: 'Tamper sensitivity (1-127, lower is more sensitive, 0 for disabled)']
+  gen1_tamper_sensitivity: [type: 'number', title: 'Tamper sensitivity (1-127, lower is more sensitive, 0 for disabled)'],
+  gen1_set_volume: [type: 'number', title: 'Speaker volume (1 (lowest) .. 11 (highest))']
 ]
 @Field static List powerMonitoringDevices = [
   "SNPL-00116US"
