@@ -269,6 +269,109 @@ LinkedHashMap switchSetConfigCommand(
   ]
   return command
 }
+
+@CompileStatic
+LinkedHashMap switchResetCountersCommand(String src = 'switchResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "switchResetCounters",
+    "method" : "Switch.ResetCounters",
+    "params" : ["id" : 0]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap webhookListSupportedCommand(String src = 'switchResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "webhookListSupported",
+    "method" : "Webhook.ListSupported",
+    "params" : []
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap webhookListCommand(String src = 'switchResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "webhookList",
+    "method" : "Webhook.List",
+    "params" : []
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap scriptListCommand() {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptList",
+    "method" : "Script.List",
+    "params" : []
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap scriptStopCommand(Integer id) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptStop",
+    "method" : "Script.Stop",
+    "params" : ["id": id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap scriptStartCommand(Integer id) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptStart",
+    "method" : "Script.Start",
+    "params" : ["id": id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap scriptDeleteCommand(Integer id) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptDelete",
+    "method" : "Script.Delete",
+    "params" : ["id": id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap scriptCreateCommand() {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptCreate",
+    "method" : "Script.Create",
+    "params" : ["name": "HubitatBLEHelper"]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = true) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptPutCode",
+    "method" : "Script.PutCode",
+    "params" : [
+      "id": id,
+      "code": code,
+      "append": append
+    ]
+  ]
+  return command
+}
 // =============================================================================
 // End Command Maps
 // =============================================================================
@@ -719,37 +822,13 @@ void switchResetCounters(String src = 'switchResetCounters') {
 }
 
 @CompileStatic
-LinkedHashMap switchResetCountersCommand(String src = 'switchResetCounters') {
-  LinkedHashMap command = [
-    "id" : 0,
-    "src" : "switchResetCounters",
-    "method" : "Switch.ResetCounters",
-    "params" : ["id" : 0]
-  ]
-  return command
+void scriptList() {
+  LinkedHashMap command = scriptListCommand()
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  String json = JsonOutput.toJson(command)
+  sendWsMessage(json)
 }
 
-@CompileStatic
-LinkedHashMap webhookListSupportedCommand(String src = 'switchResetCounters') {
-  LinkedHashMap command = [
-    "id" : 0,
-    "src" : "webhookListSupported",
-    "method" : "Webhook.ListSupported",
-    "params" : []
-  ]
-  return command
-}
-
-@CompileStatic
-LinkedHashMap webhookListCommand(String src = 'switchResetCounters') {
-  LinkedHashMap command = [
-    "id" : 0,
-    "src" : "webhookList",
-    "method" : "Webhook.List",
-    "params" : []
-  ]
-  return command
-}
 // =============================================================================
 // End Websocket Commands
 // =============================================================================
