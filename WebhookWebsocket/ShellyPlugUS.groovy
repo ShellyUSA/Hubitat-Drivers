@@ -123,7 +123,9 @@ void updateDeviceWithPreferences() {
 // =============================================================================
 void parse(String message) {
   LinkedHashMap json = (LinkedHashMap)slurper.parseText(message)
-  processWebsocketMessages(json)
+  processWebsocketMessagesAuth(json)
+  processWebsocketMessagesPowerMonitoring(json, 'switch:0')
+  processWebsocketMessagesConnectivity(json)
   logJson(json)
   setLastUpdated()
 }
