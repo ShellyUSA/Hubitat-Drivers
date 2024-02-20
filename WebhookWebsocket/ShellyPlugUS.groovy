@@ -127,7 +127,6 @@ void parse(String message) {
   processWebsocketMessagesPowerMonitoring(json, 'switch:0')
   processWebsocketMessagesConnectivity(json)
   logJson(json)
-  setLastUpdated()
 }
 
 @CompileStatic
