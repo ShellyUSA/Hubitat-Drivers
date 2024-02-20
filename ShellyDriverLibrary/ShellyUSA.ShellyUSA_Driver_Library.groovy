@@ -41,6 +41,7 @@ if (device != null) {
       input 'deviceUsername', 'string', title: 'Device Username (if enabled on device)', required: false, defaultValue: 'admin'
     }
     input 'devicePassword', 'password', title: 'Device Password (if enabled on device)', required: false, defaultValue: ''
+
     preferenceMap.each{ k,v ->
       if(getDeviceSettings().containsKey(k)) {
         if(v.type == 'enum') {
@@ -50,6 +51,7 @@ if (device != null) {
         }
       }
     }
+
     if(hasPowerMonitoring() == true) {
       input(name: 'enablePowerMonitoring', type:'bool', title: 'Enable Power Monitoring', required: false, defaultValue: true)
       input(name: 'resetMonitorsAtMidnight', type:'bool', title: 'Reset Total Energy At Midnight', required: false, defaultValue: true)
@@ -122,6 +124,9 @@ void updated() {
   current_limit: [type: 'number', title: 'Overcurrent protection in amperes'],
   power_limit: [type: 'number', title: 'Overpower protection in watts'],
   voltage_limit: [type: 'number', title: 'Overvoltage protection in volts'],
+  gen1_motion_sensitivity: [type: 'number', title: 'Motion sensitivity (1-256, lower is more sensitive)'],
+  gen1_motion_blind_time_minutes: [type: 'number', title: 'Motion cool down in minutes'],
+  gen1_tamper_sensitivity: [type: 'number', title: 'Tamper sensitivity (1-127, lower is more sensitive, 0 for disabled)']
 ]
 @Field static List powerMonitoringDevices = [
   "SNPL-00116US"
@@ -966,6 +971,30 @@ void setTamperOn(Boolean tamper) {
 void setIlluminance(Integer illuminance) {
   getDevice().sendEvent(name: 'illuminance', value: illuminance)
 }
+
+@CompileStatic
+void setGasDetectedOn(Boolean tamper) {
+  if(tamper == true) {
+    getDevice().sendEvent(name: 'naturalGas', value: 'detected')
+  } else {
+    getDevice().sendEvent(name: 'naturalGas', value: 'clear')
+  }
+}
+
+@CompileStatic
+void setGasPPM(Integer ppm) {
+  getDevice().sendEvent(name: 'ppm', value: ppm)
+}
+
+@CompileStatic
+void setValvePosition(Boolean open, Integer valve = 0) {
+  if(open == true) {
+    getDevice().sendEvent(name: 'valve', value: 'open')
+  } else {
+    getDevice().sendEvent(name: 'valve', value: 'closed')
+  }
+}
+
 // /////////////////////////////////////////////////////////////////////////////
 // End Power Monitoring Getters and Setters
 // /////////////////////////////////////////////////////////////////////////////
