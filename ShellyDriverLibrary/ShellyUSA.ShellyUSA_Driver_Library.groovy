@@ -278,7 +278,7 @@ LinkedHashMap switchSetConfigCommand(
 void processWebsocketMessages(LinkedHashMap json) {
   LinkedHashMap params = (LinkedHashMap)json?.params
   if(json?.method == 'NotifyStatus' || json?.dst == 'switchGetStatus') {
-    if(params && params.containsKey('switch:0')) {
+    if(params != null && params.containsKey('switch:0')) {
       LinkedHashMap switch0 = (LinkedHashMap)params['switch:0']
 
       Boolean switchState = switch0?.output
