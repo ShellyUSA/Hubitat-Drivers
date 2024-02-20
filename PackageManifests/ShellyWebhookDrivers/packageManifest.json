@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "0.0.1",
-  "releaseNotes": "0.0.1: Prerelease of 'Shelly Plug US' Driver",
+  "version": "1.0.0",
+  "releaseNotes": "1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
@@ -44,6 +44,13 @@
       "name": "Shelly Button 1",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyButton1.groovy",
+      "required": false
+    },
+    {
+      "id": "0f01c8d2-3cb7-4d99-828e-da2a44d6fa91",
+      "name": "Shelly Gas",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyGas.groovy",
       "required": false
     }
   ]
