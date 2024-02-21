@@ -1336,6 +1336,15 @@ void setTamperOn(Boolean tamper) {
 }
 
 @CompileStatic
+void setFloodOn(Boolean tamper) {
+  if(tamper == true) {
+    getDevice().sendEvent(name: 'water', value: 'wet')
+  } else {
+    getDevice().sendEvent(name: 'water', value: 'dry')
+  }
+}
+
+@CompileStatic
 void setIlluminance(Integer illuminance) {
   getDevice().sendEvent(name: 'illuminance', value: illuminance)
 }
