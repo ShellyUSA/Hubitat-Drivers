@@ -25,6 +25,8 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.io.StringReader
+import java.io.StringWriter
 // =============================================================================
 // End Imports
 // =============================================================================
@@ -59,6 +61,10 @@ if (device != null) {
     if(hasPowerMonitoring() == true) {
       input(name: 'enablePowerMonitoring', type:'bool', title: 'Enable Power Monitoring', required: false, defaultValue: true)
       input(name: 'resetMonitorsAtMidnight', type:'bool', title: 'Reset Total Energy At Midnight', required: false, defaultValue: true)
+    }
+
+    if(hasBluGateway() == true) {
+      input(name: 'enableBluetooteGateway', type:'bool', title: 'Enable Bluetooth Gateway for Hubitat', required: false, defaultValue: true)
     }
 
     input 'logEnable', 'bool', title: 'Enable Logging', required: false, defaultValue: true
@@ -134,12 +140,18 @@ void updated() {
   gen1_set_volume: [type: 'number', title: 'Speaker volume (1 (lowest) .. 11 (highest))']
 ]
 @Field static List powerMonitoringDevices = [
-  "SNPL-00116US"
+  'SNPL-00116US'
+]
+
+@Field static List bluGatewayDevices = [
+  'SNPL-00116US',
+  'SNGW-BT01'
 ]
 @Field static List gen1Devices = [
 
 ]
 @Field static ConcurrentHashMap<String, ArrayList<BigDecimal>> movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>()
+@Field static String BLE_SHELLY_BLU = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ble-shelly-blu.js'
 // =============================================================================
 // End Fields
 // =============================================================================
@@ -337,6 +349,20 @@ LinkedHashMap scriptStartCommand(Integer id) {
 }
 
 @CompileStatic
+LinkedHashMap scriptEnableCommand(Integer id) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptEnable",
+    "method" : "Script.SetConfig",
+    "params" : [
+      "id": id,
+      "config": ["enable": true]
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
 LinkedHashMap scriptDeleteCommand(Integer id) {
   LinkedHashMap command = [
     "id" : 0,
@@ -438,6 +464,45 @@ void processWebsocketMessagesPowerMonitoring(LinkedHashMap json, String switchNa
   }
 }
 
+@CompileStatic
+void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
+  LinkedHashMap params = (LinkedHashMap)json?.params
+  String src = ((String)json?.src).split('-')[0]
+  if(json?.method == 'NotifyEvent') {
+    if(params != null && params.containsKey('events')) {
+      List<LinkedHashMap> events = (List<LinkedHashMap>)params.events
+      events.each{ event ->
+        LinkedHashMap evtData = (LinkedHashMap)event?.data
+        String address = (String)evtData?.address
+        address = address.replace(':','')
+        logInfo("DNI: ${address}")
+        if(address != null && address != '' && evtData?.button != null) {
+          Integer button = evtData?.button as Integer
+          if(button < 4) {
+            sendEventToShellyBluetoothHelper("shellyBLEButtonPushedEvents", button, address)
+          } else if(button == 4) {
+            sendEventToShellyBluetoothHelper("shellyBLEButtonHeldEvents", 1, address)
+          }
+        }
+        if(address != null && address != '' && evtData?.battery != null) {
+          sendEventToShellyBluetoothHelper("shellyBLEBatteryEvents", evtData?.battery as Integer, address)
+        }
+        if(address != null && address != '' && evtData?.illuminance != null) {
+          sendEventToShellyBluetoothHelper("shellyBLEIlluminanceEvents", evtData?.illuminance as Integer, address)
+        }
+        if(address != null && address != '' && evtData?.rotation != null) {
+          sendEventToShellyBluetoothHelper("shellyBLERotationEvents", evtData?.rotation as BigDecimal, address)
+        }
+        if(address != null && address != '' && evtData?.rotation != null) {
+          sendEventToShellyBluetoothHelper("shellyBLEWindowEvents", evtData?.window as Integer, address)
+        }
+        if(address != null && address != '' && evtData?.motion != null) {
+          sendEventToShellyBluetoothHelper("shellyBLEMotionEvents", evtData?.motion as Integer, address)
+        }
+      }
+    }
+  }
+}
 // =============================================================================
 // End Parse
 // =============================================================================
@@ -923,6 +988,60 @@ LinkedHashMap decodeLanMessage(String message) {
 
 
 // =============================================================================
+// Bluetooth
+// =============================================================================
+@CompileStatic
+void enableBluReportingToHE() {
+  LinkedHashMap s = getBleShellyBluId()
+  if(s == null) {
+    postCommandSync(scriptCreateCommand())
+    s = getBleShellyBluId()
+  }
+  Integer id = s?.id as Integer
+  if(id != null) {
+    postCommandSync(scriptStopCommand(id))
+    String js = getBleShellyBluJs()
+    postCommandSync(scriptPutCodeCommand(id, js, false))
+    postCommandSync(scriptEnableCommand(id))
+    postCommandSync(scriptStartCommand(id))
+  }
+}
+
+@CompileStatic
+void disableBluReportingToHE() {
+  LinkedHashMap s = getBleShellyBluId()
+  Integer id = s?.id as Integer
+  if(id != null) {
+    postCommandSync(scriptDeleteCommand(id))
+  }
+}
+
+@CompileStatic
+LinkedHashMap getBleShellyBluId() {
+  LinkedHashMap json = postCommandSync(scriptListCommand())
+  List<LinkedHashMap> scripts = (List<LinkedHashMap>)((LinkedHashMap)json?.result)?.scripts
+  return scripts.find{it?.name == 'HubitatBLEHelper'}
+}
+
+String getBleShellyBluJs() {
+  Map params = [uri: BLE_SHELLY_BLU]
+  params.contentType = 'text/plain'
+  params.requestContentType = 'text/plain'
+  params.textParser = true
+  httpGet(params) { resp ->
+    if (resp && resp.data && resp.success) {
+      StringWriter sw = new StringWriter()
+      ((StringReader)resp.data).transferTo(sw);
+      return sw.toString()
+    }
+    else { logError(resp.data) }
+  }
+}
+// =============================================================================
+// End Bluetooth
+// =============================================================================
+
+// =============================================================================
 // Getters and Setters
 // =============================================================================
 // /////////////////////////////////////////////////////////////////////////////
@@ -1115,6 +1234,11 @@ void setDeviceDataValue(String dataValueName, String valueToSet) {
 Boolean hasPowerMonitoring() {
   return this.device.getDataValue('model') in powerMonitoringDevices
 }
+
+Boolean hasBluGateway() {
+  return this.device.getDataValue('model') in bluGatewayDevices
+}
+
 String getBaseUri() {
   String ipBase = settings.ipAddress
   return "http://${ipBase}"
@@ -1185,6 +1309,10 @@ Boolean getSwitchState() {
 @CompileStatic
 void setLastUpdated() {
   getDevice().sendEvent(name: 'lastUpdated', value: nowFormatted())
+}
+
+void sendEventToShellyBluetoothHelper(String loc, Object value, String dni) {
+  sendLocationEvent(name:loc, value:value, data:dni)
 }
 // /////////////////////////////////////////////////////////////////////////////
 // End Generic Getters and Setters
