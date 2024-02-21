@@ -3,11 +3,11 @@
 metadata {
   definition (name: 'Shelly Motion 2', namespace: 'ShellyUSA', author: 'Daniel Winks', importUrl: '') {
     capability 'Initialize'
-    capability "Battery" //battery - NUMBER, unit:%
-    capability "MotionSensor" //motion - ENUM ["inactive", "active"]
-    capability "TamperAlert" //tamper - ENUM ["clear", "detected"]
-    capability "IlluminanceMeasurement" //illuminance - NUMBER, unit:lx
-    capability "TemperatureMeasurement" //temperature - NUMBER, unit:°F || °C
+    capability 'Battery' //battery - NUMBER, unit:%
+    capability 'MotionSensor' //motion - ENUM ['inactive', 'active']
+    capability 'TamperAlert' //tamper - ENUM ['clear', 'detected']
+    capability 'IlluminanceMeasurement' //illuminance - NUMBER, unit:lx
+    capability 'TemperatureMeasurement' //temperature - NUMBER, unit:°F || °C
     attribute 'lastUpdated', 'string'
 
     command 'getPrefsFromDevice'
