@@ -2,7 +2,7 @@
 
 metadata {
   definition (name: 'Shelly Button 1', namespace: 'ShellyUSA', author: 'Daniel Winks', importUrl: '') {
-    capability 'Initialize'
+    capability 'Configuration'
     capability 'Battery' //battery - NUMBER, unit:%
     capability 'PushableButton' //numberOfButtons - NUMBER //pushed - NUMBER
     capability 'HoldableButton' //held - NUMBER
