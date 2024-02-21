@@ -146,13 +146,16 @@ void updated() {
 @Field static List powerMonitoringDevices = [
   'SNPL-00116US',
   'S3PM-001PCEU16',
-  'SNSW-001P16EU'
+  'SNSW-001P16EU',
+  'SNSW-001P15UL'
 ]
 
 @Field static List bluGatewayDevices = [
   'SNPL-00116US',
   'SNGW-BT01',
-  'S3PM-001PCEU16'
+  'S3PM-001PCEU16',
+  'SNSW-001P16EU',
+  'SNSW-001P15UL'
 ]
 @Field static List gen1Devices = [
 
@@ -482,6 +485,19 @@ LinkedHashMap bleSetConfigCommand(Boolean enable, Boolean rpcEnable, Boolean obs
         "rpc": rpcEnable,
         "observer": observerEnable
       ]
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap inputGetConfigCommand(String src = 'inputGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Input.GetConfig",
+    "params" : [
+      "id" : 0
     ]
   ]
   return command
@@ -1498,9 +1514,9 @@ String loggingLabel() {
   if(app) {return "${app.label ?: app.name }"}
 }
 
-void logException(message) {if (settings.logEnable == true) {log.exception "${loggingLabel()}: ${message}"}}
-void logError(message) {if (settings.logEnable == true) {log.error "${loggingLabel()}: ${message}"}}
-void logWarn(message) {if (settings.logEnable == true) {log.warn "${loggingLabel()}: ${message}"}}
+void logException(message) {log.exception "${loggingLabel()}: ${message}"}
+void logError(message) {log.error "${loggingLabel()}: ${message}"}
+void logWarn(message) {log.warn "${loggingLabel()}: ${message}"}
 void logInfo(message) {if (settings.logEnable == true) {log.info "${loggingLabel()}: ${message}"}}
 void logDebug(message) {if (settings.logEnable == true) {log.debug "${loggingLabel()}: ${message}"}}
 void logTrace(message) {if (settings.logEnable == true) {log.trace "${loggingLabel()}: ${message}"}}
