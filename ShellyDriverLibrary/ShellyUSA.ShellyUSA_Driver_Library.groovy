@@ -67,6 +67,10 @@ if (device != null) {
       input(name: 'enableBluetooteGateway', type:'bool', title: 'Enable Bluetooth Gateway for Hubitat', required: false, defaultValue: true)
     }
 
+    if(getDevice().hasCapability('PresenceSensor')) {
+      input 'presenceTimeout', 'number', title: 'Presence Timeout (minimum 300 seconds)', required: true, defaultValue: 300
+    }
+
     input 'logEnable', 'bool', title: 'Enable Logging', required: false, defaultValue: true
     input 'debugLogEnable', 'bool', title: 'Enable debug logging', required: false, defaultValue: true
     input 'traceLogEnable', 'bool', title: 'Enable trace logging (warning: causes high hub load)', required: false, defaultValue: false
@@ -478,10 +482,12 @@ void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
         logInfo("DNI: ${address}")
         if(address != null && address != '' && evtData?.button != null) {
           Integer button = evtData?.button as Integer
-          if(button < 4) {
+          if(button < 4 && button > 0) {
             sendEventToShellyBluetoothHelper("shellyBLEButtonPushedEvents", button, address)
           } else if(button == 4) {
             sendEventToShellyBluetoothHelper("shellyBLEButtonHeldEvents", 1, address)
+          } else if(button == 0) {
+            sendEventToShellyBluetoothHelper("shellyBLEButtonPresenceEvents", 0, address)
           }
         }
         if(address != null && address != '' && evtData?.battery != null) {
@@ -1433,6 +1439,10 @@ String runEveryCustomHours(Integer hours) {
 
 double nowDays() {
   return (now() / 86400000)
+}
+
+long unixTimeMillis() {
+  return (now())
 }
 
 @CompileStatic
