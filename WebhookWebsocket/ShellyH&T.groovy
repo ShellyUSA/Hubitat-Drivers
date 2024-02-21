@@ -2,10 +2,10 @@
 
 metadata {
   definition (name: 'Shelly H&T Webhook', namespace: 'ShellyUSA', author: 'Daniel Winks', importUrl: '') {
-    capability 'Initialize'
-    capability "Battery" //battery - NUMBER, unit:%
-    capability "RelativeHumidityMeasurement" //humidity - NUMBER, unit:%rh
-    capability "TemperatureMeasurement" //temperature - NUMBER, unit:°F || °C
+    capability 'Configuration'
+    capability 'Battery' //battery - NUMBER, unit:%
+    capability 'RelativeHumidityMeasurement' //humidity - NUMBER, unit:%rh
+    capability 'TemperatureMeasurement' //temperature - NUMBER, unit:°F || °C
 
     attribute 'lastUpdated', 'string'
   }
@@ -46,10 +46,7 @@ void parse(String raw) {
   logDebug("Headers: ${headers}")
   List<String> res = ((String)headers.keySet()[0]).tokenize(' ')
   List<String> query = ((String)res[1]).tokenize('/')
-  if(query[0] == 'motion_on') {setMotionOn(true)}
-  else if(query[0] == 'motion_off') {setMotionOn(false)}
-  else if(query[0] == 'tamper_alarm_on') {setTamperOn(true)}
-  else if(query[0] == 'tamper_alarm_off') {setTamperOn(false)}
+  if(query[0] == 'report') {}
   setLastUpdated()
 }
 
@@ -63,13 +60,12 @@ void getBatteryStatus() {
   BigDecimal temp = (BigDecimal)(((LinkedHashMap)response?.tmp)?.value)
   String tempUnits = (((LinkedHashMap)response?.tmp)?.units).toString()
   if(tempUnits == 'C') {
-    setTemperatureC(temp)
+    if(temp != null){setTemperatureC(temp)}
   } else if(tempUnits == 'F') {
-    setTemperatureF(temp)
+    if(temp != null){setTemperatureF(temp)}
   }
   BigDecimal hum = (BigDecimal)(((LinkedHashMap)response?.hum)?.value)
-  setHumidityPercent(hum)
-
+  if(hum != null){setHumidityPercent(hum)}
 }
 
 @CompileStatic
