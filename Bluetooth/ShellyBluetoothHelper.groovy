@@ -35,21 +35,78 @@ void configure() {
   subscribe(location, "shellyBLERotationEvents", "shellyBLERotationEventsHandler")
   subscribe(location, "shellyBLEWindowEvents", "shellyBLEWindowEventsHandler")
   subscribe(location, "shellyBLEMotionEvents", "shellyBLEMotionEventsHandler")
+  subscribe(location, "shellyBLEButtonPresenceEvents", "shellyBLEButtonPresenceEventsHandler")
 }
 
 void shellyButtonPushedEventsHandler(Event evt) {
-  try{
-    sendEvent(evt.getData().toUpperCase(), [name: 'pushed', value: evt.getValue() as Integer, isStateChange: true])
-  } catch(e) {
-    logDebug("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+  String macAddress = evt.getData().toUpperCase()
+  if(!buttonPushedRecently(macAddress)) {
+    try{
+      sendEvent(macAddress, [name: 'pushed', value: evt.getValue() as Integer, isStateChange: true])
+    } catch(e) {
+      logWarn("No device found for DNI/MAC address: ${macAddress}")
+    }
+  } else {
+    runIn(1, 'removeMacFromRecentlyPushedList', [data:[mac: macAddress]])
+  }
+}
+
+Boolean buttonPushedRecently(String macAddress) {
+  if(state.buttonPushedRecently == null) {
+    state.buttonPushedRecently = new ArrayList<String>()
+  }
+  if(state.buttonPushedRecently.contains(macAddress)) {
+    return true
+  } else {
+    ArrayList<String> b = state.buttonPushedRecently
+    b.add(macAddress)
+    state.buttonPushedRecently = b
+    runIn(1, 'removeMacFromRecentlyPushedList', [data:[mac: macAddress]])
+    return false
+  }
+}
+
+void removeMacFromRecentlyPushedList(Map data = null) {
+  if(data != null && data.mac != null && state.buttonPushedRecently != null) {
+    ArrayList<String> b = state.buttonPushedRecently
+    b.remove(data.mac)
+    state.buttonPushedRecently = b
   }
 }
 
 void shellyButtonHeldEventsHandler(Event evt) {
-  try{
-    sendEvent(evt.getData().toUpperCase(), [name: 'held', value: evt.getValue() as Integer, isStateChange: true])
-  } catch(e) {
-    logDebug("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+  String macAddress = evt.getData().toUpperCase()
+  if(!buttonHeldRecently(macAddress)) {
+    try{
+      sendEvent(evt.getData().toUpperCase(), [name: 'held', value: evt.getValue() as Integer, isStateChange: true])
+    } catch(e) {
+      logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    }
+  } else {
+    runIn(1, 'removeMacFromRecentlyHeldList', [data:[mac: macAddress]])
+  }
+}
+
+Boolean buttonHeldRecently(String macAddress) {
+  if(state.buttonHeldRecently == null) {
+    state.buttonHeldRecently = new ArrayList<String>()
+  }
+  if(state.buttonHeldRecently.contains(macAddress)) {
+    return true
+  } else {
+    ArrayList<String> b = state.buttonHeldRecently
+    b.add(macAddress)
+    state.buttonHeldRecently = b
+    runIn(1, 'removeMacFromRecentlyHeldList', [data:[mac: macAddress]])
+    return false
+  }
+}
+
+void removeMacFromRecentlyHeldList(Map data = null) {
+  if(data != null && data.mac != null && state.buttonHeldRecently != null) {
+    ArrayList<String> b = state.buttonHeldRecently
+    b.remove(data.mac)
+    state.buttonHeldRecently = b
   }
 }
 
@@ -57,7 +114,7 @@ void shellyBatteryEventsHandler(Event evt) {
   try{
     sendEvent(evt.getData().toUpperCase(), [name: 'battery', value: evt.getValue() as Integer])
   } catch(e) {
-    logDebug("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
   }
 }
 
@@ -65,7 +122,7 @@ void shellyBLEIlluminanceEventsHandler(Event evt) {
   try{
     sendEvent(evt.getData().toUpperCase(), [name: 'illuminance', value: evt.getValue() as Integer])
   } catch(e) {
-    logDebug("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
   }
 }
 
@@ -73,7 +130,7 @@ void shellyBLERotationEventsHandler(Event evt) {
   try{
     sendEvent(evt.getData().toUpperCase(), [name: 'tilt', value: evt.getValue()])
   } catch(e) {
-    logDebug("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
   }
 }
 
@@ -81,7 +138,7 @@ void shellyBLEWindowEventsHandler(Event evt) {
   try{
     sendEvent(evt.getData().toUpperCase(), [name: 'contact', value: (evt.getValue() as Integer) == 0 ? 'closed' : 'open'])
   } catch(e) {
-    logDebug("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
   }
 }
 
@@ -89,7 +146,16 @@ void shellyBLEMotionEventsHandler(Event evt) {
   try{
     sendEvent(evt.getData().toUpperCase(), [name: 'motion', value: (evt.getValue() as Integer) == 0 ? 'inactive' : 'active'])
   } catch(e) {
-    logDebug("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+  }
+}
+
+void shellyBLEButtonPresenceEventsHandler(Event evt) {
+  String macAddress = evt.getData().toUpperCase()
+  try{
+    sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])
+  } catch(e) {
+    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
   }
 }
 // =============================================================================
