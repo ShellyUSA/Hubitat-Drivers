@@ -57,6 +57,7 @@ void configure() {
 
   if(getDeviceSettings().enableBluetooteGateway == true) {enableBluReportingToHE()}
   else if(getDeviceSettings().enableBluetooteGateway == false) {disableBluReportingToHE()}
+  initializeWebsocketConnection()
 }
 
 void sendPrefsToDevice() {
@@ -130,6 +131,7 @@ void parse(String message) {
   processWebsocketMessagesAuth(json)
   processWebsocketMessagesPowerMonitoring(json, 'switch:0')
   processWebsocketMessagesConnectivity(json)
+  processWebsocketMessagesBluetoothEvents(json)
   logJson(json)
 }
 
