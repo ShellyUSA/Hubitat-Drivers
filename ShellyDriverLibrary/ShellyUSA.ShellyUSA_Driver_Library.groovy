@@ -144,12 +144,14 @@ void updated() {
   gen1_set_volume: [type: 'number', title: 'Speaker volume (1 (lowest) .. 11 (highest))']
 ]
 @Field static List powerMonitoringDevices = [
-  'SNPL-00116US'
+  'SNPL-00116US',
+  'S3PM-001PCEU16'
 ]
 
 @Field static List bluGatewayDevices = [
   'SNPL-00116US',
-  'SNGW-BT01'
+  'SNGW-BT01',
+  'S3PM-001PCEU16'
 ]
 @Field static List gen1Devices = [
 
@@ -402,6 +404,88 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
   ]
   return command
 }
+
+@CompileStatic
+LinkedHashMap pm1GetConfigCommand(String src = 'pm1GetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "PM1.GetConfig",
+    "params" : [
+      "id" : 0
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap pm1SetConfigCommand(Integer pm1Id = 0) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "pm1SetConfig",
+    "method" : "PM1.SetConfig",
+    "params" : [
+      "id" : pm1Id,
+      "config": []
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap pm1GetStatusCommand(String src = 'pm1GetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "PM1.GetStatus",
+    "params" : ["id" : 0]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap pm1ResetCountersCommand(String src = 'pm1ResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "PM1.ResetCounters",
+    "params" : ["id" : 0]
+  ]
+  return command
+}
+
+
+@CompileStatic
+LinkedHashMap bleGetConfigCommand(String src = 'bleGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "BLE.GetConfig",
+    "params" : [
+      "id" : 0
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap bleSetConfigCommand(Boolean enable, Boolean rpcEnable, Boolean observerEnable) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "bleSetConfig",
+    "method" : "BLE.SetConfig",
+    "params" : [
+      "id" : 0,
+      "config": [
+        "enable": enable,
+        "rpc": rpcEnable,
+        "observer": observerEnable
+      ]
+    ]
+  ]
+  return command
+}
+
 // =============================================================================
 // End Command Maps
 // =============================================================================
@@ -441,26 +525,38 @@ void processWebsocketMessagesAuth(LinkedHashMap json) {
 }
 
 @CompileStatic
-void processWebsocketMessagesPowerMonitoring(LinkedHashMap json, String switchName) {
-  LinkedHashMap params = (LinkedHashMap)json?.params
-  if(json?.method == 'NotifyStatus' || json?.dst == 'switchGetStatus') {
+void processWebsocketMessagesPowerMonitoring(LinkedHashMap json, String switchName = null) {
+  String dst = json?.dst
+  if(dst != null && dst != '' && dst.contains('GetStatus') || (dst.contains('authCheck')) && json?.method != 'NotifyStatus') {
+    if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
+      if(json?.result != null) {
+        LinkedHashMap res = (LinkedHashMap)json.result
+        BigDecimal current =  (BigDecimal)res?.current
+        if(current != null) { setCurrent(current) }
+        BigDecimal apower =  (BigDecimal)res?.apower
+        if(apower != null) { setPower(apower) }
+        BigDecimal voltage =  (BigDecimal)res?.voltage
+        if(voltage != null) { setVoltage(voltage) }
+        BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(res?.aenergy))?.total
+        if(aenergy != null) { setEnergy(aenergy/1000) }
+      }
+    }
+  }
+
+  if(json?.method == 'NotifyStatus') {
+    LinkedHashMap params = (LinkedHashMap)json?.params
     if(params != null && params.containsKey(switchName)) {
       LinkedHashMap sw = (LinkedHashMap)params[switchName]
-
       Boolean switchState = sw?.output
       if(switchState != null) { setSwitchState(switchState) }
-
       if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
         BigDecimal current =  (BigDecimal)sw?.current
         if(current != null) { setCurrent(current) }
-
         BigDecimal apower =  (BigDecimal)sw?.apower
         if(apower != null) { setPower(apower) }
-
         BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(sw?.aenergy))?.total
         if(aenergy != null) { setEnergy(aenergy/1000) }
       }
-
     } else if (json?.result != null) {
       Boolean switchState = ((LinkedHashMap)json.result)?.output
       if(switchState != null) { setSwitchState(switchState) }
@@ -900,6 +996,13 @@ void scriptList() {
   sendWsMessage(json)
 }
 
+@CompileStatic
+String pm1GetStatus() {
+  LinkedHashMap command = pm1GetStatusCommand()
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  String json = JsonOutput.toJson(command)
+  sendWsMessage(json)
+}
 // =============================================================================
 // End Websocket Commands
 // =============================================================================
@@ -998,6 +1101,7 @@ LinkedHashMap decodeLanMessage(String message) {
 // =============================================================================
 @CompileStatic
 void enableBluReportingToHE() {
+  enableBluetooth()
   LinkedHashMap s = getBleShellyBluId()
   if(s == null) {
     postCommandSync(scriptCreateCommand())
@@ -1043,6 +1147,12 @@ String getBleShellyBluJs() {
     else { logError(resp.data) }
   }
 }
+
+void enableBluetooth() {
+  postCommandSync(bleSetConfigCommand(true, true, true))
+  postCommandSync(bleSetConfigCommand(true, true, true))
+}
+
 // =============================================================================
 // End Bluetooth
 // =============================================================================
@@ -1078,8 +1188,23 @@ ArrayList<BigDecimal> amperageAvgs() {
 }
 
 @CompileStatic
+String voltageAvg() {"${getDeviceDNI()}voltage".toString()}
+@CompileStatic
+ArrayList<BigDecimal> voltageAvgs() {
+  if(movingAvgs == null) { movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>() }
+  if(!movingAvgs.containsKey(voltageAvg())) { movingAvgs[voltageAvg()] = new ArrayList<BigDecimal>() }
+  return movingAvgs[voltageAvg()]
+}
+@CompileStatic clearVoltageAvgs() {
+  movingAvgs[voltageAvg()] = new ArrayList<BigDecimal>()
+}
+
+@CompileStatic
 void setCurrent(BigDecimal value) {
   ArrayList<BigDecimal> a = amperageAvgs()
+  if(a.size() == 0) {
+    getDevice().sendEvent(name: 'amperage', value: value)
+  }
   a.add(value)
   if(a.size() >= 10) {
     value = ((BigDecimal)a.sum()) / 10
@@ -1097,6 +1222,9 @@ BigDecimal getCurrent() {
 @CompileStatic
 void setPower(BigDecimal value) {
   ArrayList<BigDecimal> p = powerAvgs()
+  if(p.size() == 0) {
+    getDevice().sendEvent(name: 'power', value: value)
+  }
   p.add(value)
   if(p.size() >= 10) {
     value = ((BigDecimal)p.sum()) / 10
@@ -1110,6 +1238,30 @@ void setPower(BigDecimal value) {
 BigDecimal getPower() {
   return getDevice().currentValue('power', true) as BigDecimal
 }
+
+
+
+@CompileStatic
+void setVoltage(BigDecimal value) {
+  ArrayList<BigDecimal> v = voltageAvgs()
+  if(v.size() == 0) {
+    getDevice().sendEvent(name: 'voltage', value: value)
+  }
+  v.add(value)
+  if(v.size() >= 10) {
+    value = ((BigDecimal)v.sum()) / 10
+    value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
+    if(value == -1) { getDevice().sendEvent(name: 'voltage', value: null) }
+    else if(value != null && value != getPower()) { getDevice().sendEvent(name: 'voltage', value: value)}
+    clearPowerAvgs()
+  }
+}
+@CompileStatic
+BigDecimal getVoltage() {
+  return getDevice().currentValue('voltage', true) as BigDecimal
+}
+
+
 
 @CompileStatic
 void setEnergy(BigDecimal value) {
