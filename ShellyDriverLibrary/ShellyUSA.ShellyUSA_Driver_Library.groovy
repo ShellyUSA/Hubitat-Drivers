@@ -145,7 +145,8 @@ void updated() {
 ]
 @Field static List powerMonitoringDevices = [
   'SNPL-00116US',
-  'S3PM-001PCEU16'
+  'S3PM-001PCEU16',
+  'SNSW-001P16EU'
 ]
 
 @Field static List bluGatewayDevices = [
@@ -575,7 +576,6 @@ void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
         LinkedHashMap evtData = (LinkedHashMap)event?.data
         String address = (String)evtData?.address
         address = address.replace(':','')
-        logInfo("DNI: ${address}")
         if(address != null && address != '' && evtData?.button != null) {
           Integer button = evtData?.button as Integer
           if(button < 4 && button > 0) {
