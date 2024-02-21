@@ -108,12 +108,13 @@ void setDeviceActionsGen1() {
     'twilight_condition'
   ]
   actions.each{k,v ->
-    if(!k in actionsToCreate) {return}
-    String queryString = 'index=0&enabled=true'
-    queryString += "&name=${k}".toString()
-    queryString += "&urls[0][url]=${getHubBaseUri()}/${((String)k).replace('_url','')}".toString()
-    queryString += "&urls[0][int]=0000-0000"
-    sendGen1Command('settings/actions', queryString)
+    if(k in actionsToCreate) {
+      String queryString = 'index=0&enabled=true'
+      queryString += "&name=${k}".toString()
+      queryString += "&urls[0][url]=${getHubBaseUri()}/${((String)k).replace('_url','')}".toString()
+      queryString += "&urls[0][int]=0000-0000"
+      sendGen1Command('settings/actions', queryString)
+    }
   }
 }
 
