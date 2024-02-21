@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "1.0.0",
-  "releaseNotes": "1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
+  "version": "1.1.0",
+  "releaseNotes": "1.1.0 Added support for Bluetooth Gateway, Blu devices (button, motion, door/window), H&T (gen 1)\r\n1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
@@ -15,6 +15,16 @@
       "namespace": "ShellyUSA",
       "location": "https://github.com/ShellyUSA/Hubitat-Drivers/raw/master/ShellyUSA_Driver_Library.zip",
       "required": true
+    }
+  ],
+  "apps": [
+    {
+      "id": "dc756e29-619a-41a3-ba3f-0d77a93fea00",
+      "name": "Shelly Bluetooth Helper App",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ShellyBluetoothHelper.groovy",
+      "required": true,
+      "primary": true
     }
   ],
   "drivers": [
@@ -51,6 +61,41 @@
       "name": "Shelly Gas",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyGas.groovy",
+      "required": false
+    },
+    {
+      "id": "868ac76e-c6ea-441a-b436-082ea1871fe4",
+      "name": "Shelly H&T (Gen 1)",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyH%26T.groovy",
+      "required": false
+    },
+    {
+      "id": "4900ccee-fbb9-4df7-bd3a-2a479335ba79",
+      "name": "Shelly BLE Gateway",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyBleGateway.groovy",
+      "required": false
+    },
+    {
+      "id": "98f91b1b-b56b-4dd8-a880-8bd77182de37",
+      "name": "Shelly Button 1 Blu",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ShellyButton1Blu.groovy",
+      "required": false
+    },
+    {
+      "id": "6e5ceef9-1c5b-4f5d-9126-948cd8f1443d",
+      "name": "Shelly Motion Blu",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ShellyMotionBlu.groovy",
+      "required": false
+    },
+    {
+      "id": "8d7cf146-b3c9-459c-9fab-5175bde3a237",
+      "name": "Shelly Door/Window Blu",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ShellyDoorWindowBlu.groovy",
       "required": false
     }
   ]
