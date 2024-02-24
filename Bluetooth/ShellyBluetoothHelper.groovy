@@ -39,7 +39,7 @@ void configure() {
 }
 
 void shellyButtonPushedEventsHandler(Event evt) {
-  String macAddress = evt.getData().toUpperCase()
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   if(!buttonPushedRecently(macAddress)) {
     try{
       sendEvent(macAddress, [name: 'pushed', value: evt.getValue() as Integer, isStateChange: true])
@@ -75,12 +75,12 @@ void removeMacFromRecentlyPushedList(Map data = null) {
 }
 
 void shellyButtonHeldEventsHandler(Event evt) {
-  String macAddress = evt.getData().toUpperCase()
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   if(!buttonHeldRecently(macAddress)) {
     try{
-      sendEvent(evt.getData().toUpperCase(), [name: 'held', value: evt.getValue() as Integer, isStateChange: true])
+      sendEvent(macAddress, [name: 'held', value: evt.getValue() as Integer, isStateChange: true])
     } catch(e) {
-      logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+      logWarn("No device found for DNI/MAC address: ${macAddress}")
     }
   } else {
     runIn(1, 'removeMacFromRecentlyHeldList', [data:[mac: macAddress]])
@@ -111,51 +111,56 @@ void removeMacFromRecentlyHeldList(Map data = null) {
 }
 
 void shellyBatteryEventsHandler(Event evt) {
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(evt.getData().toUpperCase(), [name: 'battery', value: evt.getValue() as Integer])
+    sendEvent(macAddress, [name: 'battery', value: evt.getValue() as Integer])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}")
   }
 }
 
 void shellyBLEIlluminanceEventsHandler(Event evt) {
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(evt.getData().toUpperCase(), [name: 'illuminance', value: evt.getValue() as Integer])
+    sendEvent(macAddress, [name: 'illuminance', value: evt.getValue() as Integer])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}")
   }
 }
 
 void shellyBLERotationEventsHandler(Event evt) {
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(evt.getData().toUpperCase(), [name: 'tilt', value: evt.getValue()])
+    sendEvent(macAddress, [name: 'tilt', value: evt.getValue()])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}")
   }
 }
 
 void shellyBLEWindowEventsHandler(Event evt) {
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(evt.getData().toUpperCase(), [name: 'contact', value: (evt.getValue() as Integer) == 0 ? 'closed' : 'open'])
+    sendEvent(macAddress, [name: 'contact', value: (evt.getValue() as Integer) == 0 ? 'closed' : 'open'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}")
   }
 }
 
 void shellyBLEMotionEventsHandler(Event evt) {
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(evt.getData().toUpperCase(), [name: 'motion', value: (evt.getValue() as Integer) == 0 ? 'inactive' : 'active'])
+    sendEvent(macAddress, [name: 'motion', value: (evt.getValue() as Integer) == 0 ? 'inactive' : 'active'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}")
   }
 }
 
 void shellyBLEButtonPresenceEventsHandler(Event evt) {
-  String macAddress = evt.getData().toUpperCase()
+  String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
     sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${evt.getData().toUpperCase()}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}")
   }
 }
 // =============================================================================
