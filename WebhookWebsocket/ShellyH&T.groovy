@@ -13,6 +13,7 @@ metadata {
 
 if(device != null) {preferences{}}
 @Field static Boolean GEN1 = true
+<<<<<<< Updated upstream
 // =============================================================================
 // Initialize And Configure
 // =============================================================================
@@ -67,6 +68,21 @@ void getBatteryStatus() {
   BigDecimal hum = (BigDecimal)(((LinkedHashMap)response?.hum)?.value)
   if(hum != null){setHumidityPercent(hum)}
 }
+=======
+@Field static Boolean HAS_BATTERY_GEN1 = true
+@Field static Boolean HAS_LUX_GEN1 = true
+@Field static Boolean HAS_TEMP_GEN1 = true
+@Field static Boolean HAS_HUM_GEN1 = true
+
+@CompileStatic
+void initialize() {configure()}
+
+@CompileStatic
+void configure() {allDevicesConfiguration()}
+
+@CompileStatic
+void parse(String raw) {parseGen1Message(raw)}
+>>>>>>> Stashed changes
 
 @CompileStatic
 void setDeviceActionsGen1() {
@@ -84,4 +100,7 @@ void setDeviceActionsGen1() {
     }
   }
 }
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
