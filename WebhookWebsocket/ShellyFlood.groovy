@@ -12,6 +12,7 @@ metadata {
 
 if(device != null) {preferences{}}
 @Field static Boolean GEN1 = true
+<<<<<<< Updated upstream
 // =============================================================================
 // Initialize And Configure
 // =============================================================================
@@ -68,6 +69,21 @@ void getBatteryStatus() {
   Boolean flood = (Boolean)response?.flood
   if(flood != null){setFloodOn(flood)}
 }
+=======
+@Field static Boolean HAS_TEMP_GEN1 = true
+@Field static Boolean HAS_FLOOD_GEN1 = true
+// =============================================================================
+// Initialize And Configure
+// =============================================================================
+@CompileStatic
+void initialize() {configure()}
+
+@CompileStatic
+void configure() {allDevicesConfiguration()}
+
+@CompileStatic
+void parse(String raw) {parseGen1Message(raw)}
+>>>>>>> Stashed changes
 
 @CompileStatic
 void setDeviceActionsGen1() {
@@ -87,4 +103,7 @@ void setDeviceActionsGen1() {
     }
   }
 }
+<<<<<<< Updated upstream
 
+=======
+>>>>>>> Stashed changes
