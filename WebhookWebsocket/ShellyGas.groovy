@@ -5,8 +5,8 @@ metadata {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
-    capability "GasDetector" //naturalGas - ENUM ["clear", "tested", "detected"]
-    capability "Valve" //valve - ENUM ["open", "closed"]
+    capability 'GasDetector' //naturalGas - ENUM ['clear', 'tested', 'detected']
+    capability 'Valve' //valve - ENUM ['open', 'closed']
     attribute 'lastUpdated', 'string'
     attribute 'ppm', 'number'
     attribute 'selfTestState', 'string'
