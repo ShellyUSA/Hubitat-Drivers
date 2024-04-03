@@ -10,9 +10,8 @@ metadata {
     capability 'PowerMeter' //power - NUMBER, unit:W
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
-
     command 'resetEnergyMonitors'
-    attribute 'lastUpdated', 'string'
+    command 'getPrefsFromDevice'
   }
 }
 
@@ -23,13 +22,13 @@ if(device != null) {preferences{}}
 // =============================================================================
 void initialize() {
   if(hasIpAddress()) {
-    atomicState.initInProgress = true
-    getPrefsFromDevice()
+    // getPrefsFromDevice()
     initializeWebsocketConnection()
   }
   if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
   if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
   if(getDeviceSettings().enableBluetooteGateway == null) { this.device.updateSetting('enableBluetooteGateway', true) }
+<<<<<<< Updated upstream
 }
 
 void configure() {
@@ -96,6 +95,8 @@ void getPrefsFromDevice() {
   if(deviceInfo != null && deviceInfo?.result != null) {
     setDeviceInfo(deviceInfo.result)
   }
+=======
+>>>>>>> Stashed changes
 }
 // =============================================================================
 // End Initialization
@@ -104,28 +105,9 @@ void getPrefsFromDevice() {
 
 
 // =============================================================================
-// Custom Commands
-// =============================================================================
-@CompileStatic
-void updatePreferencesFromDevice() {
-  Map json = postCommandSync(switchGetConfigCommand())
-  LinkedHashMap result = (json != null && json?.result != null) ? json.result : null
-  if(result != null) {setDevicePreferences(result)}
-}
-
-@CompileStatic
-void updateDeviceWithPreferences() {
-  sendPrefsToDevice()
-}
-// =============================================================================
-// End Custom Commands
-// =============================================================================
-
-
-
-// =============================================================================
 // Device Specific
 // =============================================================================
+<<<<<<< Updated upstream
 void parse(String message) {
   LinkedHashMap json = (LinkedHashMap)slurper.parseText(message)
   processWebsocketMessagesAuth(json)
@@ -135,6 +117,8 @@ void parse(String message) {
   logJson(json)
 }
 
+=======
+>>>>>>> Stashed changes
 @CompileStatic
 void on() { postCommandSync(switchSetCommand(true)) }
 
@@ -144,7 +128,7 @@ void off() { postCommandSync(switchSetCommand(false)) }
 void refresh() { refreshDeviceSpecificInfo() }
 
 void refreshDeviceSpecificInfo() {
-  switchGetConfig('switchGetConfig-refreshDeviceSpecificInfo')
+  switchGetConfig()
   shellyGetDeviceInfo(true)
   switchGetStatus()
 }
