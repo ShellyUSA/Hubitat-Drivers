@@ -32,11 +32,15 @@ void initialize() {
 }
 
 void configure() {
+<<<<<<< Updated upstream
   if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
     getPrefsFromDevice()
   } else if(getDeviceDataValue('ipAddress') == getIpAddress()) {
     sendPrefsToDevice()
   }
+=======
+  getOrSetPrefs()
+>>>>>>> Stashed changes
   setDeviceDataValue('ipAddress', getIpAddress())
 
   if(getDeviceSettings().resetMonitorsAtMidnight != null && getDeviceSettings().resetMonitorsAtMidnight == true) {
@@ -56,8 +60,11 @@ void configure() {
   initializeWebsocketConnection()
 }
 
+<<<<<<< Updated upstream
 void sendPrefsToDevice() {
 }
+=======
+>>>>>>> Stashed changes
 
 void getPrefsFromDevice() {
   Map deviceInfo = postCommandSync(shellyGetDeviceInfoCommand())
@@ -96,10 +103,26 @@ void updateDeviceWithPreferences() {
 // =============================================================================
 void parse(String message) {
   LinkedHashMap json = (LinkedHashMap)slurper.parseText(message)
+<<<<<<< Updated upstream
   processWebsocketMessagesAuth(json)
   processWebsocketMessagesPowerMonitoring(json, 'pm1:0')
   processWebsocketMessagesConnectivity(json)
   processWebsocketMessagesBluetoothEvents(json)
+=======
+
+  try {processWebsocketMessagesAuth(json)}
+  catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesAuth(): ${prettyJson(json)}")}
+
+  try {processWebsocketMessagesPowerMonitoring(json, 'pm1:0')}
+  catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesPowerMonitoring(): ${prettyJson(json)}")}
+
+  try {processWebsocketMessagesConnectivity(json)}
+  catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesConnectivity(): ${prettyJson(json)}")}
+
+  try {processWebsocketMessagesBluetoothEvents(json)}
+  catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesBluetoothEvents(): ${prettyJson(json)}")}
+
+>>>>>>> Stashed changes
   logJson(json)
 }
 
