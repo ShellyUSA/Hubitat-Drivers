@@ -3,6 +3,7 @@
 metadata {
   definition (name: 'Shelly Gas', namespace: 'ShellyUSA', author: 'Daniel Winks', importUrl: '') {
     capability 'Initialize'
+    capability 'Configuration'
     capability 'Refresh'
     capability "GasDetector" //naturalGas - ENUM ["clear", "tested", "detected"]
     capability "Valve" //valve - ENUM ["open", "closed"]
@@ -12,8 +13,6 @@ metadata {
     command 'selfTest'
     command 'mute'
     command 'unmute'
-    command 'getPrefsFromDevice'
-
   }
 }
 
@@ -22,54 +21,14 @@ if(device != null) {preferences{}}
 // =============================================================================
 // Initialize And Configure
 // =============================================================================
+@CompileStatic
 void initialize() {configure()}
-void configure() {
-  this.device.setDeviceNetworkId(convertIPToHex(settings?.ipAddress))
-  setDeviceActionsGen1()
-
-  if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
-    getPrefsFromDevice()
-  } else if(getDeviceDataValue('ipAddress') == getIpAddress()) {
-    sendPrefsToDevice()
-  }
-  setDeviceDataValue('ipAddress', getIpAddress())
-}
 
 @CompileStatic
-void sendPrefsToDevice() {
-  if(
-    getDeviceSettings().gen1_set_volume != null
-  ) {
-    String queryString = "set_volume=${getDeviceSettings().gen1_set_volume}".toString()
-    sendGen1Command('settings', queryString)
-  }
-}
+void configure() {allDevicesConfiguration()}
 
 @CompileStatic
-void getPrefsFromDevice() {
-  LinkedHashMap response = (LinkedHashMap)sendGen1Command('settings')
-  logJson(response)
-  LinkedHashMap prefs = [
-    'gen1_set_volume': response?.set_volume as Integer
-  ]
-  logJson(prefs)
-  setDevicePreferences(prefs)
-}
-
-@CompileStatic
-void parse(String raw) {
-  LinkedHashMap message = decodeLanMessage(raw)
-  LinkedHashMap headers = message?.headers as LinkedHashMap
-  logDebug("Message: ${message}")
-  logDebug("Headers: ${headers}")
-  List<String> res = ((String)headers.keySet()[0]).tokenize(' ')
-  List<String> query = ((String)res[1]).tokenize('/')
-  if(query[0] == 'alarm_mild') {setGasDetectedOn(true)}
-  else if(query[0] == 'alarm_heavy') {setGasDetectedOn(true)}
-  else if(query[0] == 'alarm_off') {setGasDetectedOn(false)}
-  getStatus()
-  setLastUpdated()
-}
+void parse(String raw) {parseGen1Message(raw)}
 
 @CompileStatic
 void refresh() {getStatus()}
