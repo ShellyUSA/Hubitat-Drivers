@@ -42,9 +42,7 @@ library(
   'SNSW-001P15UL',
   'SNSN-0043X'
 ]
-@Field static List gen1Devices = [
 
-]
 @Field static ConcurrentHashMap<String, ArrayList<BigDecimal>> movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>()
 @Field static String BLE_SHELLY_BLU = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ble-shelly-blu.js'
 // =============================================================================
@@ -99,6 +97,14 @@ if (device != null) {
 }
 
 @CompileStatic
+void getDeviceCapabilities() {
+  Map result = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand())?.result
+  if(result != null && result.size() > 0) {
+    setDeviceDataValue('capabilities', result.keySet().join(','))
+  }
+}
+
+@CompileStatic
 void getOrSetPrefs() {
   if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
     getPrefsFromDevice()
@@ -116,9 +122,10 @@ void getPrefsFromDevice() {
     Integer gen = shellyResults?.gen as Integer
     if(gen != null && gen > 1) {
       // Gen 2+
-      Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand())?.result
-      logTrace("switchGetConfigResult: ${switchGetConfigResult}")
+
       Map shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
+      logDebug("shellyGetConfigResult: ${prettyJson(shellyGetConfigResult)}")
+
       Set<String> switches = shellyGetConfigResult.keySet().findAll{it.startsWith('switch')}
       Set<String> inputs = shellyGetConfigResult.keySet().findAll{it.startsWith('input')}
       Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
@@ -127,9 +134,23 @@ void getPrefsFromDevice() {
       logDebug("Inputs: ${inputs}")
       logDebug("Covers: ${covers}")
 
-
-      logDebug("shellyGetConfigResult: ${prettyJson(shellyGetConfigResult)}")
-      if(switchGetConfigResult != null && switchGetConfigResult.size() > 0) {setDevicePreferences(switchGetConfigResult)}
+      if(switches.size() > 1) {
+        switches.each{ s ->
+          Integer id = s.tokenize(':')[1] as Integer
+          logDebug("Getting switch info for switch ID: ${id}")
+          Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
+          logDebug("switchGetConfigResult: ${switchGetConfigResult}")
+          ChildDeviceWrapper child = createChildSwitch((LinkedHashMap)shellyGetConfigResult[s])
+          if(switchGetConfigResult != null && switchGetConfigResult.size() > 0) {setChildDevicePreferences(switchGetConfigResult, child)}
+        }
+      } else if(switches.size() == 1) {
+        logDebug('Only one switch found, not creating child devices')
+        Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(0))?.result
+        logDebug("switchGetConfigResult: ${switchGetConfigResult}")
+        if(switchGetConfigResult != null && switchGetConfigResult.size() > 0) {setDevicePreferences(switchGetConfigResult)}
+      } else {
+        logDebug('No switches found')
+      }
 
       configureNightlyPowerMonitoringReset()
 
@@ -184,7 +205,15 @@ void configureNightlyPowerMonitoringReset() {
 // =============================================================================
 // Initialization
 // =============================================================================
-
+void initialize() {
+  if(hasIpAddress()) {
+    // getPrefsFromDevice()
+    if(hasWebsocket() == true) {initializeWebsocketConnection()}
+  }
+  if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
+  if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
+  if(getDeviceSettings().enableBluetooteGateway == null) { this.device.updateSetting('enableBluetooteGateway', true) }
+}
 
 
 
@@ -200,7 +229,6 @@ void configure() {
   setDeviceNetworkId(getIpAddress())
   getOrSetPrefs()
   setDeviceDataValue('ipAddress', getIpAddress())
-  createChildSwitches()
   if(isGen1Device() == true) {
     try {setDeviceActionsGen1()}
     catch(e) {logDebug('No device actions configured.')}
@@ -533,9 +561,7 @@ Boolean hasParent() { return parent != null }
 
 String getDeviceDNI() { return this.device.getDeviceNetworkId() }
 
-Boolean isCelciusScale() {
-  getLocation().temperatureScale == 'C'
-}
+Boolean isCelciusScale() { getLocation().temperatureScale == 'C' }
 
 String getDeviceDataValue(String dataValueName) {
   return this.device.getDataValue(dataValueName)
@@ -613,6 +639,21 @@ void setDevicePreferences(Map preferences) {
   }
 }
 
+void setChildDevicePreferences(Map preferences, ChildDeviceWrapper child) {
+  logTrace("Setting child device preferences from ${preferences}")
+  preferences.each{ k,v ->
+    if(preferenceMap.containsKey(k)) {
+      if(preferenceMap[k].type == 'enum') {
+        child.updateSetting(k,[type:'enum', value: v])
+      } else if(preferenceMap[k].type == 'number') {
+        child.updateSetting(k,[type:'number', value: v as Integer])
+      } else {
+        child.updateSetting(k,v)
+      }
+    }
+  }
+}
+
 @CompileStatic
 void setSwitchState(Boolean on, Integer id = 0) {
   if(on != null) {
@@ -647,6 +688,10 @@ void sendEventToShellyBluetoothHelper(String loc, Object value, String dni) {
 
 Boolean isGen1Device() {
   return GEN1 != null && GEN1 == true
+}
+
+Boolean hasWebsocket() {
+  return WS != null && WS == true
 }
 // /////////////////////////////////////////////////////////////////////////////
 // End Generic Getters and Setters
@@ -1043,8 +1088,6 @@ void parseWebsocketMessage(String message) {
 
   try {processWebsocketMessagesBluetoothEvents(json)}
   catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesBluetoothEvents(): ${prettyJson(json)}")}
-
-
 }
 
 @CompileStatic
@@ -1612,7 +1655,7 @@ void createChildSwitches() {
 }
 
 @CompileStatic
-void createChildSwitch(LinkedHashMap switchConfig) {
+ChildDeviceWrapper createChildSwitch(LinkedHashMap switchConfig) {
   Integer id = switchConfig?.id as Integer
   Map<String, Object> switchStatus = postCommandSync(switchGetStatusCommand(id))
   logDebug("Switch Status: ${prettyJson(switchStatus)}")
@@ -1621,18 +1664,18 @@ void createChildSwitch(LinkedHashMap switchConfig) {
   logDebug(switchStatusResult.keySet())
   Boolean hasPM = 'apower' in switchStatusResult.keySet()
   logDebug("HasPM: ${hasPM}")
-  String dni = "${getDeviceDNI()}-${switchConfig.keySet()[0]}"
+  String dni = "${getDeviceDNI()}-${switchConfig.id}"
   String driverName = hasPM ? 'Shelly Switch PM Component' : 'Shelly Switch Component'
-  ChildDeviceWrapper device = getShellyDevice(dni)
-  if (device == null) {
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
     try {
-      device = addShellyDevice(driverName, dni, [name: "${getDevice().getLabel()} - Switch ${id+1}", label: "${getDevice().getName()} - Switch ${id+1}"])
-      device.updateDataValue('switchId',"${id}")
-      Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id, "childSwitch${id}"))?.result
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${getDevice().getLabel()} - Switch ${id}"])
+      child.updateDataValue('switchId',"${id}")
+      // Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id, "childSwitch${id}"))?.result
+      return child
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
-  }
-
+  } else { return child }
 }
 
 ChildDeviceWrapper addShellyDevice(String driverName, String dni, Map props) {
