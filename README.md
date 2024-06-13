@@ -3,7 +3,7 @@ Device Handlers To Use Shelly products With Hubitat
 
 Thanks to Scott Grayban for his time and effort developing these device handlers for the Shelly-Hubitat community.
 
-Shelly smart home products are available for European customers at https://shop.shelly.cloud/ and for US customers at https://shopusa.shelly.cloud/
+Shelly smart home products are available at https://shelly.com
 
 Below are the drivers for the **old GEN1 devices**
 
