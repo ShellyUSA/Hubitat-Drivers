@@ -16,24 +16,7 @@ metadata {
 }
 
 if(device != null) {preferences{}}
-
-// =============================================================================
-// Initialization
-// =============================================================================
-void initialize() {
-  if(hasIpAddress()) {
-    // getPrefsFromDevice()
-    initializeWebsocketConnection()
-  }
-  if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
-  if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
-  if(getDeviceSettings().enableBluetooteGateway == null) { this.device.updateSetting('enableBluetooteGateway', true) }
-}
-// =============================================================================
-// End Initialization
-// =============================================================================
-
-
+@Field static Boolean WS = true
 
 // =============================================================================
 // Device Specific
@@ -44,7 +27,7 @@ void on() { postCommandSync(switchSetCommand(true)) }
 @CompileStatic
 void off() { postCommandSync(switchSetCommand(false)) }
 
-void refresh() { refreshDeviceSpecificInfo() }
+
 
 void refreshDeviceSpecificInfo() {
   switchGetConfig()
