@@ -28,19 +28,21 @@ library(
   gen1_set_volume: [type: 'number', title: 'Speaker volume (1 (lowest) .. 11 (highest))']
 ]
 @Field static List powerMonitoringDevices = [
-  'SNPL-00116US',
   'S3PM-001PCEU16',
+  'SNPL-00116US',
+  'SNSW-001P15UL',
   'SNSW-001P16EU',
-  'SNSW-001P15UL'
+  'SNSW-102P16EU',
 ]
 
 @Field static List bluGatewayDevices = [
-  'SNPL-00116US',
-  'SNGW-BT01',
   'S3PM-001PCEU16',
-  'SNSW-001P16EU',
+  'SNGW-BT01',
+  'SNPL-00116US',
+  'SNSN-0043X',
   'SNSW-001P15UL',
-  'SNSN-0043X'
+  'SNSW-001P16EU',
+  'SNSW-102P16EU',
 ]
 
 @Field static ConcurrentHashMap<String, ArrayList<BigDecimal>> movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>()
@@ -81,6 +83,10 @@ if (device != null) {
       input(name: 'resetMonitorsAtMidnight', type:'bool', title: 'Reset Total Energy At Midnight', required: false, defaultValue: true)
     }
 
+    if(hasChildSwitches() == true) {
+      input(name: 'parentSwitchStateMode', type: 'enum', title: 'Parent Switch State Mode', options: ['allOn':'On when all children on', 'anyOn':'On when any child on'])
+    }
+
     if(hasBluGateway() == true && COMP == null) {
       input(name: 'enableBluetooteGateway', type:'bool', title: 'Enable Bluetooth Gateway for Hubitat', required: false, defaultValue: true)
     }
@@ -104,6 +110,29 @@ void getDeviceCapabilities() {
   }
 }
 
+void refresh() {
+  if(hasParent() == true) {
+
+    // Switch refresh
+    String switchId = getDeviceDataValue('switchId')
+    if(switchId != null) {
+      LinkedHashMap response = parent?.postCommandSync(switchGetStatusCommand(switchId as Integer))
+      processWebsocketMessagesPowerMonitoring(response)
+    }
+  }
+  else {
+    ArrayList<ChildDeviceWrapper> allChildren = getChildDevices()
+    allChildren.each{child ->
+      logTrace("Refreshing child...")
+      String switchId = child.getDeviceDataValue('switchId')
+      logTrace("Got child with switchId of ${switchId}")
+      LinkedHashMap response = parentPostCommandSync(switchGetStatusCommand(switchId as Integer))
+      processWebsocketMessagesPowerMonitoring(response)
+    }
+  }
+  try{refreshDeviceSpecificInfo()} catch(ex) {}
+  }
+
 @CompileStatic
 void getOrSetPrefs() {
   if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
@@ -119,6 +148,7 @@ void getPrefsFromDevice() {
   Map shellyResults = (LinkedHashMap<String, Object>)sendGen1Command('shelly')
   logDebug("Shelly Result: ${shellyResults}")
   if(shellyResults != null && shellyResults.size() > 0) {
+    setDeviceInfo(shellyResults)
     Integer gen = shellyResults?.gen as Integer
     if(gen != null && gen > 1) {
       // Gen 2+
@@ -167,7 +197,7 @@ void getPrefsFromDevice() {
 
     } else {
       // Gen 1
-      setDeviceInfo(shellyResults)
+      // setDeviceInfo(shellyResults)
 
       LinkedHashMap gen1SettingsResponse = (LinkedHashMap)sendGen1Command('settings')
       logJson(gen1SettingsResponse)
@@ -213,6 +243,9 @@ void initialize() {
   if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
   if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
   if(getDeviceSettings().enableBluetooteGateway == null) { this.device.updateSetting('enableBluetooteGateway', true) }
+  if(getDeviceSettings().parentSwitchStateMode == null) { this.device.updateSetting('parentSwitchStateMode', 'anyOn') }
+
+
 }
 
 
@@ -226,18 +259,21 @@ void initialize() {
 // Configuration
 // =============================================================================
 void configure() {
-  setDeviceNetworkId(getIpAddress())
-  getOrSetPrefs()
-  setDeviceDataValue('ipAddress', getIpAddress())
-  if(isGen1Device() == true) {
-    try {setDeviceActionsGen1()}
-    catch(e) {logDebug('No device actions configured.')}
-  } else {
-    try {setDeviceActionsGen2()}
-    catch(e) {logDebug('No device actions configured.')}
-  }
-  if(BUTTONS != null) {
-    this.device.sendEvent(name: 'numberOfButtons', value: BUTTONS)
+  if(hasParent() == false) {
+    setDeviceNetworkId(getIpAddress())
+    getOrSetPrefs()
+    setDeviceDataValue('ipAddress', getIpAddress())
+
+    if(isGen1Device() == true) {
+      try {setDeviceActionsGen1()}
+      catch(e) {logDebug('No device actions configured.')}
+    } else {
+      try {setDeviceActionsGen2()}
+      catch(e) {logDebug('No device actions configured.')}
+    }
+    if(BUTTONS != null) {
+      this.device.sendEvent(name: 'numberOfButtons', value: BUTTONS)
+    }
   }
 }
 
@@ -303,7 +339,7 @@ String powerAvg(Integer id = 0) {"${getDeviceDNI()}-${id}power".toString()}
 @CompileStatic
 ArrayList<BigDecimal> powerAvgs(Integer id = 0) {
   if(movingAvgs == null) { movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>() }
-  if(!movingAvgs.containsKey(powerAvg())) { movingAvgs[powerAvg()] = new ArrayList<BigDecimal>() }
+  if(!movingAvgs.containsKey(powerAvg(id))) { movingAvgs[powerAvg(id)] = new ArrayList<BigDecimal>() }
   return movingAvgs[powerAvg(id)]
 }
 @CompileStatic clearPowerAvgs(Integer id = 0) {
@@ -315,7 +351,7 @@ String amperageAvg(Integer id = 0) {"${getDeviceDNI()}-${id}amperage".toString()
 @CompileStatic
 ArrayList<BigDecimal> amperageAvgs(Integer id = 0) {
   if(movingAvgs == null) { movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>() }
-  if(!movingAvgs.containsKey(amperageAvg())) { movingAvgs[amperageAvg()] = new ArrayList<BigDecimal>() }
+  if(!movingAvgs.containsKey(amperageAvg(id))) { movingAvgs[amperageAvg(id)] = new ArrayList<BigDecimal>() }
   return movingAvgs[amperageAvg(id)]
 }
 @CompileStatic clearAmperageAvgs(Integer id = 0) {
@@ -327,7 +363,7 @@ String voltageAvg(Integer id = 0) {"${getDeviceDNI()}-${id}voltage".toString()}
 @CompileStatic
 ArrayList<BigDecimal> voltageAvgs(Integer id = 0) {
   if(movingAvgs == null) { movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>() }
-  if(!movingAvgs.containsKey(voltageAvg())) { movingAvgs[voltageAvg()] = new ArrayList<BigDecimal>() }
+  if(!movingAvgs.containsKey(voltageAvg(id))) { movingAvgs[voltageAvg(id)] = new ArrayList<BigDecimal>() }
   return movingAvgs[voltageAvg(id)]
 }
 @CompileStatic clearVoltageAvgs(Integer id = 0) {
@@ -344,7 +380,7 @@ void setCurrent(BigDecimal value, Integer id = 0) {
   }
   a.add(value)
   if(a.size() >= 10) {
-    value = ((BigDecimal)a.sum()) / 10
+    value = (((BigDecimal)a.sum()) / 10)
     value = value.setScale(1, BigDecimal.ROUND_HALF_UP)
     if(value == -1) {
       if(c != null) { c.sendEvent(name: 'amperage', value: null) }
@@ -354,7 +390,7 @@ void setCurrent(BigDecimal value, Integer id = 0) {
       if(c != null) { c.sendEvent(name: 'amperage', value: value) }
       else { getDevice().sendEvent(name: 'amperage', value: value) }
     }
-    clearAmperageAvgs()
+    a.removeAt(0)
   }
 }
 @CompileStatic
@@ -374,7 +410,7 @@ void setPower(BigDecimal value, Integer id = 0) {
   }
   p.add(value)
   if(p.size() >= 10) {
-    value = ((BigDecimal)p.sum()) / 10
+    value = (((BigDecimal)p.sum()) / 10)
     value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
     if(value == -1) {
       if(c != null) { c.sendEvent(name: 'power', value: null) }
@@ -384,7 +420,7 @@ void setPower(BigDecimal value, Integer id = 0) {
       if(c != null) { c.sendEvent(name: 'power', value: value) }
       else { getDevice().sendEvent(name: 'power', value: value) }
     }
-    clearPowerAvgs()
+    p.removeAt(0)
   }
 }
 @CompileStatic
@@ -406,7 +442,7 @@ void setVoltage(BigDecimal value, Integer id = 0) {
   }
   v.add(value)
   if(v.size() >= 10) {
-    value = ((BigDecimal)v.sum()) / 10
+    value = (((BigDecimal)v.sum()) / 10)
     value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
     if(value == -1) {
       if(c != null) { c.sendEvent(name: 'voltage', value: null) }
@@ -416,7 +452,7 @@ void setVoltage(BigDecimal value, Integer id = 0) {
       if(c != null) { c.sendEvent(name: 'voltage', value: value) }
       else { getDevice().sendEvent(name: 'voltage', value: value) }
     }
-    clearPowerAvgs()
+    v.removeAt(0)
   }
 }
 @CompileStatic
@@ -430,7 +466,7 @@ BigDecimal getVoltage(Integer id = 0) {
 
 @CompileStatic
 void setEnergy(BigDecimal value, Integer id = 0) {
-  value = value.setScale(1, BigDecimal.ROUND_HALF_UP)
+  value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
   ChildDeviceWrapper c = getSwitchChildById(id)
   if(value == -1) {
     if(c != null) { c.sendEvent(name: 'energy', value: null) }
@@ -450,6 +486,9 @@ BigDecimal getEnergy(Integer id = 0) {
 
 @CompileStatic
 void resetEnergyMonitors(Integer id = 0) {
+  if(hasParent() == true) {
+    id = getDeviceDataValue('switchId') as Integer
+  }
   switchResetCounters(id, "resetEnergyMonitor-switch${id}")
 }
 
@@ -559,6 +598,11 @@ LinkedHashMap getDeviceSettings() { return this.settings }
 
 Boolean hasParent() { return parent != null }
 
+Boolean hasChildren() {
+  List<ChildDeviceWrapper> allChildren = getChildDevices()
+  return (allChildren != null && allChildren.size() > 0)
+}
+
 String getDeviceDNI() { return this.device.getDeviceNetworkId() }
 
 Boolean isCelciusScale() { getLocation().temperatureScale == 'C' }
@@ -573,7 +617,13 @@ void setDeviceDataValue(String dataValueName, String valueToSet) {
 
 
 Boolean hasPowerMonitoring() {
-  return this.device.getDataValue('model') in powerMonitoringDevices
+  if(hasParent() == true) { return parent.device.getDataValue('model') in powerMonitoringDevices }
+  else { return this.device.getDataValue('model') in powerMonitoringDevices }
+}
+
+Boolean hasChildSwitches() {
+  List<ChildDeviceWrapper> allChildren = getChildDevices()
+  return allChildren.any{it.getDeviceDataValue('switchId') != null}
 }
 
 Boolean hasBluGateway() {
@@ -664,14 +714,15 @@ void setSwitchState(Boolean on, Integer id = 0) {
       //Avoids race conditions from setting child state then immediately trying to retrieve it before it has a chance to settle.
       Map childStates = children.collectEntries{child -> [child.getDataValue('switchId') as Integer, child.currentValue('switch')] }
       childStates[id] = on ? 'on' : 'off'
-      Boolean anyOff = childStates.any{k,v -> v == 'off'}
-      //Set parent state on if all children on, otherwise off.
-      getDevice().sendEvent(name: 'switch', value: anyOff ? 'off' : 'on')
-    } else {
-      getDevice().sendEvent(name: 'switch', value: on ? 'on' : 'off')
+      Boolean anyOn = childStates.any{k,v -> v == 'on'}
+      Boolean allOn = childStates.every{k,v -> v == 'on'}
+      String parentSwitchStateMode = getDeviceSettings().parentSwitchStateMode
+      if(parentSwitchStateMode == 'anyOn') { getDevice().sendEvent(name: 'switch', value: anyOn ? 'on' : 'off') }
+      if(parentSwitchStateMode == 'allOn') { getDevice().sendEvent(name: 'switch', value: allOn ? 'on' : 'off') }
     }
   }
 }
+
 @CompileStatic
 Boolean getSwitchState() {
   return getDevice().currentValue('switch', true) == 'on'
@@ -1121,44 +1172,100 @@ void processWebsocketMessagesAuth(LinkedHashMap json) {
 
 @CompileStatic
 void processWebsocketMessagesPowerMonitoring(LinkedHashMap json, Integer id = 0) {
-  String dst = json?.dst
-  if(dst != null && dst != '' && dst.contains('GetStatus') || (dst.contains('authCheck')) && json?.method != 'NotifyStatus') {
-    if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
-      if(json?.result != null) {
-        LinkedHashMap res = (LinkedHashMap)json.result
-        BigDecimal current =  (BigDecimal)res?.current
-        if(current != null) { setCurrent(current, id) }
-        BigDecimal apower =  (BigDecimal)res?.apower
-        if(apower != null) { setPower(apower, id) }
-        BigDecimal voltage =  (BigDecimal)res?.voltage
-        if(voltage != null) { setVoltage(voltage, id) }
-        BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(res?.aenergy))?.total
-        if(aenergy != null) { setEnergy(aenergy/1000, id) }
-      }
-    }
-  }
+  // logTrace("Processing PM message...")
 
-  if(json?.method == 'NotifyStatus') {
-    LinkedHashMap params = (LinkedHashMap<String, Object>)json?.params
-    if(params != null && params.any{k,v -> k.startsWith('switch')}) {
-      String swName = params.keySet().find{it.startsWith('switch')}
-      LinkedHashMap sw = (LinkedHashMap)params[swName]
-      Boolean switchState = sw?.output
-      if(switchState != null) { setSwitchState(switchState, swName.split(':')[1] as Integer) }
-      if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
-        BigDecimal current =  (BigDecimal)sw?.current
-        if(current != null) { setCurrent(current, id) }
-        BigDecimal apower =  (BigDecimal)sw?.apower
-        if(apower != null) { setPower(apower, id) }
-        BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(sw?.aenergy))?.total
-        if(aenergy != null) { setEnergy(aenergy/1000, id) }
+  String dst = json?.dst
+  // logTrace("PM messge has dst: ${dst}")
+  if(dst != null && dst != '') {
+    // logTrace("Device has PM enabled: ${getDeviceSettings().enablePowerMonitoring}")
+    if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
+      // logTrace("Device has PM enabled, continuing processing...")
+      // Process incoming messages for swtichGetStatus
+      try{
+        // logWarn("Res: ${json?.result}")
+        if(json?.result != null && json?.result != '' && dst == 'switchGetStatus') {
+          // logTrace("Processing 'switchGetStatus message...")
+          LinkedHashMap res = (LinkedHashMap)json.result
+
+          id = res?.id as Integer
+
+            if(res?.output != null && res?.output != '') {
+              Boolean switchState = res.output as Boolean
+              if(switchState != null) { setSwitchState(switchState, id) }
+            }
+
+          if(res?.current != null && res?.current != '') {
+            BigDecimal current =  (BigDecimal)res.current
+            if(current != null) { setCurrent(current, id) }
+          }
+
+          if(res?.apower != null && res?.apower != '') {
+            BigDecimal apower =  (BigDecimal)res.apower
+            if(apower != null) { setPower(apower, id) }
+          }
+
+          if(res?.voltage != null && res?.voltage != '') {
+            // logTrace("Voltage: ${res.voltage}")
+            BigDecimal voltage =  (BigDecimal)res.voltage
+            if(voltage != null) { setVoltage(voltage, id) }
+          }
+
+          if(res?.aenergy != null && res?.aenergy != '') {
+            BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(res?.aenergy))?.total
+            if(aenergy != null) { setEnergy(aenergy/1000, id) }
+          }
+        }
+      } catch(ex) {logWarn("Exception processing incoming switchGetStatus message: ${ex}")}
+
+
+      // Process incoming messages for NotifyStatus
+      try{
+        if(json?.method == 'NotifyStatus' && json?.params != null && json?.params != '') {
+          LinkedHashMap params = (LinkedHashMap<String, Object>)json.params
+          if(params != null && params.any{k,v -> k.startsWith('switch')}) {
+            String swName = params.keySet().find{it.startsWith('switch')}
+            if(swName != null && swName != '') {
+              id = swName.split(':')[1] as Integer
+              LinkedHashMap sw = (LinkedHashMap)params[swName]
+
+              if(sw?.output != null && sw?.output != '') {
+                Boolean switchState = sw.output as Boolean
+                if(switchState != null) { setSwitchState(switchState, id) }
+              }
+
+              if(sw?.current != null && sw?.current != '') {
+                BigDecimal current =  (BigDecimal)sw.current
+                if(current != null) { setCurrent(current, id) }
+              }
+
+              if(sw?.apower != null && sw?.apower != '') {
+                BigDecimal apower =  (BigDecimal)sw.apower
+                if(apower != null) { setPower(apower, id) }
+              }
+
+              if(sw?.aenergy != null && sw?.aenergy != '') {
+                LinkedHashMap aenergyMap = (LinkedHashMap)sw?.aenergy
+                if(aenergyMap?.total != null && aenergyMap?.total != '') {
+                  BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
+                  if(aenergy != null) { setEnergy(aenergy/1000, id) }
+                }
+              }
+            }
+          }
+        }
+      } catch(ex) {logWarn("Exception processing NotifyStatus: ${ex}")}
+
+
+      } else if (json?.result != null && json?.result != '') {
+        LinkedHashMap res = (LinkedHashMap)json.result
+        Boolean switchState = res?.output
+        if(switchState != null) { setSwitchState(switchState) }
       }
-    } else if (json?.result != null) {
-      Boolean switchState = ((LinkedHashMap)json.result)?.output
-      if(switchState != null) { setSwitchState(switchState) }
-    }
   }
 }
+
+
+
 
 @CompileStatic
 void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
@@ -1398,8 +1505,7 @@ void switchSetConfig(
 void switchResetCounters(Integer id = 0, String src = 'switchResetCounters') {
   LinkedHashMap command = switchResetCountersCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
