@@ -14,30 +14,6 @@ metadata {
 if(device != null) {preferences{}}
 @Field static Boolean COMP = true
 // =============================================================================
-// Initialization
-// =============================================================================
-@CompileStatic
-void initialize() {
-  Integer switchId = getDeviceDataValue('switchId') as Integer
-  logDebug("Switch ID : ${switchId}")
-  getDeviceCapabilities()
-  getPrefsFromDevice()
-}
-
-@CompileStatic
-void getDeviceCapabilities() {
-  Map result = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand())?.result
-  if(result != null && result.size() > 0) {
-    setDeviceDataValue('capabilities', result.keySet().join(','))
-  }
-}
-// =============================================================================
-// End Initialization
-// =============================================================================
-
-
-
-// =============================================================================
 // Device Specific
 // =============================================================================
 void on() {parentPostCommandSync(switchSetCommand(true, getDeviceDataValue('switchId') as Integer))}
