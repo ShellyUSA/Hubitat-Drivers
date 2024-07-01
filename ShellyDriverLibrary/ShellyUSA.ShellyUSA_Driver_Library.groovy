@@ -488,8 +488,14 @@ BigDecimal getEnergy(Integer id = 0) {
 void resetEnergyMonitors(Integer id = 0) {
   if(hasParent() == true) {
     id = getDeviceDataValue('switchId') as Integer
+    switchResetCounters(id, "resetEnergyMonitor-switch${id}")
+  } else {
+    ArrayList<ChildDeviceWrapper> allChildren = getDeviceChildren()
+    allChildren.each{child ->
+      id = getChildDeviceDataValue(child, 'switchId') as Integer
+      switchResetCounters(id, "resetEnergyMonitor-switch${id}")
+    }
   }
-  switchResetCounters(id, "resetEnergyMonitor-switch${id}")
 }
 
 @CompileStatic
@@ -594,6 +600,8 @@ void setValvePosition(Boolean open, Integer valve = 0) {
 // /////////////////////////////////////////////////////////////////////////////
 DeviceWrapper getDevice() { return this.device }
 
+ArrayList<ChildDeviceWrapper> getDeviceChildren() { return getChildDevices() }
+
 LinkedHashMap getDeviceSettings() { return this.settings }
 
 Boolean hasParent() { return parent != null }
@@ -611,6 +619,14 @@ String getDeviceDataValue(String dataValueName) {
   return this.device.getDataValue(dataValueName)
 }
 
+String getParentDeviceDataValue(String dataValueName) {
+  return parent?.getDeviceDataValue(dataValueName)
+}
+
+String getChildDeviceDataValue(ChildDeviceWrapper child, String dataValueName) {
+  return child.getDeviceDataValue('switchId')
+}
+
 void setDeviceDataValue(String dataValueName, String valueToSet) {
   this.device.updateDataValue(dataValueName, valueToSet)
 }
@@ -622,6 +638,7 @@ Boolean hasPowerMonitoring() {
 }
 
 Boolean hasChildSwitches() {
+  if(hasParent() == true) {return false}
   List<ChildDeviceWrapper> allChildren = getChildDevices()
   return allChildren.any{it.getDeviceDataValue('switchId') != null}
 }
@@ -631,8 +648,16 @@ Boolean hasBluGateway() {
 }
 
 String getBaseUri() {
-  String ipBase = settings.ipAddress
-  return "http://${ipBase}"
+  String ipBase = ''
+  if(hasParent() == true) {
+    return "http://${getParentDeviceDataValue('ipAddress')}"
+  } else {
+    return "http://${getDeviceDataValue('ipAddress')}"
+  }
+  // String ipBase = ''
+  // if(hasParent() == true) {ipBase = parent.settings.ipAddress}
+  // else { ipBase = settings.ipAddress }
+  // ipBase = settings.ipAddress
 }
 String getBaseUriRpc() {
   String ipBase = settings.ipAddress
