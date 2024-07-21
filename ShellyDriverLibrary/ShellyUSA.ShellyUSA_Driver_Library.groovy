@@ -13,7 +13,7 @@ library(
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
 @Field static LinkedHashMap preferenceMap = [
-  initial_state: [type: 'enum', title: 'State after power outage', options: ['off':'Power Off', 'on':'Power On', 'restore_last':'Previous State', 'match_input':'Match Input']],
+  initial_state: [type: 'enum', title: 'State after power outage', options: ['off':'Power Off', 'on':'Pow.er On', 'restore_last':'Previous State', 'match_input':'Match Input']],
   auto_off: [type: 'bool', title: 'Auto-ON: after turning ON, turn OFF after a predefined time (in seconds)'],
   auto_off_delay: [type:'number', title: 'Auto-ON Delay: delay before turning OFF'],
   auto_on: [type: 'bool', title: 'Auto-OFF: after turning OFF, turn ON after a predefined time (in seconds)'],
@@ -144,7 +144,7 @@ void getOrSetPrefs() {
 
 @CompileStatic
 void getPrefsFromDevice() {
-  logTrace('Getting info from device')
+  logTrace('Getting info from device...')
   Map shellyResults = (LinkedHashMap<String, Object>)sendGen1Command('shelly')
   logDebug("Shelly Result: ${shellyResults}")
   if(shellyResults != null && shellyResults.size() > 0) {
@@ -260,6 +260,7 @@ void initialize() {
 // =============================================================================
 void configure() {
   if(hasParent() == false) {
+    logTrace('Starting configuration for non-child device...')
     setDeviceNetworkId(getIpAddress())
     getOrSetPrefs()
     setDeviceDataValue('ipAddress', getIpAddress())
@@ -274,6 +275,9 @@ void configure() {
     if(BUTTONS != null) {
       this.device.sendEvent(name: 'numberOfButtons', value: BUTTONS)
     }
+  }
+  else {
+    logTrace('Starting configuration for child device...')
   }
 }
 
@@ -603,6 +607,7 @@ DeviceWrapper getDevice() { return this.device }
 ArrayList<ChildDeviceWrapper> getDeviceChildren() { return getChildDevices() }
 
 LinkedHashMap getDeviceSettings() { return this.settings }
+LinkedHashMap getParentDeviceSettings() { return this.parent?.settings }
 
 Boolean hasParent() { return parent != null }
 
@@ -648,20 +653,19 @@ Boolean hasBluGateway() {
 }
 
 String getBaseUri() {
-  String ipBase = ''
   if(hasParent() == true) {
-    return "http://${getParentDeviceDataValue('ipAddress')}"
+    return "http://${getParentDeviceSettings().ipAddress}"
   } else {
-    return "http://${getDeviceDataValue('ipAddress')}"
+    return "http://${getDeviceSettings().ipAddress}"
   }
-  // String ipBase = ''
-  // if(hasParent() == true) {ipBase = parent.settings.ipAddress}
-  // else { ipBase = settings.ipAddress }
-  // ipBase = settings.ipAddress
 }
+
 String getBaseUriRpc() {
-  String ipBase = settings.ipAddress
-  return "http://${ipBase}/rpc"
+  if(hasParent() == true) {
+    return "http://${getParentDeviceSettings().ipAddress}/rpc"
+  } else {
+    return "http://${getDeviceSettings().ipAddress}/rpc"
+  }
 }
 
 String getHubBaseUri() {
@@ -685,11 +689,14 @@ Boolean hasWebsocketUri() {
 
 @CompileStatic
 Boolean hasIpAddress() {
-  return (getDeviceSettings()?.ipAddress != null && getDeviceSettings()?.ipAddress != '' && ((String)getDeviceSettings()?.ipAddress).length() > 6)
+  Boolean hasIpAddress = (getDeviceSettings()?.ipAddress != null && getDeviceSettings()?.ipAddress != '' && ((String)getDeviceSettings()?.ipAddress).length() > 6)
+  logTrace("Device settings has IP address set: ${hasIpAddress}")
+  return hasIpAddress
 }
 
 @CompileStatic
 String getIpAddress() {
+  logTrace('Getting IP address, if set...')
   if(hasIpAddress()) {return getDeviceSettings().ipAddress} else {return null}
 }
 
@@ -1839,7 +1846,7 @@ ChildDeviceWrapper getSwitchChildById(Integer id) {
 // =============================================================================
 LinkedHashMap postCommandSync(LinkedHashMap command) {
   LinkedHashMap json
-  Map params = [uri: "${getBaseUri()}/rpc"]
+  Map params = [uri: "${getBaseUriRpc()}"]
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
@@ -1875,7 +1882,7 @@ LinkedHashMap parentPostCommandSync(LinkedHashMap command) {
 
 LinkedHashMap postCommandAsync(LinkedHashMap command, String callbackMethod = '') {
   LinkedHashMap json
-  Map params = [uri: "${getBaseUri()}/rpc"]
+  Map params = [uri: "${getBaseUriRpc()}"]
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
@@ -1912,7 +1919,7 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
 
 LinkedHashMap postSync(LinkedHashMap command) {
   LinkedHashMap json
-  Map params = [uri: "${getBaseUri()}/rpc"]
+  Map params = [uri: "${getBaseUriRpc()}"]
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
