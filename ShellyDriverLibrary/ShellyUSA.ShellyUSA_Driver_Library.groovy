@@ -5,9 +5,8 @@ library(
   description: 'ShellyUSA Driver Library',
   importUrl: 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyUSA_Driver_Library.groovy'
 )
-// =============================================================================
-// Fields
-// =============================================================================
+
+/* #region Fields */
 @Field static Integer WS_CONNECT_INTERVAL = 600
 @Field static ConcurrentHashMap<String, MessageDigest> messageDigests = new java.util.concurrent.ConcurrentHashMap<String, MessageDigest>()
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
@@ -47,15 +46,9 @@ library(
 
 @Field static ConcurrentHashMap<String, ArrayList<BigDecimal>> movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>()
 @Field static String BLE_SHELLY_BLU = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ble-shelly-blu.js'
-// =============================================================================
-// End Fields
-// =============================================================================
 
-
-
-// =============================================================================
-// Preferences
-// =============================================================================
+/* #endregion */
+/* #region Preferences */
 if (device != null) {
   preferences {
     if(BLU == null && COMP == null) {
@@ -136,25 +129,26 @@ void refresh() {
 @CompileStatic
 void getOrSetPrefs() {
   if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
+    logTrace('Detected newly added/changed IP address, getting preferences from device...')
     getPrefsFromDevice()
   } else if(getDeviceDataValue('ipAddress') == getIpAddress()) {
+    logTrace('Device IP address not changed, sending preferences to device...')
     sendPrefsToDevice()
   }
 }
 
 @CompileStatic
 void getPrefsFromDevice() {
-  logTrace('Getting info from device...')
+  logTrace('Getting device info...')
   Map shellyResults = (LinkedHashMap<String, Object>)sendGen1Command('shelly')
-  logDebug("Shelly Result: ${shellyResults}")
+  logDebug("Shelly Device Info Result: ${shellyResults}")
   if(shellyResults != null && shellyResults.size() > 0) {
     setDeviceInfo(shellyResults)
     Integer gen = shellyResults?.gen as Integer
     if(gen != null && gen > 1) {
       // Gen 2+
-
       Map shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
-      logDebug("shellyGetConfigResult: ${prettyJson(shellyGetConfigResult)}")
+      logDebug("Shelly.GetConfig Result: ${prettyJson(shellyGetConfigResult)}")
 
       Set<String> switches = shellyGetConfigResult.keySet().findAll{it.startsWith('switch')}
       Set<String> inputs = shellyGetConfigResult.keySet().findAll{it.startsWith('input')}
@@ -167,25 +161,26 @@ void getPrefsFromDevice() {
       if(switches.size() > 1) {
         switches.each{ s ->
           Integer id = s.tokenize(':')[1] as Integer
-          logDebug("Getting switch info for switch ID: ${id}")
+          logDebug("Running Switch.GetConfig for switch ID: ${id}")
           Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
-          logDebug("switchGetConfigResult: ${switchGetConfigResult}")
+          logDebug("Switch.GetConfig Result: ${switchGetConfigResult}")
           ChildDeviceWrapper child = createChildSwitch((LinkedHashMap)shellyGetConfigResult[s])
           if(switchGetConfigResult != null && switchGetConfigResult.size() > 0) {setChildDevicePreferences(switchGetConfigResult, child)}
         }
       } else if(switches.size() == 1) {
-        logDebug('Only one switch found, not creating child devices')
+        logDebug('Only one switch found, not creating child switch devices')
         Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(0))?.result
-        logDebug("switchGetConfigResult: ${switchGetConfigResult}")
+        logDebug("Switch.GetConfig Result: ${switchGetConfigResult}")
         if(switchGetConfigResult != null && switchGetConfigResult.size() > 0) {setDevicePreferences(switchGetConfigResult)}
       } else {
         logDebug('No switches found')
       }
 
-      configureNightlyPowerMonitoringReset()
-
       // Reset power monitor states if power monitoring is disabled
-      if(getDeviceSettings().enablePowerMonitoring == false) {
+      if(getDeviceSettings().enablePowerMonitoring == true) {
+        configureNightlyPowerMonitoringReset()
+      } else {
+        unscheduleTask('switchResetCounters')
         setCurrent(-1.0) //FIX
         setPower(-1.0)
         setEnergy(-1.0)
@@ -197,8 +192,6 @@ void getPrefsFromDevice() {
 
     } else {
       // Gen 1
-      // setDeviceInfo(shellyResults)
-
       LinkedHashMap gen1SettingsResponse = (LinkedHashMap)sendGen1Command('settings')
       logJson(gen1SettingsResponse)
       LinkedHashMap prefs =[:]
@@ -219,49 +212,36 @@ void getPrefsFromDevice() {
 }
 
 void configureNightlyPowerMonitoringReset() {
+  logDebug('Power monitoring device detected, creating nightly monitor reset scheduled task.')
   if(getDeviceSettings().resetMonitorsAtMidnight != null && getDeviceSettings().resetMonitorsAtMidnight == true) {
     schedule('0 0 0 * * ?', 'switchResetCounters')
   } else {
     unschedule('switchResetCounters')
   }
 }
-
-// =============================================================================
-// End Preferences
-// =============================================================================
-
-
-
-// =============================================================================
-// Initialization
-// =============================================================================
+/* #endregion */
+/* #region Initialization */
 void initialize() {
   if(hasIpAddress()) {
-    // getPrefsFromDevice()
+    getPrefsFromDevice()
     if(hasWebsocket() == true) {initializeWebsocketConnection()}
   }
   if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
   if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
   if(getDeviceSettings().enableBluetooteGateway == null) { this.device.updateSetting('enableBluetooteGateway', true) }
   if(getDeviceSettings().parentSwitchStateMode == null) { this.device.updateSetting('parentSwitchStateMode', 'anyOn') }
-
-
 }
-
-
-
-// =============================================================================
-// End Initialization
-// =============================================================================
-
-
-// =============================================================================
-// Configuration
-// =============================================================================
+/* #endregion */
+/* #region Configuration */
 void configure() {
   if(hasParent() == false) {
     logTrace('Starting configuration for non-child device...')
-    setDeviceNetworkId(getIpAddress())
+    String ipAddress = getIpAddress()
+    if (ipAddress != null && ipAddress != '') {
+      setDeviceNetworkId(ipAddress)
+    } else {
+      logTrace('Could not set device network ID because device settings does not have a valid IP address set.')
+    }
     getOrSetPrefs()
     setDeviceDataValue('ipAddress', getIpAddress())
 
@@ -322,22 +302,8 @@ void sendPrefsToDevice() {
     sendGen1Command('settings', queryString)
   }
 }
-
-void setDeviceNetworkId(String ipAddress) {
-  getDevice().setDeviceNetworkId(getMACFromIP(ipAddress))
-}
-// =============================================================================
-// End Device Configuration
-// =============================================================================
-
-
-
-// =============================================================================
-// Getters and Setters
-// =============================================================================
-// /////////////////////////////////////////////////////////////////////////////
-// Power Monitoring Getters and Setters
-// /////////////////////////////////////////////////////////////////////////////
+/* #endregion */
+/* #region Power Monitoring Getters and Setters */
 @CompileStatic
 String powerAvg(Integer id = 0) {"${getDeviceDNI()}-${id}power".toString()}
 @CompileStatic
@@ -466,8 +432,6 @@ BigDecimal getVoltage(Integer id = 0) {
   else { return getDevice().currentValue('voltage', true) as BigDecimal }
 }
 
-
-
 @CompileStatic
 void setEnergy(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
@@ -501,7 +465,8 @@ void resetEnergyMonitors(Integer id = 0) {
     }
   }
 }
-
+/* #endregion */
+/* #region Device Getters and Setters */
 @CompileStatic
 void setBatteryPercent(Integer percent) {
   getDevice().sendEvent(name: 'battery', value: percent)
@@ -594,14 +559,9 @@ void setValvePosition(Boolean open, Integer valve = 0) {
     getDevice().sendEvent(name: 'valve', value: 'closed')
   }
 }
+/* #endregion */
+/* #region Generic Getters and Setters */
 
-// /////////////////////////////////////////////////////////////////////////////
-// End Power Monitoring Getters and Setters
-// /////////////////////////////////////////////////////////////////////////////
-
-// /////////////////////////////////////////////////////////////////////////////
-// Generic Getters and Setters
-// /////////////////////////////////////////////////////////////////////////////
 DeviceWrapper getDevice() { return this.device }
 
 ArrayList<ChildDeviceWrapper> getDeviceChildren() { return getChildDevices() }
@@ -617,6 +577,22 @@ Boolean hasChildren() {
 }
 
 String getDeviceDNI() { return this.device.getDeviceNetworkId() }
+
+void setDeviceNetworkId(String ipAddress) {
+  String oldDni = getDevice().getDeviceNetworkId()
+  String newDni = getMACFromIP(ipAddress)
+  if(oldDni != newDni) {
+    atomicState.ipChanged = true
+    getDevice().setDeviceNetworkId(newDni)
+    logTrace("Set device network ID to ${ipAddress}")
+  } else {
+    atomicState.remove('ipChanged')
+  }
+}
+
+void unscheduleTask(String taskName) {
+  unschedule(taskName)
+}
 
 Boolean isCelciusScale() { getLocation().temperatureScale == 'C' }
 
@@ -701,6 +677,7 @@ String getIpAddress() {
 }
 
 void setDeviceInfo(Map info) {
+  logDebug("Setting device info: model=${model}, gen=${gen}, ver=${ver}")
   if(info?.model) { this.device.updateDataValue('model', info.model)}
   if(info?.gen) { this.device.updateDataValue('gen', info.gen.toString())}
   if(info?.ver) { this.device.updateDataValue('ver', info.ver)}
@@ -776,18 +753,8 @@ Boolean isGen1Device() {
 Boolean hasWebsocket() {
   return WS != null && WS == true
 }
-// /////////////////////////////////////////////////////////////////////////////
-// End Generic Getters and Setters
-// /////////////////////////////////////////////////////////////////////////////
-// =============================================================================
-// End Getters and Setters
-// =============================================================================
-
-
-
-// =============================================================================
-// Command Maps
-// =============================================================================
+/* #endregion */
+/* #region Command Maps */
 @CompileStatic
 LinkedHashMap shellyGetDeviceInfoCommand(Boolean fullInfo = false, String src = 'shellyGetDeviceInfo') {
   LinkedHashMap command = [
@@ -1130,15 +1097,8 @@ LinkedHashMap inputGetConfigCommand(String src = 'inputGetConfig') {
   ]
   return command
 }
-// =============================================================================
-// End Command Maps
-// =============================================================================
-
-
-
-// =============================================================================
-// Parse
-// =============================================================================
+/* #endregion */
+/* #region Parse */
 @CompileStatic
 void parse(String raw) {
   if(raw == null || raw == '') {return}
@@ -1454,16 +1414,8 @@ Boolean hasCapabilityTempGen1() { return HAS_TEMP_GEN1 == true }
 Boolean hasCapabilityHumGen1() { return HAS_HUM_GEN1 == true }
 Boolean hasCapabilityMotionGen1() { return HAS_MOTION_GEN1 == true }
 Boolean hasCapabilityFloodGen1() { return HAS_FLOOD_GEN1 == true }
-
-// =============================================================================
-// End Parse
-// =============================================================================
-
-
-
-// =============================================================================
-// Websocket Commands
-// =============================================================================
+/* #endregion */
+/* #region Websocket Commands */
 @CompileStatic
 String shellyGetDeviceInfo(Boolean fullInfo = false, String src = 'shellyGetDeviceInfo') {
   if(src == 'connectivityCheck') {
@@ -1555,16 +1507,8 @@ String pm1GetStatus() {
   String json = JsonOutput.toJson(command)
   sendWsMessage(json)
 }
-// =============================================================================
-// End Websocket Commands
-// =============================================================================
-
-
-
-// =============================================================================
-// Webhook Helpers
-// =============================================================================
-
+/* #endregion */
+/* #region Webhook Helpers */
 Boolean hasActionsToCreateList() { return ACTIONS_TO_CREATE != null }
 List<String> getActionsToCreate() {
   if(hasActionsToCreateList() == true) { return ACTIONS_TO_CREATE }
@@ -1691,20 +1635,14 @@ void webhookUpdate(String type, String event, String id) {
 LinkedHashMap decodeLanMessage(String message) {
   return parseLanMessage(message)
 }
-// =============================================================================
-// End Webhook Helpers
-// =============================================================================
-
-
-
-// =============================================================================
-// Bluetooth
-// =============================================================================
+/* #endregion */
+/* #region Bluetooth */
 @CompileStatic
 void enableBluReportingToHE() {
   enableBluetooth()
   LinkedHashMap s = getBleShellyBluId()
   if(s == null) {
+    logDebug('HubitatBLEHelper script not found on device, creating script')
     postCommandSync(scriptCreateCommand())
     s = getBleShellyBluId()
   }
@@ -1723,12 +1661,14 @@ void disableBluReportingToHE() {
   LinkedHashMap s = getBleShellyBluId()
   Integer id = s?.id as Integer
   if(id != null) {
+    logDebug('Removing HubitatBLEHelper from Shelly device')
     postCommandSync(scriptDeleteCommand(id))
   }
 }
 
 @CompileStatic
 LinkedHashMap getBleShellyBluId() {
+  logDebug('Getting index of HubitatBLEHelper script, if it exists on Shelly device')
   LinkedHashMap json = postCommandSync(scriptListCommand())
   List<LinkedHashMap> scripts = (List<LinkedHashMap>)((LinkedHashMap)json?.result)?.scripts
   return scripts.find{it?.name == 'HubitatBLEHelper'}
@@ -1750,20 +1690,11 @@ String getBleShellyBluJs() {
 }
 
 void enableBluetooth() {
-  postCommandSync(bleSetConfigCommand(true, true, true))
+  logDebug('Enabling Bluetooth on Shelly device...')
   postCommandSync(bleSetConfigCommand(true, true, true))
 }
-// =============================================================================
-// End Bluetooth
-// =============================================================================
-
-
-
-
-
-// =============================================================================
-// Child Devices
-// =============================================================================
+/* #endregion */
+/* #region Child Devices */
 @CompileStatic
 void createChildSwitches() {
   Map<String, Object> sh = postCommandSync(shellyGetConfigCommand())
@@ -1831,19 +1762,8 @@ ChildDeviceWrapper getSwitchChildById(Integer id) {
   List<ChildDeviceWrapper> allChildren = getChildDevices()
   return allChildren.find{it.getDeviceDataValue('switchId') as Integer == id}
 }
-
-// =============================================================================
-// End Child Devices
-// =============================================================================
-
-
-
-
-
-
-// =============================================================================
-// HTTP Methods
-// =============================================================================
+/* #endregion */
+/* #region HTTP Methods */
 LinkedHashMap postCommandSync(LinkedHashMap command) {
   LinkedHashMap json
   Map params = [uri: "${getBaseUriRpc()}"]
@@ -2048,15 +1968,8 @@ LinkedHashMap getDeviceActionsGen1() {
   if(json?.actions != null) {json = json.actions}
   return json
 }
-// =============================================================================
-// End HTTP Methods
-// =============================================================================
-
-
-
-// =============================================================================
-// Websocket Connection
-// =============================================================================
+/* #endregion */
+/* #region Websocket Connection */
 void webSocketStatus(String message) {
   if(message == 'failure: null' || message == 'failure: Connection reset') {
     setWebsocketStatus('closed')
@@ -2119,15 +2032,8 @@ void setWebsocketStatus(String status) {
 Boolean getWebsocketIsConnected() {
   return this.device.getDataValue('websocketStatus') == 'open'
 }
-// =============================================================================
-// End Websocket Connection
-// =============================================================================
-
-
-
-// =============================================================================
-// Auth
-// =============================================================================
+/* #endregion */
+/* #region Authentication */
 @CompileStatic
 void processUnauthorizedMessage(String message) {
   LinkedHashMap json = (LinkedHashMap)slurper.parseText(message)
@@ -2224,15 +2130,8 @@ String getBasicAuthHeader() {
     return base64Encode("${getDeviceSettings().deviceUsername}:${getDeviceSettings().devicePassword}".toString())
   }
 }
-// =============================================================================
-// End Auth
-// =============================================================================
-
-
-
-// =============================================================================
-// Logging Helpers
-// =============================================================================
+/* #endregion */
+/* #region Logging Helpers */
 String loggingLabel() {
   if(device) {return "${device.label ?: device.name }"}
   if(app) {return "${app.label ?: app.name }"}
@@ -2299,14 +2198,8 @@ void traceLogsOff() {
     app.updateSetting('debugLogEnable', [value: 'false', type: 'bool'] )
   }
 }
-// =============================================================================
-// End Logging Helpers
-// =============================================================================
-
-
-// =============================================================================
-// Formatters, Custom 'RunEvery', and other helpers
-// =============================================================================
+/* #endregion */
+/* #region Formatters, Custom 'Run Every', and other helpers */
 @CompileStatic
 String prettyJson(Map jsonInput) {
   return JsonOutput.prettyPrint(JsonOutput.toJson(jsonInput))
@@ -2338,13 +2231,9 @@ String runEveryCustomHours(Integer hours) {
   return "${currentSecond} ${currentMinute} ${currentHour}/${hours} * * ?"
 }
 
-double nowDays() {
-  return (now() / 86400000)
-}
+double nowDays() { return (now() / 86400000) }
 
-long unixTimeMillis() {
-  return (now())
-}
+long unixTimeMillis() { return (now()) }
 
 @CompileStatic
 Integer convertHexToInt(String hex) { Integer.parseInt(hex,16) }
@@ -2367,31 +2256,17 @@ void clearAllStates() {
 
 void deleteChildDevices() {
   List<ChildDeviceWrapper> children = getChildDevices()
-  children.each { child ->
-    deleteChildDevice(child.getDeviceNetworkId())
-  }
+  children.each { child -> deleteChildDevice(child.getDeviceNetworkId()) }
 }
 
-BigDecimal cToF(BigDecimal val) {
-  return celsiusToFahrenheit(val)
-}
+BigDecimal cToF(BigDecimal val) { return celsiusToFahrenheit(val) }
 
-BigDecimal fToC(BigDecimal val) {
-  return fahrenheitToCelsius(val)
-}
+BigDecimal fToC(BigDecimal val) { return fahrenheitToCelsius(val) }
 
 @CompileStatic
-String base64Encode(String toEncode) {
-  return toEncode.bytes.encodeBase64().toString()
-}
-// =============================================================================
-// End Formatters, Custom 'RunEvery', and other helpers
-// =============================================================================
-
-
-// =============================================================================
-// Imports
-// =============================================================================
+String base64Encode(String toEncode) { return toEncode.bytes.encodeBase64().toString() }
+/* #endregion */
+/* #region Imports */
 import com.hubitat.app.ChildDeviceWrapper
 import com.hubitat.app.DeviceWrapper
 import com.hubitat.app.exception.UnknownDeviceTypeException
@@ -2411,15 +2286,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.io.StringReader
 import java.io.StringWriter
-// =============================================================================
-// End Imports
-// =============================================================================
-
-
-
-// =============================================================================
-// Installed, Updated, Uninstalled
-// =============================================================================
+/* #endregion */
+/* #region Installed, Updated, Uninstalled */
 void installed() {
   logDebug('Installed...')
   try {
@@ -2440,16 +2308,17 @@ void uninstalled() {
 }
 
 void updated() {
-  logDebug('Updated...')
+  logDebug('Device preferences saved, running configure()...')
   try { configure() }
   catch(e) {
     if(e.toString().startsWith('java.net.NoRouteToHostException') || e.toString().startsWith('org.apache.http.conn.ConnectTimeoutException')) {
       logWarn('Could not initialize/configure device. Device could not be contacted. Please check IP address and/or password (if auth enabled). If device is battery powered, ensure device is awake immediately prior to clicking on "Initialize" or "Save Preferences".')
     } else {
-      logWarn("No configure() method defined or configure() resulted in error: ${e}")
+      if(e.toString().contains('A device with the same device network ID exists, Please use a different DNI')) {
+        logWarn('Another device has already been configured using the same IP address. Please verify correct IP Address is being used.')
+      } else { logWarn("No configure() method defined or configure() resulted in error: ${e}") }
+
     }
   }
 }
-// =============================================================================
-// End Installed, Updated, Uninstalled
-// =============================================================================
+/* #endregion */
