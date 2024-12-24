@@ -13,17 +13,14 @@ metadata {
     capability 'HoldableButton' //held - NUMBER
     capability 'PresenceSensor' //presence - ENUM ["present", "not present"]
     attribute 'lastUpdated', 'string'
-    command 'checkPresence'
+
   }
 }
 @Field static Boolean BLU = true
-void initialize() { configure() }
-void configure() {
-  this.device.setDeviceNetworkId(getDeviceSettings().macAddress.replace(':','').toUpperCase())
-  getDevice().updateSetting('macAddress', [type: 'string', value: getDeviceSettings().macAddress.replace(':','').toUpperCase()])
+void deviceSpecificConfigure() {
   if(getDeviceSettings().presenceTimeout == null) {getDevice().updateSetting('presenceTimeout', [type: 'number', value: 300])}
   this.device.sendEvent(name: 'numberOfButtons', value: 3)
-  runEvery1Minute('checkPresence')
+  runEveryCustomSeconds(60, 'checkPresence')
 }
 
 @CompileStatic
