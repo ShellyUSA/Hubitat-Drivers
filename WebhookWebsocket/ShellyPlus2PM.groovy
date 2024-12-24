@@ -1,7 +1,7 @@
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
-  definition (name: 'Shelly Plus 2 PM (websocket)', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Plus 2 PM (Websocket)', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'Initialize'
 
@@ -13,6 +13,7 @@ metadata {
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
     command 'resetEnergyMonitors'
     command 'getPrefsFromDevice'
+    command 'deleteChildDevices'
   }
 }
 
