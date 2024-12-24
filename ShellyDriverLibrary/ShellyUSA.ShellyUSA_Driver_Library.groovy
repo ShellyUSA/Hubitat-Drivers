@@ -12,11 +12,11 @@ library(
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
 @Field static LinkedHashMap preferenceMap = [
-  initial_state: [type: 'enum', title: 'State after power outage', options: ['off':'Power Off', 'on':'Power On', 'restore_last':'Previous State', 'match_input':'Match Input']],
-  auto_off: [type: 'bool', title: 'Auto-ON: after turning ON, turn OFF after a predefined time (in seconds)'],
-  auto_off_delay: [type:'number', title: 'Auto-ON Delay: delay before turning OFF'],
-  auto_on: [type: 'bool', title: 'Auto-OFF: after turning OFF, turn ON after a predefined time (in seconds)'],
-  auto_on_delay: [type:'number', title: 'Auto-OFF Delay: delay before turning ON'],
+  switch_initial_state: [type: 'enum', title: 'State after power outage', options: ['off':'Power Off', 'on':'Power On', 'restore_last':'Previous State', 'match_input':'Match Input']],
+  switch_auto_off: [type: 'bool', title: 'Auto-ON: after turning ON, turn OFF after a predefined time (in seconds)'],
+  switch_auto_off_delay: [type:'number', title: 'Auto-ON Delay: delay before turning OFF'],
+  switch_auto_on: [type: 'bool', title: 'Auto-OFF: after turning OFF, turn ON after a predefined time (in seconds)'],
+  switch_auto_on_delay: [type:'number', title: 'Auto-OFF Delay: delay before turning ON'],
   autorecover_voltage_errors: [type: 'bool', title: 'Turn back ON after overvoltage if previously ON'],
   current_limit: [type: 'number', title: 'Overcurrent protection in amperes'],
   power_limit: [type: 'number', title: 'Overpower protection in watts'],
@@ -24,7 +24,13 @@ library(
   gen1_motion_sensitivity: [type: 'number', title: 'Motion sensitivity (1-256, lower is more sensitive)'],
   gen1_motion_blind_time_minutes: [type: 'number', title: 'Motion cool down in minutes'],
   gen1_tamper_sensitivity: [type: 'number', title: 'Tamper sensitivity (1-127, lower is more sensitive, 0 for disabled)'],
-  gen1_set_volume: [type: 'number', title: 'Speaker volume (1 (lowest) .. 11 (highest))']
+  gen1_set_volume: [type: 'number', title: 'Speaker volume (1 (lowest) .. 11 (highest))'],
+  cover_maxtime_open: [type: 'number', title: 'Default timeout after which Cover will stop moving in open direction (0.1..300 in seconds)'],
+  cover_maxtime_close: [type: 'number', title: 'Default timeout after which Cover will stop moving in close direction (0.1..300 in seconds)'],
+  cover_initial_state: [type: 'enum', title: 'Defines Cover target state on power-on', options: ['open':'Cover will fully open', 'closed':'Cover will fully close', 'stopped':'Cover will not change its position']],
+  input_enable: [type: 'bool', title: 'When disabled, the input instance doesn\'t emit any events and reports status properties as null'],
+  input_invert: [type: 'bool', title: 'True if the logical state of the associated input is inverted, false otherwise. For the change to be applied, the physical switch has to be toggled once after invert is set. For type analog inverts percent range - 100% becomes 0% and 0% becomes 100%'],
+  input_type: [type: 'bool', title: 'True if the logical state of the associated input is inverted, false otherwise. For the change to be applied, the physical switch has to be toggled once after invert is set. For type analog inverts percent range - 100% becomes 0% and 0% becomes 100%'],
 ]
 // @Field static List powerMonitoringDevices = [
 //   'S3PM-001PCEU16',
@@ -61,12 +67,26 @@ if (device != null) {
       input 'macAddress', 'string', title: 'MAC Address', required: true, defaultValue: ''
     }
 
+    Boolean isSwitch = (getDeviceDataValue('switchId') != null && getDeviceDataValue('switchId') != '')
+    Boolean isCover = (getDeviceDataValue('coverId') != null && getDeviceDataValue('coverId') != '')
     preferenceMap.each{ k,v ->
-      if(getDeviceSettings().containsKey(k)) {
+      if(getDeviceSettings().containsKey(k) ) {
         if(v.type == 'enum') {
           input(name: "${k}".toString(), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: v.options)
         } else {
           input(name: "${k}".toString(), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue)
+        }
+      } else if(isSwitch && getDeviceSettings().containsKey(k.replace('switch_',''))) {
+        if(v.type == 'enum') {
+          input(name: "${k.replace('switch_','')}".toString(), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: v.options)
+        } else {
+          input(name: "${k.replace('switch_','')}".toString(), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue)
+        }
+      } else if(isCover && getDeviceSettings().containsKey(k.replace('cover_',''))) {
+        if(v.type == 'enum') {
+          input(name: "${k.replace('cover_','')}".toString(), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: v.options)
+        } else {
+          input(name: "${k.replace('cover_','')}".toString(), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue)
         }
       }
     }
@@ -190,6 +210,7 @@ void getPrefsFromDevice() {
           Map<String, Object> switchStatusResult = (LinkedHashMap<String, Object>)switchStatus?.result
           Boolean hasPM = 'apower' in switchStatusResult.keySet()
           setDeviceDataValue('hasPM',"${hasPM}")
+          setDeviceDataValue('switchId',"${0}")
 
           setDevicePreferences(switchGetConfigResult)
         }
@@ -210,10 +231,30 @@ void getPrefsFromDevice() {
           if(inputGetConfigResult != null && inputGetConfigResult.size() > 0) {setChildDevicePreferences(inputGetConfigResult, child)}
         }
 
+
       } else if(inputs.size() == 1) {
 
       } else {
         logDebug('No inputs found...')
+      }
+
+      if(covers.size() > 0) {
+        logDebug('Cover(s) found, running Cover.GetConfig for each...')
+        covers.each{ cov ->
+          Integer id = cov.tokenize(':')[1] as Integer
+          logDebug("Cover ID: ${id}")
+          Map coverGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(id))?.result
+          logDebug("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
+          logDebug('Creating child device for cover...')
+          ChildDeviceWrapper child = createChildCover((LinkedHashMap)shellyGetConfigResult[cov])
+          Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
+          if(coverGetConfigResult != null && coverGetConfigResult.size() > 0) {setChildDevicePreferences(coverGetConfigResult, child)}
+        }
+
+      } else if(covers.size() == 1) {
+
+      } else {
+        logDebug('No covers found...')
       }
 
       configureNightlyPowerMonitoringReset()
@@ -306,6 +347,7 @@ void configure() {
   }
   else if(BLU == false || BLU == null) {
     logDebug('Starting configuration for child device...')
+
   } else if(BLU == true) {
     this.device.setDeviceNetworkId(getDeviceSettings().macAddress.replace(':','').toUpperCase())
     setDeviceDataValue('macAddress', getDeviceSettings().macAddress.replace(':','').toUpperCase())
@@ -316,29 +358,20 @@ void configure() {
 }
 
 void sendPrefsToDevice() {
-  if(
-    getDeviceSettings().initial_state != null &&
-    getDeviceSettings().auto_on != null &&
-    getDeviceSettings().auto_on_delay != null &&
-    getDeviceSettings().auto_off != null &&
-    getDeviceSettings().auto_off_delay != null &&
-    getDeviceSettings().power_limit != null &&
-    getDeviceSettings().voltage_limit != null &&
-    getDeviceSettings().autorecover_voltage_errors != null &&
-    getDeviceSettings().current_limit != null
-  ) {
-    switchSetConfig(
-      getDeviceSettings().initial_state,
-      getDeviceSettings().auto_on,
-      getDeviceSettings().auto_on_delay,
-      getDeviceSettings().auto_off,
-      getDeviceSettings().auto_off_delay,
-      getDeviceSettings().power_limit,
-      getDeviceSettings().voltage_limit,
-      getDeviceSettings().autorecover_voltage_errors,
-      getDeviceSettings().current_limit
-    )
+  // Switch settings
+  Integer switchId = getDeviceDataValue('switchId') as Integer
+  Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(switchId))?.result
+  if(curSettings != null) { curSettings.remove('id') }
+  LinkedHashMap newSettings = getDeviceSettings()
+  LinkedHashMap toSend = curSettings.findAll{k,v -> v != newSettings."${k}"}.collectEntries{ k,v -> [k, newSettings."${k}"]}
+  logDebug("To send: ${prettyJson(toSend)}")
+  curSettings.each{ k,v ->
+    def c = newSettings."${k}"
+    logDebug("Current setting for ${k}: ${v} -> New: ${c}")
   }
+  logDebug("Sending new settings to device...")
+  switchSetConfigJson(toSend, switchId)
+
 
   if(getDeviceSettings().gen1_set_volume != null) {
     String queryString = "set_volume=${getDeviceSettings().gen1_set_volume}".toString()
@@ -745,7 +778,13 @@ void setDeviceInfo(Map info) {
 
 void setDevicePreferences(Map preferences) {
   logDebug("Setting device preferences from ${prettyJson(preferences)}")
+  Boolean isSwitch = (getDeviceDataValue('switchId') != null && getDeviceDataValue('switchId') != '')
+  Boolean isCover = (getDeviceDataValue('coverId') != null && getDeviceDataValue('coverId') != '')
+  Boolean isInput = (getDeviceDataValue('inputSwitchId') != null && getDeviceDataValue('inputSwitchId') != '') || (getDeviceDataValue('inputCountId') != null && getDeviceDataValue('inputCountId') != '') || (getDeviceDataValue('inputButtonId') != null && getDeviceDataValue('inputButtonId') != '') || (getDeviceDataValue('inputAnalogId') != null && getDeviceDataValue('inputAnalogId') != '')
   preferences.each{ k,v ->
+    String c = "cover_${k}"
+    String i = "input_${k}"
+    String s = "switch_${k}"
     if(preferenceMap.containsKey(k)) {
       if(preferenceMap[k].type == 'enum') {
         device.updateSetting(k,[type:'enum', value: v])
@@ -754,9 +793,39 @@ void setDevicePreferences(Map preferences) {
       } else {
         device.updateSetting(k,v)
       }
+    } else if(isSwitch && preferenceMap.containsKey(s)) {
+        if(preferenceMap[s].type == 'enum') {
+          device.updateSetting(s,[type:'enum', value: v])
+        } else if(preferenceMap[s].type == 'number') {
+          device.updateSetting(s,[type:'number', value: v as Integer])
+        } else {
+          device.updateSetting(s,v)
+        }
+    } else if(isCover && preferenceMap.containsKey(c)) {
+        if(preferenceMap[c].type == 'enum') {
+          device.updateSetting(c,[type:'enum', value: v])
+        } else if(preferenceMap[c].type == 'number') {
+          device.updateSetting(c,[type:'number', value: v as Integer])
+        } else {
+          device.updateSetting(c,v)
+        }
+    } else if(isInput && preferenceMap.containsKey(i)) {
+        if(preferenceMap[i].type == 'enum') {
+          device.updateSetting(i,[type:'enum', value: v])
+        } else if(preferenceMap[i].type == 'number') {
+          device.updateSetting(i,[type:'number', value: v as Integer])
+        } else {
+          device.updateSetting(i,v)
+        }
     } else {
-      if("${k}" != 'id' && "${k}" != 'name') {
-        logWarn("Preference retrieved from device (${k}) does not have config available in device driver. ")
+      if(
+        "${k}" == 'id' || "${k}" == 'name' ||
+        ("${k}" == 'type' && isInput) ||
+        ("${k}" == 'factory_reset' && isInput)
+        ) {
+          logTrace("Skipping settings as configuration of ${k} from Hubitat is ill advised, please configure from Shelly device web UI if needed.")
+      } else {
+        logWarn("Preference retrieved from child device (${k}) does not have config available in device driver. ")
       }
     }
   }
@@ -764,7 +833,15 @@ void setDevicePreferences(Map preferences) {
 
 void setChildDevicePreferences(Map preferences, ChildDeviceWrapper child) {
   logDebug("Setting child device preferences from ${prettyJson(preferences)}")
+  Boolean isSwitch = (child.getDeviceDataValue('switchId') != null && child.getDeviceDataValue('switchId') != '')
+  Boolean isCover = (child.getDeviceDataValue('coverId') != null && child.getDeviceDataValue('coverId') != '')
+  Boolean isInput = (child.getDeviceDataValue('inputSwitchId') != null && child.getDeviceDataValue('inputSwitchId') != '') || (child.getDeviceDataValue('inputCountId') != null && child.getDeviceDataValue('inputCountId') != '') || (child.getDeviceDataValue('inputButtonId') != null && child.getDeviceDataValue('inputButtonId') != '') || (child.getDeviceDataValue('inputAnalogId') != null && child.getDeviceDataValue('inputAnalogId') != '')
+  logDebug("${child} is switch: ${isSwitch}, isCover:${isCover}, isInput:${isInput}")
+  logDebug("PreferenceMap: ${prettyJson(preferenceMap)}")
   preferences.each{ k,v ->
+    String c = "cover_${k}"
+    String i = "input_${k}"
+    String s = "switch_${k}"
     if(preferenceMap.containsKey(k)) {
       if(preferenceMap[k].type == 'enum') {
         child.updateSetting(k,[type:'enum', value: v])
@@ -772,6 +849,40 @@ void setChildDevicePreferences(Map preferences, ChildDeviceWrapper child) {
         child.updateSetting(k,[type:'number', value: v as Integer])
       } else {
         child.updateSetting(k,v)
+      }
+    } else if(isSwitch && preferenceMap.containsKey(s)) {
+      if(preferenceMap[s].type == 'enum') {
+        child.updateSetting(s,[type:'enum', value: v])
+      } else if(preferenceMap[s].type == 'number') {
+        child.updateSetting(s,[type:'number', value: v as Integer])
+      } else {
+        child.updateSetting(s,v)
+      }
+    } else if(isCover && preferenceMap.containsKey(c)) {
+      if(preferenceMap[c].type == 'enum') {
+        child.updateSetting(c,[type:'enum', value: v])
+      } else if(preferenceMap[c].type == 'number') {
+        child.updateSetting(c,[type:'number', value: v as Integer])
+      } else {
+        child.updateSetting(c,v)
+      }
+    } else if(isInput && preferenceMap.containsKey(i)) {
+        if(preferenceMap[i].type == 'enum') {
+          child.updateSetting(i,[type:'enum', value: v])
+        } else if(preferenceMap[i].type == 'number') {
+          child.updateSetting(i,[type:'number', value: v as Integer])
+        } else {
+          child.updateSetting(i,v)
+        }
+    } else {
+      if(
+        "${k}" == 'id' || "${k}" == 'name' ||
+        ("${k}" == 'type' && isInput) ||
+        ("${k}" == 'factory_reset' && isInput)
+        ) {
+          logTrace("Skipping settings as configuration of ${k} from Hubitat is ill advised, please configure from Shelly device web UI if needed.")
+      } else {
+        logWarn("Preference retrieved from child device (${k}) does not have config available in device driver. ")
       }
     }
   }
@@ -929,6 +1040,23 @@ LinkedHashMap switchGetConfigCommand(Integer id = 0, String src = 'switchGetConf
 }
 
 @CompileStatic
+LinkedHashMap switchSetConfigCommandJson(
+  Map jsonConfigToSend,
+  Integer switchId = 0
+) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "switchSetConfig",
+    "method" : "Switch.SetConfig",
+    "params" : [
+      "id" : switchId,
+      "config": jsonConfigToSend
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
 LinkedHashMap switchSetConfigCommand(
   String initial_state,
   Boolean auto_on,
@@ -963,6 +1091,66 @@ LinkedHashMap switchSetConfigCommand(
   return command
 }
 
+// @CompileStatic
+// LinkedHashMap switchSetConfigStringCommand(
+//   String stringToSet,
+//   String stringValue,
+//   Integer switchId = 0
+// ) {
+//   LinkedHashMap command = [
+//     "id" : 0,
+//     "src" : "switchSetConfig",
+//     "method" : "Switch.SetConfig",
+//     "params" : [
+//       "id" : switchId,
+//       "config": [
+//         "${stringToSet}": stringValue
+//       ]
+//     ]
+//   ]
+//   return command
+// }
+
+// @CompileStatic
+// LinkedHashMap switchSetConfigBooleanCommand(
+//   String boolToSet,
+//   Boolean boolValue,
+//   Integer switchId = 0
+// ) {
+//   LinkedHashMap command = [
+//     "id" : 0,
+//     "src" : "switchSetConfig",
+//     "method" : "Switch.SetConfig",
+//     "params" : [
+//       "id" : switchId,
+//       "config": [
+//         "${boolToSet}": boolValue
+//       ]
+//     ]
+//   ]
+//   return command
+// }
+
+// @CompileStatic
+// LinkedHashMap switchSetConfigLongCommand(
+//   String longToSet,
+//   Long longValue,
+//   Integer switchId = 0
+// ) {
+//   LinkedHashMap command = [
+//     "id" : 0,
+//     "src" : "switchSetConfig",
+//     "method" : "Switch.SetConfig",
+//     "params" : [
+//       "id" : switchId,
+//       "config": [
+//         "${longToSet}": longValue
+//       ]
+//     ]
+//   ]
+//   return command
+// }
+
 @CompileStatic
 LinkedHashMap switchResetCountersCommand(Integer id = 0, String src = 'switchResetCounters') {
   LinkedHashMap command = [
@@ -970,6 +1158,89 @@ LinkedHashMap switchResetCountersCommand(Integer id = 0, String src = 'switchRes
     "src" : src,
     "method" : "Switch.ResetCounters",
     "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap coverGetConfigCommand(Integer id = 0, String src = 'coverGetConfigCommand') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Cover.GetConfig",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap coverOpenCommand(Integer id = 0) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "coverOpen",
+    "method" : "Cover.Open",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap coverCloseCommand(Integer id = 0) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "coverClose",
+    "method" : "Cover.Close",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap coverGoToPositionCommand(Integer id = 0, Integer pos) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "coverGoToPosition",
+    "method" : "Cover.Close",
+    "params" : [
+      "id" : id,
+      "pos" : pos
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap coverGetStatusCommand(Integer id = 0, src = 'coverGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Cover.GetStatus",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap coverSetConfigCommandJson(
+  Map jsonConfigToSend,
+  Integer coverId = 0
+) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "coverSetConfig",
+    "method" : "Cover.SetConfig",
+    "params" : [
+      "id" : coverId,
+      "config": jsonConfigToSend
+    ]
   ]
   return command
 }
@@ -1533,7 +1804,7 @@ String shellyGetDeviceInfo(Boolean fullInfo = false, String src = 'shellyGetDevi
   }
   Map command = shellyGetDeviceInfoCommand(fullInfo, src)
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1541,7 +1812,7 @@ String shellyGetStatus(String src = 'shellyGetStatus') {
   LinkedHashMap command = shellyGetStatusCommand(src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1549,7 +1820,7 @@ String sysGetStatus(String src = 'sysGetStatus') {
   LinkedHashMap command = sysGetStatusCommand(src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1557,7 +1828,7 @@ String switchGetStatus() {
   LinkedHashMap command = switchGetStatusCommand()
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1565,7 +1836,7 @@ String switchSet(Boolean on) {
   LinkedHashMap command = switchSetCommand(on)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1573,7 +1844,7 @@ String switchGetConfig(Integer id = 0, String src = 'switchGetConfig') {
   LinkedHashMap command = switchGetConfigCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1591,7 +1862,15 @@ void switchSetConfig(
   Map command = switchSetConfigCommand(initial_state, auto_on, auto_on_delay, auto_off, auto_off_delay, power_limit, voltage_limit, autorecover_voltage_errors, current_limit)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
+}
+
+@CompileStatic
+void switchSetConfigJson(Map jsonConfigToSend, Integer switchId = 0) {
+  Map command = switchSetConfigCommandJson(jsonConfigToSend, switchId)
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  String json = JsonOutput.toJson(command)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1606,7 +1885,7 @@ void scriptList() {
   LinkedHashMap command = scriptListCommand()
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -1614,7 +1893,7 @@ String pm1GetStatus() {
   LinkedHashMap command = pm1GetStatusCommand()
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   String json = JsonOutput.toJson(command)
-  sendWsMessage(json)
+  parentSendWsMessage(json)
 }
 /* #endregion */
 /* #region Webhook Helpers */
@@ -1863,6 +2142,26 @@ ChildDeviceWrapper createChildInput(LinkedHashMap inputConfig) {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
       child.updateDataValue("input${inputType}Id","${id}")
       // Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id, "childSwitch${id}"))?.result
+      return child
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  } else { return child }
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildCover(LinkedHashMap coverConfig) {
+  Integer id = coverConfig?.id as Integer
+  Map<String, Object> coverStatus = postCommandSync(coverGetStatusCommand(id))
+  logDebug("Cover Status: ${prettyJson(coverStatus)}")
+  String driverName = "Shelly Cover Component"
+  String dni = "${getDeviceDNI()}-cover${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String label = "${getDevice().getLabel()} - Cover ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+      child.updateDataValue("coverId","${id}")
       return child
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
@@ -2129,6 +2428,14 @@ void sendWsMessage(String message) {
   if(getWebsocketIsConnected() == false) { wsConnect() }
   logTrace("Sending json command: ${message}")
   interfaces.webSocket.sendMessage(message)
+}
+
+void parentSendWsMessage(String message) {
+  if(hasParent() == true) {
+    parent?.sendWsMessage(message)
+  } else {
+    sendWsMessage(message)
+  }
 }
 
 void initializeWebsocketConnection() {
