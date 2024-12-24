@@ -16,10 +16,20 @@ if(device != null) {preferences{}}
 // =============================================================================
 // Device Specific
 // =============================================================================
-void open() {parentPostCommandSync(coverSetCommand(true, getDeviceDataValue('switchId') as Integer))}
-void close() {parentPostCommandSync(switchSetCommand(false, getDeviceDataValue('switchId') as Integer))}
-void setPosition(BigDecimal position) {}
+void open() {
+  parentPostCommandSync(coverOpenCommand(getDeviceDataValue('switchId') as Integer))
+}
+
+void close() {
+  parentPostCommandSync(coverCloseCommand(getDeviceDataValue('switchId') as Integer))
+}
+
+void setPosition(BigDecimal position) {
+  parentPostCommandSync(coverGoToPositionCommand(getDeviceDataValue('switchId') as Integer, position as Integer))
+}
+
 void startPositionChange(String direction) {}
+
 void stopPositionChange() {}
 // =============================================================================
 // End Device Specific
