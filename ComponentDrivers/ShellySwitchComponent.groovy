@@ -18,7 +18,6 @@ if(device != null) {preferences{}}
 // =============================================================================
 void on() {parentPostCommandSync(switchSetCommand(true, getDeviceDataValue('switchId') as Integer))}
 void off() {parentPostCommandSync(switchSetCommand(false, getDeviceDataValue('switchId') as Integer))}
-void refresh() {parentPostCommandSync(switchGetStatusCommand(getDeviceDataValue('switchId') as Integer))}
 // =============================================================================
 // End Device Specific
 // =============================================================================
