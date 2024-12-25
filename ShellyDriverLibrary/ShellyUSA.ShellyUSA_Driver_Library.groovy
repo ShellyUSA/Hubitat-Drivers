@@ -102,7 +102,7 @@ if (device != null) {
     }
 
     if(hasBluGateway() == true && COMP == null) {
-      input(name: 'enableBluetooteGateway', type:'bool', title: 'Enable Bluetooth Gateway for Hubitat', required: false, defaultValue: true)
+      input(name: 'enableBluetoothGateway', type:'bool', title: 'Enable Bluetooth Gateway for Hubitat', required: false, defaultValue: true)
     }
 
     if(getDevice().hasCapability('PresenceSensor')) {
@@ -257,15 +257,14 @@ void getPrefsFromDevice() {
       } else {
         logDebug('No covers found...')
       }
-
-      configureNightlyPowerMonitoringReset()
+      if(hasPowerMonitoring() == true) { configureNightlyPowerMonitoringReset() }
 
       // Enable or disable BLE gateway functionality
-      if(getDeviceSettings().enableBluetooteGateway == true) {
+      if(hasBluGateway() == true && getDeviceSettings().enableBluetoothGateway == true) {
         logDebug('Bluetooth Gateway functionality enabled, configuring device for bluetooth reporting to Hubitat...')
         enableBluReportingToHE()
       }
-      else if(getDeviceSettings().enableBluetooteGateway == false) {disableBluReportingToHE()}
+      else if(hasBluGateway() == true && getDeviceSettings().enableBluetoothGateway == false) {disableBluReportingToHE()}
 
     } else {
       // Gen 1
@@ -317,7 +316,7 @@ void initialize() {
   }
   if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
   if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
-  if(getDeviceSettings().enableBluetooteGateway == null) { this.device.updateSetting('enableBluetooteGateway', true) }
+  if(getDeviceSettings().enableBluetoothGateway == null) { this.device.updateSetting('enableBluetoothGateway', true) }
   if(getDeviceSettings().parentSwitchStateMode == null) { this.device.updateSetting('parentSwitchStateMode', 'anyOn') }
 }
 /* #endregion */
@@ -337,10 +336,10 @@ void configure() {
 
     if(isGen1Device() == true) {
       try {setDeviceActionsGen1()}
-      catch(e) {logDebug('No device actions configured.')}
+      catch(e) {logDebug("No device actions configured. Encountered error :${e}")}
     } else {
       try {setDeviceActionsGen2()}
-      catch(e) {logDebug('No device actions configured.')}
+      catch(e) {logDebug("No device actions configured. Encountered error :${e}")}
     }
     if(BUTTONS != null) {
       this.device.sendEvent(name: 'numberOfButtons', value: BUTTONS)
@@ -1149,66 +1148,6 @@ LinkedHashMap switchSetConfigCommand(
   return command
 }
 
-// @CompileStatic
-// LinkedHashMap switchSetConfigStringCommand(
-//   String stringToSet,
-//   String stringValue,
-//   Integer switchId = 0
-// ) {
-//   LinkedHashMap command = [
-//     "id" : 0,
-//     "src" : "switchSetConfig",
-//     "method" : "Switch.SetConfig",
-//     "params" : [
-//       "id" : switchId,
-//       "config": [
-//         "${stringToSet}": stringValue
-//       ]
-//     ]
-//   ]
-//   return command
-// }
-
-// @CompileStatic
-// LinkedHashMap switchSetConfigBooleanCommand(
-//   String boolToSet,
-//   Boolean boolValue,
-//   Integer switchId = 0
-// ) {
-//   LinkedHashMap command = [
-//     "id" : 0,
-//     "src" : "switchSetConfig",
-//     "method" : "Switch.SetConfig",
-//     "params" : [
-//       "id" : switchId,
-//       "config": [
-//         "${boolToSet}": boolValue
-//       ]
-//     ]
-//   ]
-//   return command
-// }
-
-// @CompileStatic
-// LinkedHashMap switchSetConfigLongCommand(
-//   String longToSet,
-//   Long longValue,
-//   Integer switchId = 0
-// ) {
-//   LinkedHashMap command = [
-//     "id" : 0,
-//     "src" : "switchSetConfig",
-//     "method" : "Switch.SetConfig",
-//     "params" : [
-//       "id" : switchId,
-//       "config": [
-//         "${longToSet}": longValue
-//       ]
-//     ]
-//   ]
-//   return command
-// }
-
 @CompileStatic
 LinkedHashMap switchResetCountersCommand(Integer id = 0, String src = 'switchResetCounters') {
   LinkedHashMap command = [
@@ -1769,9 +1708,10 @@ void getStatusGen1() {
 
 @CompileStatic
 void getStatusGen1Callback(AsyncResponse response, Map data = null) {
+  logTrace('Processing gen1 status callback')
   if(responseIsValid(response) == true) {
     Map json = (LinkedHashMap)response.getJson()
-    logJson(json)
+    logTrace("getStatusGen1Callback JSON: ${prettyJson(json)}")
     if(hasCapabilityBatteryGen1() == true) {
       LinkedHashMap battery = (LinkedHashMap)json?.bat
       Integer percent = battery?.value as Integer
@@ -1807,10 +1747,10 @@ void getStatusGen2() {
 }
 
 void getStatusGen2Callback(AsyncResponse response, Map data = null) {
-  logDebug('Processing gen2+ status callback')
+  logTrace('Processing gen2+ status callback')
   if(responseIsValid(response) == true) {
     Map json = (LinkedHashMap)response.getJson()
-    logJson(json)
+    logTrace("getStatusGen2Callback JSON: ${prettyJson(json)}")
     LinkedHashMap result = (LinkedHashMap)json?.result
     LinkedHashMap battery = (LinkedHashMap)result?.battery
     Integer percent = battery?.percent as Integer
@@ -2041,27 +1981,51 @@ Boolean actionsHaveEnabledTimes(LinkedHashMap actions) {
 @CompileStatic
 void setDeviceActionsGen2() {
   LinkedHashMap supported = getSupportedWebhooks()
-  if(supported?.result != null) {supported = (LinkedHashMap)supported.result}
+  if(supported?.result != null) {
+    supported = (LinkedHashMap)supported.result
+    logDebug("Got supported webhooks: ${prettyJson(supported)}")
+  }
   LinkedHashMap types = (LinkedHashMap)supported?.types
   LinkedHashMap currentWebhooks = getCurrentWebhooks()
-  if(currentWebhooks?.result != null) {currentWebhooks = (LinkedHashMap)currentWebhooks.result}
+  if(currentWebhooks?.result != null) {
+    currentWebhooks = (LinkedHashMap)currentWebhooks.result
+    logDebug("Got current webhooks: ${prettyJson(currentWebhooks)}")
+  }
   List<LinkedHashMap> hooks = (List<LinkedHashMap>)currentWebhooks?.hooks
   if(types != null) {
+    logDebug("Got supported webhook types: ${prettyJson(types)}")
     types.each{k,v ->
       String type = k.toString()
-      List<LinkedHashMap> attrs = ((LinkedHashMap)v).attrs as List<LinkedHashMap>
-      attrs.each{
-        String event = it.name.toString()
-        String name = "hubitat.${type}.${event}".toString()
-        if(hooks != null) {
-          LinkedHashMap currentWebhook = hooks.find{it.name == name}
-          if(currentWebhook != null) {
-            webhookUpdate(type, event, (currentWebhook?.id).toString())
+      LinkedHashMap val = (LinkedHashMap)v
+      if(val != null && val.size() > 0) {
+        List<LinkedHashMap> attrs = ((LinkedHashMap)val).attrs as List<LinkedHashMap>
+        attrs.each{
+          String event = it.name.toString()
+          String name = "hubitat.${type}.${event}".toString()
+          if(hooks != null) {
+            LinkedHashMap currentWebhook = hooks.find{it.name == name}
+            if(currentWebhook != null) {
+              webhookUpdate(type, event, (currentWebhook?.id).toString())
+            } else {
+              webhookCreate(type, event)
+            }
           } else {
             webhookCreate(type, event)
           }
+        }
+      } else {
+        String name = "hubitat.${type}".toString()
+        if(hooks != null) {
+          LinkedHashMap currentWebhook = hooks.find{it.name == name}
+          logDebug("Hook name: ${name}, found current:${currentWebhook}")
+          logDebug("Hooks: ${hooks}")
+          if(currentWebhook != null) {
+            webhookUpdateNoEvent(type, (currentWebhook?.id).toString())
+          } else {
+            webhookCreateNoEvent(type)
+          }
         } else {
-          webhookCreate(type, event)
+          webhookCreateNoEvent(type)
         }
       }
     }
@@ -2090,7 +2054,24 @@ void webhookCreate(String type, String event) {
       "enable": true,
       "name": "hubitat.${type}.${event}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}".toString()]
+    ]
+  ]
+  postCommandSync(command)
+}
+
+@CompileStatic
+void webhookCreateNoEvent(String type) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "webhookCreate",
+    "method" : "Webhook.Create",
+    "params" : [
+      "cid": 0,
+      "enable": true,
+      "name": "hubitat.${type}".toString(),
+      "event": "${type}".toString(),
+      "urls": ["${getHubBaseUri()}/${type}".toString()]
     ]
   ]
   postCommandSync(command)
@@ -2107,7 +2088,24 @@ void webhookUpdate(String type, String event, String id) {
       "enable": true,
       "name": "hubitat.${type}.${event}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}".toString()]
+    ]
+  ]
+  postCommandSync(command)
+}
+
+@CompileStatic
+void webhookUpdateNoEvent(String type, String id) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "webhookUpdate",
+    "method" : "Webhook.Update",
+    "params" : [
+      "id": id as Integer,
+      "enable": true,
+      "name": "hubitat.${type}".toString(),
+      "event": "${type}".toString(),
+      "urls": ["${getHubBaseUri()}/${type}".toString()]
     ]
   ]
   postCommandSync(command)
