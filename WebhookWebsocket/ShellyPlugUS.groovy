@@ -15,8 +15,13 @@ metadata {
   }
 }
 
-if(device != null) {preferences{}}
 @Field static Boolean WS = true
+@Field static List<String> ACTIONS_TO_CREATE = [
+  'report_url',
+  'flood_detected_url',
+  'flood_gone_url'
+]
+if(device != null) {preferences{}}
 
 // =============================================================================
 // Device Specific
