@@ -20,7 +20,8 @@ library(
   autorecover_voltage_errors: [type: 'bool', title: 'Turn back ON after overvoltage if previously ON'],
   current_limit: [type: 'number', title: 'Overcurrent protection in amperes'],
   power_limit: [type: 'number', title: 'Overpower protection in watts'],
-  voltage_limit: [type: 'number', title: 'Overvoltage protection in volts'],
+  voltage_limit: [type: 'number', title: 'Volts, a limit that must be exceeded to trigger an overvoltage error'],
+  undervoltage_limit: [type: 'number', title: 'Volts, a limit that must be subceeded to trigger an undervoltage error'],
   gen1_motion_sensitivity: [type: 'number', title: 'Motion sensitivity (1-256, lower is more sensitive)'],
   gen1_motion_blind_time_minutes: [type: 'number', title: 'Motion cool down in minutes'],
   gen1_tamper_sensitivity: [type: 'number', title: 'Tamper sensitivity (1-127, lower is more sensitive, 0 for disabled)'],
@@ -347,7 +348,7 @@ void configure() {
   }
   else if(BLU == false || BLU == null) {
     logDebug('Starting configuration for child device...')
-
+    sendPrefsToDevice()
   } else if(BLU == true) {
     this.device.setDeviceNetworkId(getDeviceSettings().macAddress.replace(':','').toUpperCase())
     setDeviceDataValue('macAddress', getDeviceSettings().macAddress.replace(':','').toUpperCase())
@@ -359,18 +360,65 @@ void configure() {
 
 void sendPrefsToDevice() {
   // Switch settings
+  Integer coverId = getDeviceDataValue('coverId') as Integer
+  Integer inputButtonId = getDeviceDataValue('inputButtonId') as Integer
+  Integer inputCountId = getDeviceDataValue('inputCountId') as Integer
+  Integer inputSwitchId = getDeviceDataValue('inputSwitchId') as Integer
   Integer switchId = getDeviceDataValue('switchId') as Integer
-  Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(switchId))?.result
-  if(curSettings != null) { curSettings.remove('id') }
+
   LinkedHashMap newSettings = getDeviceSettings()
-  LinkedHashMap toSend = curSettings.findAll{k,v -> v != newSettings."${k}"}.collectEntries{ k,v -> [k, newSettings."${k}"]}
-  logDebug("To send: ${prettyJson(toSend)}")
-  curSettings.each{ k,v ->
-    def c = newSettings."${k}"
-    logDebug("Current setting for ${k}: ${v} -> New: ${c}")
+  logDebug("New settings: ${prettyJson(newSettings)}")
+
+
+  if(switchId != null) {
+    Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(switchId))?.result
+    if(curSettings != null) { curSettings.remove('id') }
+    LinkedHashMap toSend = [:]
+    curSettings.each{ String k,v ->
+      String cKey = "switch_${k}"
+      def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
+      logDebug("Current setting for ${k}: ${v} -> New: ${newVal}")
+      toSend[k] = newVal
+    }
+    toSend = toSend.findAll{ it.value!=null }
+    logDebug("To send: ${prettyJson(toSend)}")
+    logDebug("Sending new settings to device for switch...")
+    switchSetConfigJson(toSend, switchId)
   }
-  logDebug("Sending new settings to device...")
-  switchSetConfigJson(toSend, switchId)
+  if(coverId != null) {
+    Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(coverId))?.result
+    if(curSettings != null) { curSettings.remove('id') }
+    LinkedHashMap toSend = [:]
+    curSettings.each{ String k,v ->
+      String cKey = "cover_${k}"
+      def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
+      logDebug("Current setting for ${k}: ${v} -> New: ${newVal}")
+      toSend[k] = newVal
+    }
+    toSend = toSend.findAll{ it.value!=null }
+    logDebug("To send: ${prettyJson(toSend)}")
+    logDebug("Sending new settings to device for cover...")
+    coverSetConfigJson(toSend, coverId)
+  }
+  if(inputButtonId != null || inputCountId != null || inputSwitchId != null) {
+    Integer id = 0
+    if(inputButtonId != null) {id = inputButtonId}
+    else if(inputCountId != null) {id = inputCountId}
+    else if(inputSwitchId != null) {id = inputSwitchId}
+    Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(inputGetConfigCommand(id))?.result
+    if(curSettings != null) { curSettings.remove('id') }
+    LinkedHashMap toSend = [:]
+    curSettings.each{ String k,v ->
+      String cKey = "input_${k}"
+      def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
+      logDebug("Current setting for ${k}: ${v} -> New: ${newVal}")
+      toSend[k] = newVal
+    }
+    toSend = toSend.findAll{ it.value!=null }
+    logDebug("To send: ${prettyJson(toSend)}")
+    logDebug("Sending new settings to device for input...")
+    inputSetConfigJson(toSend, id)
+  }
 
 
   if(getDeviceSettings().gen1_set_volume != null) {
@@ -491,25 +539,28 @@ BigDecimal getPower(Integer id = 0) {
 
 @CompileStatic
 void setVoltage(BigDecimal value, Integer id = 0) {
-  ArrayList<BigDecimal> v = voltageAvgs()
-  ChildDeviceWrapper c = getSwitchChildById(id)
-  if(v.size() == 0) {
-    if(c != null) { c.sendEvent(name: 'voltage', value: value) }
-    else { getDevice().sendEvent(name: 'voltage', value: value) }
-  }
-  v.add(value)
-  if(v.size() >= 10) {
-    value = (((BigDecimal)v.sum()) / 10)
-    value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
-    if(value == -1) {
-      if(c != null) { c.sendEvent(name: 'voltage', value: null) }
-      else { getDevice().sendEvent(name: 'voltage', value: null) }
-    }
-    else if(value != null && value != getPower()) {
+  if(id == 100) { getDevice().sendEvent(name: 'voltage', value: value) }
+  else {
+    ArrayList<BigDecimal> v = voltageAvgs()
+    ChildDeviceWrapper c = getSwitchChildById(id)
+    if(v.size() == 0) {
       if(c != null) { c.sendEvent(name: 'voltage', value: value) }
       else { getDevice().sendEvent(name: 'voltage', value: value) }
     }
-    v.removeAt(0)
+    v.add(value)
+    if(v.size() >= 10) {
+      value = (((BigDecimal)v.sum()) / 10)
+      value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
+      if(value == -1) {
+        if(c != null) { c.sendEvent(name: 'voltage', value: null) }
+        else { getDevice().sendEvent(name: 'voltage', value: null) }
+      }
+      else if(value != null && value != getPower()) {
+        if(c != null) { c.sendEvent(name: 'voltage', value: value) }
+        else { getDevice().sendEvent(name: 'voltage', value: value) }
+      }
+      v.removeAt(0)
+    }
   }
 }
 @CompileStatic
@@ -817,16 +868,14 @@ void setDevicePreferences(Map preferences) {
         } else {
           device.updateSetting(i,v)
         }
+    } else if("${k}" == 'id' || "${k}" == 'name') {
+      logTrace("Skipping settings as configuration of ${k} from Hubitat, please configure from Shelly device web UI if needed.")
+    } else if(isInput && ("${k}" == 'type' || "${k}" == 'factory_reset')) {
+        logTrace("Skipping settings as configuration of ${k} from Hubitat, please configure from Shelly device web UI if needed.")
+    } else if(isCover && "${k}".toString() in ['type','factory_reset','in_mode','invert_directions','motor','obstruction_detection','safety_switch','swap_inputs']) {
+        logTrace("Skipping settings as configuration of ${k} from Hubitat, please configure from Shelly device web UI if needed.")
     } else {
-      if(
-        "${k}" == 'id' || "${k}" == 'name' ||
-        ("${k}" == 'type' && isInput) ||
-        ("${k}" == 'factory_reset' && isInput)
-        ) {
-          logTrace("Skipping settings as configuration of ${k} from Hubitat is ill advised, please configure from Shelly device web UI if needed.")
-      } else {
-        logWarn("Preference retrieved from child device (${k}) does not have config available in device driver. ")
-      }
+      logWarn("Preference retrieved from child device (${k}) does not have config available in device driver. ")
     }
   }
 }
@@ -874,16 +923,14 @@ void setChildDevicePreferences(Map preferences, ChildDeviceWrapper child) {
         } else {
           child.updateSetting(i,v)
         }
+    } else if("${k}" == 'id' || "${k}" == 'name') {
+      logTrace("Skipping settings as configuration of ${k} from Hubitat, please configure from Shelly device web UI if needed.")
+    } else if(isInput && ("${k}" == 'type' || "${k}" == 'factory_reset')) {
+        logTrace("Skipping settings as configuration of ${k} from Hubitat, please configure from Shelly device web UI if needed.")
+    } else if(isCover && "${k}".toString() in ['type','factory_reset','in_mode','invert_directions','motor','obstruction_detection','safety_switch','swap_inputs']) {
+        logTrace("Skipping settings as configuration of ${k} from Hubitat, please configure from Shelly device web UI if needed.")
     } else {
-      if(
-        "${k}" == 'id' || "${k}" == 'name' ||
-        ("${k}" == 'type' && isInput) ||
-        ("${k}" == 'factory_reset' && isInput)
-        ) {
-          logTrace("Skipping settings as configuration of ${k} from Hubitat is ill advised, please configure from Shelly device web UI if needed.")
-      } else {
-        logWarn("Preference retrieved from child device (${k}) does not have config available in device driver. ")
-      }
+      logWarn("Preference retrieved from child device (${k}) does not have config available in device driver. ")
     }
   }
 }
@@ -920,6 +967,17 @@ void setInputSwitchState(Boolean on, Integer id = 0) {
     List<ChildDeviceWrapper> children = getInputSwitchChildren()
     if(children != null && children.size() > 0) {
       getInputSwitchChildById(id)?.sendEvent(name: 'switch', value: on ? 'on' : 'off')
+    }
+  }
+}
+
+@CompileStatic
+void setInputCountState(Integer count, Integer id = 0) {
+  logDebug("Sending count: ${count}")
+  if(count != null) {
+    List<ChildDeviceWrapper> children = getInputCountChildren()
+    if(children != null && children.size() > 0) {
+      getInputCountChildById(id)?.sendEvent(name: 'count', value: count)
     }
   }
 }
@@ -1246,6 +1304,23 @@ LinkedHashMap coverSetConfigCommandJson(
 }
 
 @CompileStatic
+LinkedHashMap inputSetConfigCommandJson(
+  Map jsonConfigToSend,
+  Integer inputId = 0
+) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "inputSetConfig",
+    "method" : "Input.SetConfig",
+    "params" : [
+      "id" : inputId,
+      "config": jsonConfigToSend
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
 LinkedHashMap webhookListSupportedCommand(String src = 'webhookListSupported') {
   LinkedHashMap command = [
     "id" : 0,
@@ -1474,19 +1549,12 @@ void parse(String raw) {
 
 void parseWebsocketMessage(String message) {
   LinkedHashMap json = (LinkedHashMap)slurper.parseText(message)
-  logJson(json)
+  logTrace("Incoming WS message: ${prettyJson(json)}")
 
   try {processWebsocketMessagesAuth(json)}
   catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesAuth(): ${prettyJson(json)}")}
 
-  Integer sw = 0
-  LinkedHashMap params = json?.params
-  if(params != null) {
-    LinkedHashMap v = params.values()[0]
-    if(v != null) { sw = v?.id }
-  }
-
-  try {processWebsocketMessagesPowerMonitoring(json, sw)}
+  try {processWebsocketMessagesPowerMonitoring(json)}
   catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesPowerMonitoring(): ${prettyJson(json)}")}
 
   try {processWebsocketMessagesConnectivity(json)}
@@ -1621,7 +1689,19 @@ void processWebsocketMessagesPowerMonitoring(LinkedHashMap json, Integer id = 0)
                 Boolean inputState = inp.state as Boolean
                 if(inputState != null) { setInputSwitchState(inputState, id) }
               }
+              if(inp?.counts != null && inp?.counts != '') {
+                Map counts = (LinkedHashMap)inp.counts
+                if(counts?.total != null && counts?.total != '') {
+                  Integer cTot = counts.total as Integer
+                  if(cTot != null) { setInputCountState(cTot, id) }
+                }
+              }
             }
+          } else if(params != null && params.any{k,v -> k.startsWith('voltmeter:100')}) {
+            LinkedHashMap voltmeter = (LinkedHashMap)params["voltmeter:100"]
+            BigDecimal voltage = (BigDecimal)voltmeter?.voltage
+            logDebug("Sending ${voltage} volts")
+            setVoltage(voltage, 100)
           }
         }
       } catch(ex) {logWarn("Exception processing NotifyStatus: ${ex}")}
@@ -1774,7 +1854,7 @@ void parseGen1Message(String raw) {
 
 @CompileStatic
 void parseGen2Message(String raw) {
-  logDebug(raw)
+  logDebug("Raw gen2Message: ${raw}")
   getStatusGen2()
   LinkedHashMap message = decodeLanMessage(raw)
   LinkedHashMap headers = message?.headers as LinkedHashMap
@@ -1869,8 +1949,21 @@ void switchSetConfig(
 void switchSetConfigJson(Map jsonConfigToSend, Integer switchId = 0) {
   Map command = switchSetConfigCommandJson(jsonConfigToSend, switchId)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
+}
+
+@CompileStatic
+void coverSetConfigJson(Map jsonConfigToSend, Integer coverId = 0) {
+  Map command = coverSetConfigCommandJson(jsonConfigToSend, coverId)
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  parentPostCommandSync(command)
+}
+
+@CompileStatic
+void inputSetConfigJson(Map jsonConfigToSend, Integer inputId = 0) {
+  Map command = inputSetConfigCommandJson(jsonConfigToSend, inputId)
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
@@ -2192,6 +2285,16 @@ List<ChildDeviceWrapper> getInputSwitchChildren() {
 ChildDeviceWrapper getInputSwitchChildById(Integer id) {
   List<ChildDeviceWrapper> allChildren = getChildDevices()
   return allChildren.find{it.getDeviceDataValue('inputSwitchId') as Integer == id}
+}
+
+List<ChildDeviceWrapper> getInputCountChildren() {
+  List<ChildDeviceWrapper> allChildren = getChildDevices()
+  return allChildren.findAll{it.getDeviceDataValue('inputCountId') != null}
+}
+
+ChildDeviceWrapper getInputCountChildById(Integer id) {
+  List<ChildDeviceWrapper> allChildren = getChildDevices()
+  return allChildren.find{it.getDeviceDataValue('inputCountId') as Integer == id}
 }
 /* #endregion */
 /* #region HTTP Methods */
