@@ -29,7 +29,7 @@ void initialize() {
   }
   if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
   if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
-  if(getDeviceSettings().enableBluetooteGateway == null) { this.device.updateSetting('enableBluetooteGateway', true) }
+  if(getDeviceSettings().enableBluetoothGateway == null) { this.device.updateSetting('enableBluetoothGateway', true) }
 }
 
 void configure() {
@@ -55,8 +55,8 @@ void configure() {
   setSwitchState(postCommandSync(switchGetStatusCommand())?.output)
   switchGetStatus()
 
-  if(getDeviceSettings().enableBluetooteGateway == true) {enableBluReportingToHE()}
-  else if(getDeviceSettings().enableBluetooteGateway == false) {disableBluReportingToHE()}
+  if(getDeviceSettings().enableBluetoothGateway == true) {enableBluReportingToHE()}
+  else if(getDeviceSettings().enableBluetoothGateway == false) {disableBluReportingToHE()}
   initializeWebsocketConnection()
 }
 
