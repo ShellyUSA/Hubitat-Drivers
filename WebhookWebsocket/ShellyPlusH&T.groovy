@@ -10,3 +10,4 @@ metadata {
   }
 }
 
+if(device != null) {preferences{}}
