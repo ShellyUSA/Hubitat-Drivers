@@ -1,7 +1,7 @@
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
-  definition (name: 'Shelly Button 1', namespace: 'ShellyUSA', author: 'Daniel Winks', importUrl: '') {
+  definition (name: 'Shelly Button 1 (Webhook)', namespace: 'ShellyUSA', author: 'Daniel Winks', importUrl: '') {
     capability 'Configuration'
     capability 'Battery' //battery - NUMBER, unit:%
     capability 'PushableButton' //numberOfButtons - NUMBER //pushed - NUMBER
@@ -12,3 +12,5 @@ metadata {
 
 @Field static Boolean GEN1 = true
 @Field static Boolean BUTTONS = 3
+@Field static Boolean HAS_BATTERY_GEN1 = true
+if(device != null) {preferences{}}
