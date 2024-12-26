@@ -304,6 +304,10 @@ void configureNightlyPowerMonitoringReset() {
     setCurrent(0)
     setPower(0)
     setEnergy(0)
+    unschedule('switchResetCounters')
+    unschedule('checkWebsocketConnection')
+    wsClose()
+
   }
 }
 
@@ -312,12 +316,24 @@ void configureNightlyPowerMonitoringReset() {
 void initialize() {
   if(hasIpAddress()) {
     getPrefsFromDevice()
-    if(hasWebsocket() == true) {initializeWebsocketConnection()}
+    if(wsShouldBeConnected() == true) {
+      atomicState.remove('reconnectTimer')
+      initializeWebsocketConnection()
+    } else {wsClose()}
   }
-  if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
-  if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
-  if(getDeviceSettings().enableBluetoothGateway == null) { this.device.updateSetting('enableBluetoothGateway', true) }
-  if(getDeviceSettings().parentSwitchStateMode == null) { this.device.updateSetting('parentSwitchStateMode', 'anyOn') }
+  if(hasPowerMonitoring() == true) {
+    if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
+    if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
+  }else { 
+    this.device.removeSetting('enablePowerMonitoring') 
+    this.device.removeSetting('resetMonitorsAtMidnight') 
+  }
+  if(hasBluGateway() == true) {
+    if(getDeviceSettings().enableBluetoothGateway == null) { this.device.updateSetting('enableBluetoothGateway', true) }
+  }else { this.device.removeSetting('enableBluetoothGateway') }
+  if(hasChildSwitches() == true) {
+    if(getDeviceSettings().parentSwitchStateMode == null) { this.device.updateSetting('parentSwitchStateMode', 'anyOn') }
+  } else { this.device.removeSetting('parentSwitchStateMode') }
 }
 /* #endregion */
 /* #region Configuration */
@@ -353,8 +369,15 @@ void configure() {
     setDeviceDataValue('macAddress', getDeviceSettings().macAddress.replace(':','').toUpperCase())
   }
 
-  if(getDeviceSettings().presenceTimeout != null && (getDeviceSettings().presenceTimeout as Integer) < 300) {getDevice().updateSetting('presenceTimeout', [type: 'number', value: 300])}
+  if(getDeviceSettings().presenceTimeout != null && (getDeviceSettings().presenceTimeout as Integer) < 300) {
+    getDevice().updateSetting('presenceTimeout', [type: 'number', value: 300])
+  }
   try { deviceSpecificConfigure() } catch(e) {}
+  if(wsShouldBeConnected() == true) {
+    atomicState.remove('reconnectTimer')
+    initializeWebsocketConnection()
+  } else {wsClose()}
+  configureNightlyPowerMonitoringReset()
 }
 
 void sendPrefsToDevice() {
@@ -376,7 +399,7 @@ void sendPrefsToDevice() {
     curSettings.each{ String k,v ->
       String cKey = "switch_${k}"
       def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
-      logDebug("Current setting for ${k}: ${v} -> New: ${newVal}")
+      logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
       toSend[k] = newVal
     }
     toSend = toSend.findAll{ it.value!=null }
@@ -391,7 +414,7 @@ void sendPrefsToDevice() {
     curSettings.each{ String k,v ->
       String cKey = "cover_${k}"
       def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
-      logDebug("Current setting for ${k}: ${v} -> New: ${newVal}")
+      logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
       toSend[k] = newVal
     }
     toSend = toSend.findAll{ it.value!=null }
@@ -410,7 +433,7 @@ void sendPrefsToDevice() {
     curSettings.each{ String k,v ->
       String cKey = "input_${k}"
       def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
-      logDebug("Current setting for ${k}: ${v} -> New: ${newVal}")
+      logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
       toSend[k] = newVal
     }
     toSend = toSend.findAll{ it.value!=null }
@@ -706,6 +729,16 @@ ArrayList<ChildDeviceWrapper> getDeviceChildren() { return getChildDevices() }
 LinkedHashMap getDeviceSettings() { return this.settings }
 LinkedHashMap getParentDeviceSettings() { return this.parent?.settings }
 
+@CompileStatic
+Boolean getBooleanDeviceSetting(String settingName) {
+  logTrace("Device Settings: ${prettyJson(getDeviceSettings())}")
+  if(getDeviceSettings().containsKey(settingName)) {
+    return getDeviceSettings()[settingName]
+  } else {
+    return null
+  }
+}
+
 Boolean hasParent() { return parent != null }
 
 Boolean hasChildren() {
@@ -997,6 +1030,16 @@ Boolean isGen1Device() {
 Boolean hasWebsocket() {
   return WS != null && WS == true
 }
+
+@CompileStatic
+Boolean wsShouldBeConnected() {
+  logDebug("Checking if websocket should be connected...")
+  Boolean bluGatewayEnabled = getBooleanDeviceSetting('enableBluetoothGateway') == true
+  Boolean powerMonitoringEnabled = getBooleanDeviceSetting('enablePowerMonitoring') == true
+  logTrace("Websocket should be connected: ${bluGatewayEnabled || powerMonitoringEnabled}")
+  return bluGatewayEnabled || powerMonitoringEnabled
+}
+
 /* #endregion */
 /* #region Command Maps */
 @CompileStatic
@@ -1743,7 +1786,9 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
 
 @CompileStatic
 void getStatusGen2() {
-  postCommandAsync(devicePowerGetStatusCommand(), 'getStatusGen2Callback')
+  if(hasCapabilityBattery()) {
+    postCommandAsync(devicePowerGetStatusCommand(), 'getStatusGen2Callback')
+  }
 }
 
 void getStatusGen2Callback(AsyncResponse response, Map data = null) {
@@ -1794,17 +1839,29 @@ void parseGen1Message(String raw) {
 
 @CompileStatic
 void parseGen2Message(String raw) {
-  logDebug("Raw gen2Message: ${raw}")
+  logTrace("Raw gen2Message: ${raw}")
   getStatusGen2()
   LinkedHashMap message = decodeLanMessage(raw)
+  logDebug("Received incoming message: ${prettyJson(message)}")
   LinkedHashMap headers = message?.headers as LinkedHashMap
   List<String> res = ((String)headers.keySet()[0]).tokenize(' ')
   List<String> query = ((String)res[1]).tokenize('/')
+  logTrace("Incoming query ${query}")
   if(query[0] == 'report') {}
 
   else if(query[0] == 'humidity.change') {setHumidityPercent(new BigDecimal(query[2]))}
   else if(query[0] == 'temperature.change' && query[1] == 'tC' && isCelciusScale()) {setTemperatureC(new BigDecimal(query[2]))}
   else if(query[0] == 'temperature.change' && query[1] == 'tF' && !isCelciusScale()) {setTemperatureF(new BigDecimal(query[2]))}
+  else if(query[0].startsWith('switch.o')) {
+    String command = query[0]
+    Integer id = query[1] as Integer
+    setSwitchState(command.toString() == 'switch.on', id)
+  }
+  else if(query[0].startsWith('input.toggle')) {
+    String command = query[0]
+    Integer id = query[1] as Integer
+    setInputSwitchState(command.toString() == 'input.toggle_on', id)
+  }
   setLastUpdated()
 }
 
@@ -1814,6 +1871,8 @@ Boolean hasCapabilityTempGen1() { return HAS_TEMP_GEN1 == true }
 Boolean hasCapabilityHumGen1() { return HAS_HUM_GEN1 == true }
 Boolean hasCapabilityMotionGen1() { return HAS_MOTION_GEN1 == true }
 Boolean hasCapabilityFloodGen1() { return HAS_FLOOD_GEN1 == true }
+
+Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true }
 /* #endregion */
 /* #region Websocket Commands */
 @CompileStatic
@@ -1823,48 +1882,43 @@ String shellyGetDeviceInfo(Boolean fullInfo = false, String src = 'shellyGetDevi
     src = "${src}-${seconds}"
   }
   Map command = shellyGetDeviceInfoCommand(fullInfo, src)
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  // String json = JsonOutput.toJson(command)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
 String shellyGetStatus(String src = 'shellyGetStatus') {
   LinkedHashMap command = shellyGetStatusCommand(src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
 String sysGetStatus(String src = 'sysGetStatus') {
   LinkedHashMap command = sysGetStatusCommand(src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
 String switchGetStatus() {
   LinkedHashMap command = switchGetStatusCommand()
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
 String switchSet(Boolean on) {
   LinkedHashMap command = switchSetCommand(on)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
 String switchGetConfig(Integer id = 0, String src = 'switchGetConfig') {
   LinkedHashMap command = switchGetConfigCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
@@ -1881,8 +1935,7 @@ void switchSetConfig(
 ) {
   Map command = switchSetConfigCommand(initial_state, auto_on, auto_on_delay, auto_off, auto_off_delay, power_limit, voltage_limit, autorecover_voltage_errors, current_limit)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
@@ -1917,16 +1970,14 @@ void switchResetCounters(Integer id = 0, String src = 'switchResetCounters') {
 void scriptList() {
   LinkedHashMap command = scriptListCommand()
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 
 @CompileStatic
 String pm1GetStatus() {
   LinkedHashMap command = pm1GetStatusCommand()
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  String json = JsonOutput.toJson(command)
-  parentSendWsMessage(json)
+  parentPostCommandSync(command)
 }
 /* #endregion */
 /* #region Webhook Helpers */
@@ -1992,8 +2043,23 @@ void setDeviceActionsGen2() {
     logDebug("Got current webhooks: ${prettyJson(currentWebhooks)}")
   }
   List<LinkedHashMap> hooks = (List<LinkedHashMap>)currentWebhooks?.hooks
+  logDebug("Current webhooks count: ${hooks.size()}")
   if(types != null) {
     logDebug("Got supported webhook types: ${prettyJson(types)}")
+    Map shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
+    logDebug("Shelly.GetConfig Result: ${prettyJson(shellyGetConfigResult)}")
+
+    Set<String> switches = shellyGetConfigResult.keySet().findAll{it.startsWith('switch')}
+    Set<String> inputs = shellyGetConfigResult.keySet().findAll{it.startsWith('input')}
+    Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
+
+    logDebug("Found Switches: ${switches}")
+    logDebug("Found Inputs: ${inputs}")
+    logDebug("Found Covers: ${covers}")
+
+    // LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
+    // String inputType = (inputConfig?.type as String).capitalize()
+
     types.each{k,v ->
       String type = k.toString()
       LinkedHashMap val = (LinkedHashMap)v
@@ -2014,22 +2080,44 @@ void setDeviceActionsGen2() {
           }
         }
       } else {
-        String name = "hubitat.${type}".toString()
-        if(hooks != null) {
-          LinkedHashMap currentWebhook = hooks.find{it.name == name}
-          logDebug("Hook name: ${name}, found current:${currentWebhook}")
-          logDebug("Hooks: ${hooks}")
-          if(currentWebhook != null) {
-            webhookUpdateNoEvent(type, (currentWebhook?.id).toString())
-          } else {
-            webhookCreateNoEvent(type)
+        if(type.startsWith('input')) {
+          inputs.each{ inp -> 
+            LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[inp]
+            String inputType = (conf?.type as String).capitalize()
+            Integer id = conf?.id as Integer
+            String name = "hubitat.${type}.${id}".toString()
+            logDebug("Processing webhook for input:${id}...")
+            processWebhookCreateOrUpdate(name, id, hooks, type)
           }
-        } else {
-          webhookCreateNoEvent(type)
+        } else if(type.startsWith('switch')) {
+          switches.each{ sw -> 
+            LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[sw]
+            Integer id = conf?.id as Integer
+            String name = "hubitat.${type}.${id}".toString()
+            logDebug("Processing webhook for switch:${id}...")
+            processWebhookCreateOrUpdate(name, id, hooks, type)
+          }
         }
       }
     }
   }
+}
+
+@CompileStatic
+void processWebhookCreateOrUpdate(String name, Integer id, List<LinkedHashMap> hooks, String type) {
+  if(hooks != null || hooks.size() == 0) {
+    LinkedHashMap currentWebhook = hooks.find{it.name == name}
+    logDebug("Webhook name: ${name}, found current webhook:${currentWebhook}")
+    logDebug("Webhooks: ${hooks}")
+    if(currentWebhook != null) {
+      webhookUpdateNoEvent(type, (currentWebhook?.id as Integer))
+    } else { 
+      webhookCreateNoEvent(type, id)
+    }
+  } else { 
+    logDebug("Creating new webhook for ${name}:${id}...")
+    webhookCreateNoEvent(type, id)
+  } 
 }
 
 
@@ -2054,24 +2142,24 @@ void webhookCreate(String type, String event) {
       "enable": true,
       "name": "hubitat.${type}.${event}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}".toString()]
     ]
   ]
   postCommandSync(command)
 }
 
 @CompileStatic
-void webhookCreateNoEvent(String type) {
+void webhookCreateNoEvent(String type, Integer cid) {
   LinkedHashMap command = [
-    "id" : 0,
+    "id" : cid,
     "src" : "webhookCreate",
     "method" : "Webhook.Create",
     "params" : [
-      "cid": 0,
+      "cid": cid,
       "enable": true,
       "name": "hubitat.${type}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${cid}".toString()]
     ]
   ]
   postCommandSync(command)
@@ -2088,20 +2176,20 @@ void webhookUpdate(String type, String event, String id) {
       "enable": true,
       "name": "hubitat.${type}.${event}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}".toString()]
     ]
   ]
   postCommandSync(command)
 }
 
 @CompileStatic
-void webhookUpdateNoEvent(String type, String id) {
+void webhookUpdateNoEvent(String type, Integer id) {
   LinkedHashMap command = [
     "id" : 0,
     "src" : "webhookUpdate",
     "method" : "Webhook.Update",
     "params" : [
-      "id": id as Integer,
+      "id": id,
       "enable": true,
       "name": "hubitat.${type}".toString(),
       "event": "${type}".toString(),
@@ -2559,18 +2647,34 @@ void wsClose() { interfaces.webSocket.close() }
 void setWebsocketStatus(String status) {
   logDebug("Websocket Status: ${status}")
   if(status != 'open') {
-    logDebug('Websocket not open, attempting to reconnect in 300 seconds...')
-    reconnectWebsocketAfterDelay(300)
+    if(wsShouldBeConnected() == true) {
+      Integer t = getReconnectTimer()
+      logDebug("Websocket not open, attempting to reconnect in ${t} seconds...")
+      reconnectWebsocketAfterDelay(t)
+    }
   }
   if(status == 'open') {
+    logDebug('Websocket connection is open, cancelling any pending reconnection attempts...')
     unschedule('initializeWebsocketConnection')
     if(atomicState.initInProgress == true) {
       atomicState.remove('initInProgress')
+      atomicState.remove('reconnectTimer')
       configure()
     }
     runIn(1, 'performAuthCheck')
   }
   this.device.updateDataValue('websocketStatus', status)
+}
+
+Integer getReconnectTimer() {
+  Integer t = 1
+  if(atomicState.reconnectTimer == null) {
+    atomicState.reconnectTimer = t
+  } else {
+    t = atomicState.reconnectTimer as Integer
+    atomicState.reconnectTimer = 2*t <= 300 ? 2*t : 300
+  }
+  return t
 }
 
 @CompileStatic
