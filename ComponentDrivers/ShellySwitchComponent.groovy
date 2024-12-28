@@ -2,8 +2,6 @@
 
 metadata {
   definition (name: 'Shelly Switch Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
-    capability 'Initialize'
-    capability 'Configuration'
     capability 'Switch'
     capability 'Refresh'
 
