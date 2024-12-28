@@ -2,8 +2,6 @@
 
 metadata {
   definition (name: 'Shelly Input Button Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
-    capability 'Initialize'
-    capability 'Configuration'
     capability 'PushableButton'
     capability 'Refresh'
 
