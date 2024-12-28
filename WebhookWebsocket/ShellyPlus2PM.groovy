@@ -12,7 +12,7 @@ metadata {
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
     command 'resetEnergyMonitors'
-    command 'getPrefsFromDevice'
+    command 'getPreferencesFromShellyDevice'
     command 'deleteChildDevices'
   }
 }
