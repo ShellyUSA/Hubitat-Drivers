@@ -160,7 +160,7 @@ void refresh() {
 void getOrSetPrefs() {
   if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
     logDebug('Detected newly added/changed IP address, getting preferences from device...')
-    getPrefsFromDevice()
+    getPreferencesFromShellyDevice()
     refresh()
   } else if(getDeviceDataValue('ipAddress') == getIpAddress()) {
     logDebug('Device IP address not changed, sending preferences to device...')
@@ -169,7 +169,7 @@ void getOrSetPrefs() {
 }
 
 @CompileStatic
-void getPrefsFromDevice() {
+void getPreferencesFromShellyDevice() {
   logDebug('Getting device info...')
   Map shellyResults = (LinkedHashMap<String, Object>)sendGen1Command('shelly')
   logDebug("Shelly Device Info Result: ${shellyResults}")
@@ -315,18 +315,15 @@ void configureNightlyPowerMonitoringReset() {
 /* #region Initialization */
 void initialize() {
   if(hasIpAddress()) {
-    getPrefsFromDevice()
-    if(wsShouldBeConnected() == true) {
-      atomicState.remove('reconnectTimer')
-      initializeWebsocketConnection()
-    } else {wsClose()}
+    runInRandomSeconds('getPreferencesFromShellyDevice')
+    if(hasWebsocket() == true) {initializeWebsocketConnection()}
   }
   if(hasPowerMonitoring() == true) {
     if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
     if(getDeviceSettings().resetMonitorsAtMidnight == null) { this.device.updateSetting('resetMonitorsAtMidnight', true) }
-  }else { 
-    this.device.removeSetting('enablePowerMonitoring') 
-    this.device.removeSetting('resetMonitorsAtMidnight') 
+  }else {
+    this.device.removeSetting('enablePowerMonitoring')
+    this.device.removeSetting('resetMonitorsAtMidnight')
   }
   if(hasBluGateway() == true) {
     if(getDeviceSettings().enableBluetoothGateway == null) { this.device.updateSetting('enableBluetoothGateway', true) }
@@ -341,8 +338,8 @@ void configure() {
   if(hasParent() == false && (BLU == false || BLU == null)) {
     logDebug('Starting configuration for a non-child device...')
     String ipAddress = getIpAddress()
-    if (ipAddress != null && ipAddress != '') {
-      logDebug('Device has an IP address set in preferances, updating DNI if needed...')
+    if (ipAddress != null && ipAddress != '' && ipAddress ==~ /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/) {
+      logDebug('Device has an IP address set in preferences, updating DNI if needed...')
       setDeviceNetworkId(ipAddress)
     } else {
       logDebug('Could not set device network ID because device settings does not have a valid IP address set.')
@@ -2081,7 +2078,7 @@ void setDeviceActionsGen2() {
         }
       } else {
         if(type.startsWith('input')) {
-          inputs.each{ inp -> 
+          inputs.each{ inp ->
             LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[inp]
             String inputType = (conf?.type as String).capitalize()
             Integer id = conf?.id as Integer
@@ -2090,7 +2087,7 @@ void setDeviceActionsGen2() {
             processWebhookCreateOrUpdate(name, id, hooks, type)
           }
         } else if(type.startsWith('switch')) {
-          switches.each{ sw -> 
+          switches.each{ sw ->
             LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[sw]
             Integer id = conf?.id as Integer
             String name = "hubitat.${type}.${id}".toString()
@@ -2111,13 +2108,13 @@ void processWebhookCreateOrUpdate(String name, Integer id, List<LinkedHashMap> h
     logDebug("Webhooks: ${hooks}")
     if(currentWebhook != null) {
       webhookUpdateNoEvent(type, (currentWebhook?.id as Integer))
-    } else { 
+    } else {
       webhookCreateNoEvent(type, id)
     }
-  } else { 
+  } else {
     logDebug("Creating new webhook for ${name}:${id}...")
     webhookCreateNoEvent(type, id)
-  } 
+  }
 }
 
 
@@ -2891,6 +2888,15 @@ void runEveryCustomSeconds(Integer seconds, String methodToRun) {
   }
 }
 
+void runInRandomSeconds(String methodToRun, Integer seconds = 90) {
+  if(seconds < 0 || seconds > 240) {
+    logWarn('Seconds must be between 0 and 240')
+  } else {
+    Long r = new Long(new Random().nextInt(seconds))
+    runIn(r as Long, methodToRun)
+  }
+}
+
 double nowDays() { return (now() / 86400000) }
 
 long unixTimeMillis() { return (now()) }
@@ -2977,7 +2983,6 @@ void updated() {
       if(e.toString().contains('A device with the same device network ID exists, Please use a different DNI')) {
         logWarn('Another device has already been configured using the same IP address. Please verify correct IP Address is being used.')
       } else { logWarn("No configure() method defined or configure() resulted in error: ${e}") }
-
     }
   }
 }
