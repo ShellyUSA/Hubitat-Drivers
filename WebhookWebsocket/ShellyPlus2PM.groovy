@@ -14,6 +14,7 @@ metadata {
     command 'resetEnergyMonitors'
     command 'getPreferencesFromShellyDevice'
     command 'deleteChildDevices'
+    command 'setDeviceActionsGen2'
   }
 }
 
