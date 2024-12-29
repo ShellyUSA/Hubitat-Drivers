@@ -2034,13 +2034,18 @@ void setDeviceActionsGen2() {
     logDebug("Got supported webhooks: ${prettyJson(supported)}")
   }
   LinkedHashMap types = (LinkedHashMap)supported?.types
-  LinkedHashMap currentWebhooks = getCurrentWebhooks()
-  if(currentWebhooks?.result != null) {
-    currentWebhooks = (LinkedHashMap)currentWebhooks.result
-    logDebug("Got current webhooks: ${prettyJson(currentWebhooks)}")
+
+  LinkedHashMap currentWebhooksResult = getCurrentWebhooks()
+  // List<LinkedHashMap> currentWebhooks = (List<LinkedHashMap>)getCurrentWebhooks()
+  List<LinkedHashMap> currentWebhooks = []
+  if(currentWebhooksResult?.result != null) {
+    LinkedHashMap result = (LinkedHashMap)currentWebhooks.result
+    if(result != null && result.size() > 0 && result?.hooks != null) {
+      currentWebhooks = (List<LinkedHashMap>)result?.hooks
+    }
+    logDebug("Got current webhooks: ${prettyJson(result)}")
+    logDebug("Current webhooks count: ${currentWebhooks.size()}")
   }
-  List<LinkedHashMap> hooks = (List<LinkedHashMap>)currentWebhooks?.hooks
-  logDebug("Current webhooks count: ${hooks.size()}")
   if(types != null) {
     logDebug("Got supported webhook types: ${prettyJson(types)}")
     Map shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
@@ -2049,10 +2054,12 @@ void setDeviceActionsGen2() {
     Set<String> switches = shellyGetConfigResult.keySet().findAll{it.startsWith('switch')}
     Set<String> inputs = shellyGetConfigResult.keySet().findAll{it.startsWith('input')}
     Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
+    Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
 
     logDebug("Found Switches: ${switches}")
     logDebug("Found Inputs: ${inputs}")
     logDebug("Found Covers: ${covers}")
+    logDebug("Found Temperatures: ${temps}")
 
     // LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
     // String inputType = (inputConfig?.type as String).capitalize()
@@ -2060,40 +2067,47 @@ void setDeviceActionsGen2() {
     types.each{k,v ->
       String type = k.toString()
       LinkedHashMap val = (LinkedHashMap)v
+      List<LinkedHashMap> attrs = []
       if(val != null && val.size() > 0) {
-        List<LinkedHashMap> attrs = ((LinkedHashMap)val).attrs as List<LinkedHashMap>
-        attrs.each{
-          String event = it.name.toString()
-          String name = "hubitat.${type}.${event}".toString()
-          if(hooks != null) {
-            LinkedHashMap currentWebhook = hooks.find{it.name == name}
-            if(currentWebhook != null) {
-              webhookUpdate(type, event, (currentWebhook?.id).toString())
-            } else {
-              webhookCreate(type, event)
-            }
-          } else {
-            webhookCreate(type, event)
+        attrs = ((LinkedHashMap)val).attrs as List<LinkedHashMap>
+      }
+      logDebug("Processing type: ${type} with value: ${prettyJson(val)}")
+
+
+      if(type.startsWith('input')) {
+        inputs.each{ inp ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[inp]
+          String inputType = (conf?.type as String).capitalize()
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}.${cid}".toString()
+          logDebug("Processing webhook for input:${cid}, type: ${inputType}, config: ${prettyJson(conf)}...")
+          logDebug("Type is: ${type} inputType is: ${inputType}")
+          if(type.contains('button') && inputType == 'Button') {
+            logDebug("Processing ${name}...")
+            processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+          } else if(type.contains('toggle') && inputType == 'Switch') {
+            logDebug("Processing ${name}...")
+            processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+          } else if(type.contains('analog') && inputType == 'Analog') {
+            logDebug("Processing ${name}...")
+            processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
           }
         }
-      } else {
-        if(type.startsWith('input')) {
-          inputs.each{ inp ->
-            LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[inp]
-            String inputType = (conf?.type as String).capitalize()
-            Integer id = conf?.id as Integer
-            String name = "hubitat.${type}.${id}".toString()
-            logDebug("Processing webhook for input:${id}...")
-            processWebhookCreateOrUpdate(name, id, hooks, type)
-          }
-        } else if(type.startsWith('switch')) {
-          switches.each{ sw ->
-            LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[sw]
-            Integer id = conf?.id as Integer
-            String name = "hubitat.${type}.${id}".toString()
-            logDebug("Processing webhook for switch:${id}...")
-            processWebhookCreateOrUpdate(name, id, hooks, type)
-          }
+      } else if(type.startsWith('switch')) {
+        switches.each{ sw ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[sw]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}.${cid}".toString()
+          logDebug("Processing webhook for switch:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
+      } else if(type.startsWith('temperature')) {
+        temps.each{ t ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[t]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}.${cid}".toString()
+          logDebug("Processing webhook for temperature:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
       }
     }
@@ -2101,21 +2115,34 @@ void setDeviceActionsGen2() {
 }
 
 @CompileStatic
-void processWebhookCreateOrUpdate(String name, Integer id, List<LinkedHashMap> hooks, String type) {
-  if(hooks != null || hooks.size() == 0) {
-    LinkedHashMap currentWebhook = hooks.find{it.name == name}
+void processWebhookCreateOrUpdate(String name, Integer cid, List<LinkedHashMap> currentWebhooks, String type, List<LinkedHashMap> attrs = []) {
+  if(currentWebhooks != null || currentWebhooks.size() > 0) {
+    LinkedHashMap currentWebhook = currentWebhooks.find{it.name == name}
     logDebug("Webhook name: ${name}, found current webhook:${currentWebhook}")
-    logDebug("Webhooks: ${hooks}")
-    if(currentWebhook != null) {
-      webhookUpdateNoEvent(type, (currentWebhook?.id as Integer))
+    if(attrs.size() > 0) {
+      logDebug('Webhook has attrs, processing each to set webhoook...')
+      attrs.each{
+        String event = it.name.toString()
+        name = "hubitat.${type}.${event}".toString()
+        webhookCreateOrUpdate(type, event, cid, currentWebhook)
+      }
     } else {
-      webhookCreateNoEvent(type, id)
+      webhookCreateOrUpdate(type, null, cid, currentWebhook)
     }
   } else {
-    logDebug("Creating new webhook for ${name}:${id}...")
-    webhookCreateNoEvent(type, id)
+    logDebug("Creating new webhook for ${name}:${cid}...")
+    if(attrs.size() > 0) {
+      attrs.each{
+        String event = it.name.toString()
+        name = "hubitat.${type}.${event}".toString()
+        webhookCreateOrUpdate(type, event, cid, null)
+      }
+    } else {
+      webhookCreateOrUpdate(type, null, cid, null)
+    }
   }
 }
+
 
 
 @CompileStatic
@@ -2129,13 +2156,13 @@ LinkedHashMap getSupportedWebhooks() {
 }
 
 @CompileStatic
-void webhookCreate(String type, String event) {
+void webhookCreate(String type, String event, Integer cid) {
   LinkedHashMap command = [
     "id" : 0,
     "src" : "webhookCreate",
     "method" : "Webhook.Create",
     "params" : [
-      "cid": 0,
+      "cid": cid,
       "enable": true,
       "name": "hubitat.${type}.${event}".toString(),
       "event": "${type}".toString(),
@@ -2148,7 +2175,7 @@ void webhookCreate(String type, String event) {
 @CompileStatic
 void webhookCreateNoEvent(String type, Integer cid) {
   LinkedHashMap command = [
-    "id" : cid,
+    "id" : 0,
     "src" : "webhookCreate",
     "method" : "Webhook.Create",
     "params" : [
@@ -2163,13 +2190,13 @@ void webhookCreateNoEvent(String type, Integer cid) {
 }
 
 @CompileStatic
-void webhookUpdate(String type, String event, String id) {
+void webhookUpdate(String type, String event, Integer id, Integer cid) {
   LinkedHashMap command = [
-    "id" : 0,
+    "id" : id,
     "src" : "webhookUpdate",
     "method" : "Webhook.Update",
     "params" : [
-      "id": id as Integer,
+      "id": cid,
       "enable": true,
       "name": "hubitat.${type}.${event}".toString(),
       "event": "${type}".toString(),
@@ -2180,13 +2207,13 @@ void webhookUpdate(String type, String event, String id) {
 }
 
 @CompileStatic
-void webhookUpdateNoEvent(String type, Integer id) {
+void webhookUpdateNoEvent(String type, Integer id, Integer cid) {
   LinkedHashMap command = [
-    "id" : 0,
+    "id" : id,
     "src" : "webhookUpdate",
     "method" : "Webhook.Update",
     "params" : [
-      "id": id,
+      "id": cid,
       "enable": true,
       "name": "hubitat.${type}".toString(),
       "event": "${type}".toString(),
@@ -2194,6 +2221,24 @@ void webhookUpdateNoEvent(String type, Integer id) {
     ]
   ]
   postCommandSync(command)
+}
+
+@CompileStatic
+webhookCreateOrUpdate(String type, String event, Integer cid, LinkedHashMap currentWebhook) {
+  logDebug("Webhook Create or Update called with type: ${type}, event ${event}, CID: ${cid}, currentWebhook: ${currentWebhook}")
+  if(currentWebhook != null && currentWebhook.size() > 0) {
+    Integer id = (currentWebhook?.id) as Integer
+    if(id != null) {
+      if(event != null && event != '') { webhookUpdate(type, event, id, cid) }
+      else { webhookUpdateNoEvent(type, id, cid) }
+    } else {
+      if(event != null && event != '') { webhookCreate(type, event, cid) }
+      else { webhookCreateNoEvent(type, cid) }
+    }
+  } else {
+      if(event != null && event != '') { webhookCreate(type, event, cid) }
+      else { webhookCreateNoEvent(type, cid) }
+    }
 }
 
 LinkedHashMap decodeLanMessage(String message) {
