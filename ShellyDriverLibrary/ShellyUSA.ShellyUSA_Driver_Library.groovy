@@ -184,10 +184,12 @@ void getPreferencesFromShellyDevice() {
       Set<String> switches = shellyGetConfigResult.keySet().findAll{it.startsWith('switch')}
       Set<String> inputs = shellyGetConfigResult.keySet().findAll{it.startsWith('input')}
       Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
+      Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
 
       logDebug("Found Switches: ${switches}")
       logDebug("Found Inputs: ${inputs}")
       logDebug("Found Covers: ${covers}")
+      logDebug("Found Temperatures: ${temps}")
 
       if(switches.size() > 1) {
         logDebug('Multiple switches found, running Switch.GetConfig for each...')
@@ -248,7 +250,6 @@ void getPreferencesFromShellyDevice() {
           logDebug("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
           logDebug('Creating child device for cover...')
           ChildDeviceWrapper child = createChildCover((LinkedHashMap)shellyGetConfigResult[cov])
-          Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
           if(coverGetConfigResult != null && coverGetConfigResult.size() > 0) {setChildDevicePreferences(coverGetConfigResult, child)}
         }
 
@@ -257,6 +258,21 @@ void getPreferencesFromShellyDevice() {
       } else {
         logDebug('No covers found...')
       }
+
+      if(temps.size() > 0 ) {
+        logDebug('Temperature(s) found, running Temperature.GetConfig for each...')
+        temps.each{ temp ->
+          Integer id = temp.tokenize(':')[1] as Integer
+          logDebug("Temperature ID: ${id}")
+          Map tempGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(temperatureGetConfigCommand(id))?.result
+          logDebug("Temperature.GetConfig Result: ${prettyJson(tempGetConfigResult)}")
+          logDebug('Creating child device for temperature...')
+          ChildDeviceWrapper child = createChildTemperature((LinkedHashMap)shellyGetConfigResult[temp])
+          if(tempGetConfigResult != null && tempGetConfigResult.size() > 0) {setChildDevicePreferences(tempGetConfigResult, child)}
+        }
+      }
+
+
       if(hasPowerMonitoring() == true) { configureNightlyPowerMonitoringReset() }
 
       // Enable or disable BLE gateway functionality
@@ -914,7 +930,8 @@ void setChildDevicePreferences(Map preferences, ChildDeviceWrapper child) {
   Boolean isSwitch = (child.getDeviceDataValue('switchId') != null && child.getDeviceDataValue('switchId') != '')
   Boolean isCover = (child.getDeviceDataValue('coverId') != null && child.getDeviceDataValue('coverId') != '')
   Boolean isInput = (child.getDeviceDataValue('inputSwitchId') != null && child.getDeviceDataValue('inputSwitchId') != '') || (child.getDeviceDataValue('inputCountId') != null && child.getDeviceDataValue('inputCountId') != '') || (child.getDeviceDataValue('inputButtonId') != null && child.getDeviceDataValue('inputButtonId') != '') || (child.getDeviceDataValue('inputAnalogId') != null && child.getDeviceDataValue('inputAnalogId') != '')
-  logDebug("${child} is switch: ${isSwitch}, isCover:${isCover}, isInput:${isInput}")
+  Boolean isTemperature = (child.getDeviceDataValue('temperatureId') != null && child.getDeviceDataValue('temperatureId') != '')
+  logDebug("${child} is switch: ${isSwitch}, isCover:${isCover}, isInput:${isInput}, isTemperature: ${isTemperature}")
   logDebug("PreferenceMap: ${prettyJson(preferenceMap)}")
   preferences.each{ k,v ->
     String c = "cover_${k}"
@@ -1277,6 +1294,32 @@ LinkedHashMap coverSetConfigCommandJson(
     "params" : [
       "id" : coverId,
       "config": jsonConfigToSend
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap temperatureGetConfigCommand(Integer id = 0, String src = 'temperatureGetConfigCommand') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Temperature.GetConfig",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap temperatureGetStatusCommand(Integer id = 0, src = 'temperatureGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Temperature.GetStatus",
+    "params" : [
+      "id" : id
     ]
   ]
   return command
@@ -2101,7 +2144,7 @@ void setDeviceActionsGen2() {
           logDebug("Processing webhook for switch:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
-      } else if(type.startsWith('temperature')) {
+      } else if(type.startsWith('temperature') && type.contains('tC')) { //only get reports in C, can convert to F in Hubitat if needed
         temps.each{ t ->
           LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[t]
           Integer cid = conf?.id as Integer
@@ -2383,6 +2426,26 @@ ChildDeviceWrapper createChildCover(LinkedHashMap coverConfig) {
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
       child.updateDataValue("coverId","${id}")
+      return child
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  } else { return child }
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildTemperature(LinkedHashMap temperatureConfig) {
+  Integer id = temperatureConfig?.id as Integer
+  Map<String, Object> temperatureStatus = postCommandSync(temperatureGetStatusCommand(id))
+  logDebug("Temperature Status: ${prettyJson(temperatureStatus)}")
+  String driverName = "Shelly Temperature Peripheral Component"
+  String dni = "${getDeviceDNI()}-temperature${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String label = "${getDevice().getLabel()} - Temperature ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+      child.updateDataValue("temperatureId","${id}")
       return child
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
