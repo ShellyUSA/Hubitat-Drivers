@@ -651,20 +651,24 @@ void setHumidityPercent(BigDecimal percent) {
 }
 
 @CompileStatic
-void setTemperatureC(BigDecimal tempC) {
-  if(isCelciusScale()) {
-    getDevice().sendEvent(name: 'temperature', value: tempC.setScale(1, BigDecimal.ROUND_HALF_UP))
-  } else {
-    getDevice().sendEvent(name: 'temperature', value: cToF(tempC).setScale(1, BigDecimal.ROUND_HALF_UP))
+void setTemperatureC(BigDecimal tempC, Integer id = 0) {
+  BigDecimal v = isCelciusScale() ? tempC.setScale(1, BigDecimal.ROUND_HALF_UP) : cToF(tempC).setScale(1, BigDecimal.ROUND_HALF_UP)
+  if(hasTemperatureChildren()) {
+    ChildDeviceWrapper child = getTemperatureChildById(id)
+    child.sendEvent(name: 'temperature', value: v)
+  } else {    
+    getDevice().sendEvent(name: 'temperature', value: v)
   }
 }
 
 @CompileStatic
-void setTemperatureF(BigDecimal tempF) {
-  if(!isCelciusScale()) {
-    getDevice().sendEvent(name: 'temperature', value: tempF.setScale(1, BigDecimal.ROUND_HALF_UP))
-  } else {
-    getDevice().sendEvent(name: 'temperature', value: fToC(tempF).setScale(1, BigDecimal.ROUND_HALF_UP))
+void setTemperatureF(BigDecimal tempF, Integer id = 0) {
+  BigDecimal v = isCelciusScale() ? fToC(tempF).setScale(1, BigDecimal.ROUND_HALF_UP) : tempF.setScale(1, BigDecimal.ROUND_HALF_UP)
+  if(hasTemperatureChildren()) {
+    ChildDeviceWrapper child = getTemperatureChildById(id)
+    child.sendEvent(name: 'temperature', value: v)
+  } else {    
+    getDevice().sendEvent(name: 'temperature', value: v)
   }
 }
 
@@ -1872,8 +1876,8 @@ void parseGen1Message(String raw) {
   else if(query[0] == 'flood_gone') {setFloodOn(false)}
 
   else if(query[0] == 'humidity.change') {setHumidityPercent(new BigDecimal(query[2]))}
-  else if(query[0] == 'temperature.change' && query[1] == 'tC' && isCelciusScale()) {setTemperatureC(new BigDecimal(query[2]))}
-  else if(query[0] == 'temperature.change' && query[1] == 'tF' && !isCelciusScale()) {setTemperatureF(new BigDecimal(query[2]))}
+  else if(query[0] == 'temperature.change' && query[1] == 'tC') {setTemperatureC(new BigDecimal(query[2]))}
+  else if(query[0] == 'temperature.change' && query[1] == 'tF') {setTemperatureF(new BigDecimal(query[2]))}
   setLastUpdated()
 }
 
@@ -1887,19 +1891,20 @@ void parseGen2Message(String raw) {
   List<String> res = ((String)headers.keySet()[0]).tokenize(' ')
   List<String> query = ((String)res[1]).tokenize('/')
   logTrace("Incoming query ${query}")
+  Integer id = 0
+  if(query.size() > 3) { id = query[3] as Integer}
   if(query[0] == 'report') {}
-
   else if(query[0] == 'humidity.change') {setHumidityPercent(new BigDecimal(query[2]))}
-  else if(query[0] == 'temperature.change' && query[1] == 'tC' && isCelciusScale()) {setTemperatureC(new BigDecimal(query[2]))}
-  else if(query[0] == 'temperature.change' && query[1] == 'tF' && !isCelciusScale()) {setTemperatureF(new BigDecimal(query[2]))}
+  else if(query[0] == 'temperature.change' && query[1] == 'tC') {setTemperatureC(new BigDecimal(query[2]), id)}
+  else if(query[0] == 'temperature.change' && query[1] == 'tF') {setTemperatureF(new BigDecimal(query[2]), id)}
   else if(query[0].startsWith('switch.o')) {
     String command = query[0]
-    Integer id = query[1] as Integer
+    id = query[1] as Integer
     setSwitchState(command.toString() == 'switch.on', id)
   }
   else if(query[0].startsWith('input.toggle')) {
     String command = query[0]
-    Integer id = query[1] as Integer
+    id = query[1] as Integer
     setInputSwitchState(command.toString() == 'input.toggle_on', id)
   }
   setLastUpdated()
@@ -2079,14 +2084,14 @@ void setDeviceActionsGen2() {
   LinkedHashMap types = (LinkedHashMap)supported?.types
 
   LinkedHashMap currentWebhooksResult = getCurrentWebhooks()
-  // List<LinkedHashMap> currentWebhooks = (List<LinkedHashMap>)getCurrentWebhooks()
+
   List<LinkedHashMap> currentWebhooks = []
   if(currentWebhooksResult?.result != null) {
-    LinkedHashMap result = (LinkedHashMap)currentWebhooks.result
+    LinkedHashMap result = (LinkedHashMap)currentWebhooksResult.result
     if(result != null && result.size() > 0 && result?.hooks != null) {
-      currentWebhooks = (List<LinkedHashMap>)result?.hooks
+      currentWebhooks = (List<LinkedHashMap>)result.hooks
+      logDebug("Got current webhooks: ${prettyJson(result)}")
     }
-    logDebug("Got current webhooks: ${prettyJson(result)}")
     logDebug("Current webhooks count: ${currentWebhooks.size()}")
   }
   if(types != null) {
@@ -2122,7 +2127,7 @@ void setDeviceActionsGen2() {
           LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[inp]
           String inputType = (conf?.type as String).capitalize()
           Integer cid = conf?.id as Integer
-          String name = "hubitat.${type}.${cid}".toString()
+          String name = "hubitat.${type}".toString()
           logDebug("Processing webhook for input:${cid}, type: ${inputType}, config: ${prettyJson(conf)}...")
           logDebug("Type is: ${type} inputType is: ${inputType}")
           if(type.contains('button') && inputType == 'Button') {
@@ -2140,15 +2145,15 @@ void setDeviceActionsGen2() {
         switches.each{ sw ->
           LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[sw]
           Integer cid = conf?.id as Integer
-          String name = "hubitat.${type}.${cid}".toString()
+          String name = "hubitat.${type}".toString()
           logDebug("Processing webhook for switch:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
-      } else if(type.startsWith('temperature') && type.contains('tC')) { //only get reports in C, can convert to F in Hubitat if needed
+      } else if(type.startsWith('temperature.change')) {
         temps.each{ t ->
           LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[t]
           Integer cid = conf?.id as Integer
-          String name = "hubitat.${type}.${cid}".toString()
+          String name = "hubitat.${type}".toString()
           logDebug("Processing webhook for temperature:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
@@ -2160,14 +2165,25 @@ void setDeviceActionsGen2() {
 @CompileStatic
 void processWebhookCreateOrUpdate(String name, Integer cid, List<LinkedHashMap> currentWebhooks, String type, List<LinkedHashMap> attrs = []) {
   if(currentWebhooks != null || currentWebhooks.size() > 0) {
-    LinkedHashMap currentWebhook = currentWebhooks.find{it.name == name}
+    logTrace("Current Webhooks: ${currentWebhooks}")
+    LinkedHashMap currentWebhook = [:]
+    currentWebhooks.each{ hook -> 
+      if(hook?.name == "${name}.${cid}".toString()) {currentWebhook = hook}
+    }
     logDebug("Webhook name: ${name}, found current webhook:${currentWebhook}")
     if(attrs.size() > 0) {
       logDebug('Webhook has attrs, processing each to set webhoook...')
       attrs.each{
         String event = it.name.toString()
-        name = "hubitat.${type}.${event}".toString()
-        webhookCreateOrUpdate(type, event, cid, currentWebhook)
+        currentWebhooks.each{ hook -> 
+          if(hook?.name == "${name}.${event}.${cid}".toString()) {currentWebhook = hook}
+        }
+        logDebug("Current Webhook: ${currentWebhook}")
+        if(event == 'tF') {
+          logTrace('Skipping webhook creating for F changes, no need to send both C and F to Hubitat')
+        } else {
+          webhookCreateOrUpdate(type, event, cid, currentWebhook)
+        }
       }
     } else {
       webhookCreateOrUpdate(type, null, cid, currentWebhook)
@@ -2177,7 +2193,6 @@ void processWebhookCreateOrUpdate(String name, Integer cid, List<LinkedHashMap> 
     if(attrs.size() > 0) {
       attrs.each{
         String event = it.name.toString()
-        name = "hubitat.${type}.${event}".toString()
         webhookCreateOrUpdate(type, event, cid, null)
       }
     } else {
@@ -2207,9 +2222,9 @@ void webhookCreate(String type, String event, Integer cid) {
     "params" : [
       "cid": cid,
       "enable": true,
-      "name": "hubitat.${type}.${event}".toString(),
+      "name": "hubitat.${type}.${event}.${cid}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}/${cid}".toString()]
     ]
   ]
   postCommandSync(command)
@@ -2224,7 +2239,7 @@ void webhookCreateNoEvent(String type, Integer cid) {
     "params" : [
       "cid": cid,
       "enable": true,
-      "name": "hubitat.${type}".toString(),
+      "name": "hubitat.${type}.${cid}".toString(),
       "event": "${type}".toString(),
       "urls": ["${getHubBaseUri()}/${type}/${cid}".toString()]
     ]
@@ -2239,11 +2254,12 @@ void webhookUpdate(String type, String event, Integer id, Integer cid) {
     "src" : "webhookUpdate",
     "method" : "Webhook.Update",
     "params" : [
-      "id": cid,
+      "id": id,
+      "cid": cid,
       "enable": true,
-      "name": "hubitat.${type}.${event}".toString(),
+      "name": "hubitat.${type}.${event}.${cid}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${event}/\${ev.${event}}/${cid}".toString()]
     ]
   ]
   postCommandSync(command)
@@ -2256,11 +2272,12 @@ void webhookUpdateNoEvent(String type, Integer id, Integer cid) {
     "src" : "webhookUpdate",
     "method" : "Webhook.Update",
     "params" : [
-      "id": cid,
+      "id": id,
+      "cid": cid,
       "enable": true,
-      "name": "hubitat.${type}".toString(),
+      "name": "hubitat.${type}.${cid}".toString(),
       "event": "${type}".toString(),
-      "urls": ["${getHubBaseUri()}/${type}".toString()]
+      "urls": ["${getHubBaseUri()}/${type}/${cid}".toString()]
     ]
   ]
   postCommandSync(command)
@@ -2486,6 +2503,18 @@ List<ChildDeviceWrapper> getInputCountChildren() {
 ChildDeviceWrapper getInputCountChildById(Integer id) {
   List<ChildDeviceWrapper> allChildren = getChildDevices()
   return allChildren.find{it.getDeviceDataValue('inputCountId') as Integer == id}
+}
+
+Boolean hasTemperatureChildren() { return getTemperatureChildren().size() > 0 }
+
+List<ChildDeviceWrapper> getTemperatureChildren() {
+  List<ChildDeviceWrapper> allChildren = getChildDevices()
+  return allChildren.findAll{it.getDeviceDataValue('temperatureId') != null}
+}
+
+ChildDeviceWrapper getTemperatureChildById(Integer id) {
+  List<ChildDeviceWrapper> allChildren = getChildDevices()
+  return allChildren.find{it.getDeviceDataValue('temperatureId') as Integer == id}
 }
 /* #endregion */
 /* #region HTTP Methods */
