@@ -49,6 +49,7 @@ library(
   'SNSW-001P15UL',
   'SNSW-001P16EU',
   'SNSW-102P16EU',
+  'SNSN-0013A'
 ]
 
 @Field static ConcurrentHashMap<String, ArrayList<BigDecimal>> movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>()
@@ -341,6 +342,9 @@ void initialize() {
     this.device.removeSetting('enablePowerMonitoring')
     this.device.removeSetting('resetMonitorsAtMidnight')
   }
+  LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
+  if(shellyGetConfigResult?.ble?.observer != null) { setDeviceDataValue('hasBluGateway', 'true') }
+
   if(hasBluGateway() == true) {
     if(getDeviceSettings().enableBluetoothGateway == null) { this.device.updateSetting('enableBluetoothGateway', true) }
   }else { this.device.removeSetting('enableBluetoothGateway') }
@@ -390,7 +394,7 @@ void configure() {
     atomicState.remove('reconnectTimer')
     initializeWebsocketConnection()
   } else {wsClose()}
-  configureNightlyPowerMonitoringReset()
+  if(hasPowerMonitoring() == true) { configureNightlyPowerMonitoringReset() }
 }
 
 void sendPrefsToDevice() {
@@ -794,7 +798,7 @@ String getParentDeviceDataValue(String dataValueName) {
 }
 
 String getChildDeviceDataValue(ChildDeviceWrapper child, String dataValueName) {
-  return child.getDeviceDataValue('switchId')
+  return child.getDeviceDataValue(dataValueName)
 }
 
 void setDeviceDataValue(String dataValueName, String valueToSet) {
@@ -803,7 +807,12 @@ void setDeviceDataValue(String dataValueName, String valueToSet) {
 
 @CompileStatic
 Boolean hasPowerMonitoring() {
-  return getDeviceDataValue('hasPM') == 'true'
+  if(hasChildren() == false) {return getDeviceDataValue('hasPM') == 'true'}
+  else {
+    List<ChildDeviceWrapper> allChildren = getDeviceChildren()
+    Boolean anyChildHasPM = allChildren.any{child -> getChildDeviceDataValue(child, 'hasPM') == 'true'}
+    return (anyChildHasPM || getDeviceDataValue('hasPM') == 'true')
+  } 
 }
 
 Boolean hasChildSwitches() {
@@ -814,7 +823,7 @@ Boolean hasChildSwitches() {
 
 @CompileStatic
 Boolean hasBluGateway() {
-  return getDeviceDataValue('model') in bluGatewayDevices
+  return getDeviceDataValue('hasBluGateway') != null
 }
 
 @CompileStatic
@@ -1051,11 +1060,13 @@ Boolean hasWebsocket() {
 
 @CompileStatic
 Boolean wsShouldBeConnected() {
-  logDebug("Checking if websocket should be connected...")
-  Boolean bluGatewayEnabled = getBooleanDeviceSetting('enableBluetoothGateway') == true
-  Boolean powerMonitoringEnabled = getBooleanDeviceSetting('enablePowerMonitoring') == true
-  logTrace("Websocket should be connected: ${bluGatewayEnabled || powerMonitoringEnabled}")
-  return bluGatewayEnabled || powerMonitoringEnabled
+  if(hasWebsocket()) {
+    logDebug("Checking if websocket should be connected...")
+    Boolean bluGatewayEnabled = getBooleanDeviceSetting('enableBluetoothGateway') == true
+    Boolean powerMonitoringEnabled = getBooleanDeviceSetting('enablePowerMonitoring') == true
+    logTrace("Websocket should be connected: ${bluGatewayEnabled || powerMonitoringEnabled}")
+    return bluGatewayEnabled || powerMonitoringEnabled
+  } else { return false }
 }
 
 /* #endregion */
@@ -1790,6 +1801,7 @@ void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
 
 @CompileStatic
 void getStatusGen1() {
+  logTrace('Sending Gen1 Device Status Request...')
   sendGen1CommandAsync('status', null, 'getStatusGen1Callback')
 }
 
@@ -2067,7 +2079,7 @@ Boolean actionsHaveEnabledTimes(LinkedHashMap actions) {
         logDebug("Motion")
         return true
       } else {
-        logDebug("Everything else")
+        logTrace("Everything else")
         return false
       }
     }
@@ -2642,10 +2654,15 @@ LinkedHashMap jsonSyncGet(Map params) {
 @CompileStatic
 Boolean responseIsValid(AsyncResponse response) {
   if (response?.status != 200 || response.hasError()) {
-    logError("Request returned HTTP status ${response.status}")
-    logError("Request error message: ${response.getErrorMessage()}")
-    try{logError("Request ErrorData: ${response.getErrorData()}")} catch(Exception e){} //Empty catch to work around not having a 'hasErrorData()' method
-    try{logError("Request ErrorJson: ${prettyJson(response.getErrorJson() as LinkedHashMap)}")} catch(Exception e){} //Empty catch to work around not having a 'hasErrorJson()' method
+    if((hasCapabilityBattery() || hasCapabilityBatteryGen1()) && response.status == 408 ) {
+      logInfo("Request returned HTTP status:${response.status}, error message: ${response.getErrorMessage()}")
+      logInfo('This is due to the device being asleep. If you are attempting to add/configure a device, ensure it is awake and connected to WiFi before trying again...')
+    } else {
+      logError("Request returned HTTP status ${response.status}")
+      logError("Request error message: ${response.getErrorMessage()}")
+      try{logError("Request ErrorData: ${response.getErrorData()}")} catch(Exception e){} //Empty catch to work around not having a 'hasErrorData()' method
+      try{logError("Request ErrorJson: ${prettyJson(response.getErrorJson() as LinkedHashMap)}")} catch(Exception e){} //Empty catch to work around not having a 'hasErrorJson()' method
+    }
   }
   if (response.hasError()) { return false } else { return true }
 }
