@@ -333,7 +333,6 @@ void configureNightlyPowerMonitoringReset() {
 void initialize() {
   if(hasIpAddress()) {
     runInRandomSeconds('getPreferencesFromShellyDevice')
-    if(hasWebsocket() == true) {initializeWebsocketConnection()}
   }
   if(hasPowerMonitoring() == true) {
     if(getDeviceSettings().enablePowerMonitoring == null) { this.device.updateSetting('enablePowerMonitoring', true) }
@@ -351,7 +350,9 @@ void initialize() {
   if(hasChildSwitches() == true) {
     if(getDeviceSettings().parentSwitchStateMode == null) { this.device.updateSetting('parentSwitchStateMode', 'anyOn') }
   } else { this.device.removeSetting('parentSwitchStateMode') }
+  initializeWebsocketConnectionIfNeeded()
 }
+
 /* #endregion */
 /* #region Configuration */
 void configure() {
@@ -390,11 +391,8 @@ void configure() {
     getDevice().updateSetting('presenceTimeout', [type: 'number', value: 300])
   }
   try { deviceSpecificConfigure() } catch(e) {}
-  if(wsShouldBeConnected() == true) {
-    atomicState.remove('reconnectTimer')
-    initializeWebsocketConnection()
-  } else {wsClose()}
   if(hasPowerMonitoring() == true) { configureNightlyPowerMonitoringReset() }
+  initializeWebsocketConnectionIfNeeded()
 }
 
 void sendPrefsToDevice() {
@@ -1614,7 +1612,7 @@ void processWebsocketMessagesConnectivity(LinkedHashMap json) {
     } else { setWebsocketStatus('connection timed out') }
     if(((LinkedHashMap)json.result)?.auth_en != null) {
       setAuthIsEnabled((Boolean)(((LinkedHashMap)json.result)?.auth_en))
-      shellyGetStatus('authCheck')
+      shellyGetStatusWs('authCheck')
     }
   }
 }
@@ -1944,10 +1942,29 @@ String shellyGetDeviceInfo(Boolean fullInfo = false, String src = 'shellyGetDevi
 }
 
 @CompileStatic
+String shellyGetDeviceInfoWs(Boolean fullInfo = false, String src = 'shellyGetDeviceInfo') {
+  if(src == 'connectivityCheck') {
+    long seconds = unixTimeSeconds()
+    src = "${src}-${seconds}"
+  }
+  Map command = shellyGetDeviceInfoCommand(fullInfo, src)
+  String json = JsonOutput.toJson(command)
+  parentSendWsMessage(json)
+}
+
+@CompileStatic
 String shellyGetStatus(String src = 'shellyGetStatus') {
   LinkedHashMap command = shellyGetStatusCommand(src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
+}
+
+@CompileStatic
+String shellyGetStatusWs(String src = 'shellyGetStatus') {
+  LinkedHashMap command = shellyGetStatusCommand(src)
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  String json = JsonOutput.toJson(command)
+  parentSendWsMessage(json)
 }
 
 @CompileStatic
@@ -2783,10 +2800,17 @@ void initializeWebsocketConnection() {
   wsConnect()
 }
 
+void initializeWebsocketConnectionIfNeeded() {
+  if(wsShouldBeConnected() == true) {
+    atomicState.remove('reconnectTimer')
+    initializeWebsocketConnection()
+  } else {wsClose()}
+}
+
 @CompileStatic
 void checkWebsocketConnection() {
   logDebug('Sending connectivityCheck websocket command...')
-  shellyGetDeviceInfo(false, 'connectivityCheck')
+  shellyGetDeviceInfoWs(false, 'connectivityCheck')
 }
 
 void reconnectWebsocketAfterDelay(Integer delay = 15) {
@@ -2918,9 +2942,7 @@ Boolean authIsEnabledGen1() {
 }
 
 @CompileStatic
-void performAuthCheck() {
-  shellyGetStatus('authCheck')
-}
+void performAuthCheck() { shellyGetStatusWs('authCheck') }
 
 @CompileStatic
 String getBasicAuthHeader() {
