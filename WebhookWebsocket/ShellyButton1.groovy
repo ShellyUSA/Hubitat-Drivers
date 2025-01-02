@@ -7,6 +7,7 @@ metadata {
     capability 'PushableButton' //numberOfButtons - NUMBER //pushed - NUMBER
     capability 'HoldableButton' //held - NUMBER
     attribute 'lastUpdated', 'string'
+    command 'setDeviceActionsGen1'
   }
 }
 
