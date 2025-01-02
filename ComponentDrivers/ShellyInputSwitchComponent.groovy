@@ -14,8 +14,14 @@ if(device != null) {preferences{}}
 // =============================================================================
 // Device Specific
 // =============================================================================
-void on() {logWarn('Cannot change state of an input on a Shelly device from Hubitat!')}
-void off() {logWarn('Cannot change state of an input on a Shelly device from Hubitat!')}
+void on() {
+  logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
+  sendEvent(name: 'switch', value: 'off', isStateChange: false)
+  }
+void off() {
+  logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
+  sendEvent(name: 'switch', value: 'on', isStateChange: false)
+  }
 // =============================================================================
 // End Device Specific
 // =============================================================================
