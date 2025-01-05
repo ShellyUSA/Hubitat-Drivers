@@ -3,6 +3,7 @@
 metadata {
   definition (name: 'Shelly Uni (Webhook)', namespace: 'ShellyUSA', author: 'Daniel Winks', importUrl: '') {
     capability 'Configuration'
+    capability 'Refresh'
     command 'setDeviceActionsGen1'
     command 'getPreferencesFromShellyDeviceGen1'
     command 'deleteHubitatWebhooksGen1'
@@ -25,7 +26,6 @@ metadata {
   'shortpush_url',
   'adc_over_url',
   'adc_under_url',
-  'report_url',
   'ext_temp_over_url',
   'ext_temp_under_url',
   'ext_hum_over_url',
