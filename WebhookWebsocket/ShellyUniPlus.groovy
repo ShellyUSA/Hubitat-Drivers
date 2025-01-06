@@ -12,6 +12,11 @@ metadata {
     capability "TemperatureMeasurement" //temperature - NUMBER, unit:°F || °C
 
     attribute 'lastUpdated', 'string'
+
+    command 'setDeviceActionsGen2'
+    command 'deleteChildDevices'
+    command 'getPreferencesFromShellyDevice'
+    command 'checkWebsocketConnection'
   }
 }
 
