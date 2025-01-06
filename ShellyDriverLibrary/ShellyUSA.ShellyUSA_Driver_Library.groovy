@@ -193,11 +193,13 @@ void getPreferencesFromShellyDevice() {
       Set<String> inputs = shellyGetConfigResult.keySet().findAll{it.startsWith('input')}
       Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
       Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
+      Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
 
       logDebug("Found Switches: ${switches}")
       logDebug("Found Inputs: ${inputs}")
       logDebug("Found Covers: ${covers}")
       logDebug("Found Temperatures: ${temps}")
+      logDebug("Found Humidites: ${hums}")
 
       if(switches.size() > 0) {
         logDebug('Multiple switches found, running Switch.GetConfig for each...')
@@ -211,12 +213,12 @@ void getPreferencesFromShellyDevice() {
             Map<String, Object> switchStatus = postCommandSync(switchGetStatusCommand(id))
             logDebug("Switch Status: ${prettyJson(switchStatus)}")
             Map<String, Object> switchStatusResult = (LinkedHashMap<String, Object>)switchStatus?.result
-            Boolean hasPM = 'apower' in switchStatusResult.keySet()
+            Boolean hasPM = ('apower' in switchStatusResult.keySet())
             ChildDeviceWrapper child = null
             if(hasPM == true) {
-              child = createChildSwitch(id)
-            } else {
               child = createChildPmSwitch(id)
+            } else {
+              child = createChildSwitch(id)
             }
             if(child != null) {setChildDevicePreferences(switchGetConfigResult, child)}
           }
@@ -265,7 +267,7 @@ void getPreferencesFromShellyDevice() {
         logDebug('No covers found...')
       }
 
-      if(temps.size() > 0 && hasNoChildrenNeeded() == false) {
+      if(temps.size() > 1 && hasNoChildrenNeeded() == false) {
         logDebug('Temperature(s) found, running Temperature.GetConfig for each...')
         temps.each{ temp ->
           Integer id = temp.tokenize(':')[1] as Integer
@@ -275,6 +277,19 @@ void getPreferencesFromShellyDevice() {
           logDebug('Creating child device for temperature...')
           ChildDeviceWrapper child = createChildTemperature(id)
           if(tempGetConfigResult != null && tempGetConfigResult.size() > 0) {setChildDevicePreferences(tempGetConfigResult, child)}
+        }
+      } else if(temps.size() == 1 && hums.size() == 1) {
+        temps.each{ temp ->
+          Integer id = temp.tokenize(':')[1] as Integer
+          logDebug("Temperature ID: ${id}")
+          Map tempGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(temperatureGetConfigCommand(id))?.result
+          Map humGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(humidityGetConfigCommand(id))?.result
+          logDebug("Temperature.GetConfig Result: ${prettyJson(tempGetConfigResult)}")
+          logDebug('Creating child device for temperature and humidity...')
+          logDebug("Humidity.GetConfig Result: ${prettyJson(humGetConfigResult)}")
+          ChildDeviceWrapper child = createChildTemperatureHumidity(id)
+          if(tempGetConfigResult != null && tempGetConfigResult.size() > 0) {setChildDevicePreferences(tempGetConfigResult, child)}
+          if(humGetConfigResult != null && humGetConfigResult.size() > 0) {setChildDevicePreferences(humGetConfigResult, child)}
         }
       }
 
@@ -1547,6 +1562,32 @@ LinkedHashMap temperatureGetStatusCommand(Integer id = 0, src = 'temperatureGetS
 }
 
 @CompileStatic
+LinkedHashMap humidityGetConfigCommand(Integer id = 0, String src = 'humidityGetConfigCommand') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Humidity.GetConfig",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap humidityGetStatusCommand(Integer id = 0, src = 'humidityGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Humidity.GetStatus",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
 LinkedHashMap inputSetConfigCommandJson(
   Map jsonConfigToSend,
   Integer inputId = 0
@@ -2220,7 +2261,7 @@ void parseGen2Message(String raw) {
   Integer id = 0
   if(query.size() > 3) { id = query[3] as Integer}
   if(query[0] == 'report') {}
-  else if(query[0] == 'humidity.change') {setHumidityPercent(new BigDecimal(query[2]))}
+  else if(query[0] == 'humidity.change' && query[1] == 'rh') {setHumidityPercent(new BigDecimal(query[2]), id)}
   else if(query[0] == 'temperature.change' && query[1] == 'tC') {setTemperatureC(new BigDecimal(query[2]), id)}
   else if(query[0] == 'temperature.change' && query[1] == 'tF') {setTemperatureF(new BigDecimal(query[2]), id)}
   else if(query[0].startsWith('switch.o')) {
