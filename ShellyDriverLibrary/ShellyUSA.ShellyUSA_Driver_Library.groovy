@@ -784,9 +784,9 @@ void setTemperatureC(BigDecimal tempC, Integer id = 0) {
   BigDecimal v = isCelciusScale() ? tempC.setScale(1, BigDecimal.ROUND_HALF_UP) : cToF(tempC).setScale(1, BigDecimal.ROUND_HALF_UP)
   if(hasTemperatureChildren() == true) {
     ChildDeviceWrapper child = getTemperatureChildById(id)
-    child.sendEvent(name: 'temperature', value: v)
+    child.sendEvent(name: 'temperature', value: v, unit: '°C')
   } else {
-    getDevice().sendEvent(name: 'temperature', value: v)
+    getDevice().sendEvent(name: 'temperature', value: v, unit: '°C')
   }
 }
 
@@ -795,9 +795,9 @@ void setTemperatureF(BigDecimal tempF, Integer id = 0) {
   BigDecimal v = isCelciusScale() ? fToC(tempF).setScale(1, BigDecimal.ROUND_HALF_UP) : tempF.setScale(1, BigDecimal.ROUND_HALF_UP)
   if(hasTemperatureChildren()) {
     ChildDeviceWrapper child = getTemperatureChildById(id)
-    child.sendEvent(name: 'temperature', value: v)
+    child.sendEvent(name: 'temperature', value: v, unit: '°F')
   } else {
-    getDevice().sendEvent(name: 'temperature', value: v)
+    getDevice().sendEvent(name: 'temperature', value: v, unit: '°F')
   }
 }
 
