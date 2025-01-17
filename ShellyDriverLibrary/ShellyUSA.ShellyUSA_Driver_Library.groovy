@@ -766,16 +766,16 @@ void resetEnergyMonitors(Integer id = 0) {
 /* #region Device Getters and Setters */
 @CompileStatic
 void setBatteryPercent(Integer percent) {
-  getDevice().sendEvent(name: 'battery', value: percent)
+  getDevice().sendEvent(name: 'battery', value: percent, unit: '%')
 }
 
 @CompileStatic
 void setHumidityPercent(BigDecimal percent, Integer id = 0) {
   if(hasHumidityChildren() == true) {
     ChildDeviceWrapper child = getHumidityChildById(id)
-    child.sendEvent(name: 'humidity', value: percent.setScale(1, BigDecimal.ROUND_HALF_UP))
+    child.sendEvent(name: 'humidity', value: percent.setScale(1, BigDecimal.ROUND_HALF_UP), unit: '%')
   } else {
-    getDevice().sendEvent(name: 'humidity', value: percent.setScale(1, BigDecimal.ROUND_HALF_UP))
+    getDevice().sendEvent(name: 'humidity', value: percent.setScale(1, BigDecimal.ROUND_HALF_UP), unit: '%')
   }
 }
 
@@ -1121,7 +1121,6 @@ void setChildDevicePreferences(Map preferences, ChildDeviceWrapper child) {
   Boolean isInput = (child.getDeviceDataValue('inputSwitchId') != null && child.getDeviceDataValue('inputSwitchId') != '') || (child.getDeviceDataValue('inputCountId') != null && child.getDeviceDataValue('inputCountId') != '') || (child.getDeviceDataValue('inputButtonId') != null && child.getDeviceDataValue('inputButtonId') != '') || (child.getDeviceDataValue('inputAnalogId') != null && child.getDeviceDataValue('inputAnalogId') != '')
   Boolean isTemperature = (child.getDeviceDataValue('temperatureId') != null && child.getDeviceDataValue('temperatureId') != '')
   logDebug("${child} is switch: ${isSwitch}, isCover:${isCover}, isInput:${isInput}, isTemperature: ${isTemperature}")
-  logDebug("PreferenceMap: ${prettyJson(preferenceMap)}")
   preferences.each{ k,v ->
     String c = "cover_${k}"
     String i = "input_${k}"
