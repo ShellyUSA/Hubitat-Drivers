@@ -17,25 +17,18 @@ metadata {
 }
 
 @Field static Boolean GEN1 = true
-if(device != null) {preferences{}}
 
 @CompileStatic
-void refreshDeviceSpecificInfo() {
-  LinkedHashMap response = (LinkedHashMap)sendGen1Command('status')
-  logJson(response)
-  LinkedHashMap concentration = (LinkedHashMap)response?.concentration
-  Integer ppm = concentration?.ppm as Integer
-  setGasPPM(ppm)
-  LinkedHashMap gas_sensor = (LinkedHashMap)response?.gas_sensor
-  String self_test_state = gas_sensor?.self_test_state.toString()
-  getDevice().sendEvent(name: 'selfTestState', value: self_test_state)
-}
+void selfTest() {sendGen1CommandAsync('self_test')}
 
 @CompileStatic
-void selfTest() {sendGen1Command('/self_test')}
+void mute() {sendGen1CommandAsync('mute')}
 
 @CompileStatic
-void mute() {sendGen1Command('/mute')}
+void unmute() {sendGen1CommandAsync('unmute')}
 
 @CompileStatic
-void unmute() {sendGen1Command('/unmute')}
+void open() {sendGen1CommandAsync('valve/0?go=open')}
+
+@CompileStatic
+void close() {sendGen1CommandAsync('valve/0?go=close')}
