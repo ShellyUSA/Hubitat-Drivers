@@ -18,7 +18,6 @@ metadata {
   }
 }
 
-if(device != null) {preferences{}}
 @Field static Boolean WS = true
 
 // =============================================================================
