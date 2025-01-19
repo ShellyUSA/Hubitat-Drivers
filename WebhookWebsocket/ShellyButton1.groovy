@@ -12,6 +12,6 @@ metadata {
 }
 
 @Field static Boolean GEN1 = true
-@Field static Boolean BUTTONS = 3
+@Field static Integer BUTTONS = 3
 @Field static Boolean HAS_BATTERY_GEN1 = true
 if(device != null) {preferences{}}
