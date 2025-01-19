@@ -10,8 +10,6 @@ metadata {
     capability 'IlluminanceMeasurement' //illuminance - NUMBER, unit:lx
     capability 'TemperatureMeasurement' //temperature - NUMBER, unit:°F || °C
     attribute 'lastUpdated', 'string'
-    command 'deleteHubitatWebhooksGen1'
-    command 'setDeviceActionsGen1'
   }
 }
 
@@ -29,5 +27,3 @@ metadata {
   'dark_condition',
   'twilight_condition'
 ]
-
-if(device != null) {preferences{}}
