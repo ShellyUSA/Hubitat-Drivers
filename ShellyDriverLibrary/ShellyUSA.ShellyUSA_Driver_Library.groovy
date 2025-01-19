@@ -73,7 +73,6 @@ if (device != null) {
     }
 
     preferenceMap.each{ String k,LinkedHashMap v ->
-      logDebug("Setting k: ${k}")
       if(thisDeviceHasSetting(k) ) {
         if(v.type == 'enum') {
           input(name: k, required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: v.options)
@@ -316,17 +315,6 @@ void getPreferencesFromShellyDevice() {
           if(humGetConfigResult != null && humGetConfigResult.size() > 0) {setChildDevicePreferences(humGetConfigResult, child)}
         }
       }
-
-
-      if(thisDeviceOrChildrenHasPowerMonitoring() == true) { configureNightlyPowerMonitoringReset() }
-
-      // Enable or disable BLE gateway functionality
-      if(hasBluGateway() == true && getDeviceSettings().enableBluetoothGateway == true) {
-        logDebug('Bluetooth Gateway functionality enabled, configuring device for bluetooth reporting to Hubitat...')
-        enableBluReportingToHE()
-      }
-      else if(hasBluGateway() == true && getDeviceSettings().enableBluetoothGateway == false) {disableBluReportingToHE()}
-
     } else {
       getPreferencesFromShellyDeviceGen1()
     }
@@ -429,7 +417,7 @@ void getPreferencesFromShellyDeviceGen1() {
 
 @CompileStatic
 void configureNightlyPowerMonitoringReset() {
-  logDebug('Power monitoring device detected, creating nightly monitor reset scheduled task...')
+  logDebug('Power monitoring device detected...')
   if(getBooleanDeviceSetting('enablePowerMonitoring') == true) {
     logDebug('Power monitoring is enabled in device preferences...')
     if(getBooleanDeviceSetting('resetMonitorsAtMidnight') == true) {
@@ -446,8 +434,11 @@ void configureNightlyPowerMonitoringReset() {
     setPower(0 as BigDecimal)
     setEnergy(0 as BigDecimal)
     unscheduleTask('switchResetCounters')
-    unscheduleTask('checkWebsocketConnection')
-    wsClose()
+    if(wsShouldBeConnected() == false) {
+      logDebug('Websocket connection no longer required, removing any WS connection checks and closing connection...')
+      unscheduleTask('checkWebsocketConnection')
+      wsClose()
+    }
   }
 }
 
@@ -495,12 +486,11 @@ void configure() {
     String ipAddress = getIpAddress()
     if (ipAddress != null && ipAddress != '' && ipAddress ==~ /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/) {
       logDebug('Device has an IP address set in preferences, updating DNI if needed...')
-      setThisDeviceNetworkId(ipAddress)
+      setIpAddress(ipAddress)
     } else {
       logDebug('Could not set device network ID because device settings does not have a valid IP address set.')
     }
     getOrSetPrefs()
-    setDeviceDataValue('ipAddress', getIpAddress())
 
     if(isGen1Device() == true) {
       try {setDeviceActionsGen1()}
@@ -511,8 +501,7 @@ void configure() {
     } else {
       initializeWebsocketConnectionIfNeeded()
     }
-  }
-  else if(isBlu() == false) {
+  } else if(isBlu() == false) {
     logDebug('Starting configuration for child device...')
     sendPreferencesToShellyDevice()
   } else if(isBlu() == true) {
@@ -521,6 +510,16 @@ void configure() {
     setThisDeviceNetworkId(mac)
     setDeviceDataValue('macAddress', mac)
   }
+
+  // Enable or disable BLE gateway functionality
+  if(hasBluGateway() == true && getDeviceSettings().enableBluetoothGateway == true) {
+    logDebug('Bluetooth Gateway functionality enabled, configuring device for bluetooth reporting to Hubitat...')
+    enableBluReportingToHE()
+  }
+  else if(hasBluGateway() == true && getDeviceSettings().enableBluetoothGateway == false) {
+    logDebug('Bluetooth Gateway functionality disabled, configuring device to no longer have bluetooth reporting to Hubitat...')
+    disableBluReportingToHE()
+  } else { logDebug('Device does not support Bluetooth gateway')}
 
   if(hasButtons() == true) {sendDeviceEvent([name: 'numberOfButtons', value: getNumberOfButtons()])}
 
@@ -922,15 +921,18 @@ Boolean hasParent() { return parent != null }
 
 @CompileStatic
 Boolean thisDeviceHasSetting(String settingName) {
-  logDebug("Device Settings: ${getDeviceSettings()}")
   Boolean hasSetting = getDeviceSettings().containsKey("${settingName}".toString())
-  logDebug("Device has setting ${settingName}: ${hasSetting}")
   return hasSetting
 }
 
 @CompileStatic
 Boolean getBooleanDeviceSetting(String settingName) {
   return thisDeviceHasSetting(settingName) ? getDeviceSettings()[settingName] as Boolean : null
+}
+
+@CompileStatic
+String getStringDeviceSetting(String settingName) {
+  return thisDeviceHasSetting(settingName) ? getDeviceSettings()[settingName] as String : null
 }
 
 @CompileStatic
@@ -956,6 +958,11 @@ Boolean hasChildren() {
 String getThisDeviceDNI() { return this.device.getDeviceNetworkId() }
 void setThisDeviceNetworkId(String newDni) { thisDevice().setDeviceNetworkId(newDni) }
 String getMACFromIPAddress(String ipAddress) { return getMACFromIP(ipAddress) }
+String getIpAddressFromHexAddress(String hexString) {
+  Integer[] i = hubitat.helper.HexUtils.hexStringToIntArray(hexString)
+  String ip = i.join('.')
+  return ip
+}
 
 @CompileStatic
 void sendDeviceEvent(String name, Object value, String unit = null, String descriptionText = null, Boolean isStateChange = false) {
@@ -1159,7 +1166,16 @@ Boolean hasIpAddress() {
 
 @CompileStatic
 String getIpAddress() {
-  if(hasIpAddress()) {return getDeviceSettings().ipAddress} else {return null}
+  if(hasIpAddress()) {return getStringDeviceSetting('ipAddress')} else {return null}
+}
+
+@CompileStatic setIpAddress(String ipAddress, Boolean updateSetting = false) {
+  setThisDeviceNetworkId(getMACFromIPAddress(ipAddress))
+  setDeviceDataValue('ipAddress', ipAddress)
+  if(updateSetting == true) {
+    logDebug("Incoming webhook IP address doesn't match what is currently set in driver preferences, updating preference value...")
+    setDeviceSetting('ipAddress', ipAddress)
+  }
 }
 
 @CompileStatic
@@ -1362,10 +1378,8 @@ Integer getNumberOfButtons() {return hasButtons() == true ? BUTTONS as Integer :
 @CompileStatic
 Boolean wsShouldBeConnected() {
   if(hasWebsocket()) {
-    logDebug("Checking if websocket should be connected...")
     Boolean bluGatewayEnabled = getBooleanDeviceSetting('enableBluetoothGateway') == true
     Boolean powerMonitoringEnabled = getBooleanDeviceSetting('enablePowerMonitoring') == true
-    logTrace("Websocket should be connected: ${bluGatewayEnabled || powerMonitoringEnabled}")
     return bluGatewayEnabled || powerMonitoringEnabled
   } else { return false }
 }
@@ -2282,9 +2296,11 @@ void getStatusGen2Callback(AsyncResponse response, Map data = null) {
 void parseGen1Message(String raw) {
   getStatusGen1()
   LinkedHashMap message = decodeLanMessage(raw)
+  String ip = getIpAddressFromHexAddress(message?.ip as String)
+  if(ip != getIpAddress()) { setIpAddress(ip, true) }
   LinkedHashMap headers = message?.headers as LinkedHashMap
-  logDebug("Message: ${message}")
-  logDebug("Headers: ${headers}")
+  logTrace("Gen1 Webhook Message: ${message}")
+  logTrace("Gen1 Webhook Headers: ${headers}")
   List<String> res = ((String)headers.keySet()[0]).tokenize(' ')
   List<String> query = ((String)res[1]).tokenize('/')
   if(query[0] == 'report') {}
@@ -2493,7 +2509,6 @@ List<String> getActionsToCreate() {
 @CompileStatic
 void setDeviceActionsGen1() {
   LinkedHashMap<String, List> actions = getDeviceActionsGen1()
-  // Boolean hasEnabledTimes = actionHasEnabledTimes(actions)
   logDebug("Gen 1 Actions: ${prettyJson(actions)}")
   actions.each{ k,v ->
     v.each{ m ->
@@ -2549,10 +2564,12 @@ Boolean actionHasEnabledTimes(List<LinkedHashMap> action) {
         Map url = (Map)urls[0]
         if(url?.int != null) {
           logDebug("Has times")
+          return true
         }
       }
     } else {
       logDebug("No times")
+      return false
     }
   }
 }
@@ -3456,7 +3473,7 @@ void webSocketStatus(String message) {
     logWarn("Websocket Status Message: ${message}")
     setWebsocketStatus('unknown')
   }
-  logTrace("Socket Status: ${message}")
+  logTrace("Incoming Socket Status message: ${message}")
 }
 
 void wsConnect() {
@@ -3488,12 +3505,13 @@ void initializeWebsocketConnection() {
 }
 
 void initializeWebsocketConnectionIfNeeded() {
-  if(wsShouldBeConnected() == true) {
-    atomicState.remove('reconnectTimer')
+  atomicState.remove('reconnectTimer')
+  if(wsShouldBeConnected() == true && getWebsocketIsConnected() == false) {
     initializeWebsocketConnection()
+    checkWebsocketConnection()
   } else {
     wsClose()
-    setDeviceActionsGen2
+    setDeviceActionsGen2()
   }
 }
 
@@ -3521,14 +3539,11 @@ void setWebsocketStatus(String status) {
   if(status == 'open') {
     logDebug('Websocket connection is open, cancelling any pending reconnection attempts...')
     unschedule('initializeWebsocketConnection')
-    if(atomicState.initInProgress == true) {
-      atomicState.remove('initInProgress')
-      atomicState.remove('reconnectTimer')
-      configure()
-    }
+    atomicState.remove('initInProgress')
+    atomicState.remove('reconnectTimer')
     runIn(1, 'performAuthCheck')
   }
-  this.device.updateDataValue('websocketStatus', status)
+  setDeviceDataValue('websocketStatus', status)
 }
 
 Integer getReconnectTimer() {
