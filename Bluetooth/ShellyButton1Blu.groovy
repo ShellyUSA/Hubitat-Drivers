@@ -17,16 +17,11 @@ metadata {
   }
 }
 @Field static Boolean BLU = true
+
+@CompileStatic
 void deviceSpecificConfigure() {
-  if(getDeviceSettings().presenceTimeout == null) {getDevice().updateSetting('presenceTimeout', [type: 'number', value: 300])}
-  this.device.sendEvent(name: 'numberOfButtons', value: 3)
+  if(getDeviceSettings().presenceTimeout == null) {setDeviceSetting('presenceTimeout', [type: 'number', value: 300])}
+  thisDevice().sendEvent(name: 'numberOfButtons', value: 3)
   runEveryCustomSeconds(60, 'checkPresence')
 }
 
-@CompileStatic
-void checkPresence() {
-  Event lastEvent = getDevice().events([max: 1])[0]
-  if(((unixTimeMillis() - lastEvent.getUnixTime()) / 1000) > (getDeviceSettings().presenceTimeout as Integer)) {
-    getDevice().sendEvent([name: 'presence', value: 'not present', isStateChange: false])
-  }
-}
