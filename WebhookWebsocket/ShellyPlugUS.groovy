@@ -11,17 +11,11 @@ metadata {
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
     command 'resetEnergyMonitors'
-    command 'getPreferencesFromShellyDevice'
   }
 }
 
 @Field static Boolean WS = true
-@Field static List<String> ACTIONS_TO_CREATE = [
-  'report_url',
-  'flood_detected_url',
-  'flood_gone_url'
-]
-if(device != null) {preferences{}}
+@Field static Boolean NOCHILDREN = true
 
 // =============================================================================
 // Device Specific
@@ -32,11 +26,7 @@ void on() { postCommandSync(switchSetCommand(true)) }
 @CompileStatic
 void off() { postCommandSync(switchSetCommand(false)) }
 
-void refreshDeviceSpecificInfo() {
-  switchGetConfig()
-  shellyGetDeviceInfo(true)
-  switchGetStatus()
-}
+void refreshDeviceSpecificInfo() {}
 // =============================================================================
 // End Device Specific
 // =============================================================================
