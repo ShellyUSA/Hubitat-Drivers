@@ -11,26 +11,22 @@ metadata {
   }
 }
 
-if(device != null) {preferences{}}
 @Field static Boolean COMP = true
 // =============================================================================
 // Device Specific
 // =============================================================================
-void open() {
-  parentPostCommandSync(coverOpenCommand(getDeviceDataValue('switchId') as Integer))
+void open() {parentPostCommandSync(coverOpenCommand(getIntegerDeviceSetting('coverId')))}
+
+void close() {parentPostCommandSync(coverCloseCommand(getIntegerDeviceSetting('coverId')))}
+
+void setPosition(BigDecimal position) {parentPostCommandSync(coverGoToPositionCommand(getIntegerDeviceSetting('coverId'), position as Integer))}
+
+void startPositionChange(String direction) {
+  if(direction == 'open') {open()}
+  if(direction == 'close') {close()}
 }
 
-void close() {
-  parentPostCommandSync(coverCloseCommand(getDeviceDataValue('switchId') as Integer))
-}
-
-void setPosition(BigDecimal position) {
-  parentPostCommandSync(coverGoToPositionCommand(getDeviceDataValue('switchId') as Integer, position as Integer))
-}
-
-void startPositionChange(String direction) {}
-
-void stopPositionChange() {}
+void stopPositionChange() {parentPostCommandSync(coverStopCommand(getIntegerDeviceSetting('coverId')))}
 // =============================================================================
 // End Device Specific
 // =============================================================================
