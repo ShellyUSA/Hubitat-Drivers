@@ -16,17 +16,3 @@ metadata {
 
 @Field static Boolean WS = true
 @Field static Boolean NOCHILDREN = true
-
-// =============================================================================
-// Device Specific
-// =============================================================================
-@CompileStatic
-void on() { parentPostCommandAsync(switchSetCommand(true)) }
-
-@CompileStatic
-void off() { parentPostCommandAsync(switchSetCommand(false)) }
-
-void refreshDeviceSpecificInfo() {}
-// =============================================================================
-// End Device Specific
-// =============================================================================
