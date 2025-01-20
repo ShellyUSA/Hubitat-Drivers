@@ -10,13 +10,4 @@ metadata {
   }
 }
 
-if(device != null) {preferences{}}
 @Field static Boolean COMP = true
-// =============================================================================
-// Device Specific
-// =============================================================================
-void on() {logWarn('Cannot change state of an input on a Shelly device from Hubitat!')}
-void off() {logWarn('Cannot change state of an input on a Shelly device from Hubitat!')}
-// =============================================================================
-// End Device Specific
-// =============================================================================
