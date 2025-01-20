@@ -16,21 +16,3 @@ metadata {
 }
 
 @Field static Boolean WS = true
-
-// =============================================================================
-// Device Specific
-// =============================================================================
-@CompileStatic
-void on() { postCommandSync(switchSetCommand(true)) }
-
-@CompileStatic
-void off() { postCommandSync(switchSetCommand(false)) }
-
-void refreshDeviceSpecificInfo() {
-  switchGetConfig()
-  shellyGetDeviceInfo(true)
-  switchGetStatus()
-}
-// =============================================================================
-// End Device Specific
-// =============================================================================
