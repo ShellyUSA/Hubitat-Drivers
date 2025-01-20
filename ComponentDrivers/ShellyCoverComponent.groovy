@@ -15,17 +15,22 @@ metadata {
 // =============================================================================
 // Device Specific
 // =============================================================================
+@CompileStatic
 void open() {parentPostCommandSync(coverOpenCommand(getIntegerDeviceSetting('coverId')))}
 
+@CompileStatic
 void close() {parentPostCommandSync(coverCloseCommand(getIntegerDeviceSetting('coverId')))}
 
+@CompileStatic
 void setPosition(BigDecimal position) {parentPostCommandSync(coverGoToPositionCommand(getIntegerDeviceSetting('coverId'), position as Integer))}
 
+@CompileStatic
 void startPositionChange(String direction) {
   if(direction == 'open') {open()}
   if(direction == 'close') {close()}
 }
 
+@CompileStatic
 void stopPositionChange() {parentPostCommandSync(coverStopCommand(getIntegerDeviceSetting('coverId')))}
 // =============================================================================
 // End Device Specific
