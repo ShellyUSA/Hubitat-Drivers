@@ -21,10 +21,10 @@ metadata {
 // Device Specific
 // =============================================================================
 @CompileStatic
-void on() { postCommandSync(switchSetCommand(true)) }
+void on() { parentPostCommandAsync(switchSetCommand(true)) }
 
 @CompileStatic
-void off() { postCommandSync(switchSetCommand(false)) }
+void off() { parentPostCommandAsync(switchSetCommand(false)) }
 
 void refreshDeviceSpecificInfo() {}
 // =============================================================================
