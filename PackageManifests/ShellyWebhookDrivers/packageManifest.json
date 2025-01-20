@@ -29,6 +29,90 @@
   ],
   "drivers": [
     {
+      "id": "fa710232-69e3-4c3a-bbd5-0876da5bd79c",
+      "name": "Shelly Cover Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyCoverComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "f71bc078-29c4-4cc0-9973-ead39639c117",
+      "name": "Shelly Humidity Peripheral Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyHumidityPeripheralComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "7c08f9bf-f3f2-478a-a5ad-a0ea005838a9",
+      "name": "Shelly Input Analog Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyInputAnalogComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "f6a463d6-053a-4f8e-9e68-7562a84a0f11",
+      "name": "Shelly Input Button Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyInputButtonComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "8bc3c882-993d-41cc-8e1f-116811cb3106",
+      "name": "Shelly Input Count Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyInputCountComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "cfaf9d5a-c623-4886-8462-72434074911a",
+      "name": "Shelly Input Switch Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyInputSwitchComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "c3773dec-e243-4888-9ad9-36dff91d531a",
+      "name": "Shelly Over/Under Switch Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyOverUnderSwitchComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "655dc7c6-8923-44f8-a6cd-9c6bcfc494f2",
+      "name": "Shelly Polling Voltage Sensor Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyPollingVoltageSensorComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "41fdf826-3cf4-459c-89f4-b61bf496ee49",
+      "name": "Shelly Switch Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellySwitchComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "5bd6c538-02d4-4709-8e8a-3f3a39f97d63",
+      "name": "Shelly Switch PM Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellySwitchComponentPM.groovy",
+      "required": true
+    },
+    {
+      "id": "61ea19aa-aee5-4d5c-99cb-eb048ad435fe",
+      "name": "Shelly Temperature Humidity Peripheral Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyTemperatureHumidityPeripheralComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "23ee982e-bfb4-4f4f-a178-94398fcf5f27",
+      "name": "Shelly Temperature Peripheral Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyTemperaturePeripheralComponent.groovy",
+      "required": true
+    },
+    {
       "id": "ccc859a9-4be3-45d4-bc09-9fa393a4fd3e",
       "name": "Shelly Plug US",
       "namespace": "ShellyUSA",
@@ -72,7 +156,7 @@
     },
     {
       "id": "4900ccee-fbb9-4df7-bd3a-2a479335ba79",
-      "name": "Shelly BLE Gateway",
+      "name": "Shelly Blu Gateway",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyBleGateway.groovy",
       "required": false
