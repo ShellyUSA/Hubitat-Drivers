@@ -10,17 +10,4 @@ metadata {
 }
 
 @Field static Boolean COMP = true
-// =============================================================================
-// Device Specific
-// =============================================================================
-void on() {
-  logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
-  sendEvent(name: 'switch', value: 'off', isStateChange: false)
-  }
-void off() {
-  logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
-  sendEvent(name: 'switch', value: 'on', isStateChange: false)
-  }
-// =============================================================================
-// End Device Specific
-// =============================================================================
+@Field static Boolean INPUTSWITCH = true
