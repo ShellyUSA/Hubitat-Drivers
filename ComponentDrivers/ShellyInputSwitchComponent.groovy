@@ -9,7 +9,6 @@ metadata {
   }
 }
 
-if(device != null) {preferences{}}
 @Field static Boolean COMP = true
 // =============================================================================
 // Device Specific
