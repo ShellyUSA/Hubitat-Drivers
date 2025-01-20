@@ -60,6 +60,8 @@ List<String> getActionsToCreate() {
 }
 
 Boolean deviceIsComponent() {return COMP == true}
+Boolean deviceIsComponentInputSwitch() {return INPUTSWITCH == true}
+Boolean deviceIsOverUnderSwitch() {return OVERUNDERSWITCH == true}
 
 Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true }
 Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
@@ -1094,7 +1096,7 @@ Boolean deviceIsSwitch(DeviceWrapper dev) {return deviceHasDataValue('switchId',
 Boolean deviceIsCover(DeviceWrapper dev) {return deviceHasDataValue('coverId', dev)}
 
 @CompileStatic
-Boolean deviceIsInputSwitch(DeviceWrapper dev) {return deviceHasDataValue('inputSwitchId', dev)}
+Boolean deviceIsInputSwitch(DeviceWrapper dev) {return deviceHasDataValue('inputSwitchId', dev) || deviceIsComponentInputSwitch() == true}
 
 @CompileStatic
 Boolean deviceIsInputCount(DeviceWrapper dev) {return deviceHasDataValue('inputCountId', dev)}
@@ -1372,8 +1374,14 @@ Boolean getSwitchState() {
 }
 
 @CompileStatic
-void componentSwitchOn() {
-  if(isGen1Device() == true) {
+void on() {
+  if(deviceIsInputSwitch(thisDevice()) == true) {
+    logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
+    sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
+  } else if(deviceIsOverUnderSwitch() == true) {
+    logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
+    sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
+  } else if(isGen1Device() == true) {
     parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=on")
   } else {
     parentPostCommandAsync(switchSetCommand(true, getIntegerDeviceDataValue('switchId')))
@@ -1381,8 +1389,14 @@ void componentSwitchOn() {
 }
 
 @CompileStatic
-void componentSwitchOff() {
-  if(isGen1Device() == true) {
+void off() {
+  if(deviceIsInputSwitch(thisDevice()) == true) {
+    logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
+    sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
+  } else if(deviceIsOverUnderSwitch() == true) {
+    logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
+    sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
+  } else if(isGen1Device() == true) {
     parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
   } else {
     parentPostCommandAsync(switchSetCommand(false, getIntegerDeviceDataValue('switchId')))
