@@ -18,4 +18,3 @@ metadata {
   'flood_detected_url',
   'flood_gone_url'
 ]
-if(device != null) {preferences{}}
