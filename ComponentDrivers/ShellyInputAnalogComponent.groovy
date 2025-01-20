@@ -5,6 +5,7 @@ metadata {
     capability 'Sensor'
     capability 'Refresh'
 
+    attribute 'analogValue', 'number'
     attribute 'lastUpdated', 'string'
   }
 }
