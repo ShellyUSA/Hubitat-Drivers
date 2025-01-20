@@ -9,12 +9,14 @@ metadata {
   }
 }
 
-if(device != null) {preferences{}}
 @Field static Boolean COMP = true
 // =============================================================================
 // Device Specific
 // =============================================================================
+@CompileStatic
 void on() {componentSwitchOn()}
+
+@CompileStatic
 void off() {componentSwitchOff()}
 // =============================================================================
 // End Device Specific
