@@ -10,20 +10,3 @@ metadata {
     attribute 'lastUpdated', 'string'
   }
 }
-
-if(device != null) {preferences{}}
-
-
-
-
-@CompileStatic
-void on() { postCommandSync(switchSetCommand(true)) }
-
-@CompileStatic
-void off() { postCommandSync(switchSetCommand(false)) }
-
-void refreshDeviceSpecificInfo() {
-  switchGetConfig('switchGetConfig-refreshDeviceSpecificInfo')
-  shellyGetDeviceInfo(true)
-  switchGetStatus()
-}
