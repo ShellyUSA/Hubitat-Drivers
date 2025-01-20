@@ -19,4 +19,3 @@ metadata {
 @Field static List<String> ACTIONS_TO_CREATE = [
   'report_url'
 ]
-if(device != null) {preferences{}}
