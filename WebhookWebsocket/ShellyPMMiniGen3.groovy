@@ -14,5 +14,3 @@ metadata {
     attribute 'lastUpdated', 'string'
   }
 }
-
-if(device != null) {preferences{}}
