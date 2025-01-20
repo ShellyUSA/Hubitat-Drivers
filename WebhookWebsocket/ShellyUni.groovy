@@ -31,4 +31,3 @@ metadata {
   'ext_hum_over_url',
   'ext_hum_under_url'
 ]
-if(device != null) {preferences{}}
