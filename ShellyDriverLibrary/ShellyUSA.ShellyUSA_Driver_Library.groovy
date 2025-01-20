@@ -171,7 +171,7 @@ void refresh() {
       Integer switchId = getIntegerDeviceDataValue('switchId')
       if(switchId != null) {
         LinkedHashMap response = parentPostCommandSync(switchGetStatusCommand(switchId))
-        processWebsocketMessagesPowerMonitoring(response)
+        processGen2JsonMessage(response)
       }
     } else {
       List<ChildDeviceWrapper> switchChildren = getSwitchChildren()
@@ -180,7 +180,7 @@ void refresh() {
         Integer switchId = getChildDeviceIntegerDataValue(child, 'switchId')
         logDebug("Got child with switchId of ${switchId}")
         LinkedHashMap response = parentPostCommandSync(switchGetStatusCommand(switchId as Integer))
-        processWebsocketMessagesPowerMonitoring(response)
+        processGen2JsonMessage(response)
       }
       List<ChildDeviceWrapper> inputSwitchChildren = getInputSwitchChildren()
       inputSwitchChildren.each{child ->
@@ -188,7 +188,7 @@ void refresh() {
         Integer inputSwitchId = getChildDeviceIntegerDataValue(child, 'inputSwitchId')
         logDebug("Got child with switchId of ${inputSwitchId}")
         LinkedHashMap response = parentPostCommandSync(inputGetStatusCommand(inputSwitchId as Integer))
-        processWebsocketMessagesPowerMonitoring(response)
+        processGen2JsonMessage(response)
       }
     }
   }
@@ -498,11 +498,19 @@ void configure() {
     String ipAddress = getIpAddress()
     if (ipAddress != null && ipAddress != '' && ipAddress ==~ /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/) {
       logDebug('Device has an IP address set in preferences, updating DNI if needed...')
-      setIpAddress(ipAddress)
+      String deviceDataIpAddress = getDeviceDataValue('ipAddress')
+      if(deviceDataIpAddress == null || deviceDataIpAddress == '' || deviceDataIpAddress != ipAddress) {
+        logDebug('Detected newly added/changed IP address, getting preferences from device...')
+        setIpAddress(ipAddress)
+        getPreferencesFromShellyDevice()
+        refresh()
+      } else {
+        logDebug('Device IP address not changed, sending preferences to device...')
+        sendPreferencesToShellyDevice()
+      }
     } else {
       logDebug('Could not set device network ID because device settings does not have a valid IP address set.')
     }
-    getOrSetPrefs()
 
     if(isGen1Device() == true) {
       try {setDeviceActionsGen1()}
@@ -1304,9 +1312,9 @@ void setValveState(String position, Integer id = 0) {
   if(position in ['open','closed']) {
     List<ChildDeviceWrapper> children = getValveChildren()
     if(children != null && children.size() > 0) {
-      getValveChildById(id)?.sendEvent(name: 'valve', value: position)
+      getValveChildById(id)?.sendEvent([name: 'valve', value: position])
     } else {
-      thisDevice().sendEvent(name: 'valve', value: position)
+      thisDevice().sendEvent([name: 'valve', value: position])
     }
   }
 }
@@ -1316,7 +1324,7 @@ void setSwitchState(Boolean on, Integer id = 0) {
   if(on != null) {
     List<ChildDeviceWrapper> children = getSwitchChildren()
     if(children != null && children.size() > 0) {
-      getSwitchChildById(id)?.sendEvent(name: 'switch', value: on ? 'on' : 'off')
+      getSwitchChildById(id)?.sendEvent([name: 'switch', value: on ? 'on' : 'off'])
       //Create map of child states and set entry for this event in map.
       //Avoids race conditions from setting child state then immediately trying to retrieve it before it has a chance to settle.
       Map childStates = children.collectEntries{child -> [child.getDataValue('switchId') as Integer, child.currentValue('switch')] }
@@ -1324,10 +1332,10 @@ void setSwitchState(Boolean on, Integer id = 0) {
       Boolean anyOn = childStates.any{k,v -> v == 'on'}
       Boolean allOn = childStates.every{k,v -> v == 'on'}
       String parentSwitchStateMode = getDeviceSettings().parentSwitchStateMode
-      if(parentSwitchStateMode == 'anyOn') { thisDevice().sendEvent(name: 'switch', value: anyOn ? 'on' : 'off') }
-      if(parentSwitchStateMode == 'allOn') { thisDevice().sendEvent(name: 'switch', value: allOn ? 'on' : 'off') }
+      if(parentSwitchStateMode == 'anyOn') { thisDevice().sendEvent([name: 'switch', value: anyOn ? 'on' : 'off']) }
+      if(parentSwitchStateMode == 'allOn') { thisDevice().sendEvent([name: 'switch', value: allOn ? 'on' : 'off']) }
     } else {
-      thisDevice().sendEvent(name: 'switch', value: on ? 'on' : 'off')
+      thisDevice().sendEvent([name: 'switch', value: on ? 'on' : 'off'])
     }
   }
 }
@@ -1336,7 +1344,7 @@ void setSwitchState(Boolean on, Integer id = 0) {
 void setGen1AdcSwitchState(String value, Integer id) {
   if(value in ['on','off'] && id != null) {
     ChildDeviceWrapper child = getAdcSwitchChildById(id)
-    if(child != null) { child.sendEvent(name: 'switch', value: value) }
+    if(child != null) { child.sendEvent([name: 'switch', value: value]) }
   }
 }
 
@@ -1345,7 +1353,7 @@ void setGen1TemperatureSwitchState(String value, Integer id) {
   if(value in ['on','off'] && id != null) {
     ChildDeviceWrapper child = getTemperatureSwitchChildById(id)
     if(child != null) {
-      child.sendEvent(name: 'switch', value: value)
+      child.sendEvent([name: 'switch', value: value])
     }
   }
 }
@@ -1354,7 +1362,7 @@ void setGen1TemperatureSwitchState(String value, Integer id) {
 void setGen1HumiditySwitchState(String value, Integer id) {
   if(value in ['on','off'] && id != null) {
     ChildDeviceWrapper child = getHumiditySwitchChildById(id)
-    if(child != null) { child.sendEvent(name: 'switch', value: value) }
+    if(child != null) { child.sendEvent([name: 'switch', value: value]) }
   }
 }
 
@@ -1383,21 +1391,31 @@ void componentSwitchOff() {
 
 @CompileStatic
 void setInputSwitchState(Boolean on, Integer id = 0) {
+  logTrace("Setting inputSwitch:${id} to ${on ? 'on' : 'off'}")
   if(on != null) {
     List<ChildDeviceWrapper> children = getInputSwitchChildren()
     if(children != null && children.size() > 0) {
-      getInputSwitchChildById(id)?.sendEvent(name: 'switch', value: on ? 'on' : 'off')
+      getInputSwitchChildById(id)?.sendEvent([name: 'switch', value: on ? 'on' : 'off'])
     }
   }
 }
 
 @CompileStatic
 void setInputCountState(Integer count, Integer id = 0) {
-  logDebug("Sending count: ${count}")
   if(count != null) {
     List<ChildDeviceWrapper> children = getInputCountChildren()
     if(children != null && children.size() > 0) {
-      getInputCountChildById(id)?.sendEvent(name: 'count', value: count)
+      getInputCountChildById(id)?.sendEvent([name: 'count', value: count])
+    }
+  }
+}
+
+@CompileStatic
+void setInputAnalogState(BigDecimal value, Integer id = 0) {
+  if(value != null) {
+    List<ChildDeviceWrapper> children = getInputAnalogChildren()
+    if(children != null && children.size() > 0) {
+      getInputAnalogChildById(id)?.sendEvent([name: 'analogValue', value: value, unit: '%'])
     }
   }
 }
@@ -2000,11 +2018,11 @@ void parseWebsocketMessage(String message) {
   LinkedHashMap json = (LinkedHashMap)slurper.parseText(message)
   logTrace("Incoming WS message: ${prettyJson(json)}")
 
+  try {processGen2JsonMessage(json)}
+  catch(e) {logWarn("Encountered an issue ${e} with processGen2JsonMessage(): ${prettyJson(json)}")}
+
   try {processWebsocketMessagesAuth(json)}
   catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesAuth(): ${prettyJson(json)}")}
-
-  try {processWebsocketMessagesPowerMonitoring(json)}
-  catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesPowerMonitoring(): ${prettyJson(json)}")}
 
   try {processWebsocketMessagesConnectivity(json)}
   catch(e) {logWarn("Encountered an issue ${e} with processWebsocketMessagesConnectivity(): ${prettyJson(json)}")}
@@ -2016,7 +2034,6 @@ void parseWebsocketMessage(String message) {
 @CompileStatic
 void processWebsocketMessagesConnectivity(LinkedHashMap json) {
   if(((String)json?.dst).startsWith('connectivityCheck-') && json?.result != null) {
-    logTrace("Incoming WS JSON: ${json}")
     Long checkStarted = Long.valueOf(((String)json?.dst).split('-')[1])
     logDebug("Connectivity check started ${checkStarted}")
     if(checkStarted != null) {
@@ -2043,129 +2060,89 @@ void processWebsocketMessagesAuth(LinkedHashMap json) {
 }
 
 @CompileStatic
-void processWebsocketMessagesPowerMonitoring(LinkedHashMap json, Integer id = 0) {
-  // logDebug("Processing PM message...")
-
-  String dst = json?.dst
+void processGen2JsonMessage(LinkedHashMap jsonInput, Integer id = 0) {
+  String dst = jsonInput?.dst
+  LinkedHashMap<String, Object> json = [:]
   if(dst != null && dst != '') {
-    try{
-      if(json?.result != null && json?.result != '' && dst == 'switchGetStatus') {
-        logWarn("Res: ${json?.result}")
-        LinkedHashMap res = (LinkedHashMap)json.result
-        id = res?.id as Integer
-        if(res?.output != null && res?.output != '') {
-          Boolean switchState = res.output as Boolean
-          if(switchState != null) { setSwitchState(switchState, id) }
-        }
-      if(getDeviceSettings().enablePowerMonitoring != null && getDeviceSettings().enablePowerMonitoring == true) {
-          if(res?.current != null && res?.current != '') {
-            BigDecimal current =  (BigDecimal)res.current
-            if(current != null) { setCurrent(current, id) }
-          }
-
-          if(res?.apower != null && res?.apower != '') {
-            BigDecimal apower =  (BigDecimal)res.apower
-            if(apower != null) { setPower(apower, id) }
-          }
-
-          if(res?.voltage != null && res?.voltage != '') {
-            BigDecimal voltage =  (BigDecimal)res.voltage
-            if(voltage != null) { setVoltage(voltage, id) }
-          }
-
-          if(res?.aenergy != null && res?.aenergy != '') {
-            BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(res?.aenergy))?.total
-            if(aenergy != null) { setEnergy(aenergy/1000, id) }
-          }
-        }
-      }
-    } catch(ex) {logWarn("Exception processing incoming switchGetStatus websocket message: ${ex}")}
-
-
-    try{
-      // logWarn("Res: ${json?.result}")
-      if(json?.result != null && json?.result != '' && dst == 'inputGetStatus') {
-        LinkedHashMap res = (LinkedHashMap)json.result
-        id = res?.id as Integer
-        if(res?.state != null && res?.state != '') {
-          Boolean inputSwitchState = res.state as Boolean
-          if(inputSwitchState != null) { setInputSwitchState(inputSwitchState, id) }
-        }
-      }
-    } catch(ex) {logWarn("Exception processing incoming inputGetStatus websocket message: ${ex}")}
-
-      // Process incoming messages for NotifyStatus
-      try{
-        if(json?.method == 'NotifyStatus' && json?.params != null && json?.params != '') {
-          LinkedHashMap params = (LinkedHashMap<String, Object>)json.params
-          if(params != null && params.any{k,v -> k.startsWith('switch')}) {
-            String swName = params.keySet().find{it.startsWith('switch')}
-            if(swName != null && swName != '') {
-              id = swName.split(':')[1] as Integer
-              LinkedHashMap sw = (LinkedHashMap)params[swName]
-
-              if(sw?.output != null && sw?.output != '') {
-                Boolean switchState = sw.output as Boolean
-                if(switchState != null) { setSwitchState(switchState, id) }
-              }
-
-              if(sw?.current != null && sw?.current != '') {
-                BigDecimal current =  (BigDecimal)sw.current
-                if(current != null) { setCurrent(current, id) }
-              }
-
-              if(sw?.apower != null && sw?.apower != '') {
-                BigDecimal apower =  (BigDecimal)sw.apower
-                if(apower != null) { setPower(apower, id) }
-              }
-
-              if(sw?.aenergy != null && sw?.aenergy != '') {
-                LinkedHashMap aenergyMap = (LinkedHashMap)sw?.aenergy
-                if(aenergyMap?.total != null && aenergyMap?.total != '') {
-                  BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
-                  if(aenergy != null) { setEnergy(aenergy/1000, id) }
-                }
-              }
-            }
-          } else if(params != null && params.any{k,v -> k.startsWith('input')}) {
-            String inputName = params.keySet().find{it.startsWith('input')}
-            logTrace("Processing input WS message for ${inputName}")
-            if(inputName != null && inputName != '') {
-              id = inputName.split(':')[1] as Integer
-              LinkedHashMap inp = (LinkedHashMap)params[inputName]
-
-              if(inp?.state != null && inp?.state != '') {
-                Boolean inputState = inp.state as Boolean
-                if(inputState != null) { setInputSwitchState(inputState, id) }
-              }
-              if(inp?.counts != null && inp?.counts != '') {
-                Map counts = (LinkedHashMap)inp.counts
-                if(counts?.total != null && counts?.total != '') {
-                  Integer cTot = counts.total as Integer
-                  if(cTot != null) { setInputCountState(cTot, id) }
-                }
-              }
-            }
-          } else if(params != null && params.any{k,v -> k.startsWith('voltmeter:100')}) {
-            LinkedHashMap voltmeter = (LinkedHashMap)params["voltmeter:100"]
-            BigDecimal voltage = (BigDecimal)voltmeter?.voltage
-            logDebug("Sending ${voltage} volts")
-            setVoltage(voltage, 100)
-          }
-        }
-      } catch(ex) {logWarn("Exception processing NotifyStatus: ${ex}")}
-
-
-      // } else if (json?.result != null && json?.result != '') {
-      //   LinkedHashMap res = (LinkedHashMap)json.result
-      //   Boolean switchState = res?.output
-      //   if(switchState != null) { setSwitchState(switchState) }
-      // }
+    if(jsonInput?.result != null && jsonInput?.result != '') {
+      json = (LinkedHashMap<String, Object>)jsonInput?.result
+    } else if(jsonInput?.params != null && jsonInput?.params != '') {
+      json = (LinkedHashMap<String, Object>)jsonInput?.params
+    }
   }
+  processGen2JsonMessageBody(json)
 }
 
+@CompileStatic
+void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id = null) {
+  json.each{ k,v ->
+    // Switches
+    if(k.startsWith('switch:')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.output != null) {
+        Boolean switchState = update?.output as Boolean
+        if(switchState != null) { setSwitchState(switchState, id) }
+      }
+      if(getBooleanDeviceSetting('enablePowerMonitoring') == true) {
+        if(update?.current != null && update?.current != '') {
+          BigDecimal current =  (BigDecimal)update.current
+          if(current != null) { setCurrent(current, id) }
+        }
 
+        if(update?.apower != null && update?.apower != '') {
+          BigDecimal apower =  (BigDecimal)update.apower
+          if(apower != null) { setPower(apower, id) }
+        }
 
+        if(update?.voltage != null && update?.voltage != '') {
+          BigDecimal voltage =  (BigDecimal)update.voltage
+          if(voltage != null) { setVoltage(voltage, id) }
+        }
+
+        if(update?.aenergy != null && update?.aenergy != '') {
+          BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(update?.aenergy))?.total
+          if(aenergy != null) { setEnergy(aenergy/1000, id) }
+        }
+      }
+    }
+
+    // Inputs
+    if(k.startsWith('input:')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+
+      if(update?.state != null) {
+        Boolean inputSwitchState = update?.state as Boolean
+        if(inputSwitchState != null) {setInputSwitchState(inputSwitchState, id)}
+      }
+
+      if(update?.percent != null) {
+        BigDecimal percent =  (BigDecimal)update.percent
+        if(percent != null) {setInputAnalogState(percent, id)}
+      }
+
+      if(update?.counts != null) {
+        Map counts = (LinkedHashMap)update?.counts
+        if(counts?.total != null && counts?.size() > 0) {
+          Integer cTot = counts.total as Integer
+          if(cTot != null) { setInputCountState(cTot, id) }
+        }
+      }
+    }
+
+    // Temperatures
+    if(k.startsWith('temperature:')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+
+      if(update?.tC != null) {
+        BigDecimal tempC =  (BigDecimal)update.tC
+        if(tempC != null) {setTemperatureC(tempC, id)}
+      }
+    }
+  }
+}
 
 @CompileStatic
 void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
@@ -2435,7 +2412,7 @@ void parseGen2Message(String raw) {
   logTrace("Raw gen2Message: ${raw}")
   getStatusGen2()
   LinkedHashMap message = decodeLanMessage(raw)
-  logDebug("Received incoming message: ${prettyJson(message)}")
+  logTrace("Received incoming message: ${prettyJson(message)}")
   LinkedHashMap headers = message?.headers as LinkedHashMap
   List<String> res = ((String)headers.keySet()[0]).tokenize(' ')
   List<String> query = ((String)res[1]).tokenize('/')
@@ -2455,6 +2432,11 @@ void parseGen2Message(String raw) {
     String command = query[0]
     id = query[1] as Integer
     setInputSwitchState(command.toString() == 'input.toggle_on', id)
+  }
+  else if(query[0].startsWith('input.analog_measurement') && query[1].startsWith('percent')) {
+    String command = query[0]
+    id = query[3] as Integer
+    setInputAnalogState(new BigDecimal(query[2]), id)
   }
   setLastUpdated()
 }
@@ -3235,6 +3217,18 @@ List<ChildDeviceWrapper> getInputCountChildren() {
 ChildDeviceWrapper getInputCountChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'inputCountId') == id}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getInputAnalogChildren() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasDataValue(it,'inputAnalogId')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getInputAnalogChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'inputAnalogId') == id}
 }
 
 @CompileStatic
