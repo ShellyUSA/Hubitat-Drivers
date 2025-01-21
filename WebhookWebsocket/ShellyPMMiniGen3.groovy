@@ -1,7 +1,7 @@
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
-  definition (name: 'Shelly PM Mini Gen 3 (websocket)', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly PM Mini Gen 2&3 (Webhook)', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
@@ -14,3 +14,5 @@ metadata {
     attribute 'lastUpdated', 'string'
   }
 }
+
+@Field static Boolean NOCHILDREN = true
