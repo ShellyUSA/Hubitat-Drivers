@@ -698,20 +698,20 @@ void setCurrent(BigDecimal value, Integer id = 0) {
   ArrayList<BigDecimal> a = amperageAvgs(id)
   ChildDeviceWrapper c = getSwitchChildById(id)
   if(a.size() == 0) {
-    if(c != null) { c.sendEvent(name: 'amperage', value: value) }
-    else { thisDevice().sendEvent(name: 'amperage', value: value) }
+    if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value], c) }
+    else { sendDeviceEvent([name: 'amperage', value: value]) }
   }
   a.add(value)
   if(a.size() >= 10) {
     value = (((BigDecimal)a.sum()) / 10)
     value = value.setScale(1, BigDecimal.ROUND_HALF_UP)
     if(value == -1) {
-      if(c != null) { c.sendEvent(name: 'amperage', value: null) }
-      else { thisDevice().sendEvent(name: 'amperage', value: null) }
+      if(c != null) { sendChildDeviceEvent([name: 'amperage', value: null], c) }
+      else { sendDeviceEvent([name: 'amperage', value: null]) }
     }
     else if(value != null && value != getCurrent(id)) {
-      if(c != null) { c.sendEvent(name: 'amperage', value: value) }
-      else { thisDevice().sendEvent(name: 'amperage', value: value) }
+      if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value], c) }
+      else { sendDeviceEvent([name: 'amperage', value: value]) }
     }
     a.removeAt(0)
   }
@@ -728,20 +728,20 @@ void setPower(BigDecimal value, Integer id = 0) {
   ArrayList<BigDecimal> p = powerAvgs()
   ChildDeviceWrapper c = getSwitchChildById(id)
   if(p.size() == 0) {
-    if(c != null) { c.sendEvent(name: 'power', value: value) }
-    else { thisDevice().sendEvent(name: 'power', value: value) }
+    if(c != null) { sendChildDeviceEvent([name: 'power', value: value], c) }
+    else { sendDeviceEvent([name: 'power', value: value]) }
   }
   p.add(value)
   if(p.size() >= 10) {
     value = (((BigDecimal)p.sum()) / 10)
     value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
     if(value == -1) {
-      if(c != null) { c.sendEvent(name: 'power', value: null) }
-      else { thisDevice().sendEvent(name: 'power', value: null) }
+      if(c != null) { sendChildDeviceEvent([name: 'power', value: null], c) }
+      else { sendDeviceEvent([name: 'power', value: null]) }
     }
     else if(value != null && value != getPower()) {
-      if(c != null) { c.sendEvent(name: 'power', value: value) }
-      else { thisDevice().sendEvent(name: 'power', value: value) }
+      if(c != null) { sendChildDeviceEvent([name: 'power', value: value], c) }
+      else { sendDeviceEvent([name: 'power', value: value]) }
     }
     p.removeAt(0)
   }
@@ -757,29 +757,29 @@ BigDecimal getPower(Integer id = 0) {
 
 @CompileStatic
 void setVoltage(BigDecimal value, Integer id = 0) {
-  if(id == 100) { thisDevice().sendEvent(name: 'voltage', value: value) }
+  if(id == 100) { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
   if(hasADCGen1() == true) {
     ChildDeviceWrapper c = getVoltageChildById(id)
-    if(c != null) { c.sendEvent(name: 'voltage', value: value) }
+    if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
   }
   else {
     ArrayList<BigDecimal> v = voltageAvgs()
     ChildDeviceWrapper c = getSwitchChildById(id)
     if(v.size() == 0) {
-      if(c != null) { c.sendEvent(name: 'voltage', value: value) }
-      else { thisDevice().sendEvent(name: 'voltage', value: value) }
+      if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
+      else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
     }
     v.add(value)
     if(v.size() >= 10) {
       value = (((BigDecimal)v.sum()) / 10)
       value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
       if(value == -1) {
-        if(c != null) { c.sendEvent(name: 'voltage', value: null) }
-        else { thisDevice().sendEvent(name: 'voltage', value: null) }
+        if(c != null) { sendChildDeviceEvent([name: 'voltage', value: null, unit:'V'], c) }
+        else { sendDeviceEvent([name: 'voltage', value: null, unit:'V']) }
       }
       else if(value != null && value != getPower()) {
-        if(c != null) { c.sendEvent(name: 'voltage', value: value) }
-        else { thisDevice().sendEvent(name: 'voltage', value: value) }
+        if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
+        else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
       }
       v.removeAt(0)
     }
@@ -797,12 +797,12 @@ void setEnergy(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
   ChildDeviceWrapper c = getSwitchChildById(id)
   if(value == -1) {
-    if(c != null) { c.sendEvent(name: 'energy', value: null) }
-    else { thisDevice().sendEvent(name: 'energy', value: null) }
+    if(c != null) { sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c) }
+    else { sendDeviceEvent([name: 'energy', value: null, unit:'kWh']) }
   }
   else if(value != null && value != getEnergy(id)) {
-    if(c != null) { c.sendEvent(name: 'energy', value: value) }
-    else { thisDevice().sendEvent(name: 'energy', value: value) }
+    if(c != null) { sendChildDeviceEvent([name: 'energy', value: value, unit:'kWh'], c) }
+    else { sendDeviceEvent([name: 'energy', value: value, unit:'kWh']) }
   }
 }
 @CompileStatic
@@ -1314,9 +1314,9 @@ void setValveState(String position, Integer id = 0) {
   if(position in ['open','closed']) {
     List<ChildDeviceWrapper> children = getValveChildren()
     if(children != null && children.size() > 0) {
-      getValveChildById(id)?.sendEvent([name: 'valve', value: position])
+      sendChildDeviceEvent[name: 'valve', value: position], getValveChildById(id))
     } else {
-      thisDevice().sendEvent([name: 'valve', value: position])
+      sendDeviceEvent([name: 'valve', value: position])
     }
   }
 }
@@ -1326,7 +1326,7 @@ void setSwitchState(Boolean on, Integer id = 0) {
   if(on != null) {
     List<ChildDeviceWrapper> children = getSwitchChildren()
     if(children != null && children.size() > 0) {
-      getSwitchChildById(id)?.sendEvent([name: 'switch', value: on ? 'on' : 'off'])
+      sendChildDeviceEvent([name: 'switch', value: on ? 'on' : 'off'], getSwitchChildById(id))
       //Create map of child states and set entry for this event in map.
       //Avoids race conditions from setting child state then immediately trying to retrieve it before it has a chance to settle.
       Map childStates = children.collectEntries{child -> [child.getDataValue('switchId') as Integer, child.currentValue('switch')] }
@@ -1334,10 +1334,10 @@ void setSwitchState(Boolean on, Integer id = 0) {
       Boolean anyOn = childStates.any{k,v -> v == 'on'}
       Boolean allOn = childStates.every{k,v -> v == 'on'}
       String parentSwitchStateMode = getDeviceSettings().parentSwitchStateMode
-      if(parentSwitchStateMode == 'anyOn') { thisDevice().sendEvent([name: 'switch', value: anyOn ? 'on' : 'off']) }
-      if(parentSwitchStateMode == 'allOn') { thisDevice().sendEvent([name: 'switch', value: allOn ? 'on' : 'off']) }
+      if(parentSwitchStateMode == 'anyOn') { sendDeviceEvent([name: 'switch', value: anyOn ? 'on' : 'off']) }
+      if(parentSwitchStateMode == 'allOn') { sendDeviceEvent([name: 'switch', value: allOn ? 'on' : 'off']) }
     } else {
-      thisDevice().sendEvent([name: 'switch', value: on ? 'on' : 'off'])
+      sendDeviceEvent([name: 'switch', value: on ? 'on' : 'off'])
     }
   }
 }
@@ -1345,27 +1345,21 @@ void setSwitchState(Boolean on, Integer id = 0) {
 @CompileStatic
 void setGen1AdcSwitchState(String value, Integer id) {
   if(value in ['on','off'] && id != null) {
-    ChildDeviceWrapper child = getAdcSwitchChildById(id)
-    if(child != null) { child.sendEvent([name: 'switch', value: value]) }
+    sendChildDeviceEvent([name: 'switch', value: value], getAdcSwitchChildById(id))
   }
 }
 
 @CompileStatic
 void setGen1TemperatureSwitchState(String value, Integer id) {
   if(value in ['on','off'] && id != null) {
-    ChildDeviceWrapper child = getTemperatureSwitchChildById(id)
-    if(child != null) {
-      child.sendEvent([name: 'switch', value: value])
-    }
+    sendChildDeviceEvent([name: 'switch', value: value], getTemperatureSwitchChildById(id))
   }
 }
 
 @CompileStatic
 void setGen1HumiditySwitchState(String value, Integer id) {
   if(value in ['on','off'] && id != null) {
-    ChildDeviceWrapper child = getHumiditySwitchChildById(id)
-    if(child != null) { child.sendEvent([name: 'switch', value: value]) }
-  }
+  sendChildDeviceEvent([name: 'switch', value: value], getHumiditySwitchChildById(id)) }
 }
 
 @CompileStatic
@@ -1409,7 +1403,7 @@ void setInputSwitchState(Boolean on, Integer id = 0) {
   if(on != null) {
     List<ChildDeviceWrapper> children = getInputSwitchChildren()
     if(children != null && children.size() > 0) {
-      getInputSwitchChildById(id)?.sendEvent([name: 'switch', value: on ? 'on' : 'off'])
+      sendChildDeviceEvent([name: 'switch', value: on ? 'on' : 'off'], getInputSwitchChildById(id))
     }
   }
 }
@@ -1419,7 +1413,7 @@ void setInputCountState(Integer count, Integer id = 0) {
   if(count != null) {
     List<ChildDeviceWrapper> children = getInputCountChildren()
     if(children != null && children.size() > 0) {
-      getInputCountChildById(id)?.sendEvent([name: 'count', value: count])
+      sendChildDeviceEvent([name: 'count', value: count], getInputCountChildById(id))
     }
   }
 }
@@ -1429,14 +1423,14 @@ void setInputAnalogState(BigDecimal value, Integer id = 0) {
   if(value != null) {
     List<ChildDeviceWrapper> children = getInputAnalogChildren()
     if(children != null && children.size() > 0) {
-      getInputAnalogChildById(id)?.sendEvent([name: 'analogValue', value: value, unit: '%'])
+      sendChildDeviceEvent([name: 'analogValue', value: value, unit: '%'], getInputAnalogChildById(id))
     }
   }
 }
 
 @CompileStatic
 void setLastUpdated() {
-  thisDevice().sendEvent(name: 'lastUpdated', value: nowFormatted())
+  sendDeviceEvent([name: 'lastUpdated', value: nowFormatted()])
 }
 
 void sendEventToShellyBluetoothHelper(String loc, Object value, String dni) {
@@ -2278,11 +2272,11 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
       LinkedHashMap gas_sensor = (LinkedHashMap)json?.gas_sensor
       if(gas_sensor?.self_test_state != null && thisDevice().hasAttribute('selfTestState')) {
         String self_test_state = gas_sensor?.self_test_state.toString()
-        thisDevice().sendEvent(name: 'selfTestState', value: self_test_state)
+        sendDeviceEvent([name: 'selfTestState', value: self_test_state])
       }
       if(gas_sensor?.alarm_state != null && thisDevice().hasAttribute('naturalGas')) {
         String alarm_state = gas_sensor?.alarm_state.toString()
-        thisDevice().sendEvent(name: 'naturalGas', value: alarm_state in ['mild','heavy'] ? 'detected' : 'clear')
+        sendDeviceEvent([name: 'naturalGas', value: alarm_state in ['mild','heavy'] ? 'detected' : 'clear'])
       }
     }
     if(hasPollingChildren() == true) {
