@@ -112,7 +112,7 @@ if (device != null) {
     }
 
     if(hasChildSwitches() == true) {
-      input(name: 'parentSwitchStateMode', type: 'enum', title: 'Parent Switch State Mode', options: ['allOn':'On when all children on', 'anyOn':'On when any child on'])
+      input(name: 'parentSwitchStateMode', type: 'enum', title: 'Parent Switch State Mode', options: ['allOn':'On when all children on', 'anyOn':'On when any child on'], defaultValue: 'anyOn')
     }
 
     if(hasBluGateway() == true && deviceIsComponent() == false) {
@@ -198,18 +198,6 @@ void refresh() {
 }
 
 void tryRefreshDeviceSpecificInfo() {try{refreshDeviceSpecificInfo()} catch(ex) {}}
-
-@CompileStatic
-void getOrSetPrefs() {
-  if(getDeviceDataValue('ipAddress') == null || getDeviceDataValue('ipAddress') != getIpAddress()) {
-    logDebug('Detected newly added/changed IP address, getting preferences from device...')
-    getPreferencesFromShellyDevice()
-    refresh()
-  } else if(getDeviceDataValue('ipAddress') == getIpAddress()) {
-    logDebug('Device IP address not changed, sending preferences to device...')
-    sendPreferencesToShellyDevice()
-  }
-}
 
 @CompileStatic
 void getPreferencesFromShellyDevice() {
@@ -480,8 +468,10 @@ void initialize() {
 
 
   if(hasChildSwitches() == true) {
-    if(getDeviceSettings().parentSwitchStateMode == null) { setDeviceSetting('parentSwitchStateMode', 'anyOn') }
-  } else { removeDeviceSetting('parentSwitchStateMode') }
+    if(getDeviceSettings().parentSwitchStateMode == null) {setDeviceSetting('parentSwitchStateMode', 'anyOn')}
+  } else {
+    removeDeviceSetting('parentSwitchStateMode')
+  }
 
   if(hasIpAddress() == true) {initializeWebsocketConnectionIfNeeded()}
 
@@ -3389,9 +3379,11 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
       logError('Auth failed a second time. Double check password correctness.')
     }
   } else if(response?.status == 200) {
-    String followOnCallback = data.callbackMethod
-    logTrace("Follow On Callback: ${followOnCallback}")
-    "${followOnCallback}"(response, data)
+    String followOnCallback = data?.callbackMethod
+    if(followOnCallback != null && followOnCallback != '') {
+      logTrace("Follow On Callback: ${followOnCallback}")
+      "${followOnCallback}"(response, data)
+    }
   }
 }
 
