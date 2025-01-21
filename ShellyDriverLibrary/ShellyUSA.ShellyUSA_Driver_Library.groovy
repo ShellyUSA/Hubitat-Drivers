@@ -14,10 +14,11 @@ library(
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
 @Field static LinkedHashMap<String, LinkedHashMap> preferenceMap = [
   'switch_initial_state': [type: 'enum', title: 'State after power outage', options: ['off':'Power Off', 'on':'Power On', 'restore_last':'Previous State', 'match_input':'Match Input']],
-  'switch_auto_off': [type: 'bool', title: 'Auto-ON: after turning ON, turn OFF after a predefined time (in seconds)'],
-  'switch_auto_off_delay': [type:'number', title: 'Auto-ON Delay: delay before turning OFF'],
-  'switch_auto_on': [type: 'bool', title: 'Auto-OFF: after turning OFF, turn ON after a predefined time (in seconds)'],
-  'switch_auto_on_delay': [type:'number', title: 'Auto-OFF Delay: delay before turning ON'],
+  'switch_auto_off': [type: 'bool', title: 'Auto-OFF: after turning ON, turn OFF after a predefined time (in seconds)'],
+  'switch_auto_off_delay': [type:'number', title: 'Auto-OFF Delay: delay before turning OFF'],
+  'switch_auto_on': [type: 'bool', title: 'Auto-ON: after turning OFF, turn ON after a predefined time (in seconds)'],
+  'switch_auto_on_delay': [type:'number', title: 'Auto-ON Delay: delay before turning ON'],
+  'switch_in_mode': [type: 'enum', title: 'Mode of associated input', options: []],
   'autorecover_voltage_errors': [type: 'bool', title: 'Turn back ON after overvoltage if previously ON'],
   'current_limit': [type: 'number', title: 'Overcurrent protection in amperes'],
   'power_limit': [type: 'number', title: 'Overpower protection in watts'],
@@ -34,7 +35,7 @@ library(
   'input_invert': [type: 'bool', title: 'True if the logical state of the associated input is inverted, false otherwise. For the change to be applied, the physical switch has to be toggled once after invert is set. For type analog inverts percent range - 100% becomes 0% and 0% becomes 100%'],
   'input_type': [type: 'bool', title: 'True if the logical state of the associated input is inverted, false otherwise. For the change to be applied, the physical switch has to be toggled once after invert is set. For type analog inverts percent range - 100% becomes 0% and 0% becomes 100%'],
 ]
-
+  // 'switch_in_mode': [type: 'enum', title: 'Mode of associated input', options: [momentary: 'momentary', follow: 'follow', flip: 'flip', detached: 'detached', cycle: 'cycle', activate: 'activate']]
 
 @Field static ConcurrentHashMap<String, ArrayList<BigDecimal>> movingAvgs = new java.util.concurrent.ConcurrentHashMap<String, ArrayList<BigDecimal>>()
 @Field static String BLE_SHELLY_BLU = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ble-shelly-blu.js'
@@ -68,6 +69,18 @@ Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
 Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
 Boolean hasCapabilityValve() { return device.hasCapability('Valve') == true }
 
+@CompileStatic
+LinkedHashMap getSwitchInModeOptions() {
+  if(getSwitchChildrenCount() == 2 && getInputSwitchChildrenCount() == 2) {
+    return [follow: 'follow', flip: 'flip', detached: 'detached', cycle: 'cycle', activate: 'activate']
+  } else if(getSwitchChildrenCount() == 1 && getInputSwitchChildrenCount() == 1) {
+    return [follow: 'follow', flip: 'flip', detached: 'detached', activate: 'activate']
+  } else if(getSwitchChildrenCount() == 1 && getInputButtonChildrenCount() == 1) {
+    return [momentary: 'momentary', detached: 'detached', activate: 'activate']
+  }  else {
+    return [momentary: 'momentary', follow: 'follow', flip: 'flip', detached: 'detached']
+  }
+}
 /* #endregion */
 
 /* #region Preferences */
@@ -86,22 +99,12 @@ if (device != null) {
 
     preferenceMap.each{ String k,LinkedHashMap v ->
       if(thisDeviceHasSetting(k) ) {
-        if(v.type == 'enum') {
+        if(v.type == 'enum' && k == 'switch_in_mode') {
+          input(name: k, required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: getSwitchInModeOptions())
+        } else if(v.type == 'enum') {
           input(name: k, required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: v.options)
         } else {
           input(name: k, required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue)
-        }
-      } else if(deviceIsSwitch() && thisDeviceHasSetting(k.replace('switch_',''))) {
-        if(v.type == 'enum') {
-          input(name: k.replace('switch_',''), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: v.options)
-        } else {
-          input(name: k.replace('switch_',''), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue)
-        }
-      } else if(deviceIsCover() && thisDeviceHasSetting(k.replace('cover_',''))) {
-        if(v.type == 'enum') {
-          input(name: k.replace('cover_',''), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue, options: v.options)
-        } else {
-          input(name: k.replace('cover_',''), required: v?.required ? v.required : false, title: v.title, type: v.type, defaultValue: v.defaultValue)
         }
       }
     }
@@ -194,6 +197,11 @@ void refresh() {
 
 void tryRefreshDeviceSpecificInfo() {try{refreshDeviceSpecificInfo()} catch(ex) {}}
 
+void parentGetPreferencesFromShellyDevice() {
+  if(hasParent() == true) {parent?.getPreferencesFromShellyDevice()}
+  else {getPreferencesFromShellyDevice()}
+}
+
 @CompileStatic
 void getPreferencesFromShellyDevice() {
   logDebug('Getting device info...')
@@ -245,7 +253,7 @@ void getPreferencesFromShellyDevice() {
         logDebug('No switches found...')
       }
 
-      if(inputs?.size() > 1) {
+      if(inputs?.size() > 0) {
         logDebug('Multiple inputs found, running Input.GetConfig for each...')
         inputs?.each{ inp ->
           Integer id = inp.tokenize(':')[1] as Integer
@@ -442,7 +450,7 @@ void configureNightlyPowerMonitoringReset() {
 @CompileStatic
 void initialize() {
   if(hasIpAddress() == true) {
-    runInRandomSeconds('getPreferencesFromShellyDevice')
+    getPreferencesFromShellyDevice()
   }
   if(thisDeviceOrChildrenHasPowerMonitoring() == true) {
     if(getDeviceSettings().enablePowerMonitoring == null) { setDeviceSetting('enablePowerMonitoring', true) }
@@ -639,6 +647,8 @@ void sendPreferencesToShellyDevice() {
     queryString += "&tamper_sensitivity${getDeviceSettings().gen1_tamper_sensitivity}".toString()
     sendGen1Command('settings', queryString)
   }
+
+  runInSeconds('parentGetPreferencesFromShellyDevice', 6)
 }
 /* #endregion */
 /* #region Power Monitoring Getters and Setters */
@@ -944,10 +954,12 @@ void setValvePosition(Boolean open, Integer valve = 0) {
 
 DeviceWrapper thisDevice() { return this.device }
 ArrayList<ChildDeviceWrapper> getThisDeviceChildren() { return getChildDevices() }
+ArrayList<ChildDeviceWrapper> getParentDeviceChildren() { return parent?.getChildDevices() }
 
 LinkedHashMap getDeviceSettings() { return this.settings }
 LinkedHashMap getParentDeviceSettings() { return this.parent?.settings }
 Boolean hasParent() { return parent != null }
+
 
 @CompileStatic
 Boolean thisDeviceHasSetting(String settingName) {
@@ -1273,7 +1285,6 @@ void setHubitatDevicePreferences(LinkedHashMap<String, Object> preferences, Devi
         } else if(preferenceMap[s].type == 'number') {
           setDeviceSetting(s, [type:'number', value: v as Integer], dev)
         } else {
-          logWarn("V is ${v}")
           setDeviceSetting(s, [type: preferenceMap[s].type, value: v], dev)
         }
     } else if(isCover == true && preferenceMap.containsKey(c) == true) {
@@ -3205,6 +3216,17 @@ ChildDeviceWrapper getEnergySwitchChildById(Integer id) {
 }
 
 @CompileStatic
+Integer getSwitchChildrenCount() {
+  if(hasParent() == true) {
+    ArrayList<ChildDeviceWrapper> allChildren = getParentDeviceChildren()
+    return allChildren.findAll{childHasDataValue(it,'switchId')}.size()
+  } else {
+    ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+    return allChildren.findAll{childHasDataValue(it,'switchId')}.size()
+  }
+}
+
+@CompileStatic
 List<ChildDeviceWrapper> getSwitchChildren() {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.findAll{childHasDataValue(it,'switchId')}
@@ -3214,6 +3236,17 @@ List<ChildDeviceWrapper> getSwitchChildren() {
 ChildDeviceWrapper getSwitchChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'switchId') == id}
+}
+
+@CompileStatic
+Integer getInputSwitchChildrenCount() {
+  if(hasParent() == true) {
+    ArrayList<ChildDeviceWrapper> allChildren = getParentDeviceChildren()
+    return allChildren.findAll{childHasDataValue(it,'inputSwitchId')}?.size()
+  } else {
+    ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+    return allChildren.findAll{childHasDataValue(it,'inputSwitchId')}?.size()
+  }
 }
 
 @CompileStatic
@@ -3254,6 +3287,17 @@ ChildDeviceWrapper getInputAnalogChildById(Integer id) {
 
 @CompileStatic
 Boolean hasInputButtonChildren() { return getInputButtonChildren().size() > 0 }
+
+@CompileStatic
+Integer getInputButtonChildrenCount() {
+  if(hasParent() == true) {
+    ArrayList<ChildDeviceWrapper> allChildren = getParentDeviceChildren()
+    return allChildren.findAll{childHasDataValue(it,'inputButtonId')}?.size()
+  } else {
+    ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+    return allChildren.findAll{childHasDataValue(it,'inputButtonId')}?.size()
+  }
+}
 
 @CompileStatic
 List<ChildDeviceWrapper> getInputButtonChildren() {
@@ -3891,6 +3935,14 @@ void runInRandomSeconds(String methodToRun, Integer seconds = 90) {
   } else {
     Long r = new Long(new Random().nextInt(seconds))
     runIn(r as Long, methodToRun)
+  }
+}
+
+void runInSeconds(String methodToRun, Integer seconds = 3) {
+  if(seconds < 0 || seconds > 240) {
+    logWarn('Seconds must be between 0 and 240')
+  } else {
+    runIn(seconds as Long, methodToRun)
   }
 }
 
