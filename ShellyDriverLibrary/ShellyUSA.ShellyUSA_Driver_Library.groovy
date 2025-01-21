@@ -785,11 +785,22 @@ void setEnergy(BigDecimal value, Integer id = 0) {
     if(c != null) { sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c) }
     else { sendDeviceEvent([name: 'energy', value: null, unit:'kWh']) }
   }
-  else if(value != null && value != getEnergy(id)) {
-    if(c != null) { sendChildDeviceEvent([name: 'energy', value: value, unit:'kWh'], c) }
+  else if(value != null) {
+    if(c != null) {
+      sendChildDeviceEvent([name: 'energy', value: value, unit:'kWh'], c)
+      updateParentEnergyTotal()
+    }
     else { sendDeviceEvent([name: 'energy', value: value, unit:'kWh']) }
   }
 }
+
+@CompileStatic
+void updateParentEnergyTotal() {
+  List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren()
+  List<BigDecimal> childEnergies = energySwitchChildren.collect{it.currentValue('energy') as BigDecimal}
+  setEnergy(childEnergies.sum() as BigDecimal)
+}
+
 @CompileStatic
 BigDecimal getEnergy(Integer id = 0) {
   ChildDeviceWrapper c = getSwitchChildById(id)
@@ -1095,6 +1106,10 @@ Boolean deviceIsInputAnalog(DeviceWrapper dev) {return deviceHasDataValue('input
 @CompileStatic
 Boolean deviceIsInput(DeviceWrapper dev) {return deviceIsInputSwitch(dev) || deviceIsInputCount(dev) || deviceIsInputButton(dev) || deviceIsInputAnalog(dev)}
 
+Boolean childHasAttribute(ChildDeviceWrapper child, String attributeName) {
+  return child.hasAttribute(attributeName)
+}
+
 String getParentDeviceDataValue(String dataValueName) {
   return parent?.getDeviceDataValue(dataValueName)
 }
@@ -1352,7 +1367,6 @@ Boolean getSwitchState() {
   return thisDevice().currentValue('switch', true) == 'on'
 }
 
-@CompileStatic
 void on() {
   if(deviceIsInputSwitch(thisDevice()) == true) {
     logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
@@ -1362,12 +1376,13 @@ void on() {
     sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
   } else if(isGen1Device() == true) {
     parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=on")
+  } else if(hasChildSwitches()) {
+    getSwitchChildren().each{it.on()}
   } else {
     parentPostCommandAsync(switchSetCommand(true, getIntegerDeviceDataValue('switchId')))
   }
 }
 
-@CompileStatic
 void off() {
   if(deviceIsInputSwitch(thisDevice()) == true) {
     logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
@@ -1377,6 +1392,8 @@ void off() {
     sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
   } else if(isGen1Device() == true) {
     parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
+  } else if(hasChildSwitches()) {
+    getSwitchChildren().each{it.off()}
   } else {
     parentPostCommandAsync(switchSetCommand(false, getIntegerDeviceDataValue('switchId')))
   }
@@ -3173,6 +3190,18 @@ List<ChildDeviceWrapper> getValveChildren() {
 ChildDeviceWrapper getValveChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'valveId') == id}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getEnergySwitchChildren() {
+  List<ChildDeviceWrapper> switchChildren = getSwitchChildren()
+  return switchChildren.findAll{childHasAttribute(it,'energy')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getEnergySwitchChildById(Integer id) {
+  List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren()
+  return energySwitchChildren.find{getChildDeviceIntegerDataValue(it,'switchId') == id}
 }
 
 @CompileStatic
