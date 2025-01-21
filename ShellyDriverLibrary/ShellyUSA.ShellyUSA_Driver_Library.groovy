@@ -169,29 +169,24 @@ void refresh() {
     refreshStatusGen1()
   } else {
     if(hasParent() == true) {
-      // Switch refresh
       Integer switchId = getIntegerDeviceDataValue('switchId')
       if(switchId != null) {
-        LinkedHashMap response = parentPostCommandSync(switchGetStatusCommand(switchId))
-        processGen2JsonMessage(response)
+        parentPostCommandAsync(switchGetStatusCommand(switchId), 'getStatusGen2Callback')
+      }
+      Integer inputSwitchId = getIntegerDeviceDataValue('inputSwitchId')
+      if(inputSwitchId != null) {
+        parentPostCommandAsync(inputGetStatusCommand(inputSwitchId), 'getStatusGen2Callback')
+      }
+      Integer temperatureId = getIntegerDeviceDataValue('temperatureId')
+      if(temperatureId != null) {
+        parentPostCommandAsync(temperatureGetStatusCommand(temperatureId), 'getStatusGen2Callback')
+      }
+      Integer humidityId = getIntegerDeviceDataValue('humidityId')
+      if(humidityId != null) {
+        parentPostCommandAsync(humidityGetStatusCommand(humidityId), 'getStatusGen2Callback')
       }
     } else {
-      List<ChildDeviceWrapper> switchChildren = getSwitchChildren()
-      switchChildren.each{child ->
-        logDebug("Refreshing switch child...")
-        Integer switchId = getChildDeviceIntegerDataValue(child, 'switchId')
-        logDebug("Got child with switchId of ${switchId}")
-        LinkedHashMap response = parentPostCommandSync(switchGetStatusCommand(switchId as Integer))
-        processGen2JsonMessage(response)
-      }
-      List<ChildDeviceWrapper> inputSwitchChildren = getInputSwitchChildren()
-      inputSwitchChildren.each{child ->
-        logDebug("Refreshing input switch child...")
-        Integer inputSwitchId = getChildDeviceIntegerDataValue(child, 'inputSwitchId')
-        logDebug("Got child with switchId of ${inputSwitchId}")
-        LinkedHashMap response = parentPostCommandSync(inputGetStatusCommand(inputSwitchId as Integer))
-        processGen2JsonMessage(response)
-      }
+      parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
     }
   }
   tryRefreshDeviceSpecificInfo()
@@ -2043,12 +2038,14 @@ void processWebsocketMessagesAuth(LinkedHashMap json) {
 }
 
 @CompileStatic
-void processGen2JsonMessage(LinkedHashMap jsonInput, Integer id = 0) {
+void processGen2JsonMessage(LinkedHashMap jsonInput) {
+  logTrace("Processing Gen2 Json Message: ${prettyJson(jsonInput)}")
   String dst = jsonInput?.dst
   LinkedHashMap<String, Object> json = [:]
   if(dst != null && dst != '') {
     if(jsonInput?.result != null && jsonInput?.result != '') {
-      json = (LinkedHashMap<String, Object>)jsonInput?.result
+      json[dst] = (LinkedHashMap<String, Object>)jsonInput?.result
+      // json = (LinkedHashMap<String, Object>)jsonInput?.result
     } else if(jsonInput?.params != null && jsonInput?.params != '') {
       json = (LinkedHashMap<String, Object>)jsonInput?.params
     }
@@ -2058,9 +2055,10 @@ void processGen2JsonMessage(LinkedHashMap jsonInput, Integer id = 0) {
 
 @CompileStatic
 void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id = null) {
+  logTrace("Processing Gen2 Json Message Body: ${prettyJson(json)}")
   json.each{ k,v ->
     // Switches
-    if(k.startsWith('switch:')) {
+    if(k.startsWith('switch')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.output != null) {
@@ -2091,7 +2089,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     }
 
     // Inputs
-    if(k.startsWith('input:')) {
+    if(k.startsWith('input')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
 
@@ -2115,13 +2113,23 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     }
 
     // Temperatures
-    if(k.startsWith('temperature:')) {
+    if(k.startsWith('temperature')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
 
       if(update?.tC != null) {
         BigDecimal tempC =  (BigDecimal)update.tC
         if(tempC != null) {setTemperatureC(tempC, id)}
+      }
+    }
+
+    // Humidities
+    if(k.startsWith('humidity')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.rh != null) {
+        BigDecimal rh = (BigDecimal)update.rh
+        if(rh != null) {setHumidityPercent(rh, id)}
       }
     }
   }
@@ -2335,6 +2343,7 @@ void getStatusGen2Callback(AsyncResponse response, Map data = null) {
     LinkedHashMap battery = (LinkedHashMap)result?.battery
     Integer percent = battery?.percent as Integer
     if(percent != null) {setBatteryPercent(percent)}
+    processGen2JsonMessage(json)
   }
 }
 
@@ -3344,8 +3353,8 @@ LinkedHashMap parentPostCommandSync(LinkedHashMap command) {
 }
 
 void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '') {
-  if(hasParent() == true) { parent?.postCommandAsync(command) }
-  else { postCommandAsync(command) }
+  if(hasParent() == true) { parent?.postCommandAsync(command, callbackMethod) }
+  else { postCommandAsync(command, callbackMethod) }
 }
 
 void postCommandAsync(LinkedHashMap command, String callbackMethod = '') {
