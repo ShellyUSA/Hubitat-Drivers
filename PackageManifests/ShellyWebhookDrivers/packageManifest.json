@@ -72,7 +72,7 @@
     },
     {
       "id": "c3773dec-e243-4888-9ad9-36dff91d531a",
-      "name": "Shelly Over/Under Switch Component",
+      "name": "Shelly OverUnder Switch Component",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyOverUnderSwitchComponent.groovy",
       "required": true
@@ -112,25 +112,14 @@
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyTemperaturePeripheralComponent.groovy",
       "required": true
     },
+
+
+
     {
-      "id": "ccc859a9-4be3-45d4-bc09-9fa393a4fd3e",
-      "name": "Shelly Plug US",
+      "id": "4900ccee-fbb9-4df7-bd3a-2a479335ba79",
+      "name": "Shelly Blu Gateway",
       "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlugUS.groovy",
-      "required": false
-    },
-    {
-      "id": "4c1c0bb2-175e-4a28-9f57-7c1503382d3c",
-      "name": "Shelly H&T (gen 2 and 3)",
-      "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlusH%26T.groovy",
-      "required": false
-    },
-    {
-      "id": "d85b455a-37a7-4cdd-b619-ea5ca6057152",
-      "name": "Shelly Motion 2",
-      "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyMotion2.groovy",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyBleGateway.groovy",
       "required": false
     },
     {
@@ -138,6 +127,13 @@
       "name": "Shelly Button 1",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyButton1.groovy",
+      "required": false
+    },
+    {
+      "id": "2b2d10f3-c078-406f-aacf-936936d41a1d",
+      "name": "Shelly Flood",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyFlood.groovy",
       "required": false
     },
     {
@@ -155,24 +151,68 @@
       "required": false
     },
     {
-      "id": "4900ccee-fbb9-4df7-bd3a-2a479335ba79",
-      "name": "Shelly Blu Gateway",
+      "id": "d85b455a-37a7-4cdd-b619-ea5ca6057152",
+      "name": "Shelly Motion 2",
       "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyBleGateway.groovy",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyMotion2.groovy",
       "required": false
     },
+    {
+      "id": "ccc859a9-4be3-45d4-bc09-9fa393a4fd3e",
+      "name": "Shelly Plug US",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlugUS.groovy",
+      "required": false
+    },
+    {
+      "id": "916d6c92-804f-4549-b841-d73aaded2771",
+      "name": "Shelly Plus1",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlus1.groovy",
+      "required": false
+    },
+    {
+      "id": "5f70dff6-e1f9-4dd6-bf50-fe2692fb3461",
+      "name": "Shelly Plus1PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlus1PM.groovy",
+      "required": false
+    },
+    {
+      "id": "15c0dba4-b4ba-42d5-b571-a163bf65a3d2",
+      "name": "Shelly Plus1PM Mini",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlus1PMMini.groovy",
+      "required": false
+    },
+    {
+      "id": "b3a32621-001c-45d0-9ad9-afee0feb392a",
+      "name": "Shelly Plus2PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlus2PM.groovy",
+      "required": false
+    },
+    {
+      "id": "4c1c0bb2-175e-4a28-9f57-7c1503382d3c",
+      "name": "Shelly H&T (gen 2 and 3)",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlusH%26T.groovy",
+      "required": false
+    },
+    {
+      "id": "783a844e-cbe5-43c1-8772-918c1922db41",
+      "name": "Shelly PM Mini Gen3",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPMMiniGen3.groovy",
+      "required": false
+    },
+
+
     {
       "id": "98f91b1b-b56b-4dd8-a880-8bd77182de37",
       "name": "Shelly Button 1 Blu",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ShellyButton1Blu.groovy",
-      "required": false
-    },
-    {
-      "id": "6e5ceef9-1c5b-4f5d-9126-948cd8f1443d",
-      "name": "Shelly Motion Blu",
-      "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ShellyMotionBlu.groovy",
       "required": false
     },
     {
@@ -183,17 +223,10 @@
       "required": false
     },
     {
-      "id": "2b2d10f3-c078-406f-aacf-936936d41a1d",
-      "name": "Shelly Flood",
+      "id": "6e5ceef9-1c5b-4f5d-9126-948cd8f1443d",
+      "name": "Shelly Motion Blu",
       "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyFlood.groovy",
-      "required": false
-    },
-    {
-      "id": "783a844e-cbe5-43c1-8772-918c1922db41",
-      "name": "Shelly PM Mini Gen3",
-      "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPMMiniGen3.groovy",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/Bluetooth/ShellyMotionBlu.groovy",
       "required": false
     }
   ]
