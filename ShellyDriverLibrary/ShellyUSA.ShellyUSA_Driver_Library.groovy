@@ -1453,6 +1453,18 @@ void off() {
 }
 
 @CompileStatic
+void push(Integer buttonNumber) {sendDeviceEvent([name: 'pushed', value: buttonNumber, isStateChange: true]) }
+
+@CompileStatic
+void hold(Integer buttonNumber) {sendDeviceEvent([name: 'held', value: buttonNumber, isStateChange: true]) }
+
+@CompileStatic
+void doubleTap(Integer buttonNumber) {sendDeviceEvent([name: 'doubleTapped', value: buttonNumber, isStateChange: true]) }
+
+@CompileStatic
+void tripleTap(Integer buttonNumber) {sendDeviceEvent([name: 'tripleTapped', value: buttonNumber, isStateChange: true]) }
+
+@CompileStatic
 void setInputSwitchState(Boolean on, Integer id = 0) {
   logTrace("Setting inputSwitch:${id} to ${on ? 'on' : 'off'}")
   if(on != null) {sendChildDeviceEvent([name: 'switch', value: on ? 'on' : 'off'], getInputSwitchChildById(id))}
