@@ -1,3 +1,8 @@
 .hubitat/metadata.json
 .DS_Store
 .vscode/settings.json
+ShellyDriverLibrary/WebhookWebsocket.code-workspace
+ComponentDrivers/.hubitat/metadata.json
+ShellyDriverLibrary/.hubitat/metadata.json
+Bluetooth/.hubitat/metadata.json
+WebhookWebsocket/.hubitat/metadata.json
