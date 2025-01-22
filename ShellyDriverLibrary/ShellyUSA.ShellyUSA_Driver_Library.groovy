@@ -467,9 +467,7 @@ void configureNightlyPowerMonitoringReset() {
 /* #region Initialization */
 @CompileStatic
 void initialize() {
-  if(hasIpAddress() == true) {
-    getPreferencesFromShellyDevice()
-  }
+  if(hasIpAddress() == true) {getPreferencesFromShellyDevice()}
   if(thisDeviceOrChildrenHasPowerMonitoring() == true) {
     if(getDeviceSettings().enablePowerMonitoring == null) { setDeviceSetting('enablePowerMonitoring', true) }
     if(getDeviceSettings().resetMonitorsAtMidnight == null) { setDeviceSetting('resetMonitorsAtMidnight', true) }
@@ -3793,9 +3791,9 @@ void initializeWebsocketConnection() {
 
 void initializeWebsocketConnectionIfNeeded() {
   atomicState.remove('reconnectTimer')
-  if(wsShouldBeConnected() == true && getWebsocketIsConnected() == false) {
+  if(wsShouldBeConnected() == true) {
     initializeWebsocketConnection()
-    runIn(1, 'checkWebsocketConnection')
+    runIn(2, 'checkWebsocketConnection')
   } else {
     wsClose()
     setDeviceActionsGen2()
