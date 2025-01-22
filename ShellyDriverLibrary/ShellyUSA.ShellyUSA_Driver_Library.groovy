@@ -510,6 +510,7 @@ void configure() {
     if (ipAddress != null && ipAddress != '' && ipAddress ==~ /^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$/) {
       logDebug('Device has an IP address set in preferences, updating DNI if needed...')
       String deviceDataIpAddress = getDeviceDataValue('ipAddress')
+      setThisDeviceNetworkId(getMACFromIPAddress(ipAddress))
       if(deviceDataIpAddress == null || deviceDataIpAddress == '' || deviceDataIpAddress != ipAddress) {
         logDebug('Detected newly added/changed IP address, getting preferences from device...')
         setIpAddress(ipAddress)
@@ -2098,7 +2099,7 @@ void processWebsocketMessagesConnectivity(LinkedHashMap json) {
 @CompileStatic
 void processWebsocketMessagesAuth(LinkedHashMap json) {
   if(json?.error != null ) {
-    logInfo(prettyJson(json))
+    logTrace(prettyJson(json))
     LinkedHashMap error = (LinkedHashMap)json.error
     if(error?.message != null && error?.code == 401) {
       processUnauthorizedMessage(error.message as String)
@@ -3523,7 +3524,7 @@ LinkedHashMap postCommandSync(LinkedHashMap command) {
     httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
     setAuthIsEnabled(false)
   } catch(HttpResponseException ex) {
-    logWarn("Exception: ${ex}")
+    if(ex.getStatusCode() != 401) {logWarn("Exception: ${ex}")}
     setAuthIsEnabled(true)
     String authToProcess = ex.getResponse().getAllHeaders().find{ it.getValue().contains('nonce')}.getValue().replace('Digest ', '')
     authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
@@ -3907,7 +3908,7 @@ LinkedHashMap getAuthMap() {
 @CompileStatic
 void setAuthMap(LinkedHashMap map) {
   if(authMaps == null) { authMaps = new ConcurrentHashMap<String, LinkedHashMap>() }
-  logInfo("Device authentication detected, setting authmap to ${map}")
+  logTrace("Device authentication detected, setting authmap to ${map}")
   authMaps[getThisDeviceDNI()] = map
 }
 
