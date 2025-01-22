@@ -189,7 +189,8 @@ void refresh() {
         parentPostCommandAsync(humidityGetStatusCommand(humidityId), 'getStatusGen2Callback')
       }
     } else {
-      parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
+      if(getWebsocketIsConnected() == true) {parentSendWsCommand(shellyGetStatusCommand())}
+      else {parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')}
     }
   }
   tryRefreshDeviceSpecificInfo()
@@ -220,12 +221,14 @@ void getPreferencesFromShellyDevice() {
       Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
       Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
       Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
+      Set<String> pm1s = shellyGetConfigResult.keySet().findAll{it.startsWith('pm1')}
 
       logDebug("Found Switches: ${switches}")
       logDebug("Found Inputs: ${inputs}")
       logDebug("Found Covers: ${covers}")
       logDebug("Found Temperatures: ${temps}")
       logDebug("Found Humidites: ${hums}")
+      logDebug("Found PM1s: ${pm1s}")
 
       if(switches?.size() > 0) {
         logDebug('Multiple switches found, running Switch.GetConfig for each...')
@@ -247,6 +250,8 @@ void getPreferencesFromShellyDevice() {
               child = createChildSwitch(id)
             }
             if(child != null) {setChildDevicePreferences(switchGetConfigResult, child)}
+          } else {
+            setDeviceDataValue('switchId', "${id}")
           }
         }
       } else {
@@ -317,6 +322,19 @@ void getPreferencesFromShellyDevice() {
           if(tempGetConfigResult != null && tempGetConfigResult.size() > 0) {setChildDevicePreferences(tempGetConfigResult, child)}
           if(humGetConfigResult != null && humGetConfigResult.size() > 0) {setChildDevicePreferences(humGetConfigResult, child)}
         }
+      } else if(temps?.size() == 1 && hums.size() == 1 && hasNoChildrenNeeded() == true) {
+        Integer id = temps[0].tokenize(':')[1] as Integer
+        setDeviceDataValue('temperatureId', "${id}")
+        setDeviceDataValue('humidityId', "${id}")
+      }
+
+      if(pm1s?.size() == 1 && hasNoChildrenNeeded() == true) {
+        Integer id = pm1s[0].tokenize(':')[1] as Integer
+        logDebug('PM1 found, configuring device IDs')
+        setDeviceDataValue('currentId', "${id}")
+        setDeviceDataValue('powerId', "${id}")
+        setDeviceDataValue('voltageId', "${id}")
+        setDeviceDataValue('frequencyId', "${id}")
       }
     } else {
       getPreferencesFromShellyDeviceGen1()
@@ -690,26 +708,31 @@ ArrayList<BigDecimal> voltageAvgs(Integer id = 0) {
 
 @CompileStatic
 void setCurrent(BigDecimal value, Integer id = 0) {
-  ArrayList<BigDecimal> a = amperageAvgs(id)
-  ChildDeviceWrapper c = getSwitchChildById(id)
-  if(a.size() == 0) {
+  if(getIntegerDeviceDataValue('currentId') == id) {sendDeviceEvent([name: 'amperage', value: value, unit:'A'])}
+  else {
+    ChildDeviceWrapper c = getCurrentChildById(id)
     if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
-    else { sendDeviceEvent([name: 'amperage', value: value, unit:'A']) }
   }
-  a.add(value)
-  if(a.size() >= 10) {
-    value = (((BigDecimal)a.sum()) / 10)
-    value = value.setScale(1, BigDecimal.ROUND_HALF_UP)
-    if(value == -1) {
-      if(c != null) { sendChildDeviceEvent([name: 'amperage', value: null, unit:'A'], c) }
-      else { sendDeviceEvent([name: 'amperage', value: null, unit:'A']) }
-    }
-    else if(value != null && value != getCurrent(id)) {
-      if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
-      else { sendDeviceEvent([name: 'amperage', value: value, unit:'A']) }
-    }
-    a.removeAt(0)
-  }
+  // ArrayList<BigDecimal> a = amperageAvgs(id)
+  // ChildDeviceWrapper c = getSwitchChildById(id)
+  // if(a.size() == 0) {
+  //   if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
+  //   else { sendDeviceEvent([name: 'amperage', value: value, unit:'A']) }
+  // }
+  // a.add(value)
+  // if(a.size() >= 10) {
+  //   value = (((BigDecimal)a.sum()) / 10)
+  //   value = value.setScale(1, BigDecimal.ROUND_HALF_UP)
+  //   if(value == -1) {
+  //     if(c != null) { sendChildDeviceEvent([name: 'amperage', value: null, unit:'A'], c) }
+  //     else { sendDeviceEvent([name: 'amperage', value: null, unit:'A']) }
+  //   }
+  //   else if(value != null && value != getCurrent(id)) {
+  //     if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
+  //     else { sendDeviceEvent([name: 'amperage', value: value, unit:'A']) }
+  //   }
+  //   a.removeAt(0)
+  // }
 }
 @CompileStatic
 BigDecimal getCurrent(Integer id = 0) {
@@ -720,26 +743,31 @@ BigDecimal getCurrent(Integer id = 0) {
 
 @CompileStatic
 void setPower(BigDecimal value, Integer id = 0) {
-  ArrayList<BigDecimal> p = powerAvgs()
-  ChildDeviceWrapper c = getSwitchChildById(id)
-  if(p.size() == 0) {
+  if(getIntegerDeviceDataValue('currentId') == id) {sendDeviceEvent([name: 'power', value: value, unit:'W'])}
+  else {
+    ChildDeviceWrapper c = getCurrentChildById(id)
     if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
-    else { sendDeviceEvent([name: 'power', value: value, unit:'W']) }
   }
-  p.add(value)
-  if(p.size() >= 10) {
-    value = (((BigDecimal)p.sum()) / 10)
-    value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
-    if(value == -1) {
-      if(c != null) { sendChildDeviceEvent([name: 'power', value: null, unit:'W'], c) }
-      else { sendDeviceEvent([name: 'power', value: null, unit:'W']) }
-    }
-    else if(value != null && value != getPower()) {
-      if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
-      else { sendDeviceEvent([name: 'power', value: value, unit:'W']) }
-    }
-    p.removeAt(0)
-  }
+  // ArrayList<BigDecimal> p = powerAvgs()
+  // ChildDeviceWrapper c = getSwitchChildById(id)
+  // if(p.size() == 0) {
+  //   if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
+  //   else { sendDeviceEvent([name: 'power', value: value, unit:'W']) }
+  // }
+  // p.add(value)
+  // if(p.size() >= 10) {
+  //   value = (((BigDecimal)p.sum()) / 10)
+  //   value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
+  //   if(value == -1) {
+  //     if(c != null) { sendChildDeviceEvent([name: 'power', value: null, unit:'W'], c) }
+  //     else { sendDeviceEvent([name: 'power', value: null, unit:'W']) }
+  //   }
+  //   else if(value != null && value != getPower()) {
+  //     if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
+  //     else { sendDeviceEvent([name: 'power', value: value, unit:'W']) }
+  //   }
+  //   p.removeAt(0)
+  // }
 }
 @CompileStatic
 BigDecimal getPower(Integer id = 0) {
@@ -748,37 +776,50 @@ BigDecimal getPower(Integer id = 0) {
   else { return thisDevice().currentValue('power', true) as BigDecimal }
 }
 
-
+@CompileStatic
+void setFrequency(BigDecimal value, Integer id = 0) {
+  if(getIntegerDeviceDataValue('frequencyId') == id) {sendDeviceEvent([name: 'frequency', value: value, unit:'Hz'])}
+  else {
+    ChildDeviceWrapper c = getFrequencyChildById(id)
+    if(c != null) { sendChildDeviceEvent([name: 'frequency', value: value, unit:'Hz'], c) }
+  }
+}
 
 @CompileStatic
 void setVoltage(BigDecimal value, Integer id = 0) {
-  if(id == 100) { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
-  if(hasADCGen1() == true) {
+  if(getIntegerDeviceDataValue('voltageId') == id) {sendDeviceEvent([name: 'voltage', value: value, unit:'V'])}
+  else {
     ChildDeviceWrapper c = getVoltageChildById(id)
     if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
   }
-  else {
-    ArrayList<BigDecimal> v = voltageAvgs()
-    ChildDeviceWrapper c = getSwitchChildById(id)
-    if(v.size() == 0) {
-      if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
-      else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
-    }
-    v.add(value)
-    if(v.size() >= 10) {
-      value = (((BigDecimal)v.sum()) / 10)
-      value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
-      if(value == -1) {
-        if(c != null) { sendChildDeviceEvent([name: 'voltage', value: null, unit:'V'], c) }
-        else { sendDeviceEvent([name: 'voltage', value: null, unit:'V']) }
-      }
-      else if(value != null && value != getPower()) {
-        if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
-        else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
-      }
-      v.removeAt(0)
-    }
-  }
+
+  // if(id == 100) { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
+  // if(hasADCGen1() == true) {
+  //   ChildDeviceWrapper c = getVoltageChildById(id)
+  //   if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
+  // }
+  // else {
+  //   ArrayList<BigDecimal> v = voltageAvgs()
+  //   ChildDeviceWrapper c = getSwitchChildById(id)
+  //   if(v.size() == 0) {
+  //     if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
+  //     else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
+  //   }
+  //   v.add(value)
+  //   if(v.size() >= 10) {
+  //     value = (((BigDecimal)v.sum()) / 10)
+  //     value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
+  //     if(value == -1) {
+  //       if(c != null) { sendChildDeviceEvent([name: 'voltage', value: null, unit:'V'], c) }
+  //       else { sendDeviceEvent([name: 'voltage', value: null, unit:'V']) }
+  //     }
+  //     else if(value != null && value != getPower()) {
+  //       if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
+  //       else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
+  //     }
+  //     v.removeAt(0)
+  //   }
+  // }
 }
 @CompileStatic
 BigDecimal getVoltage(Integer id = 0) {
@@ -790,6 +831,8 @@ BigDecimal getVoltage(Integer id = 0) {
 @CompileStatic
 void setEnergy(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
+
+
   ChildDeviceWrapper c = getSwitchChildById(id)
   if(value == -1) {
     if(c != null) { sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c) }
@@ -2072,8 +2115,8 @@ void processGen2JsonMessage(LinkedHashMap jsonInput) {
   LinkedHashMap<String, Object> json = [:]
   if(dst != null && dst != '') {
     if(jsonInput?.result != null && jsonInput?.result != '') {
-      json[dst] = (LinkedHashMap<String, Object>)jsonInput?.result
-      // json = (LinkedHashMap<String, Object>)jsonInput?.result
+      // json[dst] = (LinkedHashMap<String, Object>)jsonInput?.result
+      json = (LinkedHashMap<String, Object>)jsonInput?.result
     } else if(jsonInput?.params != null && jsonInput?.params != '') {
       json = (LinkedHashMap<String, Object>)jsonInput?.params
     }
@@ -2109,9 +2152,61 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
           if(voltage != null) { setVoltage(voltage, id) }
         }
 
+        if(update?.freq != null && update?.freq != '') {
+          BigDecimal freq =  (BigDecimal)update.freq
+          if(freq != null) { setFrequency(freq, id) }
+        }
+
         if(update?.aenergy != null && update?.aenergy != '') {
-          BigDecimal aenergy =  (BigDecimal)((LinkedHashMap)(update?.aenergy))?.total
+          LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
+          BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
           if(aenergy != null) { setEnergy(aenergy/1000, id) }
+        }
+      }
+    }
+
+    if(k.startsWith('pm1')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      logDebug("Update for pm1:${id}")
+      if(update?.current != null && update?.current != '') {
+        BigDecimal current =  (BigDecimal)update.current
+        if(current != null) {
+          logDebug("Setting current to ${current} for ${id}")
+          setCurrent(current, id)
+        }
+      }
+
+      if(update?.apower != null && update?.apower != '') {
+        BigDecimal apower =  (BigDecimal)update.apower
+        if(apower != null) {
+          logDebug("Setting power to ${apower} for ${id}")
+          setPower(apower, id)
+        }
+      }
+
+      if(update?.voltage != null && update?.voltage != '') {
+        BigDecimal voltage =  (BigDecimal)update.voltage
+        if(voltage != null) {
+          logDebug("Setting voltage to ${voltage} for ${id}")
+          setVoltage(voltage, id)
+        }
+      }
+
+      if(update?.aenergy != null && update?.aenergy != '') {
+        LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
+        BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
+        if(aenergy != null) {
+          logDebug("Setting energy to ${aenergy} for ${id}")
+          setEnergy(aenergy/1000, id)
+        }
+      }
+
+      if(update?.freq != null && update?.freq != '') {
+        BigDecimal freq =  (BigDecimal)update.freq
+        if(freq != null) {
+          logDebug("Setting freq to ${freq} for ${id}")
+          setFrequency(freq, id)
         }
       }
     }
@@ -2424,6 +2519,10 @@ void parseGen1Message(String raw) {
   else if(query[0] == 'ext_hum_over') {setGen1HumiditySwitchState('on', query[1] as Integer)}
   else if(query[0] == 'ext_hum_under') {setGen1HumiditySwitchState('off', query[1] as Integer)}
 
+  else if(query[0] == 'pm1.apower_change'  && query.size() == 4) {setPower(new BigDecimal(query[2]), query[3] as Integer)}
+  else if(query[0] == 'pm1.current_change' && query.size() == 4) {setCurrent(new BigDecimal(query[2]), query[3] as Integer)}
+  else if(query[0] == 'pm1.voltage_change' && query.size() == 4) {setVoltage(new BigDecimal(query[2]), query[3] as Integer)}
+
   setLastUpdated()
 }
 
@@ -2683,11 +2782,14 @@ void setDeviceActionsGen2() {
     Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
     Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
     Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
+    Set<String> pm1s = shellyGetConfigResult.keySet().findAll{it.startsWith('pm1')}
 
     logDebug("Found Switches: ${switches}")
     logDebug("Found Inputs: ${inputs}")
     logDebug("Found Covers: ${covers}")
     logDebug("Found Temperatures: ${temps}")
+    logDebug("Found Humdities: ${hums}")
+    logDebug("Found PM1s: ${pm1s}")
 
     // LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
     // String inputType = (inputConfig?.type as String).capitalize()
@@ -2743,6 +2845,14 @@ void setDeviceActionsGen2() {
           Integer cid = conf?.id as Integer
           String name = "hubitat.${type}".toString()
           logDebug("Processing webhook for humidity:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
+      } else if(type.startsWith('pm1')) {
+        pm1s.each{ pm1 ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[pm1]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for pm1:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
       }
@@ -3189,6 +3299,18 @@ ChildDeviceWrapper getShellyDevice(String dni) {return getChildDevice(dni)}
 ChildDeviceWrapper getVoltageChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'adcId') == id}
+}
+
+@CompileStatic
+ChildDeviceWrapper getFrequencyChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'frequencyId') == id}
+}
+
+@CompileStatic
+ChildDeviceWrapper getCurrentChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'currentId') == id}
 }
 
 @CompileStatic
@@ -3647,7 +3769,7 @@ void wsConnect() {
 
 void sendWsMessage(String message) {
   if(getWebsocketIsConnected() == false) { wsConnect() }
-  logTrace("Sending json command: ${message}")
+  logTrace("Sending json message via websocket: ${message}")
   interfaces.webSocket.sendMessage(message)
 }
 
@@ -3657,6 +3779,12 @@ void parentSendWsMessage(String message) {
   } else {
     sendWsMessage(message)
   }
+}
+
+@CompileStatic
+void parentSendWsCommand(LinkedHashMap command) {
+  String json = JsonOutput.toJson(command)
+  parentSendWsMessage(json)
 }
 
 void initializeWebsocketConnection() {
