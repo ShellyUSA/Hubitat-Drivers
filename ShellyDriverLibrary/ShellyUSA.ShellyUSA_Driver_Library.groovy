@@ -1701,7 +1701,7 @@ LinkedHashMap coverGoToPositionCommand(Integer id = 0, Integer pos) {
   LinkedHashMap command = [
     "id" : 0,
     "src" : "coverGoToPosition",
-    "method" : "Cover.Close",
+    "method" : "Cover.GoToPosition",
     "params" : [
       "id" : id,
       "pos" : pos
