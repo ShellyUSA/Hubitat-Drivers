@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "1.2.0",
-  "releaseNotes": "1.2.0 Added Shelly Flood, Shelly PM Mini Gen3\r\n1.1.0 Added support for Bluetooth Gateway, Blu devices (button, motion, door/window), H&T (gen 1)\r\n1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
+  "version": "2.0.0",
+  "releaseNotes": "2.0.0 Added support for many more devices. Major rewrite of library code. 🥳\r\n1.2.0 Added Shelly Flood, Shelly PM Mini Gen3\r\n1.1.0 Added support for Bluetooth Gateway, Blu devices (button, motion, door/window), H&T (gen 1)\r\n1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
@@ -119,7 +119,7 @@
       "id": "4900ccee-fbb9-4df7-bd3a-2a479335ba79",
       "name": "Shelly Blu Gateway",
       "namespace": "ShellyUSA",
-      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyBleGateway.groovy",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyBluGateway.groovy",
       "required": false
     },
     {
@@ -194,14 +194,14 @@
     },
     {
       "id": "4c1c0bb2-175e-4a28-9f57-7c1503382d3c",
-      "name": "Shelly H&T (gen 2 and 3)",
+      "name": "Shelly H&T Gen2 & Gen3",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlusH%26T.groovy",
       "required": false
     },
     {
       "id": "783a844e-cbe5-43c1-8772-918c1922db41",
-      "name": "Shelly PM Mini Gen3",
+      "name": "Shelly PM Mini Gen2 & Gen3",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPMMiniGen3.groovy",
       "required": false
