@@ -12,6 +12,5 @@ metadata {
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
 
     command 'resetEnergyMonitors'
-    attribute 'lastUpdated', 'string'
   }
 }
