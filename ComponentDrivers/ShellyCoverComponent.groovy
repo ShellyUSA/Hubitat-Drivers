@@ -12,26 +12,3 @@ metadata {
 }
 
 @Field static Boolean COMP = true
-// =============================================================================
-// Device Specific
-// =============================================================================
-@CompileStatic
-void open() {parentPostCommandSync(coverOpenCommand(getIntegerDeviceDataValue('coverId')))}
-
-@CompileStatic
-void close() {parentPostCommandSync(coverCloseCommand(getIntegerDeviceDataValue('coverId')))}
-
-@CompileStatic
-void setPosition(BigDecimal position) {parentPostCommandSync(coverGoToPositionCommand(getIntegerDeviceDataValue('coverId'), position as Integer))}
-
-@CompileStatic
-void startPositionChange(String direction) {
-  if(direction == 'open') {open()}
-  if(direction == 'close') {close()}
-}
-
-@CompileStatic
-void stopPositionChange() {parentPostCommandSync(coverStopCommand(getIntegerDeviceDataValue('coverId')))}
-// =============================================================================
-// End Device Specific
-// =============================================================================
