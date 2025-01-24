@@ -114,7 +114,13 @@
     },
 
 
-
+    {
+      "id": "900b9944-a61c-4b15-9da0-a6528b93d3d8",
+      "name": "Shelly 2.5",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/Shelly2.5.groovy",
+      "required": false
+    },
     {
       "id": "4900ccee-fbb9-4df7-bd3a-2a479335ba79",
       "name": "Shelly Blu Gateway",
