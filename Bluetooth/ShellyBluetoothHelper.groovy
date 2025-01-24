@@ -42,7 +42,10 @@ void shellyButtonPushedEventsHandler(Event evt) {
   String macAddress = evt.getData().toUpperCase().replace(':','')
   if(!buttonPushedRecently(macAddress)) {
     try{
-      sendEvent(macAddress, [name: 'pushed', value: evt.getValue() as Integer, isStateChange: true])
+      Integer b = evt.getValue() as Integer
+      if(b == 1) {sendEvent(macAddress, [name: 'pushed', value: 1, isStateChange: true])}
+      else if(b == 2) {sendEvent(macAddress, [name: 'doubleTapped', value: 1, isStateChange: true])}
+      else if(b == 3) {sendEvent(macAddress, [name: 'tripleTapped', value: 1, isStateChange: true])}
     } catch(e) {
       logWarn("No device found for DNI/MAC address: ${macAddress}")
     }

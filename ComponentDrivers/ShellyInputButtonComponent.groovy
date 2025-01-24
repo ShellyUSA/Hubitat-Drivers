@@ -12,20 +12,5 @@ metadata {
 }
 
 @Field static Boolean COMP = true
-// =============================================================================
-// Device Specific
-// =============================================================================
-@CompileStatic
-void push(Integer buttonNumber) {sendDeviceEvent([name: 'pushed', value: buttonNumber, isStateChange: true]) }
+@Field static Integer BUTTONS = 1
 
-@CompileStatic
-void hold(Integer buttonNumber) {sendDeviceEvent([name: 'held', value: buttonNumber, isStateChange: true]) }
-
-@CompileStatic
-void doubleTap(Integer buttonNumber) {sendDeviceEvent([name: 'doubleTapped', value: buttonNumber, isStateChange: true]) }
-
-@CompileStatic
-void deviceSpecificConfigure() {sendDeviceEvent([name: 'numberOfButtons', value: 1])}
-// =============================================================================
-// End Device Specific
-// =============================================================================

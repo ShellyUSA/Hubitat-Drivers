@@ -849,7 +849,7 @@ void setEnergy(BigDecimal value, Integer id = 0) {
 @CompileStatic
 void updateParentEnergyTotal() {
   List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren()
-  List<BigDecimal> childEnergies = energySwitchChildren.collect{it.currentValue('energy') as BigDecimal}
+  List<BigDecimal> childEnergies = energySwitchChildren.findAll{it.currentValue('energy') != null}.collect{it.currentValue('energy') as BigDecimal}
   setEnergy(childEnergies.sum() as BigDecimal)
 }
 
@@ -1451,6 +1451,18 @@ void off() {
     parentPostCommandAsync(switchSetCommand(false, getIntegerDeviceDataValue('switchId')))
   }
 }
+
+@CompileStatic
+void push(Integer buttonNumber) {sendDeviceEvent([name: 'pushed', value: buttonNumber, isStateChange: true]) }
+
+@CompileStatic
+void hold(Integer buttonNumber) {sendDeviceEvent([name: 'held', value: buttonNumber, isStateChange: true]) }
+
+@CompileStatic
+void doubleTap(Integer buttonNumber) {sendDeviceEvent([name: 'doubleTapped', value: buttonNumber, isStateChange: true]) }
+
+@CompileStatic
+void tripleTap(Integer buttonNumber) {sendDeviceEvent([name: 'tripleTapped', value: buttonNumber, isStateChange: true]) }
 
 @CompileStatic
 void setInputSwitchState(Boolean on, Integer id = 0) {
@@ -2167,46 +2179,30 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     if(k.startsWith('pm1')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
-      logDebug("Update for pm1:${id}")
       if(update?.current != null && update?.current != '') {
         BigDecimal current =  (BigDecimal)update.current
-        if(current != null) {
-          logDebug("Setting current to ${current} for ${id}")
-          setCurrent(current, id)
-        }
+        if(current != null) {setCurrent(current, id)}
       }
 
       if(update?.apower != null && update?.apower != '') {
         BigDecimal apower =  (BigDecimal)update.apower
-        if(apower != null) {
-          logDebug("Setting power to ${apower} for ${id}")
-          setPower(apower, id)
-        }
+        if(apower != null) {setPower(apower, id)}
       }
 
       if(update?.voltage != null && update?.voltage != '') {
         BigDecimal voltage =  (BigDecimal)update.voltage
-        if(voltage != null) {
-          logDebug("Setting voltage to ${voltage} for ${id}")
-          setVoltage(voltage, id)
-        }
+        if(voltage != null) {setVoltage(voltage, id)}
       }
 
       if(update?.aenergy != null && update?.aenergy != '') {
         LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
         BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
-        if(aenergy != null) {
-          logDebug("Setting energy to ${aenergy} for ${id}")
-          setEnergy(aenergy/1000, id)
-        }
+        if(aenergy != null) {setEnergy(aenergy/1000, id)}
       }
 
       if(update?.freq != null && update?.freq != '') {
         BigDecimal freq =  (BigDecimal)update.freq
-        if(freq != null) {
-          logDebug("Setting freq to ${freq} for ${id}")
-          setFrequency(freq, id)
-        }
+        if(freq != null) {setFrequency(freq, id)}
       }
     }
 
@@ -2255,6 +2251,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
   }
+  setLastUpdated()
 }
 
 @CompileStatic

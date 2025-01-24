@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "2.0.1",
-  "releaseNotes": "2.0.1 Change logging level on a few things to keep logs from warning about Shelly auth related messages. \r\n2.0.0 Added support for many more devices. Major rewrite of library code. 🥳\r\n1.2.0 Added Shelly Flood, Shelly PM Mini Gen3\r\n1.1.0 Added support for Bluetooth Gateway, Blu devices (button, motion, door/window), H&T (gen 1)\r\n1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
+  "version": "2.0.4",
+  "releaseNotes": "2.0.4 Fix null issue on setting parent energy totals\r\n2.0.3 Fix for cover child devices not getting coverId properly from device data\r\n2.0.3 Add drivers for Pro2PM, Pro3, Uni gen1 and gen2 to HPM. \r\n2.0.1 Change logging level on a few things to keep logs from warning about Shelly auth related messages. \r\n2.0.0 Added support for many more devices. Major rewrite of library code. 🥳\r\n1.2.0 Added Shelly Flood, Shelly PM Mini Gen3\r\n1.1.0 Added support for Bluetooth Gateway, Blu devices (button, motion, door/window), H&T (gen 1)\r\n1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
@@ -204,6 +204,34 @@
       "name": "Shelly PM Mini Gen2 & Gen3",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPMMiniGen3.groovy",
+      "required": false
+    },
+    {
+      "id": "1fa12bb5-04b5-4c94-91e1-5565533bdc5d",
+      "name": "Shelly Pro 2PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro2PM.groovy",
+      "required": false
+    },
+    {
+      "id": "3b5443fb-e2df-4208-9e05-c5f50b7e0021",
+      "name": "Shelly Pro 3",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro3.groovy",
+      "required": false
+    },
+    {
+      "id": "6e2d0794-b72e-483f-8c39-6d5c8fed6540",
+      "name": "Shelly Uni Gen 1",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyUni.groovy",
+      "required": false
+    },
+    {
+      "id": "a6111bfa-48cb-4bc4-8c5c-649b05f74251",
+      "name": "Shelly Uni Gen 2",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyUniPlus.groovy",
       "required": false
     },
 
