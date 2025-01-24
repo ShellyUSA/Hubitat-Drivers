@@ -849,7 +849,7 @@ void setEnergy(BigDecimal value, Integer id = 0) {
 @CompileStatic
 void updateParentEnergyTotal() {
   List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren()
-  List<BigDecimal> childEnergies = energySwitchChildren.collect{it.currentValue('energy') as BigDecimal}
+  List<BigDecimal> childEnergies = energySwitchChildren.findAll{it.currentValue('energy') != null}.collect{it.currentValue('energy') as BigDecimal}
   setEnergy(childEnergies.sum() as BigDecimal)
 }
 
