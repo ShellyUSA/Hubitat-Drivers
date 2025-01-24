@@ -8,10 +8,8 @@ metadata {
     capability 'Refresh'
     capability 'Sensor'
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
-    capability "RelativeHumidityMeasurement" //humidity - NUMBER, unit:%rh
-    capability "TemperatureMeasurement" //temperature - NUMBER, unit:°F || °C
-
-    attribute 'lastUpdated', 'string'
+    capability 'RelativeHumidityMeasurement' //humidity - NUMBER, unit:%rh
+    capability 'TemperatureMeasurement' //temperature - NUMBER, unit:°F || °C
   }
 }
 

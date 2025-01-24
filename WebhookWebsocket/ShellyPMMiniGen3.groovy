@@ -11,7 +11,6 @@ metadata {
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
     command 'enableBluetooth'
     command 'resetEnergyMonitors'
-    attribute 'lastUpdated', 'string'
   }
 }
 

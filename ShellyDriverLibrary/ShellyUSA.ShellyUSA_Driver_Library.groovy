@@ -850,10 +850,8 @@ void updateParentEnergyTotal() {
   if(hasChildren() == true) {
     List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren().findAll{it.currentValue('energy') != null}
     List<BigDecimal> childEnergies = []
-    logDebug("energySwitchChildren: ${energySwitchChildren}")
     if(energySwitchChildren != null && energySwitchChildren?.size() > 0) {
       childEnergies = energySwitchChildren.collect{it.currentValue('energy') as BigDecimal}
-      logDebug("ChildEnergies: ${childEnergies}")
     }
     sendDeviceEvent([name: 'energy', value: childEnergies.sum() as BigDecimal, unit:'kWh'])
   }
