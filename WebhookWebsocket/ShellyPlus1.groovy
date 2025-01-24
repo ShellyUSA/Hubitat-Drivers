@@ -5,7 +5,5 @@ metadata {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
-
-    attribute 'lastUpdated', 'string'
   }
 }
