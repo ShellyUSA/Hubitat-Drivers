@@ -16,13 +16,13 @@ metadata {
 // Device Specific
 // =============================================================================
 @CompileStatic
-void open() {parentPostCommandSync(coverOpenCommand(getIntegerDeviceSetting('coverId')))}
+void open() {parentPostCommandSync(coverOpenCommand(getIntegerDeviceDataValue('coverId')))}
 
 @CompileStatic
-void close() {parentPostCommandSync(coverCloseCommand(getIntegerDeviceSetting('coverId')))}
+void close() {parentPostCommandSync(coverCloseCommand(getIntegerDeviceDataValue('coverId')))}
 
 @CompileStatic
-void setPosition(BigDecimal position) {parentPostCommandSync(coverGoToPositionCommand(getIntegerDeviceSetting('coverId'), position as Integer))}
+void setPosition(BigDecimal position) {parentPostCommandSync(coverGoToPositionCommand(getIntegerDeviceDataValue('coverId'), position as Integer))}
 
 @CompileStatic
 void startPositionChange(String direction) {
@@ -31,7 +31,7 @@ void startPositionChange(String direction) {
 }
 
 @CompileStatic
-void stopPositionChange() {parentPostCommandSync(coverStopCommand(getIntegerDeviceSetting('coverId')))}
+void stopPositionChange() {parentPostCommandSync(coverStopCommand(getIntegerDeviceDataValue('coverId')))}
 // =============================================================================
 // End Device Specific
 // =============================================================================
