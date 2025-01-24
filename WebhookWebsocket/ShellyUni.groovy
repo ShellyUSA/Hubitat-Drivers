@@ -8,8 +8,6 @@ metadata {
     command 'getPreferencesFromShellyDeviceGen1'
     command 'deleteHubitatWebhooksGen1'
     command 'deleteChildDevices'
-
-    attribute 'lastUpdated', 'string'
   }
 }
 
