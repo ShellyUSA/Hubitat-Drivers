@@ -831,7 +831,6 @@ BigDecimal getVoltage(Integer id = 0) {
 void setEnergy(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
 
-
   ChildDeviceWrapper c = getSwitchChildById(id)
   if(value == -1) {
     if(c != null) { sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c) }
@@ -848,9 +847,16 @@ void setEnergy(BigDecimal value, Integer id = 0) {
 
 @CompileStatic
 void updateParentEnergyTotal() {
-  List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren()
-  List<BigDecimal> childEnergies = energySwitchChildren.findAll{it.currentValue('energy') != null}.collect{it.currentValue('energy') as BigDecimal}
-  setEnergy(childEnergies.sum() as BigDecimal)
+  if(hasChildren() == true) {
+    List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren().findAll{it.currentValue('energy') != null}
+    List<BigDecimal> childEnergies = []
+    logDebug("energySwitchChildren: ${energySwitchChildren}")
+    if(energySwitchChildren != null && energySwitchChildren?.size() > 0) {
+      childEnergies = energySwitchChildren.collect{it.currentValue('energy') as BigDecimal}
+      logDebug("ChildEnergies: ${childEnergies}")
+    }
+    sendDeviceEvent([name: 'energy', value: childEnergies.sum() as BigDecimal, unit:'kWh'])
+  }
 }
 
 @CompileStatic
@@ -1482,7 +1488,7 @@ void setInputAnalogState(BigDecimal value, Integer id = 0) {
 
 @CompileStatic
 void setLastUpdated() {
-  sendDeviceEvent([name: 'lastUpdated', value: nowFormatted()])
+  if(hasCapabilityBattery() == true) {sendDeviceEvent([name: 'lastUpdated', value: nowFormatted()])}
 }
 
 void sendEventToShellyBluetoothHelper(String loc, Object value, String dni) {
