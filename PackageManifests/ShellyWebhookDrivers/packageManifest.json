@@ -143,6 +143,13 @@
       "required": false
     },
     {
+      "id": "972a5b8c-53c2-46e1-927b-9f12952d3e78",
+      "name": "Shelly Dimmer 1 & 2",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyDimmer2.groovy",
+      "required": false
+    },
+    {
       "id": "2b2d10f3-c078-406f-aacf-936936d41a1d",
       "name": "Shelly Flood",
       "namespace": "ShellyUSA",
