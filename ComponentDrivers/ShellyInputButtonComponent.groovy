@@ -6,7 +6,8 @@ metadata {
     capability 'DoubleTapableButton' //doubleTapped - NUMBER
     capability 'HoldableButton' //held - NUMBER
     capability 'Refresh'
-
+    command 'tripleTap'
+    attribute 'tripleTapped', 'number'
     attribute 'lastUpdated', 'string'
   }
 }
