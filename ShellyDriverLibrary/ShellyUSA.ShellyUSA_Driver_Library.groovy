@@ -191,7 +191,8 @@ void tryRefreshDeviceSpecificInfo() {try{refreshDeviceSpecificInfo()} catch(ex) 
 // MARK: Initialize
 @CompileStatic
 void initialize() {
-  if(hasIpAddress() == true) {getPreferencesFromShellyDevice()}
+  // Skip getting preferences right after a reboot. With multiple Shelly this causes a flood of network traffic
+  if(hasIpAddress() == true && uptime() > 60) {getPreferencesFromShellyDevice()}
   initializeSettingsToDefaults()
   if(hasIpAddress() == true) {initializeWebsocketConnectionIfNeeded()}
 }
@@ -207,13 +208,16 @@ void initializeSettingsToDefaults() {
   }
 
   if(hasParent() == false && isGen1Device() == false && hasIpAddress() == true) {
-    LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
-    LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
-    Boolean hasBlu = ble?.observer != null
-    if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
-    if(hasBlu == true && getDeviceSettings().enableBluetoothGateway == null) {
-      setDeviceSetting('enableBluetoothGateway', true)
-    } else { removeDeviceSetting('enableBluetoothGateway') }
+    // Battery devices will never have Blu gateway, and if 'hasBluGateway' has already been set, there's no need to check again...
+    if(hasCapabilityBattery() == false && getDeviceDataValue(hasBluGateway) == null) {
+      LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
+      LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
+      Boolean hasBlu = ble?.observer != null
+      if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
+      if(hasBlu == true && getDeviceSettings().enableBluetoothGateway == null) {
+        setDeviceSetting('enableBluetoothGateway', true)
+      } else { removeDeviceSetting('enableBluetoothGateway') }
+    }
   }
 
   if(hasChildSwitches() == true) {
@@ -1143,6 +1147,11 @@ Integer getIntegerDeviceDataValue(String dataValueName, DeviceWrapper dev = null
   return dev.getDataValue(dataValueName) as Integer
 }
 
+Boolean getBooleanDeviceDataValue(String dataValueName, DeviceWrapper dev = null) {
+  if(dev == null) {dev = thisDevice()}
+  return dev.getDataValue(dataValueName) == 'true'
+}
+
 @CompileStatic
 Boolean deviceIsSwitch(DeviceWrapper dev) {return deviceHasDataValue('switchId', dev)}
 
@@ -1469,8 +1478,15 @@ void on() {
     logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
   } else if(isGen1Device() == true) {
-    parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=on")
-  } else if(hasChildSwitches()) {
+    if(hasChildSwitches() == true) {
+      getSwitchChildren().each{ child ->
+        Integer id = getChildDeviceDataValue('switchId', child)
+        parentSendGen1CommandAsync("/relay/${id}/?turn=on")
+      }
+    } else {
+      parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=on")
+    }
+  } else if(hasChildSwitches() == true) {
     getSwitchChildren().each{it.on()}
   } else {
     parentPostCommandAsync(switchSetCommand(true, getIntegerDeviceDataValue('switchId')))
@@ -1485,7 +1501,14 @@ void off() {
     logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
   } else if(isGen1Device() == true) {
-    parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
+    if(hasChildSwitches() == true) {
+      getSwitchChildren().each{ child ->
+        Integer id = getChildDeviceDataValue('switchId', child)
+        parentSendGen1CommandAsync("/relay/${id}/?turn=off")
+      }
+    } else {
+      parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
+    }
   } else if(hasChildSwitches()) {
     getSwitchChildren().each{it.off()}
   } else {
@@ -4356,5 +4379,13 @@ void updated() {
       } else { logWarn("No configure() method defined or configure() resulted in error: ${e}") }
     }
   }
+}
+
+@CompileStatic
+Boolean notRecentlyBooted() {return uptime() > 60}
+
+BigInteger uptime() {
+  logTrace("Uptime: ${getLocation().getHub().uptime}s")
+  return getLocation().getHub().uptime
 }
 /* #endregion */
