@@ -6,9 +6,6 @@ metadata {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
-    capability 'CurrentMeter' //amperage - NUMBER, unit:A
-    capability 'PowerMeter' //power - NUMBER, unit:W
-    capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
     command 'resetEnergyMonitors'
   }
