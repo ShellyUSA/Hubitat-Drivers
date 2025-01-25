@@ -65,6 +65,7 @@ Boolean deviceIsComponentInputSwitch() {return INPUTSWITCH == true}
 Boolean deviceIsOverUnderSwitch() {return OVERUNDERSWITCH == true}
 
 Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true }
+Boolean hasCapabilityLight() { return device.hasCapability('Light') == true }
 Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
 Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
 Boolean hasCapabilityValve() { return device.hasCapability('Valve') == true }
@@ -170,6 +171,7 @@ void getDeviceCapabilities() {
   }
 }
 
+// MARK: Refresh
 @CompileStatic
 void refresh() {
   if(isGen1Device() == true) {
@@ -183,6 +185,82 @@ void refresh() {
 }
 
 void tryRefreshDeviceSpecificInfo() {try{refreshDeviceSpecificInfo()} catch(ex) {}}
+
+
+/* #endregion */
+/* #region Initialization */
+// MARK: Initialize
+@CompileStatic
+void initialize() {
+  // Skip getting preferences right after a reboot. With multiple Shelly this causes a flood of network traffic
+  if(hasIpAddress() == true && uptime() > 60) {getPreferencesFromShellyDevice()}
+  initializeSettingsToDefaults()
+  if(hasIpAddress() == true) {initializeWebsocketConnectionIfNeeded()}
+  refresh()
+}
+
+@CompileStatic
+void initializeSettingsToDefaults() {
+  if(thisDeviceOrChildrenHasPowerMonitoring() == true) {
+    if(getDeviceSettings().enablePowerMonitoring == null) { setDeviceSetting('enablePowerMonitoring', true) }
+    if(getDeviceSettings().resetMonitorsAtMidnight == null) { setDeviceSetting('resetMonitorsAtMidnight', true) }
+  } else {
+    removeDeviceSetting('enablePowerMonitoring')
+    removeDeviceSetting('resetMonitorsAtMidnight')
+  }
+
+  if(hasParent() == false && isGen1Device() == false && hasIpAddress() == true) {
+    // Battery devices will never have Blu gateway, and if 'hasBluGateway' has already been set, there's no need to check again...
+    if(hasCapabilityBattery() == false && getDeviceDataValue('hasBluGateway') == null) {
+      LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
+      LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
+      Boolean hasBlu = ble?.observer != null
+      if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
+      if(hasBlu == true && getDeviceSettings().enableBluetoothGateway == null) {
+        setDeviceSetting('enableBluetoothGateway', true)
+      } else { removeDeviceSetting('enableBluetoothGateway') }
+    }
+  }
+
+  if(hasChildSwitches() == true) {
+    if(getDeviceSettings().parentSwitchStateMode == null) {setDeviceSetting('parentSwitchStateMode', 'anyOn')}
+  } else {
+    removeDeviceSetting('parentSwitchStateMode')
+  }
+
+  if(hasPollingChildren() == true) {
+    if(getDeviceSettings().gen1_status_polling_rate == null) { setDeviceSetting('gen1_status_polling_rate', 60) }
+    runEveryCustomSeconds(getDeviceSettings().gen1_status_polling_rate as Integer, 'refresh')
+  }
+  logTrace('Finished initializing settings to defaults')
+}
+
+@CompileStatic
+void configureNightlyPowerMonitoringReset() {
+  logDebug('Power monitoring device detected...')
+  if(getBooleanDeviceSetting('enablePowerMonitoring') == true) {
+    logDebug('Power monitoring is enabled in device preferences...')
+    if(getBooleanDeviceSetting('resetMonitorsAtMidnight') == true) {
+      logDebug('Nightly power monitoring reset is enabled in device preferences, creating nightly reset task...')
+      scheduleTask('0 0 0 * * ?', 'switchResetCounters')
+    } else {
+      logDebug('Nightly power monitoring reset is disabled in device preferences, removing nightly reset task...')
+      unscheduleTask('switchResetCounters')
+    }
+  } else {
+    logDebug('Power monitoring is disabled in device preferences, setting current, power, and energy to zero...')
+    logDebug('Hubitat does not allow for dynamically enabling/disabling device capabilities. Disabling power monitoring in device drivers require setting attribute to zero and not processing incoming power monitoring data.')
+    setCurrent(0 as BigDecimal)
+    setPower(0 as BigDecimal)
+    setEnergy(0 as BigDecimal)
+    unscheduleTask('switchResetCounters')
+    if(wsShouldBeConnected() == false) {
+      logDebug('Websocket connection no longer required, removing any WS connection checks and closing connection...')
+      unscheduleTask('checkWebsocketConnection')
+      wsClose()
+    }
+  }
+}
 
 void parentGetPreferencesFromShellyDevice() {
   if(hasParent() == true) {parent?.getPreferencesFromShellyDevice()}
@@ -330,8 +408,6 @@ void getPreferencesFromShellyDevice() {
   }
 }
 
-
-
 @CompileStatic
 void getPreferencesFromShellyDeviceGen1() {
   LinkedHashMap gen1SettingsResponse = (LinkedHashMap)sendGen1Command('settings')
@@ -412,90 +488,36 @@ void getPreferencesFromShellyDeviceGen1() {
     relays.eachWithIndex{ it, index ->
       if(mode == 'roller') {
         if(index == 0) {createChildCover(index)}
+      } else if(relays.size() == 1 && hasNoChildrenNeeded() == true && hasCapabilitySwitch() == true) {
+        setDeviceDataValue('switchId', "${index}")
       } else {
         createChildSwitch(index)
       }
 
       if(((LinkedHashMap)it)?.btn_type in ['momentary', 'momentary_on_release', 'detached']) {
         createChildInput(index, "Button")
-      } else  {
-        removeChildInput(index, "Button")
+      } else {
+        createChildInput(index, "Switch")
       }
-      createChildInput(index, "Switch")
     }
   }
 
+  List lights = (List)gen1SettingsResponse?.lights
+  if(lights != null && lights.size() > 0) {
+    lights.eachWithIndex{ it, index ->
+      setDeviceDataValue('switchId', "${index}")
+      setDeviceDataValue('lightId', "${index}")
+      setDeviceDataValue('switchLevelId', "${index}")
+      setDeviceDataValue('lightMode', mode)
+    }
+  }
   if(prefs.size() > 0) { setHubitatDevicePreferences(prefs) }
-}
-
-
-
-@CompileStatic
-void configureNightlyPowerMonitoringReset() {
-  logDebug('Power monitoring device detected...')
-  if(getBooleanDeviceSetting('enablePowerMonitoring') == true) {
-    logDebug('Power monitoring is enabled in device preferences...')
-    if(getBooleanDeviceSetting('resetMonitorsAtMidnight') == true) {
-      logDebug('Nightly power monitoring reset is enabled in device preferences, creating nightly reset task...')
-      scheduleTask('0 0 0 * * ?', 'switchResetCounters')
-    } else {
-      logDebug('Nightly power monitoring reset is disabled in device preferences, removing nightly reset task...')
-      unscheduleTask('switchResetCounters')
-    }
-  } else {
-    logDebug('Power monitoring is disabled in device preferences, setting current, power, and energy to zero...')
-    logDebug('Hubitat does not allow for dynamically enabling/disabling device capabilities. Disabling power monitoring in device drivers require setting attribute to zero and not processing incoming power monitoring data.')
-    setCurrent(0 as BigDecimal)
-    setPower(0 as BigDecimal)
-    setEnergy(0 as BigDecimal)
-    unscheduleTask('switchResetCounters')
-    if(wsShouldBeConnected() == false) {
-      logDebug('Websocket connection no longer required, removing any WS connection checks and closing connection...')
-      unscheduleTask('checkWebsocketConnection')
-      wsClose()
-    }
-  }
-}
-
-/* #endregion */
-/* #region Initialization */
-@CompileStatic
-void initialize() {
-  if(hasIpAddress() == true) {getPreferencesFromShellyDevice()}
-  if(thisDeviceOrChildrenHasPowerMonitoring() == true) {
-    if(getDeviceSettings().enablePowerMonitoring == null) { setDeviceSetting('enablePowerMonitoring', true) }
-    if(getDeviceSettings().resetMonitorsAtMidnight == null) { setDeviceSetting('resetMonitorsAtMidnight', true) }
-  }else {
-    removeDeviceSetting('enablePowerMonitoring')
-    removeDeviceSetting('resetMonitorsAtMidnight')
-  }
-  if(hasParent() == false && isGen1Device() == false && hasIpAddress() == true) {
-    LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
-    LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
-    Boolean hasBlu = ble?.observer != null
-    if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
-    if(hasBlu == true && getDeviceSettings().enableBluetoothGateway == null) {
-      setDeviceSetting('enableBluetoothGateway', true)
-    } else { removeDeviceSetting('enableBluetoothGateway') }
-  }
-
-
-  if(hasChildSwitches() == true) {
-    if(getDeviceSettings().parentSwitchStateMode == null) {setDeviceSetting('parentSwitchStateMode', 'anyOn')}
-  } else {
-    removeDeviceSetting('parentSwitchStateMode')
-  }
-
-  if(hasIpAddress() == true) {initializeWebsocketConnectionIfNeeded()}
-
-  if(hasPollingChildren() == true) {
-    if(getDeviceSettings().gen1_status_polling_rate == null) { setDeviceSetting('gen1_status_polling_rate', 60) }
-    runEveryCustomSeconds(getDeviceSettings().gen1_status_polling_rate as Integer, 'refresh')
-  }
+  refresh()
 }
 
 /* #endregion */
 /* #region Configuration */
+// MARK: Configure
 @CompileStatic
 void configure() {
   if(hasParent() == false && isBlu() == false) {
@@ -574,6 +596,7 @@ void configure() {
       runEveryCustomSeconds(getDeviceSettings().gen1_status_polling_rate as Integer, 'refresh')
     }
   }
+  refresh()
 }
 
 void tryDeviceSpecificConfigure() {try{deviceSpecificConfigure()} catch(ex) {}}
@@ -1139,6 +1162,11 @@ Integer getIntegerDeviceDataValue(String dataValueName, DeviceWrapper dev = null
   return dev.getDataValue(dataValueName) as Integer
 }
 
+Boolean getBooleanDeviceDataValue(String dataValueName, DeviceWrapper dev = null) {
+  if(dev == null) {dev = thisDevice()}
+  return dev.getDataValue(dataValueName) == 'true'
+}
+
 @CompileStatic
 Boolean deviceIsSwitch(DeviceWrapper dev) {return deviceHasDataValue('switchId', dev)}
 
@@ -1411,6 +1439,21 @@ void setValveState(String position, Integer id = 0) {
 }
 
 @CompileStatic
+void setSwitchLevelState(Integer level, Integer id = 0) {
+  if(level != null) {
+    if(getDeviceDataValue('switchLevelId') == null && getDeviceDataValue('switchLevelId') != id){
+      List<ChildDeviceWrapper> children = getSwitchLevelChildren()
+      if(children != null && children.size() > 0) {
+        sendChildDeviceEvent([name: 'level', value: level], getSwitchLevelChildById(id))
+      }
+    } else {
+      sendDeviceEvent([name: 'level', value: level])
+    }
+
+  }
+}
+
+@CompileStatic
 void setSwitchState(Boolean on, Integer id = 0) {
   if(on != null) {
     List<ChildDeviceWrapper> children = getSwitchChildren()
@@ -1423,6 +1466,7 @@ void setSwitchState(Boolean on, Integer id = 0) {
       Boolean anyOn = childStates.any{k,v -> v == 'on'}
       Boolean allOn = childStates.every{k,v -> v == 'on'}
       String parentSwitchStateMode = getDeviceSettings().parentSwitchStateMode
+      if(parentSwitchStateMode == null || parentSwitchStateMode == '') {initializeSettingsToDefaults()}
       if(parentSwitchStateMode == 'anyOn') { sendDeviceEvent([name: 'switch', value: anyOn ? 'on' : 'off']) }
       if(parentSwitchStateMode == 'allOn') { sendDeviceEvent([name: 'switch', value: allOn ? 'on' : 'off']) }
     } else {
@@ -1464,8 +1508,15 @@ void on() {
     logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
   } else if(isGen1Device() == true) {
-    parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=on")
-  } else if(hasChildSwitches()) {
+    if(hasChildSwitches() == true) {
+      getSwitchChildren().each{ child ->
+        Integer id = getChildDeviceDataValue('switchId', child)
+        parentSendGen1CommandAsync("/relay/${id}/?turn=on")
+      }
+    } else {
+      parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=on")
+    }
+  } else if(hasChildSwitches() == true) {
     getSwitchChildren().each{it.on()}
   } else {
     parentPostCommandAsync(switchSetCommand(true, getIntegerDeviceDataValue('switchId')))
@@ -1480,12 +1531,25 @@ void off() {
     logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
   } else if(isGen1Device() == true) {
-    parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
+    if(hasChildSwitches() == true) {
+      getSwitchChildren().each{ child ->
+        Integer id = getChildDeviceDataValue('switchId', child)
+        parentSendGen1CommandAsync("/relay/${id}/?turn=off")
+      }
+    } else {
+      parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
+    }
   } else if(hasChildSwitches()) {
     getSwitchChildren().each{it.off()}
   } else {
     parentPostCommandAsync(switchSetCommand(false, getIntegerDeviceDataValue('switchId')))
   }
+}
+
+void setLevel(Integer level, Integer duration) {
+  level = boundedLevel(level)
+  duration = boundedLevel(durationMs, 0, 5000)
+  parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
 }
 
 @CompileStatic
@@ -2575,6 +2639,15 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
         }
       }
     }
+    if(json?.lights != null) {
+      List<LinkedHashMap> lights = (List<LinkedHashMap>)json?.lights
+      lights.eachWithIndex{ light, index ->
+        Integer brightness = light?.brightness as Integer
+        if(brightness != null) {setSwitchLevelState(brightness, index)}
+        Boolean isOn = light?.ison as Boolean
+        if(isOn != null) {setSwitchState(isOn)}
+      }
+    }
   }
 }
 
@@ -2599,6 +2672,7 @@ void getStatusGen2Callback(AsyncResponse response, Map data = null) {
   }
 }
 
+// MARK: Parse Gen1 Webhook
 @CompileStatic
 void parseGen1Message(String raw) {
   getStatusGen1()
@@ -2629,8 +2703,14 @@ void parseGen1Message(String raw) {
   else if(query[0] == 'flood_detected') {setFloodOn(true)}
   else if(query[0] == 'flood_gone') {setFloodOn(false)}
 
-  else if(query[0] == 'out_on') {setSwitchState(true, query[1] as Integer)}
-  else if(query[0] == 'out_off') {setSwitchState(false, query[1] as Integer)}
+  else if(query[0] == 'out_on') {
+    setSwitchState(true, query[1] as Integer)
+    if(hasCapabilityLight() == true) {getStatusGen1(true)}
+  }
+  else if(query[0] == 'out_off') {
+    setSwitchState(false, query[1] as Integer)
+    if(hasCapabilityLight() == true) {getStatusGen1(true)}
+  }
 
   else if(query[0] == 'btn_on') {setInputSwitchState(true, query[1] as Integer)}
   else if(query[0] == 'btn_off') {setInputSwitchState(false, query[1] as Integer)}
@@ -2824,6 +2904,7 @@ String pm1GetStatus() {
 /* #region Webhook Helpers */
 @CompileStatic
 void setDeviceActionsGen1() {
+  logTrace('Setting device actions for gen 1 device...')
   LinkedHashMap<String, List> actions = getDeviceActionsGen1()
   logDebug("Gen 1 Actions: ${prettyJson(actions)}")
   actions.each{ k,v ->
@@ -2889,6 +2970,7 @@ String getClassName(Object obj) {return getObjectClassName(obj)}
 
 @CompileStatic
 void setDeviceActionsGen2() {
+  logTrace('Setting device actions for gen2+ device...')
   LinkedHashMap supported = getSupportedWebhooks()
   if(supported?.result != null) {
     supported = (LinkedHashMap)supported.result
@@ -3283,7 +3365,8 @@ ChildDeviceWrapper createChildSwitch(Integer id, String additionalId = null) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = additionalId == null ? 'Shelly Switch Component' : 'Shelly OverUnder Switch Component'
-    String label = additionalId == null ? "${thisDevice().getLabel()} - Switch ${id}" : "${thisDevice().getLabel()} - ${additionalId} - Switch ${id}"
+    String labelText = thisDevice().getLabel() != null ? "${thisDevice().getLabel()}" : "${driverName}"
+    String label = additionalId == null ? "${labelText} - Switch ${id}" : "${labelText} - ${additionalId} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -3300,7 +3383,7 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = 'Shelly Switch PM Component'
-    String label = "${thisDevice().getLabel()} - Switch ${id}"
+    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - Switch ${id}" : "${driverName} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -3521,6 +3604,18 @@ Integer getSwitchChildrenCount() {
     ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
     return allChildren.findAll{childHasDataValue(it,'switchId')}.size()
   }
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getSwitchLevelChildren() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasDataValue(it,'switchLevelId')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getSwitchLevelChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'switchLevelId') == id}
 }
 
 @CompileStatic
@@ -3972,8 +4067,10 @@ void initializeWebsocketConnectionIfNeeded() {
     initializeWebsocketConnection()
     runIn(2, 'checkWebsocketConnection')
   } else {
-    wsClose()
-    setDeviceActionsGen2()
+    if(isGen1Device() == false) {
+      wsClose()
+      setDeviceActionsGen2()
+    }
   }
 }
 
@@ -4350,5 +4447,13 @@ void updated() {
       } else { logWarn("No configure() method defined or configure() resulted in error: ${e}") }
     }
   }
+}
+
+@CompileStatic
+Boolean notRecentlyBooted() {return uptime() > 60}
+
+BigInteger uptime() {
+  logTrace("Uptime: ${getLocation().getHub().uptime}s")
+  return getLocation().getHub().uptime
 }
 /* #endregion */

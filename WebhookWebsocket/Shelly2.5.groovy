@@ -5,6 +5,7 @@ metadata {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
+    capability 'Switch'
   }
 }
 
