@@ -164,6 +164,13 @@
       "required": false
     },
     {
+      "id": "81a5feb7-8c7a-4112-8db5-50377b922994",
+      "name": "Shelly Motion",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyMotion.groovy",
+      "required": false
+    },
+    {
       "id": "d85b455a-37a7-4cdd-b619-ea5ca6057152",
       "name": "Shelly Motion 2",
       "namespace": "ShellyUSA",
