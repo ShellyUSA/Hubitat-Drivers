@@ -1375,7 +1375,7 @@ void setCoverState(String value, Integer id = 0) {
   }
 }
 
-void setChildCoverPosition(Integer position, ChildDeviceWrapper child) {child?.setCoverPosition(position)}
+void setChildCoverPosition(Integer position, ChildDeviceWrapper child) {child?.setCoverPosition(boundedLevel(position))}
 
 @CompileStatic
 void setCoverPosition(Integer position, Integer id = 0) {
@@ -2261,7 +2261,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       id = update?.id as Integer
       if(update?.current_pos != null) {
         Integer current_pos = update?.current_pos as Integer
-        if(current_pos != null) { setCoverPosition(current_pos, id) }
+        if(current_pos != null) { setCoverPosition(boundedLevel(current_pos), id) }
       }
       if(update?.state != null) {
         String coverState = update?.state as String
