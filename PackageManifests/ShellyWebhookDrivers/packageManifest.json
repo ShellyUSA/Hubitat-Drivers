@@ -241,6 +241,13 @@
       "required": false
     },
     {
+      "id": "37966361-a930-4ac4-a4b2-eca8fb717e1f",
+      "name": "Shelly Pro 4 PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro4PM.groovy",
+      "required": false
+    },
+    {
       "id": "6e2d0794-b72e-483f-8c39-6d5c8fed6540",
       "name": "Shelly Uni Gen 1",
       "namespace": "ShellyUSA",
