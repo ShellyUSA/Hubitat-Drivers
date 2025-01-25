@@ -65,6 +65,7 @@ Boolean deviceIsComponentInputSwitch() {return INPUTSWITCH == true}
 Boolean deviceIsOverUnderSwitch() {return OVERUNDERSWITCH == true}
 
 Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true }
+Boolean hasCapabilityLight() { return device.hasCapability('Light') == true }
 Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
 Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
 Boolean hasCapabilityValve() { return device.hasCapability('Valve') == true }
@@ -195,6 +196,7 @@ void initialize() {
   if(hasIpAddress() == true && uptime() > 60) {getPreferencesFromShellyDevice()}
   initializeSettingsToDefaults()
   if(hasIpAddress() == true) {initializeWebsocketConnectionIfNeeded()}
+  refresh()
 }
 
 @CompileStatic
@@ -209,7 +211,7 @@ void initializeSettingsToDefaults() {
 
   if(hasParent() == false && isGen1Device() == false && hasIpAddress() == true) {
     // Battery devices will never have Blu gateway, and if 'hasBluGateway' has already been set, there's no need to check again...
-    if(hasCapabilityBattery() == false && getDeviceDataValue(hasBluGateway) == null) {
+    if(hasCapabilityBattery() == false && getDeviceDataValue('hasBluGateway') == null) {
       LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
       LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
       Boolean hasBlu = ble?.observer != null
@@ -230,6 +232,7 @@ void initializeSettingsToDefaults() {
     if(getDeviceSettings().gen1_status_polling_rate == null) { setDeviceSetting('gen1_status_polling_rate', 60) }
     runEveryCustomSeconds(getDeviceSettings().gen1_status_polling_rate as Integer, 'refresh')
   }
+  logTrace('Finished initializing settings to defaults')
 }
 
 @CompileStatic
@@ -485,20 +488,31 @@ void getPreferencesFromShellyDeviceGen1() {
     relays.eachWithIndex{ it, index ->
       if(mode == 'roller') {
         if(index == 0) {createChildCover(index)}
+      } else if(relays.size() == 1 && hasNoChildrenNeeded() == true && hasCapabilitySwitch() == true) {
+        setDeviceDataValue('switchId', "${index}")
       } else {
         createChildSwitch(index)
       }
 
       if(((LinkedHashMap)it)?.btn_type in ['momentary', 'momentary_on_release', 'detached']) {
         createChildInput(index, "Button")
-      } else  {
-        removeChildInput(index, "Button")
+      } else {
+        createChildInput(index, "Switch")
       }
-      createChildInput(index, "Switch")
     }
   }
 
+  List lights = (List)gen1SettingsResponse?.lights
+  if(lights != null && lights.size() > 0) {
+    lights.eachWithIndex{ it, index ->
+      setDeviceDataValue('switchId', "${index}")
+      setDeviceDataValue('lightId', "${index}")
+      setDeviceDataValue('switchLevelId', "${index}")
+      setDeviceDataValue('lightMode', mode)
+    }
+  }
   if(prefs.size() > 0) { setHubitatDevicePreferences(prefs) }
+  refresh()
 }
 
 /* #endregion */
@@ -582,6 +596,7 @@ void configure() {
       runEveryCustomSeconds(getDeviceSettings().gen1_status_polling_rate as Integer, 'refresh')
     }
   }
+  refresh()
 }
 
 void tryDeviceSpecificConfigure() {try{deviceSpecificConfigure()} catch(ex) {}}
@@ -1424,6 +1439,21 @@ void setValveState(String position, Integer id = 0) {
 }
 
 @CompileStatic
+void setSwitchLevelState(Integer level, Integer id = 0) {
+  if(level != null) {
+    if(getDeviceDataValue('switchLevelId') == null && getDeviceDataValue('switchLevelId') != id){
+      List<ChildDeviceWrapper> children = getSwitchLevelChildren()
+      if(children != null && children.size() > 0) {
+        sendChildDeviceEvent([name: 'level', value: level], getSwitchLevelChildById(id))
+      }
+    } else {
+      sendDeviceEvent([name: 'level', value: level])
+    }
+
+  }
+}
+
+@CompileStatic
 void setSwitchState(Boolean on, Integer id = 0) {
   if(on != null) {
     List<ChildDeviceWrapper> children = getSwitchChildren()
@@ -1514,6 +1544,12 @@ void off() {
   } else {
     parentPostCommandAsync(switchSetCommand(false, getIntegerDeviceDataValue('switchId')))
   }
+}
+
+void setLevel(Integer level, Integer duration) {
+  level = boundedLevel(level)
+  duration = boundedLevel(durationMs, 0, 5000)
+  parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
 }
 
 @CompileStatic
@@ -2603,6 +2639,15 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
         }
       }
     }
+    if(json?.lights != null) {
+      List<LinkedHashMap> lights = (List<LinkedHashMap>)json?.lights
+      lights.eachWithIndex{ light, index ->
+        Integer brightness = light?.brightness as Integer
+        if(brightness != null) {setSwitchLevelState(brightness, index)}
+        Boolean isOn = light?.ison as Boolean
+        if(isOn != null) {setSwitchState(isOn)}
+      }
+    }
   }
 }
 
@@ -2627,6 +2672,7 @@ void getStatusGen2Callback(AsyncResponse response, Map data = null) {
   }
 }
 
+// MARK: Parse Gen1 Webhook
 @CompileStatic
 void parseGen1Message(String raw) {
   getStatusGen1()
@@ -2657,8 +2703,14 @@ void parseGen1Message(String raw) {
   else if(query[0] == 'flood_detected') {setFloodOn(true)}
   else if(query[0] == 'flood_gone') {setFloodOn(false)}
 
-  else if(query[0] == 'out_on') {setSwitchState(true, query[1] as Integer)}
-  else if(query[0] == 'out_off') {setSwitchState(false, query[1] as Integer)}
+  else if(query[0] == 'out_on') {
+    setSwitchState(true, query[1] as Integer)
+    if(hasCapabilityLight() == true) {getStatusGen1(true)}
+  }
+  else if(query[0] == 'out_off') {
+    setSwitchState(false, query[1] as Integer)
+    if(hasCapabilityLight() == true) {getStatusGen1(true)}
+  }
 
   else if(query[0] == 'btn_on') {setInputSwitchState(true, query[1] as Integer)}
   else if(query[0] == 'btn_off') {setInputSwitchState(false, query[1] as Integer)}
@@ -2852,6 +2904,7 @@ String pm1GetStatus() {
 /* #region Webhook Helpers */
 @CompileStatic
 void setDeviceActionsGen1() {
+  logTrace('Setting device actions for gen 1 device...')
   LinkedHashMap<String, List> actions = getDeviceActionsGen1()
   logDebug("Gen 1 Actions: ${prettyJson(actions)}")
   actions.each{ k,v ->
@@ -2917,6 +2970,7 @@ String getClassName(Object obj) {return getObjectClassName(obj)}
 
 @CompileStatic
 void setDeviceActionsGen2() {
+  logTrace('Setting device actions for gen2+ device...')
   LinkedHashMap supported = getSupportedWebhooks()
   if(supported?.result != null) {
     supported = (LinkedHashMap)supported.result
@@ -3553,6 +3607,18 @@ Integer getSwitchChildrenCount() {
 }
 
 @CompileStatic
+List<ChildDeviceWrapper> getSwitchLevelChildren() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasDataValue(it,'switchLevelId')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getSwitchLevelChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'switchLevelId') == id}
+}
+
+@CompileStatic
 List<ChildDeviceWrapper> getSwitchChildren() {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.findAll{childHasDataValue(it,'switchId')}
@@ -4001,8 +4067,10 @@ void initializeWebsocketConnectionIfNeeded() {
     initializeWebsocketConnection()
     runIn(2, 'checkWebsocketConnection')
   } else {
-    wsClose()
-    setDeviceActionsGen2()
+    if(isGen1Device() == false) {
+      wsClose()
+      setDeviceActionsGen2()
+    }
   }
 }
 
