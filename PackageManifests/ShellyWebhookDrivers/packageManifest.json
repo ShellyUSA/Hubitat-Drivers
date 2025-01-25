@@ -36,6 +36,13 @@
       "required": true
     },
     {
+      "id": "36bb2bc1-1081-49b4-864c-6fab0d59f291",
+      "name": "Shelly Cover PM Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyCoverComponentPM.groovy",
+      "required": true
+    },
+    {
       "id": "f71bc078-29c4-4cc0-9973-ead39639c117",
       "name": "Shelly Humidity Peripheral Component",
       "namespace": "ShellyUSA",
