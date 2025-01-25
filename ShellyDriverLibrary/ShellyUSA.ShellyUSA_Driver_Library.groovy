@@ -68,6 +68,8 @@ Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true 
 Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
 Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
 Boolean hasCapabilityValve() { return device.hasCapability('Valve') == true }
+Boolean hasCapabilityCover() { return device.hasCapability('WindowShade') == true }
+Boolean hasCapabilityCoverOrCoverChild() { return device.hasCapability('WindowShade') == true || getCoverChildren()?.size() > 0 }
 
 @CompileStatic
 LinkedHashMap getSwitchInModeOptions() {
@@ -147,6 +149,9 @@ if (device != null) {
       input(name: 'gen1_ext_hum_under_value', type:'number', title: 'Humidity value over which to trigger ext_hum_under_url', required: true, defaultValue: 50)
       input(name: 'gen1_humidity_polling_child', type:'bool', title: 'Create child humidity device for humidity sensor, only supports polling on Gen 1 Shelly Devices. Will create combined temp&humidity if both are enabled.', required: false, defaultValue: false)
     }
+    if(hasCapabilityCover() == true) {
+      input(name: 'cover_invert_status', type:'bool', title: 'Invert open/closed state. If enabled open=0, 100=closed.', required: true, defaultValue: false)
+    }
 
     input(name: 'logEnable', type: 'bool', title: 'Enable Logging', required: false, defaultValue: true)
     input(name: 'debugLogEnable', type: 'bool', title: 'Enable debug logging', required: false, defaultValue: true)
@@ -171,27 +176,8 @@ void refresh() {
     logTrace('Refreshing status for gen1 device')
     refreshStatusGen1()
   } else {
-    if(hasParent() == true) {
-      Integer switchId = getIntegerDeviceDataValue('switchId')
-      if(switchId != null) {
-        parentPostCommandAsync(switchGetStatusCommand(switchId), 'getStatusGen2Callback')
-      }
-      Integer inputSwitchId = getIntegerDeviceDataValue('inputSwitchId')
-      if(inputSwitchId != null) {
-        parentPostCommandAsync(inputGetStatusCommand(inputSwitchId), 'getStatusGen2Callback')
-      }
-      Integer temperatureId = getIntegerDeviceDataValue('temperatureId')
-      if(temperatureId != null) {
-        parentPostCommandAsync(temperatureGetStatusCommand(temperatureId), 'getStatusGen2Callback')
-      }
-      Integer humidityId = getIntegerDeviceDataValue('humidityId')
-      if(humidityId != null) {
-        parentPostCommandAsync(humidityGetStatusCommand(humidityId), 'getStatusGen2Callback')
-      }
-    } else {
-      if(getWebsocketIsConnected() == true) {parentSendWsCommand(shellyGetStatusCommand())}
-      else {parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')}
-    }
+    if(getWebsocketIsConnected() == true) {parentSendWsCommand(shellyGetStatusCommand())}
+    else {parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')}
   }
   tryRefreshDeviceSpecificInfo()
 }
@@ -238,9 +224,9 @@ void getPreferencesFromShellyDevice() {
           Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
           if(switchGetConfigResult != null && switchGetConfigResult.size() > 0 && hasNoChildrenNeeded() == false) {
             logDebug('Creating child device for switch...')
-            logDebug("Switch.GetConfig Result: ${prettyJson(switchGetConfigResult)}")
+            logTrace("Switch.GetConfig Result: ${prettyJson(switchGetConfigResult)}")
             Map<String, Object> switchStatus = postCommandSync(switchGetStatusCommand(id))
-            logDebug("Switch Status: ${prettyJson(switchStatus)}")
+            logTrace("Switch Status: ${prettyJson(switchStatus)}")
             Map<String, Object> switchStatusResult = (LinkedHashMap<String, Object>)switchStatus?.result
             Boolean hasPM = ('apower' in switchStatusResult.keySet())
             ChildDeviceWrapper child = null
@@ -264,7 +250,7 @@ void getPreferencesFromShellyDevice() {
           Integer id = inp.tokenize(':')[1] as Integer
           logDebug("Input ID: ${id}")
           Map inputGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(inputGetConfigCommand(id))?.result
-          logDebug("Input.GetConfig Result: ${prettyJson(inputGetConfigResult)}")
+          logTrace("Input.GetConfig Result: ${prettyJson(inputGetConfigResult)}")
           logDebug('Creating child device for input...')
           LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
           String inputType = (inputConfig?.type as String).capitalize()
@@ -272,10 +258,6 @@ void getPreferencesFromShellyDevice() {
           // Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
           if(inputGetConfigResult != null && inputGetConfigResult.size() > 0) {setChildDevicePreferences(inputGetConfigResult, child)}
         }
-
-
-      } else if(inputs?.size() == 1) {
-
       } else {
         logDebug('No inputs found...')
       }
@@ -286,14 +268,20 @@ void getPreferencesFromShellyDevice() {
           Integer id = cov.tokenize(':')[1] as Integer
           logDebug("Cover ID: ${id}")
           Map coverGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(id))?.result
-          logDebug("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
+          Map<String, Object> coverStatus = postCommandSync(coverGetStatusCommand(id))
+          logTrace("Cover Status: ${prettyJson(coverStatus)}")
+          Map<String, Object> coverStatusResult = (LinkedHashMap<String, Object>)coverStatus?.result
+          Boolean hasPM = ('apower' in coverStatusResult.keySet())
+          logTrace("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
           logDebug('Creating child device for cover...')
-          ChildDeviceWrapper child = createChildCover(id)
+          ChildDeviceWrapper child = null
           if(coverGetConfigResult != null && coverGetConfigResult.size() > 0) {setChildDevicePreferences(coverGetConfigResult, child)}
+          if(hasPM == true) {
+            child = createChildPmCover(id)
+          } else {
+            child = createChildCover(id)
+          }
         }
-
-      } else if(covers?.size() == 1) {
-
       } else {
         logDebug('No covers found...')
       }
@@ -419,9 +407,15 @@ void getPreferencesFromShellyDeviceGen1() {
   }
 
   List relays = (List)gen1SettingsResponse?.relays
+  String mode = gen1SettingsResponse?.mode
   if(relays != null && relays.size() > 0) {
     relays.eachWithIndex{ it, index ->
-      createChildSwitch(index)
+      if(mode == 'roller') {
+        if(index == 0) {createChildCover(index)}
+      } else {
+        createChildSwitch(index)
+      }
+
       if(((LinkedHashMap)it)?.btn_type in ['momentary', 'momentary_on_release', 'detached']) {
         createChildInput(index, "Button")
       } else  {
@@ -597,57 +591,57 @@ void sendPreferencesToShellyDevice() {
   LinkedHashMap newSettings = getDeviceSettings()
   logDebug("New settings: ${prettyJson(newSettings)}")
 
-
-  if(switchId != null) {
-    Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(switchId))?.result
-    if(curSettings != null) { curSettings.remove('id') }
-    Map<String, Object> toSend = [:]
-    curSettings.each{ String k,v ->
-      String cKey = "switch_${k}"
-      def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
-      logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
-      toSend[k] = newVal
+  if(isGen1Device() == false) {
+    if(switchId != null) {
+      Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(switchId))?.result
+      if(curSettings != null) { curSettings.remove('id') }
+      Map<String, Object> toSend = [:]
+      curSettings.each{ String k,v ->
+        String cKey = "switch_${k}"
+        def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
+        logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
+        toSend[k] = newVal
+      }
+      toSend = toSend.findAll{ it.value!=null }
+      logDebug("To send: ${prettyJson(toSend)}")
+      logDebug("Sending new settings to device for switch...")
+      switchSetConfigJson(toSend, switchId)
     }
-    toSend = toSend.findAll{ it.value!=null }
-    logDebug("To send: ${prettyJson(toSend)}")
-    logDebug("Sending new settings to device for switch...")
-    switchSetConfigJson(toSend, switchId)
-  }
-  if(coverId != null) {
-    Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(coverId))?.result
-    if(curSettings != null) { curSettings.remove('id') }
-    Map<String, Object> toSend = [:]
-    curSettings.each{ String k,v ->
-      String cKey = "cover_${k}"
-      def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
-      logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
-      toSend[k] = newVal
+    if(coverId != null) {
+      Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(coverId))?.result
+      if(curSettings != null) { curSettings.remove('id') }
+      Map<String, Object> toSend = [:]
+      curSettings.each{ String k,v ->
+        String cKey = "cover_${k}"
+        def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
+        logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
+        toSend[k] = newVal
+      }
+      toSend = toSend.findAll{ it.value!=null }
+      logDebug("To send: ${prettyJson(toSend)}")
+      logDebug("Sending new settings to device for cover...")
+      coverSetConfigJson(toSend, coverId)
     }
-    toSend = toSend.findAll{ it.value!=null }
-    logDebug("To send: ${prettyJson(toSend)}")
-    logDebug("Sending new settings to device for cover...")
-    coverSetConfigJson(toSend, coverId)
-  }
-  if(inputButtonId != null || inputCountId != null || inputSwitchId != null) {
-    Integer id = 0
-    if(inputButtonId != null) {id = inputButtonId}
-    else if(inputCountId != null) {id = inputCountId}
-    else if(inputSwitchId != null) {id = inputSwitchId}
-    Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(inputGetConfigCommand(id))?.result
-    if(curSettings != null) { curSettings.remove('id') }
-    Map<String, Object> toSend = [:]
-    curSettings.each{ String k,v ->
-      String cKey = "input_${k}"
-      def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
-      logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
-      toSend[k] = newVal
+    if(inputButtonId != null || inputCountId != null || inputSwitchId != null) {
+      Integer id = 0
+      if(inputButtonId != null) {id = inputButtonId}
+      else if(inputCountId != null) {id = inputCountId}
+      else if(inputSwitchId != null) {id = inputSwitchId}
+      Map curSettings = (LinkedHashMap<String, Object>)parentPostCommandSync(inputGetConfigCommand(id))?.result
+      if(curSettings != null) { curSettings.remove('id') }
+      Map<String, Object> toSend = [:]
+      curSettings.each{ String k,v ->
+        String cKey = "input_${k}"
+        def newVal = newSettings.containsKey(k) ? newSettings[k] : newSettings[cKey]
+        logTrace("Current setting for ${k}: ${v} -> New: ${newVal}")
+        toSend[k] = newVal
+      }
+      toSend = toSend.findAll{ it.value!=null }
+      logDebug("To send: ${prettyJson(toSend)}")
+      logDebug("Sending new settings to device for input...")
+      inputSetConfigJson(toSend, id)
     }
-    toSend = toSend.findAll{ it.value!=null }
-    logDebug("To send: ${prettyJson(toSend)}")
-    logDebug("Sending new settings to device for input...")
-    inputSetConfigJson(toSend, id)
   }
-
 
   if(getDeviceSettings().gen1_set_volume != null) {
     String queryString = "set_volume=${getDeviceSettings().gen1_set_volume}".toString()
@@ -831,7 +825,8 @@ BigDecimal getVoltage(Integer id = 0) {
 void setEnergy(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
 
-  ChildDeviceWrapper c = getSwitchChildById(id)
+  ChildDeviceWrapper c = getEnergyChildById(id)
+  logTrace("Setting energy to ${value} on ${c}")
   if(value == -1) {
     if(c != null) { sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c) }
     else { sendDeviceEvent([name: 'energy', value: null, unit:'kWh']) }
@@ -848,10 +843,10 @@ void setEnergy(BigDecimal value, Integer id = 0) {
 @CompileStatic
 void updateParentEnergyTotal() {
   if(hasChildren() == true) {
-    List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren().findAll{it.currentValue('energy') != null}
+    List<ChildDeviceWrapper> energyChildren = getThisDeviceChildren().findAll{it.currentValue('energy') != null}
     List<BigDecimal> childEnergies = []
-    if(energySwitchChildren != null && energySwitchChildren?.size() > 0) {
-      childEnergies = energySwitchChildren.collect{it.currentValue('energy') as BigDecimal}
+    if(energyChildren != null && energyChildren?.size() > 0) {
+      childEnergies = energyChildren.collect{it.currentValue('energy') as BigDecimal}
     }
     sendDeviceEvent([name: 'energy', value: childEnergies.sum() as BigDecimal, unit:'kWh'])
   }
@@ -1004,6 +999,7 @@ ArrayList<ChildDeviceWrapper> getParentDeviceChildren() { return parent?.getChil
 
 LinkedHashMap getDeviceSettings() { return this.settings }
 LinkedHashMap getParentDeviceSettings() { return this.parent?.settings }
+LinkedHashMap getChildDeviceSettings(ChildDeviceWrapper child) { return child?.settings }
 Boolean hasParent() { return parent != null }
 
 
@@ -1367,6 +1363,42 @@ void setChildDevicePreferences(LinkedHashMap<String, Object> preferences, ChildD
 }
 
 @CompileStatic
+void setCoverState(String value, Integer id = 0) {
+  logTrace("Setting cover state to ${value}")
+  if(value in ['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']) {
+    List<ChildDeviceWrapper> children = getCoverChildren()
+    if(children != null && children.size() > 0) {
+      sendChildDeviceEvent([name: 'windowShade', value: value], getCoverChildById(id))
+    } else {
+      sendDeviceEvent([name: 'windowShade', value: value])
+    }
+  }
+}
+
+void setChildCoverPosition(Integer position, ChildDeviceWrapper child) {child?.setCoverPosition(position)}
+
+@CompileStatic
+void setCoverPosition(Integer position, Integer id = 0) {
+  logTrace("Setting cover position to ${position}")
+  List<ChildDeviceWrapper> children = getCoverChildren()
+  if(children != null && children.size() > 0) {
+    setChildCoverPosition(position, getCoverChildById(id))
+  } else {
+    Boolean invert = getBooleanDeviceSetting('cover_invert_status')
+    sendDeviceEvent([name: 'position', value: position])
+  }
+  if(position == 0 && getBooleanDeviceSetting('cover_invert_status') == false) {
+    setCoverState('closed', id)
+  } else if(position == 0 && getBooleanDeviceSetting('cover_invert_status') == true) {
+    setCoverState('open', id)
+  } else if(position == 100 && getBooleanDeviceSetting('cover_invert_status') == false) {
+    setCoverState('open', id)
+  } else if(position == 100 && getBooleanDeviceSetting('cover_invert_status') == true) {
+    setCoverState('closed', id)
+  }
+}
+
+@CompileStatic
 void setValveState(String position, Integer id = 0) {
   if(position in ['open','closed']) {
     List<ChildDeviceWrapper> children = getValveChildren()
@@ -1488,6 +1520,50 @@ void setInputAnalogState(BigDecimal value, Integer id = 0) {
 void setLastUpdated() {
   if(hasCapabilityBattery() == true) {sendDeviceEvent([name: 'lastUpdated', value: nowFormatted()])}
 }
+
+@CompileStatic
+void open() {
+  if(isGen1Device() == true) {
+    parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=open")
+  } else {
+    parentPostCommandSync(coverOpenCommand(getIntegerDeviceDataValue('coverId')))
+  }
+}
+
+@CompileStatic
+void close() {
+  if(isGen1Device() == true) {
+    parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=close")
+  } else {
+    parentPostCommandSync(coverCloseCommand(getIntegerDeviceDataValue('coverId')))
+  }
+
+}
+
+@CompileStatic
+void setPosition(BigDecimal position) {
+  if(isGen1Device() == true) {
+    parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=to_pos&roller_pos=${position as Integer}")
+  } else {
+    parentPostCommandSync(coverGoToPositionCommand(getIntegerDeviceDataValue('coverId'), position as Integer))
+  }
+}
+
+@CompileStatic
+void startPositionChange(String direction) {
+  if(direction == 'open') {open()}
+  if(direction == 'close') {close()}
+}
+
+@CompileStatic
+void stopPositionChange() {
+  if(isGen1Device() == true) {
+    parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=stop")
+  } else {
+    parentPostCommandSync(coverStopCommand(getIntegerDeviceDataValue('coverId')))
+  }
+}
+
 
 void sendEventToShellyBluetoothHelper(String loc, Object value, String dni) {
   sendLocationEvent(name:loc, value:value, data:dni)
@@ -2180,6 +2256,49 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
+    if(k.startsWith('cover')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.current_pos != null) {
+        Integer current_pos = update?.current_pos as Integer
+        if(current_pos != null) { setCoverPosition(current_pos, id) }
+      }
+      if(update?.state != null) {
+        String coverState = update?.state as String
+        if(coverState != null) {
+          if(coverState == 'opening') {setCoverState(coverState, id)}
+          else if(coverState == 'closing') {setCoverState(coverState, id)}
+        }
+      }
+      if(getBooleanDeviceSetting('enablePowerMonitoring') == true) {
+        if(update?.current != null && update?.current != '') {
+          BigDecimal current =  (BigDecimal)update.current
+          if(current != null) { setCurrent(current, id) }
+        }
+
+        if(update?.apower != null && update?.apower != '') {
+          BigDecimal apower =  (BigDecimal)update.apower
+          if(apower != null) { setPower(apower, id) }
+        }
+
+        if(update?.voltage != null && update?.voltage != '') {
+          BigDecimal voltage =  (BigDecimal)update.voltage
+          if(voltage != null) { setVoltage(voltage, id) }
+        }
+
+        if(update?.freq != null && update?.freq != '') {
+          BigDecimal freq =  (BigDecimal)update.freq
+          if(freq != null) { setFrequency(freq, id) }
+        }
+
+        if(update?.aenergy != null && update?.aenergy != '') {
+          LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
+          BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
+          if(aenergy != null) { setEnergy(aenergy/1000, id) }
+        }
+      }
+    }
+
     if(k.startsWith('pm1')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
@@ -2303,8 +2422,8 @@ void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
 }
 
 @CompileStatic
-void getStatusGen1() {
-  if(hasCapabilityBatteryGen1() == true) {
+void getStatusGen1(Boolean force = false) {
+  if(hasCapabilityBatteryGen1() == true || force == true) {
     logTrace('Sending Gen1 Device Status Request...')
     sendGen1CommandAsync('status', null, 'getStatusGen1Callback')
   }
@@ -2367,6 +2486,16 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
           String position = valve?.state
           logTrace("Valve status: ${position}")
           setValveState(position.startsWith('open') ? 'open' : 'closed')
+        }
+      }
+    }
+    if(hasCapabilityCoverOrCoverChild() == true) {
+      List<LinkedHashMap<String, Object>> rollers = (List<LinkedHashMap<String, Object>>)json?.rollers
+      if(rollers?.size() > 0) {
+        rollers.eachWithIndex{ roller, index ->
+          Integer position = roller?.current_pos as Integer
+          logTrace("Cover position from Shelly: ${position}")
+          setCoverPosition(boundedLevel(position))
         }
       }
     }
@@ -2523,8 +2652,14 @@ void parseGen1Message(String raw) {
   else if(query[0] == 'pm1.current_change' && query.size() == 4) {setCurrent(new BigDecimal(query[2]), query[3] as Integer)}
   else if(query[0] == 'pm1.voltage_change' && query.size() == 4) {setVoltage(new BigDecimal(query[2]), query[3] as Integer)}
 
+  else if(query[0] == 'roller_open') {setCoverState('opening', query[1] as Integer)}
+  else if(query[0] == 'roller_stop') {getStatusGen1(true)}
+  else if(query[0] == 'roller_close') {setCoverState('closing', query[1] as Integer)}
+
   setLastUpdated()
 }
+
+
 
 @CompileStatic
 void parseGen2Message(String raw) {
@@ -3171,10 +3306,15 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
       child.updateDataValue('switchId',"${id}")
       child.updateDataValue('hasPM','true')
-      return child
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
-  } else { return child }
+  }
+  child.updateDataValue('currentId', "${id}")
+  child.updateDataValue('energyId', "${id}")
+  child.updateDataValue('powerId', "${id}")
+  child.updateDataValue('voltageId', "${id}")
+  child.updateDataValue('frequencyId', "${id}")
+  return child
 }
 
 @CompileStatic
@@ -3203,8 +3343,7 @@ void removeChildInput(Integer id, String inputType) {
 }
 
 @CompileStatic
-ChildDeviceWrapper createChildCover(Integer id) {
-  String driverName = "Shelly Cover Component"
+ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Cover Component') {
   String dni = "${getThisDeviceDNI()}-cover${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -3217,6 +3356,18 @@ ChildDeviceWrapper createChildCover(Integer id) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   } else { return child }
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildPmCover(Integer id) {
+  ChildDeviceWrapper child = createChildCover(id, 'Shelly Cover PM Component')
+  child.updateDataValue('hasPM','true')
+  child.updateDataValue('currentId', "${id}")
+  child.updateDataValue('energyId', "${id}")
+  child.updateDataValue('powerId', "${id}")
+  child.updateDataValue('voltageId', "${id}")
+  child.updateDataValue('frequencyId', "${id}")
+  return child
 }
 
 @CompileStatic
@@ -3311,6 +3462,30 @@ ChildDeviceWrapper getFrequencyChildById(Integer id) {
 ChildDeviceWrapper getCurrentChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'currentId') == id}
+}
+
+@CompileStatic
+ChildDeviceWrapper getEnergyChildById(Integer id) {
+  List<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'energyId') == id}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getEnergyChildren() {
+  List<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasAttribute(it,'energy')}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getCoverChildren() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasDataValue(it,'coverId')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getCoverChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'coverId') == id}
 }
 
 @CompileStatic
@@ -4112,6 +4287,11 @@ void deleteChildByDNI(String dni) {
 BigDecimal cToF(BigDecimal val) { return celsiusToFahrenheit(val) }
 
 BigDecimal fToC(BigDecimal val) { return fahrenheitToCelsius(val) }
+
+@CompileStatic
+Integer boundedLevel(Integer level, Integer min = 0, Integer max = 100) {
+  return (Math.min(Math.max(level, min), max) as Integer)
+}
 
 @CompileStatic
 String base64Encode(String toEncode) { return toEncode.bytes.encodeBase64().toString() }
