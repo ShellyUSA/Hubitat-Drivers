@@ -1508,13 +1508,14 @@ void on() {
     logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
   } else if(isGen1Device() == true) {
+    String action = hasCapabilityLight() == true ? 'light' : 'relay'
     if(hasChildSwitches() == true) {
       getSwitchChildren().each{ child ->
         Integer id = getChildDeviceDataValue('switchId', child)
-        parentSendGen1CommandAsync("/relay/${id}/?turn=on")
+        parentSendGen1CommandAsync("${action}/${id}/?turn=on")
       }
     } else {
-      parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=on")
+      parentSendGen1CommandAsync("${action}/${getDeviceDataValue('switchId')}/?turn=on")
     }
   } else if(hasChildSwitches() == true) {
     getSwitchChildren().each{it.on()}
@@ -1531,13 +1532,14 @@ void off() {
     logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
   } else if(isGen1Device() == true) {
+    String action = hasCapabilityLight() == true ? 'light' : 'relay'
     if(hasChildSwitches() == true) {
       getSwitchChildren().each{ child ->
         Integer id = getChildDeviceDataValue('switchId', child)
-        parentSendGen1CommandAsync("/relay/${id}/?turn=off")
+        parentSendGen1CommandAsync("${action}/${id}/?turn=off")
       }
     } else {
-      parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
+      parentSendGen1CommandAsync("${action}/${getDeviceDataValue('switchId')}/?turn=off")
     }
   } else if(hasChildSwitches()) {
     getSwitchChildren().each{it.off()}
@@ -1546,10 +1548,12 @@ void off() {
   }
 }
 
-void setLevel(Integer level, Integer duration) {
-  level = boundedLevel(level)
-  duration = boundedLevel(durationMs, 0, 5000)
-  parentSendGen1CommandAsync("/relay/${getDeviceDataValue('switchId')}/?turn=off")
+void setLevel(BigDecimal level) {setLevel(level, 500)}
+
+void setLevel(BigDecimal level, BigDecimal duration) {
+  Integer l = boundedLevel(level as Integer)
+  Integer d = boundedLevel(duration as Integer, 0, 5000)
+  parentSendGen1CommandAsync("light/${getDeviceDataValue('switchLevelId')}/?turn=on&brightness=${l}&transition=${d}")
 }
 
 @CompileStatic
