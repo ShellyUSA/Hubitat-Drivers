@@ -176,27 +176,8 @@ void refresh() {
     logTrace('Refreshing status for gen1 device')
     refreshStatusGen1()
   } else {
-    if(hasParent() == true) {
-      Integer switchId = getIntegerDeviceDataValue('switchId')
-      if(switchId != null) {
-        parentPostCommandAsync(switchGetStatusCommand(switchId), 'getStatusGen2Callback')
-      }
-      Integer inputSwitchId = getIntegerDeviceDataValue('inputSwitchId')
-      if(inputSwitchId != null) {
-        parentPostCommandAsync(inputGetStatusCommand(inputSwitchId), 'getStatusGen2Callback')
-      }
-      Integer temperatureId = getIntegerDeviceDataValue('temperatureId')
-      if(temperatureId != null) {
-        parentPostCommandAsync(temperatureGetStatusCommand(temperatureId), 'getStatusGen2Callback')
-      }
-      Integer humidityId = getIntegerDeviceDataValue('humidityId')
-      if(humidityId != null) {
-        parentPostCommandAsync(humidityGetStatusCommand(humidityId), 'getStatusGen2Callback')
-      }
-    } else {
-      if(getWebsocketIsConnected() == true) {parentSendWsCommand(shellyGetStatusCommand())}
-      else {parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')}
-    }
+    if(getWebsocketIsConnected() == true) {parentSendWsCommand(shellyGetStatusCommand())}
+    else {parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')}
   }
   tryRefreshDeviceSpecificInfo()
 }
@@ -243,9 +224,9 @@ void getPreferencesFromShellyDevice() {
           Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
           if(switchGetConfigResult != null && switchGetConfigResult.size() > 0 && hasNoChildrenNeeded() == false) {
             logDebug('Creating child device for switch...')
-            logDebug("Switch.GetConfig Result: ${prettyJson(switchGetConfigResult)}")
+            logTrace("Switch.GetConfig Result: ${prettyJson(switchGetConfigResult)}")
             Map<String, Object> switchStatus = postCommandSync(switchGetStatusCommand(id))
-            logDebug("Switch Status: ${prettyJson(switchStatus)}")
+            logTrace("Switch Status: ${prettyJson(switchStatus)}")
             Map<String, Object> switchStatusResult = (LinkedHashMap<String, Object>)switchStatus?.result
             Boolean hasPM = ('apower' in switchStatusResult.keySet())
             ChildDeviceWrapper child = null
@@ -269,7 +250,7 @@ void getPreferencesFromShellyDevice() {
           Integer id = inp.tokenize(':')[1] as Integer
           logDebug("Input ID: ${id}")
           Map inputGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(inputGetConfigCommand(id))?.result
-          logDebug("Input.GetConfig Result: ${prettyJson(inputGetConfigResult)}")
+          logTrace("Input.GetConfig Result: ${prettyJson(inputGetConfigResult)}")
           logDebug('Creating child device for input...')
           LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
           String inputType = (inputConfig?.type as String).capitalize()
@@ -277,10 +258,6 @@ void getPreferencesFromShellyDevice() {
           // Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
           if(inputGetConfigResult != null && inputGetConfigResult.size() > 0) {setChildDevicePreferences(inputGetConfigResult, child)}
         }
-
-
-      } else if(inputs?.size() == 1) {
-
       } else {
         logDebug('No inputs found...')
       }
@@ -291,14 +268,20 @@ void getPreferencesFromShellyDevice() {
           Integer id = cov.tokenize(':')[1] as Integer
           logDebug("Cover ID: ${id}")
           Map coverGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(id))?.result
-          logDebug("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
+          Map<String, Object> coverStatus = postCommandSync(coverGetStatusCommand(id))
+          logTrace("Cover Status: ${prettyJson(coverStatus)}")
+          Map<String, Object> coverStatusResult = (LinkedHashMap<String, Object>)coverStatus?.result
+          Boolean hasPM = ('apower' in coverStatusResult.keySet())
+          logTrace("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
           logDebug('Creating child device for cover...')
-          ChildDeviceWrapper child = createChildCover(id)
+          ChildDeviceWrapper child = null
           if(coverGetConfigResult != null && coverGetConfigResult.size() > 0) {setChildDevicePreferences(coverGetConfigResult, child)}
+          if(hasPM == true) {
+            child = createChildPmCover(id)
+          } else {
+            child = createChildCover(id)
+          }
         }
-
-      } else if(covers?.size() == 1) {
-
       } else {
         logDebug('No covers found...')
       }
@@ -842,7 +825,8 @@ BigDecimal getVoltage(Integer id = 0) {
 void setEnergy(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
 
-  ChildDeviceWrapper c = getSwitchChildById(id)
+  ChildDeviceWrapper c = getEnergyChildById(id)
+  logTrace("Setting energy to ${value} on ${c}")
   if(value == -1) {
     if(c != null) { sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c) }
     else { sendDeviceEvent([name: 'energy', value: null, unit:'kWh']) }
@@ -859,10 +843,10 @@ void setEnergy(BigDecimal value, Integer id = 0) {
 @CompileStatic
 void updateParentEnergyTotal() {
   if(hasChildren() == true) {
-    List<ChildDeviceWrapper> energySwitchChildren = getEnergySwitchChildren().findAll{it.currentValue('energy') != null}
+    List<ChildDeviceWrapper> energyChildren = getThisDeviceChildren().findAll{it.currentValue('energy') != null}
     List<BigDecimal> childEnergies = []
-    if(energySwitchChildren != null && energySwitchChildren?.size() > 0) {
-      childEnergies = energySwitchChildren.collect{it.currentValue('energy') as BigDecimal}
+    if(energyChildren != null && energyChildren?.size() > 0) {
+      childEnergies = energyChildren.collect{it.currentValue('energy') as BigDecimal}
     }
     sendDeviceEvent([name: 'energy', value: childEnergies.sum() as BigDecimal, unit:'kWh'])
   }
@@ -2272,6 +2256,49 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
+    if(k.startsWith('cover')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.current_pos != null) {
+        Integer current_pos = update?.current_pos as Integer
+        if(current_pos != null) { setCoverPosition(current_pos, id) }
+      }
+      if(update?.state != null) {
+        String coverState = update?.state as String
+        if(coverState != null) {
+          if(coverState == 'opening') {setCoverState(coverState, id)}
+          else if(coverState == 'closing') {setCoverState(coverState, id)}
+        }
+      }
+      if(getBooleanDeviceSetting('enablePowerMonitoring') == true) {
+        if(update?.current != null && update?.current != '') {
+          BigDecimal current =  (BigDecimal)update.current
+          if(current != null) { setCurrent(current, id) }
+        }
+
+        if(update?.apower != null && update?.apower != '') {
+          BigDecimal apower =  (BigDecimal)update.apower
+          if(apower != null) { setPower(apower, id) }
+        }
+
+        if(update?.voltage != null && update?.voltage != '') {
+          BigDecimal voltage =  (BigDecimal)update.voltage
+          if(voltage != null) { setVoltage(voltage, id) }
+        }
+
+        if(update?.freq != null && update?.freq != '') {
+          BigDecimal freq =  (BigDecimal)update.freq
+          if(freq != null) { setFrequency(freq, id) }
+        }
+
+        if(update?.aenergy != null && update?.aenergy != '') {
+          LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
+          BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
+          if(aenergy != null) { setEnergy(aenergy/1000, id) }
+        }
+      }
+    }
+
     if(k.startsWith('pm1')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
@@ -3279,10 +3306,15 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
       child.updateDataValue('switchId',"${id}")
       child.updateDataValue('hasPM','true')
-      return child
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
-  } else { return child }
+  }
+  child.updateDataValue('currentId', "${id}")
+  child.updateDataValue('energyId', "${id}")
+  child.updateDataValue('powerId', "${id}")
+  child.updateDataValue('voltageId', "${id}")
+  child.updateDataValue('frequencyId', "${id}")
+  return child
 }
 
 @CompileStatic
@@ -3311,8 +3343,7 @@ void removeChildInput(Integer id, String inputType) {
 }
 
 @CompileStatic
-ChildDeviceWrapper createChildCover(Integer id) {
-  String driverName = "Shelly Cover Component"
+ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Cover Component') {
   String dni = "${getThisDeviceDNI()}-cover${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -3325,6 +3356,18 @@ ChildDeviceWrapper createChildCover(Integer id) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   } else { return child }
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildPmCover(Integer id) {
+  ChildDeviceWrapper child = createChildCover(id, 'Shelly Cover PM Component')
+  child.updateDataValue('hasPM','true')
+  child.updateDataValue('currentId', "${id}")
+  child.updateDataValue('energyId', "${id}")
+  child.updateDataValue('powerId', "${id}")
+  child.updateDataValue('voltageId', "${id}")
+  child.updateDataValue('frequencyId', "${id}")
+  return child
 }
 
 @CompileStatic
@@ -3419,6 +3462,18 @@ ChildDeviceWrapper getFrequencyChildById(Integer id) {
 ChildDeviceWrapper getCurrentChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'currentId') == id}
+}
+
+@CompileStatic
+ChildDeviceWrapper getEnergyChildById(Integer id) {
+  List<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'energyId') == id}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getEnergyChildren() {
+  List<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasAttribute(it,'energy')}
 }
 
 @CompileStatic
