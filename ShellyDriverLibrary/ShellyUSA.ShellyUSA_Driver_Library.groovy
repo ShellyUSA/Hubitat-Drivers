@@ -59,6 +59,11 @@ List<String> getActionsToCreate() {
   if(hasActionsToCreateList() == true) { return ACTIONS_TO_CREATE }
   else {return []}
 }
+Boolean hasActionsToCreateEnabledTimesList() { return ACTIONS_TO_CREATE_ENABLED_TIMES != null }
+List<String> getActionsToCreateEnabledTimes() {
+  if(hasActionsToCreateEnabledTimesList() == true) { return ACTIONS_TO_CREATE_ENABLED_TIMES }
+  else {return []}
+}
 
 Boolean deviceIsComponent() {return COMP == true}
 Boolean deviceIsComponentInputSwitch() {return INPUTSWITCH == true}
@@ -70,6 +75,7 @@ Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
 Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
 Boolean hasCapabilityValve() { return device.hasCapability('Valve') == true }
 Boolean hasCapabilityCover() { return device.hasCapability('WindowShade') == true }
+Boolean hasCapabilityThermostatHeatingSetpoint() { return device.hasCapability('ThermostatHeatingSetpoint') == true }
 Boolean hasCapabilityCoverOrCoverChild() { return device.hasCapability('WindowShade') == true || getCoverChildren()?.size() > 0 }
 
 @CompileStatic
@@ -152,6 +158,13 @@ if (device != null) {
     }
     if(hasCapabilityCover() == true) {
       input(name: 'cover_invert_status', type:'bool', title: 'Invert open/closed state. If enabled open=0, 100=closed.', required: true, defaultValue: false)
+    }
+    if(hasCapabilityThermostatHeatingSetpoint() == true) {
+      input(name: 'trv_temperature_offset', type:'number', title: 'Temperature offset', required: true, defaultValue: 0)
+      input(name: 'trv_target_t_auto', type:'bool', title: 'Automatic temperature control', required: true, defaultValue: true)
+      input(name: 'trv_ext_t_enabled', type:'bool', title: 'If temperature correction from external temp sensor is enabled', required: true, defaultValue: true)
+      input(name: 'trv_display_brightness', type:'enum', title: 'Display brightness', required: true, options: [1:'1', 2:'2', 3:'3', 4:'4', 5:'5', 6:'6', 7:'7'])
+      input(name: 'trv_temp_units', type:'enum', title: 'Temperature Units', required: true, options: ['C':'Celcius', 'F':'Fahrenheit'])
     }
 
     input(name: 'logEnable', type: 'bool', title: 'Enable Logging', required: false, defaultValue: true)
@@ -412,8 +425,11 @@ void getPreferencesFromShellyDevice() {
 void getPreferencesFromShellyDeviceGen1() {
   LinkedHashMap gen1SettingsResponse = (LinkedHashMap)sendGen1Command('settings')
   logTrace("Gen 1 Settings ${prettyJson(gen1SettingsResponse)}")
+  // Get preferences from Shelly
   LinkedHashMap prefs = [:]
   LinkedHashMap motion = (LinkedHashMap)gen1SettingsResponse?.motion
+  LinkedHashMap display = (LinkedHashMap)gen1SettingsResponse?.display
+  List<LinkedHashMap> thermostats = (List<LinkedHashMap>)gen1SettingsResponse?.thermostats
   if(motion != null) {
     prefs['gen1_motion_sensitivity'] = motion?.sensitivity as Integer
     prefs['gen1_motion_blind_time_minutes'] = motion?.blind_time_minutes as Integer
@@ -422,6 +438,25 @@ void getPreferencesFromShellyDeviceGen1() {
     prefs['gen1_tamper_sensitivity'] = gen1SettingsResponse?.tamper_sensitivity as Integer
   }
   if(gen1SettingsResponse?.set_volume != null) {prefs['gen1_set_volume'] = gen1SettingsResponse?.set_volume as Integer}
+  if(display != null) {
+    if(display?.brightness != null) {prefs['trv_display_brightness'] = display?.brightness as Integer}
+  }
+  if(thermostats != null) {
+    thermostats.eachWithIndex{ tstat, index ->
+      LinkedHashMap target_t = (LinkedHashMap)tstat?.target_t
+      if(target_t?.enabled != null) {prefs['trv_target_t_auto'] = target_t?.enabled as Boolean}
+      if(target_t?.units != null) {prefs['trv_temp_units'] = target_t?.units}
+
+      LinkedHashMap ext_t = (LinkedHashMap)tstat?.ext_t
+      if(ext_t?.enabled != null) {prefs['trv_ext_t_enabled'] = ext_t?.enabled as Boolean}
+
+      if(tstat?.temperature_offset != null) {prefs['trv_temperature_offset'] = tstat?.temperature_offset as BigDecimal}
+    }
+  }
+
+  if(prefs.size() > 0) { setHubitatDevicePreferences(prefs) }
+
+
 
   //Process ADC(s)
   List adcs = (List)gen1SettingsResponse?.adcs
@@ -524,7 +559,6 @@ void getPreferencesFromShellyDeviceGen1() {
     }
   }
 
-  if(prefs.size() > 0) { setHubitatDevicePreferences(prefs) }
   refresh()
 }
 
@@ -692,6 +726,24 @@ void sendPreferencesToShellyDevice() {
     String queryString = "motion_sensitivity=${getDeviceSettings().gen1_motion_sensitivity}".toString()
     queryString += "&motion_blind_time_minutes${getDeviceSettings().gen1_motion_blind_time_minutes}".toString()
     queryString += "&tamper_sensitivity${getDeviceSettings().gen1_tamper_sensitivity}".toString()
+    sendGen1Command('settings', queryString)
+  }
+
+  if(getDeviceSettings().trv_temperature_offset != null) {
+    String queryString = "temperature_offset=${getDeviceSettings().trv_temperature_offset}".toString()
+    sendGen1Command('settings', queryString)
+  }
+  if(getDeviceSettings().trv_target_t_auto != null) {
+    String queryString = "target_t_enabled=${getDeviceSettings().trv_target_t_auto == true ? 1 : 0}".toString()
+    sendGen1Command('settings/thermostat/0', queryString)
+  }
+  if(getDeviceSettings().trv_ext_t_enabled != null) {
+    String queryString = "ext_t_enabled=${getDeviceSettings().trv_ext_t_enabled == true ? 1 : 0}".toString()
+    sendGen1Command('settings/thermostat/0', queryString)
+  }
+  if(getDeviceSettings().trv_temp_units != null) {
+    String u = "${getDeviceSettings().trv_temp_units}".toString()[0]
+    String queryString = "temperature_unit=${u}".toString()
     sendGen1Command('settings', queryString)
   }
 
@@ -1018,14 +1070,6 @@ void setGasPPM(Integer ppm) {
   sendDeviceEvent([name: 'ppm', value: ppm])
 }
 
-@CompileStatic
-void setValvePosition(Boolean open, Integer valve = 0) {
-  if(open == true) {
-    sendDeviceEvent([name: 'valve', value: 'open'])
-  } else {
-    sendDeviceEvent([name: 'valve', value: 'closed'])
-  }
-}
 /* #endregion */
 /* #region Generic Getters and Setters */
 
@@ -1071,6 +1115,11 @@ BigDecimal getBigDecimalDeviceSettingAsCelcius(String settingName) {
 @CompileStatic
 Integer getIntegerDeviceSetting(String settingName) {
   return thisDeviceHasSetting(settingName) ? getDeviceSettings()[settingName] as Integer : null
+}
+
+@CompileStatic
+String getEnumDeviceSetting(String settingName) {
+  return thisDeviceHasSetting(settingName) ? "${getDeviceSettings()[settingName]}".toString() : null
 }
 
 
@@ -1386,6 +1435,10 @@ void setHubitatDevicePreferences(LinkedHashMap<String, Object> preferences, Devi
         } else {
           setDeviceSetting(i, [type: preferenceMap[i].type, value: v], dev)
         }
+    } else if(dev == null && k.startsWith('trv_')) {
+      if(k == 'trv_temperature_offset') {setDeviceSetting(k, [type:'number', value: v as BigDecimal])}
+      if(k in ['trv_target_t_auto', 'trv_ext_t_enabled']) {setDeviceSetting(k, [type:'bool', value: v])}
+      if(k in ['trv_display_brightness', 'trv_temp_units']) {setDeviceSetting(k, [type:'enum', value: "${v}".toString()])}
     } else if(k == 'id' || k == 'name') {
       logTrace("Skipping settings as configuration of ${k} from Hubitat, please configure from Shelly device web UI if needed.")
     } else if(isInput == true && (k in ['type', 'factory_reset'])) {
@@ -1452,6 +1505,11 @@ void setValveState(String position, Integer id = 0) {
 }
 
 @CompileStatic
+void setValvePositionState(Integer level, Integer id = 0) {
+  if(level != null) {sendDeviceEvent([name: 'valvePosition', value: level, unit: '%'])}
+}
+
+@CompileStatic
 void setSwitchLevelState(Integer level, Integer id = 0) {
   if(level != null) {
     if(getDeviceDataValue('switchLevelId') == null && getDeviceDataValue('switchLevelId') != id){
@@ -1511,12 +1569,6 @@ void setGen1HumiditySwitchState(String value, Integer id) {
 @CompileStatic
 Boolean getSwitchState() {
   return thisDevice().currentValue('switch', true) == 'on'
-}
-
-@CompileStatic
-void setHeatingSetpoint(BigDecimal temperature) {
-  Integer id = getDeviceDataValue('tstatId') as Integer
-  parentSendGen1CommandAsync("settings/thermostat/${id}/?target_t_enabled=1&target_t=${temperature}")
 }
 
 void on() {
@@ -1608,6 +1660,7 @@ void setLastUpdated() {
   if(hasCapabilityBattery() == true) {sendDeviceEvent([name: 'lastUpdated', value: nowFormatted()])}
 }
 
+//Rollers
 @CompileStatic
 void open() {
   if(isGen1Device() == true) {
@@ -1624,7 +1677,6 @@ void close() {
   } else {
     parentPostCommandSync(coverCloseCommand(getIntegerDeviceDataValue('coverId')))
   }
-
 }
 
 @CompileStatic
@@ -1651,6 +1703,35 @@ void stopPositionChange() {
   }
 }
 
+//TRV
+@CompileStatic
+void setValvePosition(BigDecimal position) {
+  parentSendGen1CommandAsync("thermostat/0/?pos=${position as Integer}")
+}
+
+@CompileStatic
+void setExternalTemperature(BigDecimal temperature) {
+  String units = getEnumDeviceSetting('trv_temp_units')
+  if(isCelciusScale() == false && units == 'C') {
+    temperature = fToC(temperature)
+  } else if(isCelciusScale() == true && units == 'F') {
+    temperature = cToF(temperature)
+  }
+  temperature = temperature.setScale(1, BigDecimal.ROUND_HALF_UP)
+  parentSendGen1CommandAsync("ext_t?temp=${temperature}")
+}
+
+@CompileStatic
+void setHeatingSetpoint(BigDecimal temperature) {
+  String units = getEnumDeviceSetting('trv_temp_units')
+  if(isCelciusScale() == false && units == 'C') {
+    temperature = fToC(temperature)
+  } else if(isCelciusScale() == true && units == 'F') {
+    temperature = cToF(temperature)
+  }
+  temperature = temperature.setScale(1, BigDecimal.ROUND_HALF_UP)
+  parentSendGen1CommandAsync("thermostat/0?target_t_enabled=1&target_t=${temperature}")
+}
 
 void sendEventToShellyBluetoothHelper(String loc, Object value, String dni) {
   sendLocationEvent(name:loc, value:value, data:dni)
@@ -2532,28 +2613,28 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
     if(hasCapabilityBatteryGen1() == true) {
       LinkedHashMap battery = (LinkedHashMap)json?.bat
       Integer percent = battery?.value as Integer
-      setBatteryPercent(percent)
+      if(percent != null) {setBatteryPercent(percent)}
     }
     if(hasCapabilityLuxGen1() == true) {
       Integer lux = ((LinkedHashMap)json?.lux)?.value as Integer
-      setIlluminance(lux)
+      if(lux != null ) {setIlluminance(lux)}
     }
     if(hasCapabilityTempGen1() == true) {
       BigDecimal temp = (BigDecimal)(((LinkedHashMap)json?.tmp)?.value)
       String tempUnits = (((LinkedHashMap)json?.tmp)?.units).toString()
-      if(tempUnits == 'C') {
+      if(tempUnits == 'C' && temp != null) {
         setTemperatureC(temp)
-      } else if(tempUnits == 'F') {
+      } else if(tempUnits == 'F' && temp != null) {
         setTemperatureF(temp)
       }
     }
     if(hasCapabilityHumGen1() == true) {
       BigDecimal hum = (BigDecimal)(((LinkedHashMap)json?.hum)?.value)
-      if(hum != null){setHumidityPercent(hum)}
+      if(hum != null) {setHumidityPercent(hum)}
     }
     if(hasCapabilityFloodGen1() == true) {
       Boolean flood = (Boolean)json?.flood
-      if(flood != null){setFloodOn(flood)}
+      if(flood != null) {setFloodOn(flood)}
     }
     if(hasCapabilitySwitch() == true || hasChildSwitches() == true) {
       List<LinkedHashMap> relays = (List<LinkedHashMap>)json?.relays
@@ -2570,9 +2651,17 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
       List<LinkedHashMap<String, String>> valves = (List<LinkedHashMap<String, String>>)json?.valves
       if(valves?.size() > 0) {
         valves.eachWithIndex{ valve, index ->
-          String position = valve?.state
+          String valveState = valve?.state
+          logTrace("Valve status: ${valveState}")
+          setValveState(valveState.startsWith('open') ? 'open' : 'closed')
+        }
+      }
+      List<LinkedHashMap<String, String>> thermostats = (List<LinkedHashMap<String, String>>)json?.thermostats
+      if(thermostats?.size() > 0) {
+        thermostats.eachWithIndex{ tstat, index ->
+          BigDecimal position = tstat?.pos as BigDecimal
           logTrace("Valve status: ${position}")
-          setValveState(position.startsWith('open') ? 'open' : 'closed')
+          setValvePositionState(position as Integer)
         }
       }
     }
@@ -2669,6 +2758,26 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
         if(brightness != null) {setSwitchLevelState(brightness, index)}
         Boolean isOn = light?.ison as Boolean
         if(isOn != null) {setSwitchState(isOn)}
+      }
+    }
+    if(json?.thermostats != null) {
+      List<LinkedHashMap> thermostats = (List<LinkedHashMap>)json?.thermostats
+      thermostats.eachWithIndex{ tstat, index ->
+        if(tstat?.pos != null) {setValvePositionState(tstat.pos as Integer)}
+        if(tstat?.tmp != null) {
+          LinkedHashMap tmp = (LinkedHashMap)tstat.tmp
+          if(tmp?.units != null && tmp?.value != null) {
+            if(isCelciusScale() == true && tmp?.units == 'C') {
+              setTemperatureC(tmp?.value as BigDecimal)
+            } else if(isCelciusScale() == false && tmp?.units == 'C') {
+              setTemperatureF(cToF(tmp?.value as BigDecimal))
+            } else if(isCelciusScale() == true && tmp?.units == 'F') {
+              setTemperatureC(fToC(tmp?.value as BigDecimal))
+            } else if(isCelciusScale() == false && tmp?.units == 'F') {
+              setTemperatureF(tmp?.value as BigDecimal)
+            }
+          }
+        }
       }
     }
   }
@@ -2946,7 +3055,7 @@ void setDeviceActionsGen1() {
     v.each{ m ->
       Integer index = ((Map)m)?.index as Integer
       String name = "${k}".toString()
-      Boolean hasEnabledTimes = actionHasEnabledTimes(v)
+      Boolean hasEnabledTimes = actionHasEnabledTimes(k,v)
 
       Boolean create = false
       String additionalParams = ''
@@ -2987,8 +3096,10 @@ void setDeviceActionsGen1() {
 }
 
 @CompileStatic
-Boolean actionHasEnabledTimes(List<LinkedHashMap> action) {
-  if(action != null && action?.size() > 0) {
+Boolean actionHasEnabledTimes(String actionName, List<LinkedHashMap> action) {
+  if(hasActionsToCreateEnabledTimesList() == true && actionName in getActionsToCreateEnabledTimes()) {
+    return true
+  } else if(action != null && action?.size() > 0) {
     Map a = action[0]
     if(a?.urls != null) {
       List urls = (List)a.urls
@@ -3274,7 +3385,7 @@ void deleteHubitatWebhooksGen1() {
       Integer index = ((Map)m)?.index as Integer
       String queryString = "index=${index}&enabled=false".toString()
       queryString += "&name=${k}".toString()
-      Boolean hasTimes = actionHasEnabledTimes(v)
+      Boolean hasTimes = actionHasEnabledTimes(k,v)
       if(hasTimes) {
         queryString += "&urls[0][url]=".toString()
         queryString += "&urls[0][int]=".toString()
