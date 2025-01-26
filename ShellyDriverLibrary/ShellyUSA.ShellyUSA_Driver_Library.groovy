@@ -422,6 +422,7 @@ void getPreferencesFromShellyDeviceGen1() {
     prefs['gen1_tamper_sensitivity'] = gen1SettingsResponse?.tamper_sensitivity as Integer
   }
   if(gen1SettingsResponse?.set_volume != null) {prefs['gen1_set_volume'] = gen1SettingsResponse?.set_volume as Integer}
+
   //Process ADC(s)
   List adcs = (List)gen1SettingsResponse?.adcs
   if(adcs != null && adcs.size() > 0) {
@@ -439,6 +440,7 @@ void getPreferencesFromShellyDeviceGen1() {
       }
     }
   }
+
   //Process Temp Sensors
   LinkedHashMap temps = (LinkedHashMap)gen1SettingsResponse?.ext_temperature
   //Get humidity, if present, to determine if ext sensor is single DHT22 or 1-3 DS18B20
@@ -511,6 +513,17 @@ void getPreferencesFromShellyDeviceGen1() {
       setDeviceDataValue('lightMode', mode)
     }
   }
+
+  LinkedHashMap gen1StatusResponse = (LinkedHashMap)sendGen1Command('status')
+
+  List inputs = (List)gen1StatusResponse?.inputs
+  if(inputs != null && inputs.size() > 0) {
+    inputs.eachWithIndex{ it, index ->
+      createChildInput(index, "Button")
+      createChildInput(index, "Switch")
+    }
+  }
+
   if(prefs.size() > 0) { setHubitatDevicePreferences(prefs) }
   refresh()
 }
@@ -1498,6 +1511,12 @@ void setGen1HumiditySwitchState(String value, Integer id) {
 @CompileStatic
 Boolean getSwitchState() {
   return thisDevice().currentValue('switch', true) == 'on'
+}
+
+@CompileStatic
+void setHeatingSetpoint(BigDecimal temperature) {
+  Integer id = getDeviceDataValue('tstatId') as Integer
+  parentSendGen1CommandAsync("settings/thermostat/${id}/?target_t_enabled=1&target_t=${temperature}")
 }
 
 void on() {
@@ -2718,6 +2737,18 @@ void parseGen1Message(String raw) {
 
   else if(query[0] == 'btn_on') {setInputSwitchState(true, query[1] as Integer)}
   else if(query[0] == 'btn_off') {setInputSwitchState(false, query[1] as Integer)}
+
+  else if(query[0] == 'btn1_on') {setInputSwitchState(true, 0 as Integer)}
+  else if(query[0] == 'btn1_off') {setInputSwitchState(false, 0 as Integer)}
+
+  else if(query[0] == 'btn2_on') {setInputSwitchState(true, 1 as Integer)}
+  else if(query[0] == 'btn2_off') {setInputSwitchState(false, 1 as Integer)}
+
+  else if(query[0] == 'btn1_shortpush') {setPushedButton(1, 0 as Integer)}
+  else if(query[0] == 'btn1_longpush') {setHeldButton(1, 0 as Integer)}
+
+  else if(query[0] == 'btn2_shortpush') {setPushedButton(1, 1 as Integer)}
+  else if(query[0] == 'btn2_longpush') {setHeldButton(1, 1 as Integer)}
 
   else if(query[0] == 'humidity.change') {setHumidityPercent(new BigDecimal(query[2]))}
   else if(query[0] == 'temperature.change' && query[1] == 'tC') {setTemperatureC(new BigDecimal(query[2]))}
