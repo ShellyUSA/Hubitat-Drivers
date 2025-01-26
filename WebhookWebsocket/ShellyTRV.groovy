@@ -12,7 +12,6 @@ metadata {
 
     command 'setValvePosition', [[name: 'Position', type: 'NUMBER', description:"Position (0..100)", constraints:["NUMBER"]]]
     command 'setExternalTemperature', [[name: 'External Temperature Measurement', type: 'NUMBER']]
-    command 'getPreferencesFromShellyDeviceGen1'
     attribute 'valvePosition', 'number'
     attribute 'lastUpdated', 'string'
   }
