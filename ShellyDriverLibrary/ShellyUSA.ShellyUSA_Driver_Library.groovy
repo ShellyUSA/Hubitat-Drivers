@@ -1663,19 +1663,27 @@ void setLastUpdated() {
 //Rollers
 @CompileStatic
 void open() {
-  if(isGen1Device() == true) {
-    parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=open")
+  if(hasCapabilityValve() == true) {
+    if(isGen1Device() == true) { parentSendGen1CommandAsync("thermostat/0/?pos=100") }
   } else {
-    parentPostCommandSync(coverOpenCommand(getIntegerDeviceDataValue('coverId')))
+    if(isGen1Device() == true) {
+      parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=open")
+    } else {
+      parentPostCommandSync(coverOpenCommand(getIntegerDeviceDataValue('coverId')))
+    }
   }
 }
 
 @CompileStatic
 void close() {
-  if(isGen1Device() == true) {
-    parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=close")
+  if(hasCapabilityValve() == true) {
+    if(isGen1Device() == true) { parentSendGen1CommandAsync("thermostat/0/?pos=0")}
   } else {
-    parentPostCommandSync(coverCloseCommand(getIntegerDeviceDataValue('coverId')))
+    if(isGen1Device() == true) {
+      parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=close")
+    } else {
+      parentPostCommandSync(coverCloseCommand(getIntegerDeviceDataValue('coverId')))
+    }
   }
 }
 
