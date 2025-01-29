@@ -313,7 +313,7 @@ void getPreferencesFromShellyDevice() {
           Integer id = swi.tokenize(':')[1] as Integer
           logDebug("Running Switch.GetConfig for switch ID: ${id}")
           Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
-          if(switchGetConfigResult != null && switchGetConfigResult.size() > 0 && hasNoChildrenNeeded() == false) {
+          if(switchGetConfigResult != null && switchGetConfigResult?.size() > 0 && hasNoChildrenNeeded() == false) {
             logDebug('Creating child device for switch...')
             logTrace("Switch.GetConfig Result: ${prettyJson(switchGetConfigResult)}")
             Map<String, Object> switchStatus = postCommandSync(switchGetStatusCommand(id))
@@ -2209,54 +2209,194 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
 }
 
 @CompileStatic
-LinkedHashMap pm1GetConfigCommand(String src = 'pm1GetConfig') {
+LinkedHashMap pm1GetConfigCommand(Integer pm1Id = 0, String src = 'pm1GetConfig') {
   LinkedHashMap command = [
     "id" : 0,
     "src" : src,
     "method" : "PM1.GetConfig",
     "params" : [
-      "id" : 0
+      "id" : pm1Id
     ]
   ]
   return command
 }
 
 @CompileStatic
-LinkedHashMap pm1SetConfigCommand(Integer pm1Id = 0) {
+LinkedHashMap pm1SetConfigCommand(Integer pm1Id = 0, pm1Config = [], src = 'pm1SetConfig') {
   LinkedHashMap command = [
     "id" : 0,
-    "src" : "pm1SetConfig",
+    "src" : src,
     "method" : "PM1.SetConfig",
     "params" : [
       "id" : pm1Id,
-      "config": []
+      "config": pm1Config
     ]
   ]
   return command
 }
 
 @CompileStatic
-LinkedHashMap pm1GetStatusCommand(String src = 'pm1GetStatus') {
+LinkedHashMap pm1GetStatusCommand(Integer pm1Id = 0, String src = 'pm1GetStatus') {
   LinkedHashMap command = [
     "id" : 0,
     "src" : src,
     "method" : "PM1.GetStatus",
-    "params" : ["id" : 0]
+    "params" : ["id" : pm1Id]
   ]
   return command
 }
 
 @CompileStatic
-LinkedHashMap pm1ResetCountersCommand(String src = 'pm1ResetCounters') {
+LinkedHashMap pm1ResetCountersCommand(Integer pm1Id = 0, String src = 'pm1ResetCounters') {
   LinkedHashMap command = [
     "id" : 0,
     "src" : src,
     "method" : "PM1.ResetCounters",
-    "params" : ["id" : 0]
+    "params" : ["id" : pm1Id]
   ]
   return command
 }
 
+@CompileStatic
+LinkedHashMap em1GetConfigCommand(Integer em1Id = 0, String src = 'em1GetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1.GetConfig",
+    "params" : [
+      "id" : em1Id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1SetConfigCommand(Integer em1Id = 0, em1Config = [], src = 'em1SetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1.SetConfig",
+    "params" : [
+      "id" : em1Id,
+      "config": em1Config
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1GetStatusCommand(Integer em1Id = 0, String src = 'em1GetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1.GetStatus",
+    "params" : ["id" : em1Id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataSetConfigCommand(Integer id = 0, em1DataConfig = [], src = 'em1DataSetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.SetConfig",
+    "params" : [
+      "id" : id,
+      "config": em1DataConfig
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetConfigCommand(Integer id = 0, String src = 'em1DataGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetConfig",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetStatusCommand(Integer id = 0, String src = 'em1DataGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetStatus",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetRecordsCommand(Integer id = 0, Integer ts = 0, String src = 'em1DataGetRecords') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetRecords",
+    "params" : [
+      "id" : id,
+      "ts" : ts
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetDataCommand(Integer id = 0, Integer ts = 0, Integer end_ts = 0, String src = 'em1DataGetData') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetRecords",
+    "params" : [
+      "id" : id,
+      "ts" : ts,
+      "end_ts" : end_ts
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DatDeleteAllDataCommand(Integer id = 0, String src = 'em1DatDeleteAllData') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.DeleteAllData",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataResetCountersCommand(Integer id = 0, String src = 'em1DataResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.ResetCounters",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetNetEnergiesCommand(Integer id = 0, Integer ts = 0, Integer period = 300, Integer end_ts = null, String src = 'em1DataGetNetEnergies') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetNetEnergies",
+    "params" : [
+      "id" : id,
+      "ts" : ts,
+      "period" : period,
+    ]
+  ]
+  if(end_ts != null) {command.params["end_ts"] = end_ts}
+  return command
+}
 
 @CompileStatic
 LinkedHashMap bleGetConfigCommand(String src = 'bleGetConfig') {
