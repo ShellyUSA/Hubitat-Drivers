@@ -27,8 +27,3 @@ void mute() {sendGen1CommandAsync('mute')}
 @CompileStatic
 void unmute() {sendGen1CommandAsync('unmute')}
 
-@CompileStatic
-void open() {sendGen1CommandAsync('valve/0?go=open')}
-
-@CompileStatic
-void close() {sendGen1CommandAsync('valve/0?go=close')}
