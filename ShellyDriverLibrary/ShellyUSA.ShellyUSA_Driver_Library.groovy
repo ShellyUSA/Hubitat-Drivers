@@ -51,6 +51,7 @@ Boolean hasCapabilityMotionGen1() { return HAS_MOTION_GEN1 == true }
 Boolean hasCapabilityFloodGen1() { return HAS_FLOOD_GEN1 == true }
 Boolean hasNoChildrenNeeded() { return NOCHILDREN == true }
 Boolean hasADCGen1() { return HAS_ADC_GEN1 == true }
+Boolean hasPMGen1() { return HAS_PM_GEN1 == true }
 Boolean hasExtTempGen1() { return HAS_EXT_TEMP_GEN1 == true }
 Boolean hasExtHumGen1() { return HAS_EXT_HUM_GEN1 == true }
 
@@ -208,8 +209,10 @@ void initialize() {
   // Skip getting preferences right after a reboot. With multiple Shelly this causes a flood of network traffic
   if(hasIpAddress() == true && uptime() > 60) {getPreferencesFromShellyDevice()}
   initializeSettingsToDefaults()
-  if(hasIpAddress() == true) {initializeWebsocketConnectionIfNeeded()}
-  refresh()
+  if(hasIpAddress() == true) {
+    initializeWebsocketConnectionIfNeeded()
+    refresh()
+  }
 }
 
 @CompileStatic
@@ -281,6 +284,18 @@ void parentGetPreferencesFromShellyDevice() {
 }
 
 @CompileStatic
+Boolean checkDeviceForPM(Integer id) {
+  if(isGen1Device() == true) {
+    return hasPMGen1()
+  } else {
+    Map<String, Object> switchStatus = postCommandSync(switchGetStatusCommand(id))
+    logTrace("Switch Status: ${prettyJson(switchStatus)}")
+    Map<String, Object> switchStatusResult = (LinkedHashMap<String, Object>)switchStatus?.result
+    return ('apower' in switchStatusResult.keySet())
+  }
+}
+
+@CompileStatic
 void getPreferencesFromShellyDevice() {
   logDebug('Getting device info...')
   Map shellyResults = (LinkedHashMap<String, Object>)sendGen1Command('shelly')
@@ -308,18 +323,15 @@ void getPreferencesFromShellyDevice() {
       logDebug("Found PM1s: ${pm1s}")
 
       if(switches?.size() > 0) {
-        logDebug('Multiple switches found, running Switch.GetConfig for each...')
+        logDebug('One or more switches found, running Switch.GetConfig for each...')
         switches.each{ swi ->
           Integer id = swi.tokenize(':')[1] as Integer
+          Boolean hasPM = checkDeviceForPM(id)
           logDebug("Running Switch.GetConfig for switch ID: ${id}")
           Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
-          if(switchGetConfigResult != null && switchGetConfigResult.size() > 0 && hasNoChildrenNeeded() == false) {
+          if(switchGetConfigResult != null && switchGetConfigResult?.size() > 0 && hasNoChildrenNeeded() == false) {
             logDebug('Creating child device for switch...')
             logTrace("Switch.GetConfig Result: ${prettyJson(switchGetConfigResult)}")
-            Map<String, Object> switchStatus = postCommandSync(switchGetStatusCommand(id))
-            logTrace("Switch Status: ${prettyJson(switchStatus)}")
-            Map<String, Object> switchStatusResult = (LinkedHashMap<String, Object>)switchStatus?.result
-            Boolean hasPM = ('apower' in switchStatusResult.keySet())
             ChildDeviceWrapper child = null
             if(hasPM == true) {
               child = createChildPmSwitch(id)
@@ -329,6 +341,14 @@ void getPreferencesFromShellyDevice() {
             if(child != null) {setChildDevicePreferences(switchGetConfigResult, child)}
           } else {
             setDeviceDataValue('switchId', "${id}")
+            if(hasPM == true) {
+              setDeviceDataValue('hasPM','true')
+              setDeviceDataValue('currentId', "${id}")
+              setDeviceDataValue('energyId', "${id}")
+              setDeviceDataValue('powerId', "${id}")
+              setDeviceDataValue('voltageId', "${id}")
+              setDeviceDataValue('frequencyId', "${id}")
+            }
           }
         }
       } else {
@@ -336,7 +356,7 @@ void getPreferencesFromShellyDevice() {
       }
 
       if(inputs?.size() > 0) {
-        logDebug('Multiple inputs found, running Input.GetConfig for each...')
+        logDebug('One or more inputs found, running Input.GetConfig for each...')
         inputs?.each{ inp ->
           Integer id = inp.tokenize(':')[1] as Integer
           logDebug("Input ID: ${id}")
@@ -527,6 +547,14 @@ void getPreferencesFromShellyDeviceGen1() {
         if(index == 0) {createChildCover(index)}
       } else if(relays.size() == 1 && hasNoChildrenNeeded() == true && hasCapabilitySwitch() == true) {
         setDeviceDataValue('switchId', "${index}")
+        if(hasPMGen1() == true) {
+          setDeviceDataValue('hasPM','true')
+          setDeviceDataValue('currentId', "${index}")
+          setDeviceDataValue('energyId', "${index}")
+          setDeviceDataValue('powerId', "${index}")
+          setDeviceDataValue('voltageId', "${index}")
+          setDeviceDataValue('frequencyId', "${index}")
+        }
       } else {
         createChildSwitch(index)
       }
@@ -914,17 +942,30 @@ void setEnergy(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
 
   ChildDeviceWrapper c = getEnergyChildById(id)
-  logTrace("Setting energy to ${value} on ${c}")
   if(value == -1) {
-    if(c != null) { sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c) }
-    else { sendDeviceEvent([name: 'energy', value: null, unit:'kWh']) }
+    if(c != null) {
+      logTrace("Setting energy to 'null' on ${c}")
+      sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c)
+    }
+    else {
+      if(deviceHasDataValue('energyId') == true && getIntegerDeviceDataValue('energyId') == id) {
+        logTrace("Setting energy to 'null'")
+        sendDeviceEvent([name: 'energy', value: null, unit:'kWh'])
+      }
+    }
   }
   else if(value != null) {
     if(c != null) {
+      logTrace("Setting energy to ${value} on ${c}")
       sendChildDeviceEvent([name: 'energy', value: value, unit:'kWh'], c)
       updateParentEnergyTotal()
     }
-    else { sendDeviceEvent([name: 'energy', value: value, unit:'kWh']) }
+    else {
+      if(deviceHasDataValue('energyId') == true && getIntegerDeviceDataValue('energyId') == id) {
+        logTrace("Setting energy to ${value}")
+        sendDeviceEvent([name: 'energy', value: value, unit:'kWh'])
+      }
+    }
   }
 }
 
@@ -1582,7 +1623,7 @@ void on() {
     String action = hasCapabilityLight() == true ? 'light' : 'relay'
     if(hasChildSwitches() == true) {
       getSwitchChildren().each{ child ->
-        Integer id = getChildDeviceDataValue('switchId', child)
+        Integer id = getChildDeviceDataValue(child, 'switchId') as Integer
         parentSendGen1CommandAsync("${action}/${id}/?turn=on")
       }
     } else {
@@ -1606,7 +1647,7 @@ void off() {
     String action = hasCapabilityLight() == true ? 'light' : 'relay'
     if(hasChildSwitches() == true) {
       getSwitchChildren().each{ child ->
-        Integer id = getChildDeviceDataValue('switchId', child)
+        Integer id = getChildDeviceDataValue(child, 'switchId') as Integer
         parentSendGen1CommandAsync("${action}/${id}/?turn=off")
       }
     } else {
@@ -1663,9 +1704,15 @@ void setLastUpdated() {
 //Rollers
 @CompileStatic
 void open() {
-  if(hasCapabilityValve() == true) {
+  if(hasCapabilityValve() == true && hasCapabilityThermostatHeatingSetpoint() == true) {
     if(isGen1Device() == true) { parentSendGen1CommandAsync("thermostat/0/?pos=100") }
-  } else {
+  } else if(hasCapabilityValve() == true) {
+    if(isGen1Device() == true) {
+      parentSendGen1CommandAsync('valve/0?go=open')
+    } else {
+      //TODO with Gen2+ Valves
+    }
+  } else if(hasCapabilityCoverOrCoverChild() == true) {
     if(isGen1Device() == true) {
       parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=open")
     } else {
@@ -1676,9 +1723,15 @@ void open() {
 
 @CompileStatic
 void close() {
-  if(hasCapabilityValve() == true) {
+  if(hasCapabilityValve() == true && hasCapabilityThermostatHeatingSetpoint() == true) {
     if(isGen1Device() == true) { parentSendGen1CommandAsync("thermostat/0/?pos=0")}
-  } else {
+  } else if(hasCapabilityValve() == true) {
+    if(isGen1Device() == true) {
+      parentSendGen1CommandAsync('valve/0?go=close')
+    } else {
+      //TODO with Gen2+ Valves
+    }
+  } else if(hasCapabilityCoverOrCoverChild() == true) {
     if(isGen1Device() == true) {
       parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=close")
     } else {
@@ -2209,54 +2262,194 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
 }
 
 @CompileStatic
-LinkedHashMap pm1GetConfigCommand(String src = 'pm1GetConfig') {
+LinkedHashMap pm1GetConfigCommand(Integer pm1Id = 0, String src = 'pm1GetConfig') {
   LinkedHashMap command = [
     "id" : 0,
     "src" : src,
     "method" : "PM1.GetConfig",
     "params" : [
-      "id" : 0
+      "id" : pm1Id
     ]
   ]
   return command
 }
 
 @CompileStatic
-LinkedHashMap pm1SetConfigCommand(Integer pm1Id = 0) {
+LinkedHashMap pm1SetConfigCommand(Integer pm1Id = 0, pm1Config = [], src = 'pm1SetConfig') {
   LinkedHashMap command = [
     "id" : 0,
-    "src" : "pm1SetConfig",
+    "src" : src,
     "method" : "PM1.SetConfig",
     "params" : [
       "id" : pm1Id,
-      "config": []
+      "config": pm1Config
     ]
   ]
   return command
 }
 
 @CompileStatic
-LinkedHashMap pm1GetStatusCommand(String src = 'pm1GetStatus') {
+LinkedHashMap pm1GetStatusCommand(Integer pm1Id = 0, String src = 'pm1GetStatus') {
   LinkedHashMap command = [
     "id" : 0,
     "src" : src,
     "method" : "PM1.GetStatus",
-    "params" : ["id" : 0]
+    "params" : ["id" : pm1Id]
   ]
   return command
 }
 
 @CompileStatic
-LinkedHashMap pm1ResetCountersCommand(String src = 'pm1ResetCounters') {
+LinkedHashMap pm1ResetCountersCommand(Integer pm1Id = 0, String src = 'pm1ResetCounters') {
   LinkedHashMap command = [
     "id" : 0,
     "src" : src,
     "method" : "PM1.ResetCounters",
-    "params" : ["id" : 0]
+    "params" : ["id" : pm1Id]
   ]
   return command
 }
 
+@CompileStatic
+LinkedHashMap em1GetConfigCommand(Integer em1Id = 0, String src = 'em1GetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1.GetConfig",
+    "params" : [
+      "id" : em1Id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1SetConfigCommand(Integer em1Id = 0, em1Config = [], src = 'em1SetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1.SetConfig",
+    "params" : [
+      "id" : em1Id,
+      "config": em1Config
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1GetStatusCommand(Integer em1Id = 0, String src = 'em1GetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1.GetStatus",
+    "params" : ["id" : em1Id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataSetConfigCommand(Integer id = 0, em1DataConfig = [], src = 'em1DataSetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.SetConfig",
+    "params" : [
+      "id" : id,
+      "config": em1DataConfig
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetConfigCommand(Integer id = 0, String src = 'em1DataGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetConfig",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetStatusCommand(Integer id = 0, String src = 'em1DataGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetStatus",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetRecordsCommand(Integer id = 0, Integer ts = 0, String src = 'em1DataGetRecords') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetRecords",
+    "params" : [
+      "id" : id,
+      "ts" : ts
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetDataCommand(Integer id = 0, Integer ts = 0, Integer end_ts = 0, String src = 'em1DataGetData') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetRecords",
+    "params" : [
+      "id" : id,
+      "ts" : ts,
+      "end_ts" : end_ts
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DatDeleteAllDataCommand(Integer id = 0, String src = 'em1DatDeleteAllData') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.DeleteAllData",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataResetCountersCommand(Integer id = 0, String src = 'em1DataResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.ResetCounters",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap em1DataGetNetEnergiesCommand(Integer id = 0, Integer ts = 0, Integer period = 300, Integer end_ts = null, String src = 'em1DataGetNetEnergies') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "EM1Data.GetNetEnergies",
+    "params" : [
+      "id" : id,
+      "ts" : ts,
+      "period" : period,
+    ]
+  ]
+  if(end_ts != null) {command.params["end_ts"] = end_ts}
+  return command
+}
 
 @CompileStatic
 LinkedHashMap bleGetConfigCommand(String src = 'bleGetConfig') {
@@ -2788,6 +2981,13 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
         }
       }
     }
+    if(json?.meters != null) {
+      List<LinkedHashMap> meters = (List<LinkedHashMap>)json?.meters
+      meters.eachWithIndex{ meter, index ->
+        if(meter?.power != null) {setPower((BigDecimal)meter.power)}
+        if(meter?.total != null) {setEnergy(wattMinuteToKWh((BigDecimal)meter.total))}
+      }
+    }
   }
 }
 
@@ -2852,14 +3052,26 @@ void parseGen1Message(String raw) {
     if(hasCapabilityLight() == true) {getStatusGen1(true)}
   }
 
-  else if(query[0] == 'btn_on') {setInputSwitchState(true, query[1] as Integer)}
-  else if(query[0] == 'btn_off') {setInputSwitchState(false, query[1] as Integer)}
+  else if(query[0] == 'btn_on') {
+    setInputSwitchState(true, query[1] as Integer)
+  }
+  else if(query[0] == 'btn_off') {
+    setInputSwitchState(false, query[1] as Integer)
+  }
 
-  else if(query[0] == 'btn1_on') {setInputSwitchState(true, 0 as Integer)}
-  else if(query[0] == 'btn1_off') {setInputSwitchState(false, 0 as Integer)}
+  else if(query[0] == 'btn1_on') {
+    setInputSwitchState(true, 0 as Integer)
+  }
+  else if(query[0] == 'btn1_off') {
+    setInputSwitchState(false, 0 as Integer)
+  }
 
-  else if(query[0] == 'btn2_on') {setInputSwitchState(true, 1 as Integer)}
-  else if(query[0] == 'btn2_off') {setInputSwitchState(false, 1 as Integer)}
+  else if(query[0] == 'btn2_on') {
+    setInputSwitchState(true, 1 as Integer)
+  }
+  else if(query[0] == 'btn2_off') {
+    setInputSwitchState(false, 1 as Integer)
+  }
 
   else if(query[0] == 'btn1_shortpush') {setPushedButton(1, 0 as Integer)}
   else if(query[0] == 'btn1_longpush') {setHeldButton(1, 0 as Integer)}
@@ -4516,6 +4728,11 @@ String convertHexToIP(String hex) {
 String convertIPToHex(String ipAddress) {
   List parts = ipAddress.tokenize('.')
   return String.format("%02X%02X%02X%02X", parts[0] as Integer, parts[1] as Integer, parts[2] as Integer, parts[3] as Integer)
+}
+
+@CompileStatic
+BigDecimal wattMinuteToKWh(BigDecimal watts) {
+  return (watts/60/1000).setScale(2, BigDecimal.ROUND_HALF_UP)
 }
 
 void clearAllStates() {

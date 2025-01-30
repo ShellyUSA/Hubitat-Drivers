@@ -4,7 +4,6 @@ metadata {
   definition (name: 'Shelly Pro 2PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'Initialize'
-
     capability 'Configuration'
     capability 'Refresh'
     capability 'CurrentMeter' //amperage - NUMBER, unit:A
@@ -12,8 +11,6 @@ metadata {
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
     command 'resetEnergyMonitors'
-
-    attribute 'lastUpdated', 'string'
   }
 }
 
