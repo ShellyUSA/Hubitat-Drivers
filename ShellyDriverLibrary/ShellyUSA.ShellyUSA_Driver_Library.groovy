@@ -1704,9 +1704,15 @@ void setLastUpdated() {
 //Rollers
 @CompileStatic
 void open() {
-  if(hasCapabilityValve() == true) {
+  if(hasCapabilityValve() == true && hasCapabilityThermostatHeatingSetpoint() == true) {
     if(isGen1Device() == true) { parentSendGen1CommandAsync("thermostat/0/?pos=100") }
-  } else {
+  } else if(hasCapabilityValve() == true) {
+    if(isGen1Device() == true) {
+      parentSendGen1CommandAsync('valve/0?go=open')
+    } else {
+      //TODO with Gen2+ Valves
+    }
+  } else if(hasCapabilityCoverOrCoverChild() == true) {
     if(isGen1Device() == true) {
       parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=open")
     } else {
@@ -1717,9 +1723,15 @@ void open() {
 
 @CompileStatic
 void close() {
-  if(hasCapabilityValve() == true) {
+  if(hasCapabilityValve() == true && hasCapabilityThermostatHeatingSetpoint() == true) {
     if(isGen1Device() == true) { parentSendGen1CommandAsync("thermostat/0/?pos=0")}
-  } else {
+  } else if(hasCapabilityValve() == true) {
+    if(isGen1Device() == true) {
+      parentSendGen1CommandAsync('valve/0?go=close')
+    } else {
+      //TODO with Gen2+ Valves
+    }
+  } else if(hasCapabilityCoverOrCoverChild() == true) {
     if(isGen1Device() == true) {
       parentSendGen1CommandAsync("/roller/${getDeviceDataValue('coverId')}/?go=close")
     } else {
