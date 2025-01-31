@@ -3141,6 +3141,7 @@ void parseGen2Message(String raw) {
     String command = query[0]
     id = query[1] as Integer
     setCoverState(query[0].replace('cover.',''), id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
+    parentPostCommandAsync(shellyGetStatusCommand())
   }
   else if(query[0] in ['cover.stopped']) {
     String command = query[0]
