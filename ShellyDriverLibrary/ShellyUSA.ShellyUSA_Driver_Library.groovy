@@ -269,6 +269,7 @@ void configureNightlyPowerMonitoringReset() {
     setCurrent(0 as BigDecimal)
     setPower(0 as BigDecimal)
     setEnergy(0 as BigDecimal)
+    setFrequency(0 as BigDecimal)
     unscheduleTask('switchResetCounters')
     if(wsShouldBeConnected() == false) {
       logDebug('Websocket connection no longer required, removing any WS connection checks and closing connection...')
@@ -3135,6 +3136,17 @@ void parseGen2Message(String raw) {
     String command = query[0]
     id = query[3] as Integer
     setInputAnalogState(new BigDecimal(query[2]), id)
+  }
+  else if(query[0] in ['cover.opening', 'cover.open', 'cover.closing', 'cover.closed']) {
+    String command = query[0]
+    id = query[1] as Integer
+    setCoverState(query[0].replace('cover.',''), id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
+  }
+  else if(query[0] in ['cover.stopped']) {
+    String command = query[0]
+    id = query[1] as Integer
+    setCoverState('partially open', id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
+    parentPostCommandAsync(shellyGetStatusCommand())
   }
   setLastUpdated()
 }
