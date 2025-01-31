@@ -3438,6 +3438,14 @@ void setDeviceActionsGen2() {
           logDebug("Processing webhook for pm1:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
+      } else if(type.startsWith('cover')) {
+        covers.each{ cover ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[cover]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for cover:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
       }
     }
   }
