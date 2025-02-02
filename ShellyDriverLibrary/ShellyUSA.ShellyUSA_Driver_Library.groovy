@@ -1011,9 +1011,17 @@ void setBatteryPercent(Integer percent) {
 
 @CompileStatic
 void checkPresence() {
-  Event lastEvent = thisDevice().events([max: 1])[0]
-  if(((unixTimeMillis() - lastEvent.getUnixTime()) / 1000) > (getDeviceSettings().presenceTimeout as Integer)) {
-    sendDeviceEvent([name: 'presence', value: 'not present', isStateChange: false])
+  List<Event> ev = thisDevice().events([max: 1])
+  if(ev?.size() > 0) {
+    Event lastEvent = ev[0]
+    logTrace("Last event: ${lastEvent.getUnixTime()}")
+    if(lastEvent != null) {
+      if(((unixTimeMillis() - lastEvent.getUnixTime()) / 1000) > (getDeviceSettings()?.presenceTimeout as Integer)) {
+        sendDeviceEvent([name: 'presence', value: 'not present', isStateChange: false])
+      } else {
+        sendDeviceEvent([name: 'presence', value: 'present', isStateChange: false])
+      }
+    }
   }
 }
 
