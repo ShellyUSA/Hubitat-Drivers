@@ -2993,7 +2993,7 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
 }
 
 @CompileStatic
-void getStatusGen2() {
+void getBatteryStatusGen2() {
   if(hasCapabilityBattery()) {
     postCommandAsync(devicePowerGetStatusCommand(), 'getStatusGen2Callback')
   }
@@ -3109,7 +3109,7 @@ void parseGen1Message(String raw) {
 @CompileStatic
 void parseGen2Message(String raw) {
   logTrace("Raw gen2Message: ${raw}")
-  getStatusGen2()
+  getBatteryStatusGen2()
   LinkedHashMap message = decodeLanMessage(raw)
   logTrace("Received incoming message: ${prettyJson(message)}")
   LinkedHashMap headers = message?.headers as LinkedHashMap
@@ -3137,19 +3137,31 @@ void parseGen2Message(String raw) {
     id = query[3] as Integer
     setInputAnalogState(new BigDecimal(query[2]), id)
   }
-  else if(query[0] in ['cover.opening', 'cover.open', 'cover.closing', 'cover.closed']) {
+  else if(query[0] in ['cover.opening', 'cover.closing']) {
     String command = query[0]
     id = query[1] as Integer
     setCoverState(query[0].replace('cover.',''), id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
-    parentPostCommandAsync(shellyGetStatusCommand())
+  }
+  else if(query[0] in ['cover.open', 'cover.closed']) {
+    String command = query[0]
+    id = query[1] as Integer
+    setCoverState(query[0].replace('cover.',''), id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
+    parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
+    runInSeconds('getStatusGen2', 30)
   }
   else if(query[0] in ['cover.stopped']) {
     String command = query[0]
     id = query[1] as Integer
     setCoverState('partially open', id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
-    parentPostCommandAsync(shellyGetStatusCommand())
+    parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
+    runInSeconds('getStatusGen2', 30)
   }
   setLastUpdated()
+}
+
+@CompileStatic
+void getStatusGen2() {
+  parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
 }
 
 /* #endregion */
