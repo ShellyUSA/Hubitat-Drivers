@@ -79,6 +79,9 @@ Boolean hasCapabilityCover() { return device.hasCapability('WindowShade') == tru
 Boolean hasCapabilityThermostatHeatingSetpoint() { return device.hasCapability('ThermostatHeatingSetpoint') == true }
 Boolean hasCapabilityCoverOrCoverChild() { return device.hasCapability('WindowShade') == true || getCoverChildren()?.size() > 0 }
 
+Boolean deviceIsBluGateway() {return DEVICEISBLUGATEWAY == true}
+
+
 @CompileStatic
 LinkedHashMap getSwitchInModeOptions() {
   if(getSwitchChildrenCount() == 2 && getInputSwitchChildrenCount() == 2) {
@@ -128,7 +131,7 @@ if (device != null) {
       input(name: 'parentSwitchStateMode', type: 'enum', title: 'Parent Switch State Mode', options: ['allOn':'On when all children on', 'anyOn':'On when any child on'], defaultValue: 'anyOn')
     }
 
-    if(hasBluGateway() == true && deviceIsComponent() == false) {
+    if(deviceIsBluGateway() == true && deviceIsComponent() == false) {
       input(name: 'enableBluetoothGateway', type:'bool', title: 'Enable Bluetooth Gateway for Hubitat', required: false, defaultValue: true)
     }
 
@@ -228,11 +231,7 @@ void initializeSettingsToDefaults() {
   if(hasParent() == false && isGen1Device() == false && hasIpAddress() == true) {
     // Battery devices will never have Blu gateway, and if 'hasBluGateway' has already been set, there's no need to check again...
     if(hasCapabilityBattery() == false && getDeviceDataValue('hasBluGateway') == null) {
-      LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
-      LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
-      Boolean hasBlu = ble?.enable != null
-      if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
-      if(hasBlu == true && getDeviceSettings().enableBluetoothGateway == null) {
+      if(deviceIsBluGateway() == true && getDeviceSettings().enableBluetoothGateway == null) {
         setDeviceSetting('enableBluetoothGateway', true)
       } else { removeDeviceSetting('enableBluetoothGateway') }
     }
@@ -636,9 +635,7 @@ void configure() {
   }
 
   if(hasParent() == false && isGen1Device() == false && hasIpAddress() == true) {
-    LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
-    LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
-    Boolean hasBlu = ble?.enable != null
+    Boolean hasBlu = deviceIsBluGateway()
     logDebug("HasBlue: ${hasBlu}")
     if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
     logDebug("Enabled: ${getBooleanDeviceSetting('enableBluetoothGateway')}")
