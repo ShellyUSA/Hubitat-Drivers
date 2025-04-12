@@ -26,6 +26,7 @@ metadata {
 @CompileStatic
 void deviceSpecificConfigure() {
   if(getDeviceSettings().presenceTimeout == null) {setDeviceSetting('presenceTimeout', [type: 'number', value: 300])}
+  sendDeviceEvent([name: 'numberOfButtons', value: 1])
   runEveryCustomSeconds(60, 'checkPresence')
 }
 
