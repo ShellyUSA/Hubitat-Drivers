@@ -12,6 +12,7 @@ metadata {
     capability 'PushableButton' //numberOfButtons - NUMBER //pushed - NUMBER
     capability 'DoubleTapableButton' //doubleTapped - NUMBER
     capability 'HoldableButton' //held - NUMBER
+    capability 'ReleasableButton' //released - NUMBER
     capability 'PresenceSensor' //presence - ENUM ["present", "not present"]
 
     command 'tripleTap'
