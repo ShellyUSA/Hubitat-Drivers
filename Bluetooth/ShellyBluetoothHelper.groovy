@@ -27,107 +27,78 @@ Map mainPage() {
 
 void initialize() {configure()}
 void configure() {
+  clearAllStates()
   runEvery30Minutes('configure')
-  subscribe(location, "shellyBLEButtonPushedEvents", "shellyButtonPushedEventsHandler")
-  subscribe(location, "shellyBLEButtonHeldEvents", "shellyButtonHeldEventsHandler")
+  subscribe(location, "shellyBLEButtonDeviceEvents", "shellyButtonDeviceEventsHandler")
   subscribe(location, "shellyBLEBatteryEvents", "shellyBatteryEventsHandler")
   subscribe(location, "shellyBLEIlluminanceEvents", "shellyBLEIlluminanceEventsHandler")
   subscribe(location, "shellyBLERotationEvents", "shellyBLERotationEventsHandler")
   subscribe(location, "shellyBLEWindowEvents", "shellyBLEWindowEventsHandler")
   subscribe(location, "shellyBLEMotionEvents", "shellyBLEMotionEventsHandler")
-  subscribe(location, "shellyBLEButtonPresenceEvents", "shellyBLEButtonPresenceEventsHandler")
+  subscribe(location, "shellyBLETemperatureEvents", "shellyBLETemperatureEventsHandler")
+  subscribe(location, "shellyBLEHumidityEvents", "shellyBLEHumidityEventsHandler")
 }
 
-void shellyButtonPushedEventsHandler(Event evt) {
+void shellyButtonDeviceEventsHandler(Event evt) {
   String macAddress = evt.getData().toUpperCase().replace(':','')
-  if(!buttonPushedRecently(macAddress)) {
+  List<Integer> buttons = evt.getValue().replace('[','').replace(']','').tokenize(',')
+  if(!buttonDevicePushedRecently(macAddress, buttons)) {
     try{
-      Integer b = evt.getValue() as Integer
-      if(b == 1) {sendEvent(macAddress, [name: 'pushed', value: 1, isStateChange: true])}
-      else if(b == 2) {sendEvent(macAddress, [name: 'doubleTapped', value: 1, isStateChange: true])}
-      else if(b == 3) {sendEvent(macAddress, [name: 'tripleTapped', value: 1, isStateChange: true])}
+      buttons.eachWithIndex{ button, buttonNumber ->
+        b = button as Integer
+        if(b == 0 && buttonNumber == 0) {sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])}
+        else if(b == 1) {sendEvent(macAddress, [name: 'pushed', value: buttonNumber+1, isStateChange: true])}
+        else if(b == 2) {sendEvent(macAddress, [name: 'doubleTapped', value: buttonNumber+1, isStateChange: true])}
+        else if(b == 3) {sendEvent(macAddress, [name: 'tripleTapped', value: buttonNumber+1, isStateChange: true])}
+        else if(b == 4) {sendEvent(macAddress, [name: 'released', value: buttonNumber+1, isStateChange: true])}
+        else if(b > 32) {sendEvent(macAddress, [name: 'held', value: buttonNumber+1, isStateChange: true])}
+      }
     } catch(e) {
-      logWarn("No device found for DNI/MAC address: ${macAddress}")
+      logWarn("No device found for DNI/MAC address: ${macAddress}, received button device event...")
     }
   } else {
-    runIn(1, 'removeMacFromRecentlyPushedList', [data:[mac: macAddress]])
+    runIn(1, 'removeMacFromRecentlyPushedButtonDeviceList', [data:[mac: macAddress]])
   }
 }
 
-Boolean buttonPushedRecently(String macAddress) {
-  if(state.buttonPushedRecently == null) {
-    state.buttonPushedRecently = new ArrayList<String>()
+Boolean buttonDevicePushedRecently(String macAddress, List buttons) {
+  if(state.buttonDevicePushedRecently == null) {
+    state.buttonDevicePushedRecently = new LinkedHashMap<String, List>()
   }
-  if(state.buttonPushedRecently.contains(macAddress)) {
+  if(state.buttonDevicePushedRecently.containsKey(macAddress) && state.buttonDevicePushedRecently[macAddress] == buttons) {
     return true
   } else {
-    ArrayList<String> b = state.buttonPushedRecently
-    b.add(macAddress)
-    state.buttonPushedRecently = b
-    runIn(1, 'removeMacFromRecentlyPushedList', [data:[mac: macAddress]])
+    LinkedHashMap<String, List> b = state.buttonDevicePushedRecently
+    b[macAddress] = buttons
+    state.buttonDevicePushedRecently = b
+    runIn(1, 'removeMacFromRecentlyPushedButtonDeviceList', [data:[mac: macAddress]])
     return false
   }
 }
 
-void removeMacFromRecentlyPushedList(Map data = null) {
-  if(data != null && data.mac != null && state.buttonPushedRecently != null) {
-    ArrayList<String> b = state.buttonPushedRecently
+void removeMacFromRecentlyPushedButtonDeviceList(Map data = null) {
+  if(data != null && data.mac != null && state.buttonDevicePushedRecently != null) {
+    LinkedHashMap<String, List> b = state.buttonDevicePushedRecently
     b.remove(data.mac)
-    state.buttonPushedRecently = b
-  }
-}
-
-void shellyButtonHeldEventsHandler(Event evt) {
-  String macAddress = evt.getData().toUpperCase().replace(':','')
-  if(!buttonHeldRecently(macAddress)) {
-    try{
-      sendEvent(macAddress, [name: 'held', value: evt.getValue() as Integer, isStateChange: true])
-    } catch(e) {
-      logWarn("No device found for DNI/MAC address: ${macAddress}")
-    }
-  } else {
-    runIn(1, 'removeMacFromRecentlyHeldList', [data:[mac: macAddress]])
-  }
-}
-
-Boolean buttonHeldRecently(String macAddress) {
-  if(state.buttonHeldRecently == null) {
-    state.buttonHeldRecently = new ArrayList<String>()
-  }
-  if(state.buttonHeldRecently.contains(macAddress)) {
-    return true
-  } else {
-    ArrayList<String> b = state.buttonHeldRecently
-    b.add(macAddress)
-    state.buttonHeldRecently = b
-    runIn(1, 'removeMacFromRecentlyHeldList', [data:[mac: macAddress]])
-    return false
-  }
-}
-
-void removeMacFromRecentlyHeldList(Map data = null) {
-  if(data != null && data.mac != null && state.buttonHeldRecently != null) {
-    ArrayList<String> b = state.buttonHeldRecently
-    b.remove(data.mac)
-    state.buttonHeldRecently = b
+    state.buttonDevicePushedRecently = b
   }
 }
 
 void shellyBatteryEventsHandler(Event evt) {
   String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(macAddress, [name: 'battery', value: evt.getValue() as Integer])
+    sendEvent(macAddress, [name: 'battery', value: evt.getValue() as Integer, unit: '%'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received battery report event...")
   }
 }
 
 void shellyBLEIlluminanceEventsHandler(Event evt) {
   String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(macAddress, [name: 'illuminance', value: evt.getValue() as Integer])
+    sendEvent(macAddress, [name: 'illuminance', value: evt.getValue() as Integer, unit: 'lx'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received illuminance event...")
   }
 }
 
@@ -145,7 +116,7 @@ void shellyBLEWindowEventsHandler(Event evt) {
   try{
     sendEvent(macAddress, [name: 'contact', value: (evt.getValue() as Integer) == 0 ? 'closed' : 'open'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received window/door event...")
   }
 }
 
@@ -154,18 +125,33 @@ void shellyBLEMotionEventsHandler(Event evt) {
   try{
     sendEvent(macAddress, [name: 'motion', value: (evt.getValue() as Integer) == 0 ? 'inactive' : 'active'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received motion event...")
   }
 }
 
-void shellyBLEButtonPresenceEventsHandler(Event evt) {
+void shellyBLETemperatureEventsHandler(Event evt) {
   String macAddress = evt.getData().toUpperCase().replace(':','')
   try{
-    sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])
+    if(isCelciusScale() == true) {
+      sendEvent(macAddress, [name: 'temperature', value: (evt.getValue() as BigDecimal).setScale(1, BigDecimal.ROUND_HALF_UP), unit: '°C'])
+    } else {
+      sendEvent(macAddress, [name: 'temperature', value: cToF(evt.getValue() as BigDecimal).setScale(1, BigDecimal.ROUND_HALF_UP), unit: '°F'])
+    }
+
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received temperature event...")
   }
 }
+
+void shellyBLEHumidityEventsHandler(Event evt) {
+  String macAddress = evt.getData().toUpperCase().replace(':','')
+  try{
+    sendEvent(macAddress, [name: 'humidity', value: evt.getValue(), unit: '%'])
+  } catch(e) {
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received humidity event...")
+  }
+}
+
 // =============================================================================
 // Logging Helpers
 // =============================================================================
@@ -325,6 +311,15 @@ String runEveryCustomHours(Integer hours) {
   String currentMinute = new Date().format('mm')
   String currentHour = new Date().format('H')
   return "${currentSecond} ${currentMinute} ${currentHour}/${hours} * * ?"
+}
+
+Boolean isCelciusScale() { getLocation().temperatureScale == 'C' }
+BigDecimal cToF(BigDecimal val) { return celsiusToFahrenheit(val) }
+BigDecimal fToC(BigDecimal val) { return fahrenheitToCelsius(val) }
+
+void clearAllStates() {
+  state.clear()
+  if (device) device.getCurrentStates().each { device.deleteCurrentState(it.name) }
 }
 // =============================================================================
 // End Formatters, Custom 'RunEvery', and other helpers

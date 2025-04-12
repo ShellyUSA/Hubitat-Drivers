@@ -2,7 +2,7 @@
 
 metadata {
   definition(
-    name: 'Shelly Button 1 (Blu)',
+    name: 'Shelly BLU Wall Switch 4',
     namespace: 'ShellyUSA',
     author: 'Daniel Winks',
     component: true,
@@ -21,12 +21,12 @@ metadata {
   }
 }
 @Field static Boolean BLU = true
-@Field static Integer BUTTONS = 1
+@Field static Integer BUTTONS = 4
 
 @CompileStatic
 void deviceSpecificConfigure() {
   if(getDeviceSettings().presenceTimeout == null) {setDeviceSetting('presenceTimeout', [type: 'number', value: 300])}
-  sendDeviceEvent([name: 'numberOfButtons', value: 1])
+  sendDeviceEvent([name: 'numberOfButtons', value: 4])
   runEveryCustomSeconds(60, 'checkPresence')
 }
 
