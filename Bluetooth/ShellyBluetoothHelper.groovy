@@ -44,10 +44,9 @@ void shellyButtonDeviceEventsHandler(Event evt) {
   List<Integer> buttons = evt.getValue().replace('[','').replace(']','').tokenize(',')
   if(!buttonDevicePushedRecently(macAddress, buttons)) {
     try{
-      logWarn("Buttons: ${buttons}")
       buttons.eachWithIndex{ button, buttonNumber ->
         b = button as Integer
-        if(b == 0) {sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])}
+        if(b == 0 && buttonNumber == 0) {sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])}
         else if(b == 1) {sendEvent(macAddress, [name: 'pushed', value: buttonNumber+1, isStateChange: true])}
         else if(b == 2) {sendEvent(macAddress, [name: 'doubleTapped', value: buttonNumber+1, isStateChange: true])}
         else if(b == 3) {sendEvent(macAddress, [name: 'tripleTapped', value: buttonNumber+1, isStateChange: true])}
@@ -55,7 +54,6 @@ void shellyButtonDeviceEventsHandler(Event evt) {
         else if(b > 32) {sendEvent(macAddress, [name: 'held', value: buttonNumber+1, isStateChange: true])}
       }
     } catch(e) {
-      logError(e)
       logWarn("No device found for DNI/MAC address: ${macAddress}, received button device event...")
     }
   } else {
