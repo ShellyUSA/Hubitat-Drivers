@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "2.5.1",
-  "releaseNotes": "2.5.1 Change to hard-coded Blu Gateway flag instead of auto-detecting, auto-detect doesn't work on firmware 1.5.0+/r/n2.5.0 Add support for 4 button Blu devices, H&T blu, other bluetooth fixes/r/n2.4.3 Fixes for null error on checkPresence() for Blu devices\r\n2.4.2 Fixes for covers not getting current position properly\r\n2.4.1 Fix webhook creation for covers\r\n2.4.0 Add Shelly Plus I4 and Shelly 1PM, Fixes for Shelly Gas open/close valve\r\n2.3.2 Fix open/close commands on TRV\r\nAdd Shelly TRV\r\nFixes for inputs on Gen 1 device not properly being created/updated\r\nAdd Shelly Pro Dual Cover PM\r\n Add Shelly Vintage Bulb, minor fixes for Dimmer\r\n Add Shelly Dimmer 1&2 support\r\nAdd Shelly 2.5 (Gen1). Fix missing cover functionality.\r\n2.0.5 Fix overflow issue on setting parent energy totals.\r\nFix null issue on setting parent energy totals\r\n2.0.3 Fix for cover child devices not getting coverId properly from device data\r\n2.0.3 Add drivers for Pro2PM, Pro3, Uni gen1 and gen2 to HPM. \r\n2.0.1 Change logging level on a few things to keep logs from warning about Shelly auth related messages. \r\n2.0.0 Added support for many more devices. Major rewrite of library code. 🥳\r\n1.2.0 Added Shelly Flood, Shelly PM Mini Gen3\r\n1.1.0 Added support for Bluetooth Gateway, Blu devices (button, motion, door/window), H&T (gen 1)\r\n1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
+  "version": "2.6.0",
+  "releaseNotes": "2.6.0 Add Shelly Plus Smoke and Pro 1 drivers/r/n2.5.1 Change to hard-coded Blu Gateway flag instead of auto-detecting, auto-detect doesn't work on firmware 1.5.0+/r/n2.5.0 Add support for 4 button Blu devices, H&T blu, other bluetooth fixes/r/n2.4.3 Fixes for null error on checkPresence() for Blu devices\r\n2.4.2 Fixes for covers not getting current position properly\r\n2.4.1 Fix webhook creation for covers\r\n2.4.0 Add Shelly Plus I4 and Shelly 1PM, Fixes for Shelly Gas open/close valve\r\n2.3.2 Fix open/close commands on TRV\r\nAdd Shelly TRV\r\nFixes for inputs on Gen 1 device not properly being created/updated\r\nAdd Shelly Pro Dual Cover PM\r\n Add Shelly Vintage Bulb, minor fixes for Dimmer\r\n Add Shelly Dimmer 1&2 support\r\nAdd Shelly 2.5 (Gen1). Fix missing cover functionality.\r\n2.0.5 Fix overflow issue on setting parent energy totals.\r\nFix null issue on setting parent energy totals\r\n2.0.3 Fix for cover child devices not getting coverId properly from device data\r\n2.0.3 Add drivers for Pro2PM, Pro3, Uni gen1 and gen2 to HPM. \r\n2.0.1 Change logging level on a few things to keep logs from warning about Shelly auth related messages. \r\n2.0.0 Added support for many more devices. Major rewrite of library code. 🥳\r\n1.2.0 Added Shelly Flood, Shelly PM Mini Gen3\r\n1.1.0 Added support for Bluetooth Gateway, Blu devices (button, motion, door/window), H&T (gen 1)\r\n1.0.0 Release of Shelly Plug US, Button 1, Motion 2, Shelly H&T (gen 2 and 3), and Shelly Gas",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
@@ -231,6 +231,13 @@
       "name": "Shelly Plus I4",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlusI4.groovy",
+      "required": false
+    },
+    {
+      "id": "20ba620f-4400-48c3-a7b3-94b361195e19",
+      "name": "Shelly Plus Smoke",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlusSmoke.groovy",
       "required": false
     },
     {

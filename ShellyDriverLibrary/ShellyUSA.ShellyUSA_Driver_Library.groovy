@@ -1618,6 +1618,14 @@ Boolean getSwitchState() {
   return thisDevice().currentValue('switch', true) == 'on'
 }
 
+@CompileStatic
+void setSmokeState(String value, Integer id = 0) {
+  logTrace("Setting smoke detector state to ${value}")
+  if(value in ['clear', 'tested', 'detected']) {
+    sendDeviceEvent([name: 'smoke', value: value])
+  }
+}
+
 void on() {
   if(deviceIsInputSwitch(thisDevice()) == true) {
     logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
@@ -2514,6 +2522,58 @@ LinkedHashMap inputGetStatusCommand(Integer id = 0, src = 'inputGetStatus') {
   return command
 }
 
+@CompileStatic
+LinkedHashMap smokeGetConfigCommand(Integer id = 0, src = 'smokeGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Smoke.GetConfig",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap smokeSetConfigCommand(Integer id = 0, String name = '', src = 'smokeSetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Smoke.SetConfig",
+    "params" : [
+      "id" : id,
+      "name" : name
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap smokeGetStatusCommand(Integer id = 0, src = 'smokeGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Smoke.GetStatus",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+@CompileStatic
+LinkedHashMap smokeMuteCommand(Integer id = 0, src = 'smokeMute') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Smoke.Mute",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
 
 
 /* #endregion */
@@ -3166,6 +3226,9 @@ void parseGen2Message(String raw) {
     parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
     runInSeconds('getStatusGen2', 30)
   }
+  else if(query[0] == 'smoke.alarm')      {setSmokeState('detected', query[1] as Integer)}
+  else if(query[0] == 'smoke.alarm_off')  {setSmokeState('clear', query[1] as Integer)}
+  else if(query[0] == 'smoke.alarm_test') {setSmokeState('tested', query[1] as Integer)}
   setLastUpdated()
 }
 
@@ -3401,6 +3464,7 @@ void setDeviceActionsGen2() {
     Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
     Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
     Set<String> pm1s = shellyGetConfigResult.keySet().findAll{it.startsWith('pm1')}
+    Set<String> smokes = shellyGetConfigResult.keySet().findAll{it.startsWith('smoke')}
 
     logDebug("Found Switches: ${switches}")
     logDebug("Found Inputs: ${inputs}")
@@ -3408,6 +3472,7 @@ void setDeviceActionsGen2() {
     logDebug("Found Temperatures: ${temps}")
     logDebug("Found Humdities: ${hums}")
     logDebug("Found PM1s: ${pm1s}")
+    logDebug("Found Smokes: ${smokes}")
 
     // LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
     // String inputType = (inputConfig?.type as String).capitalize()
@@ -3479,6 +3544,14 @@ void setDeviceActionsGen2() {
           Integer cid = conf?.id as Integer
           String name = "hubitat.${type}".toString()
           logDebug("Processing webhook for cover:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
+      } else if(type.startsWith('smoke')) {
+        smokes.each{ smoke ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[smoke]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for smoke:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
       }
