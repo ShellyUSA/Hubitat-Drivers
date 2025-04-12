@@ -2,7 +2,6 @@
 
 metadata {
   definition (name: 'Shelly Plus 2 PM (Websocket)', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
-    capability 'Switch'
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
@@ -15,3 +14,4 @@ metadata {
 }
 
 @Field static Boolean WS = true
+@Field static Boolean DEVICEISBLUGATEWAY = true
