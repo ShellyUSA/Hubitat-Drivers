@@ -234,6 +234,13 @@
       "required": false
     },
     {
+      "id": "20ba620f-4400-48c3-a7b3-94b361195e19",
+      "name": "Shelly Plus Smoke",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPlusSmoke.groovy",
+      "required": false
+    },
+    {
       "id": "783a844e-cbe5-43c1-8772-918c1922db41",
       "name": "Shelly PM Mini Gen2 & Gen3",
       "namespace": "ShellyUSA",
