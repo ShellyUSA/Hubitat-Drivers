@@ -47,7 +47,7 @@ void shellyButtonPushedEventsHandler(Event evt) {
       else if(b == 2) {sendEvent(macAddress, [name: 'doubleTapped', value: 1, isStateChange: true])}
       else if(b == 3) {sendEvent(macAddress, [name: 'tripleTapped', value: 1, isStateChange: true])}
     } catch(e) {
-      logWarn("No device found for DNI/MAC address: ${macAddress}")
+      logWarn("No device found for DNI/MAC address: ${macAddress}, received button pushed event...")
     }
   } else {
     runIn(1, 'removeMacFromRecentlyPushedList', [data:[mac: macAddress]])
@@ -83,7 +83,7 @@ void shellyButtonHeldEventsHandler(Event evt) {
     try{
       sendEvent(macAddress, [name: 'held', value: evt.getValue() as Integer, isStateChange: true])
     } catch(e) {
-      logWarn("No device found for DNI/MAC address: ${macAddress}")
+      logWarn("No device found for DNI/MAC address: ${macAddress}, received button held event...")
     }
   } else {
     runIn(1, 'removeMacFromRecentlyHeldList', [data:[mac: macAddress]])
@@ -118,7 +118,7 @@ void shellyBatteryEventsHandler(Event evt) {
   try{
     sendEvent(macAddress, [name: 'battery', value: evt.getValue() as Integer])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received battery report event...")
   }
 }
 
@@ -127,7 +127,7 @@ void shellyBLEIlluminanceEventsHandler(Event evt) {
   try{
     sendEvent(macAddress, [name: 'illuminance', value: evt.getValue() as Integer])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received illuminance event...")
   }
 }
 
@@ -145,7 +145,7 @@ void shellyBLEWindowEventsHandler(Event evt) {
   try{
     sendEvent(macAddress, [name: 'contact', value: (evt.getValue() as Integer) == 0 ? 'closed' : 'open'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received window/door event...")
   }
 }
 
@@ -154,7 +154,7 @@ void shellyBLEMotionEventsHandler(Event evt) {
   try{
     sendEvent(macAddress, [name: 'motion', value: (evt.getValue() as Integer) == 0 ? 'inactive' : 'active'])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received motion event...")
   }
 }
 
@@ -163,7 +163,7 @@ void shellyBLEButtonPresenceEventsHandler(Event evt) {
   try{
     sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])
   } catch(e) {
-    logWarn("No device found for DNI/MAC address: ${macAddress}")
+    logWarn("No device found for DNI/MAC address: ${macAddress}, received presence (beacon) event...")
   }
 }
 // =============================================================================
