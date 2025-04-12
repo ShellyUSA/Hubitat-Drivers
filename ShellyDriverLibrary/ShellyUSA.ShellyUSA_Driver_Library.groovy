@@ -230,7 +230,7 @@ void initializeSettingsToDefaults() {
     if(hasCapabilityBattery() == false && getDeviceDataValue('hasBluGateway') == null) {
       LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
       LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
-      Boolean hasBlu = ble?.observer != null
+      Boolean hasBlu = ble?.enable != null
       if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
       if(hasBlu == true && getDeviceSettings().enableBluetoothGateway == null) {
         setDeviceSetting('enableBluetoothGateway', true)
@@ -638,7 +638,7 @@ void configure() {
   if(hasParent() == false && isGen1Device() == false && hasIpAddress() == true) {
     LinkedHashMap shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
     LinkedHashMap ble = (LinkedHashMap<String, Object>)shellyGetConfigResult?.ble
-    Boolean hasBlu = ble?.observer != null
+    Boolean hasBlu = ble?.enable != null
     logDebug("HasBlue: ${hasBlu}")
     if(hasBlu == true) { setDeviceDataValue('hasBluGateway', 'true') }
     logDebug("Enabled: ${getBooleanDeviceSetting('enableBluetoothGateway')}")
@@ -2769,14 +2769,13 @@ void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
           String address = (String)evtData?.address
           if(address != null && address != '' && evtData?.button != null) {
             address = address.replace(':','')
-            Integer button = evtData?.button as Integer
-            if(button < 4 && button > 0) {
-              sendEventToShellyBluetoothHelper("shellyBLEButtonPushedEvents", button, address)
-            } else if(button == 4) {
-              sendEventToShellyBluetoothHelper("shellyBLEButtonHeldEvents", 1, address)
-            } else if(button == 0) {
-              sendEventToShellyBluetoothHelper("shellyBLEButtonPresenceEvents", 0, address)
+            List<Integer> buttons = []
+            if(getClassName(evtData?.button) == 'java.util.ArrayList') {
+              buttons = evtData?.button as ArrayList<Integer>
+            } else {
+              buttons = [evtData?.button as Integer]
             }
+            sendEventToShellyBluetoothHelper("shellyBLEButtonDeviceEvents", buttons, address)
           }
           if(address != null && address != '' && evtData?.battery != null) {
             sendEventToShellyBluetoothHelper("shellyBLEBatteryEvents", evtData?.battery as Integer, address)
@@ -2792,6 +2791,12 @@ void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
           }
           if(address != null && address != '' && evtData?.motion != null) {
             sendEventToShellyBluetoothHelper("shellyBLEMotionEvents", evtData?.motion as Integer, address)
+          }
+          if(address != null && address != '' && evtData?.temperature != null) {
+            sendEventToShellyBluetoothHelper("shellyBLETemperatureEvents", evtData?.temperature as BigDecimal, address)
+          }
+          if(address != null && address != '' && evtData?.humidity != null) {
+            sendEventToShellyBluetoothHelper("shellyBLEHumidityEvents", evtData?.humidity as Integer, address)
           }
         }
       }
