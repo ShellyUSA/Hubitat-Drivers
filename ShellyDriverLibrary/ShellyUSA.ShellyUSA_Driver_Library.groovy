@@ -314,6 +314,9 @@ void getPreferencesFromShellyDevice() {
       Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
       Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
       Set<String> pm1s = shellyGetConfigResult.keySet().findAll{it.startsWith('pm1')}
+      Set<String> lights = shellyGetConfigResult.keySet().findAll{it.startsWith('light')}
+      Set<String> rgbs = shellyGetConfigResult.keySet().findAll{it.startsWith('rgb:')}
+      Set<String> rgbws = shellyGetConfigResult.keySet().findAll{it.startsWith('rgbw')}
 
       logDebug("Found Switches: ${switches}")
       logDebug("Found Inputs: ${inputs}")
@@ -321,6 +324,9 @@ void getPreferencesFromShellyDevice() {
       logDebug("Found Temperatures: ${temps}")
       logDebug("Found Humidites: ${hums}")
       logDebug("Found PM1s: ${pm1s}")
+      logDebug("Found Lights: ${lights}")
+      logDebug("Found RGBs: ${rgbs}")
+      logDebug("Found RGBWs: ${rgbws}")
 
       if(switches?.size() > 0) {
         logDebug('One or more switches found, running Switch.GetConfig for each...')
@@ -434,6 +440,48 @@ void getPreferencesFromShellyDevice() {
         setDeviceDataValue('powerId', "${id}")
         setDeviceDataValue('voltageId', "${id}")
         setDeviceDataValue('frequencyId', "${id}")
+      }
+
+      if(lights?.size() > 0) {
+        logDebug('One or more lights found...')
+        lights?.each{ light ->
+          Integer id = light.tokenize(':')[1] as Integer
+          logTrace("Light ID: ${id}")
+          LinkedHashMap<String, Object> lightConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[light]
+          logTrace("LightConfig: ${prettyJson(lightConfig)}")
+          logDebug("Creating child device for light:${id}...")
+          ChildDeviceWrapper child = createChildDimmer(id)
+        }
+      } else {
+        logDebug('No lights found...')
+      }
+
+      if(rgbs?.size() > 0) {
+        logDebug('One or more RGBs found...')
+        rgbs?.each{ rgb ->
+          Integer id = rgb.tokenize(':')[1] as Integer
+          logTrace("RGB ID: ${id}")
+          LinkedHashMap<String, Object> rgbConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[rgb]
+          logTrace("RGBConfig: ${prettyJson(rgbConfig)}")
+          logDebug("Creating child device for rgb:${id}...")
+          ChildDeviceWrapper child = createChildRGB(id)
+        }
+      } else {
+        logDebug('No RGBs found...')
+      }
+
+      if(rgbws?.size() > 0) {
+        logDebug('One or more RGBWs found...')
+        rgbws?.each{ rgbw ->
+          Integer id = rgbw.tokenize(':')[1] as Integer
+          logTrace("RGBW ID: ${id}")
+          LinkedHashMap<String, Object> rgbwConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[rgbw]
+          logTrace("RGBWConfig: ${prettyJson(rgbwConfig)}")
+          logDebug("Creating child device for rgbw:${id}...")
+          ChildDeviceWrapper child = createChildRGBW(id)
+        }
+      } else {
+        logDebug('No RGBWs found...')
       }
     } else {
       getPreferencesFromShellyDeviceGen1()
@@ -1280,6 +1328,15 @@ Boolean getBooleanDeviceDataValue(String dataValueName, DeviceWrapper dev = null
 Boolean deviceIsSwitch(DeviceWrapper dev) {return deviceHasDataValue('switchId', dev)}
 
 @CompileStatic
+Boolean deviceIsDimmer(DeviceWrapper dev) {return deviceHasDataValue('switchLevelId', dev)}
+
+@CompileStatic
+Boolean deviceIsRGB(DeviceWrapper dev) {return deviceHasDataValue('rgbId', dev)}
+
+@CompileStatic
+Boolean deviceIsRGBW(DeviceWrapper dev) {return deviceHasDataValue('rgbwId', dev)}
+
+@CompileStatic
 Boolean deviceIsCover(DeviceWrapper dev) {return deviceHasDataValue('coverId', dev)}
 
 @CompileStatic
@@ -1626,8 +1683,68 @@ void setSmokeState(String value, Integer id = 0) {
   }
 }
 
+@CompileStatic
+void startLevelChange(String direction) {
+  if(direction == 'up') {
+    if(deviceIsDimmer(thisDevice())) {
+      parentPostCommandAsync(lightDimUpCommand(getIntegerDeviceDataValue('switchLevelId')))
+    } else if(deviceIsRGB(thisDevice())) {
+      parentPostCommandAsync(rgbDimUpCommand(getIntegerDeviceDataValue('rgbId')))
+    } else if(deviceIsRGBW(thisDevice())) {
+      parentPostCommandAsync(rgbwDimUpCommand(getIntegerDeviceDataValue('rgbwId')))
+    }
+  } else if(direction == 'down') {
+    if(deviceIsDimmer(thisDevice())) {
+      parentPostCommandAsync(lightDimDownCommand(getIntegerDeviceDataValue('switchLevelId')))
+    } else if(deviceIsRGB(thisDevice())) {
+      parentPostCommandAsync(rgbDimDownCommand(getIntegerDeviceDataValue('rgbId')))
+    } else if(deviceIsRGBW(thisDevice())) {
+      parentPostCommandAsync(rgbwDimDownCommand(getIntegerDeviceDataValue('rgbwId')))
+    }
+  }
+}
+
+@CompileStatic
+void stopLevelChange() {
+  if(deviceIsDimmer(thisDevice())) {
+    parentPostCommandAsync(lightDimStopCommand(getIntegerDeviceDataValue('switchLevelId')))
+  } else if(deviceIsRGB(thisDevice())) {
+    parentPostCommandAsync(rgbDimStopCommand(getIntegerDeviceDataValue('rgbId')))
+  } else if(deviceIsRGBW(thisDevice())) {
+    parentPostCommandAsync(rgbwDimStopCommand(getIntegerDeviceDataValue('rgbwId')))
+  }
+}
+
+@CompileStatic
+void setColor(Map hls) {
+  List rgbColors = hlsMapToRGB(hls)
+  if(deviceIsRGB(thisDevice())) {
+    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, rgb: rgbColors]))
+  } else if(deviceIsRGBW(thisDevice())) {
+    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true, rgb: rgbColors]))
+  }
+}
+
+List hlsMapToRGB(Map hls) {return hubitat.helper.ColorUtils.hsvToRGB([hls.hue,hls.saturation,hls.level])}
+
+@CompileStatic
+setWhiteLevel(BigDecimal level) {
+  Integer l = (boundedLevel(level as Integer) / 100 * 255).toInteger()
+  if(deviceIsRGB(thisDevice())) {
+    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, white: l]))
+  } else if(deviceIsRGBW(thisDevice())) {
+    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true, white: l]))
+  }
+}
+
 void on() {
-  if(deviceIsInputSwitch(thisDevice()) == true) {
+  if(deviceIsRGB(thisDevice()) == true) {
+    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true]))
+  } else if(deviceIsRGBW(thisDevice()) == true) {
+    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true]))
+  } else if(deviceIsDimmer(thisDevice()) == true) {
+    parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), true))
+  } else if(deviceIsInputSwitch(thisDevice()) == true) {
     logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
   } else if(deviceIsOverUnderSwitch() == true) {
@@ -1651,7 +1768,13 @@ void on() {
 }
 
 void off() {
-  if(deviceIsInputSwitch(thisDevice()) == true) {
+  if(deviceIsRGB(thisDevice()) == true) {
+    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: false]))
+  } else if(deviceIsRGBW(thisDevice()) == true) {
+    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: false]))
+  } else if(deviceIsDimmer(thisDevice()) == true) {
+    parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), false))
+  } else if(deviceIsInputSwitch(thisDevice()) == true) {
     logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
     sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
   } else if(deviceIsOverUnderSwitch() == true) {
@@ -1674,12 +1797,37 @@ void off() {
   }
 }
 
-void setLevel(BigDecimal level) {setLevel(level, 500)}
+void setLevel(BigDecimal level) {setLevel(level, null)}
 
+@CompileStatic
 void setLevel(BigDecimal level, BigDecimal duration) {
   Integer l = boundedLevel(level as Integer)
-  Integer d = boundedLevel(duration as Integer, 0, 5000)
-  parentSendGen1CommandAsync("light/${getDeviceDataValue('switchLevelId')}/?turn=on&brightness=${l}&transition=${d}")
+  if(deviceIsRGB(thisDevice()) == true) {
+    if(duration == null) {
+      parentPostCommandAsync(rgbSetCommand(id: getIntegerDeviceDataValue('rgbId'), brightness: l))
+    } else {
+      Integer d = boundedLevel(duration as Integer, 0, 900)
+      parentPostCommandAsync(rgbSetCommand(id: getIntegerDeviceDataValue('rgbId'), brightness: l, transitionDuration: d))
+    }
+  } else if(deviceIsRGBW(thisDevice()) == true) {
+    if(duration == null) {
+      parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l))
+    } else {
+      Integer d = boundedLevel(duration as Integer, 0, 900)
+      parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l, transitionDuration: d))
+    }
+  } else if(deviceIsDimmer(thisDevice()) == true) {
+    if(duration == null) {
+      parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l))
+    } else {
+      Integer d = boundedLevel(duration as Integer, 0, 900)
+      parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l, transitionDuration: d))
+    }
+  } else {
+    if(duration == null) {duration = 500}
+    Integer d = boundedLevel(duration as Integer, 0, 5000)
+    parentSendGen1CommandAsync("light/${getDeviceDataValue('switchLevelId')}/?turn=on&brightness=${l}&transition=${d}")
+  }
 }
 
 @CompileStatic
@@ -2561,6 +2709,7 @@ LinkedHashMap smokeGetStatusCommand(Integer id = 0, src = 'smokeGetStatus') {
   ]
   return command
 }
+
 @CompileStatic
 LinkedHashMap smokeMuteCommand(Integer id = 0, src = 'smokeMute') {
   LinkedHashMap command = [
@@ -2574,7 +2723,346 @@ LinkedHashMap smokeMuteCommand(Integer id = 0, src = 'smokeMute') {
   return command
 }
 
+@CompileStatic
+LinkedHashMap lightGetConfigCommand(Integer id = 0, src = 'lightGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.GetConfig",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
 
+@CompileStatic
+LinkedHashMap lightSetConfigCommand(
+  String initial_state,
+  Boolean auto_on,
+  Long auto_on_delay,
+  Boolean auto_off,
+  Long auto_off_delay,
+  Long power_limit,
+  Long voltage_limit,
+  Boolean autorecover_voltage_errors,
+  Boolean nightModeEnable,
+  Integer nightModeBrightness,
+  Long current_limit,
+  Integer id = 0,
+  String src = 'lightSetConfig'
+) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "switchSetConfig",
+    "method" : "Light.SetConfig",
+    "params" : [
+      "id" : id,
+      "config": [
+        "initial_state": initial_state,
+        "auto_on": auto_on,
+        "auto_on_delay": auto_on_delay,
+        "auto_off": auto_off,
+        "auto_off_delay": auto_off_delay,
+        "power_limit": power_limit,
+        "voltage_limit": voltage_limit,
+        "autorecover_voltage_errors": autorecover_voltage_errors,
+        "current_limit": current_limit,
+        "night_mode.enable": nightModeEnable,
+        "night_mode.brightness": nightModeBrightness
+      ]
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightGetStatusCommand(Integer id = 0, src = 'lightGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.GetStatus",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightSetCommand(
+  Integer id = 0,
+  Boolean on = null,
+  Integer brightness = null,
+  Integer transitionDuration = null,
+  Integer toggleAfter = null,
+  Integer offset = null,
+  src = 'lightSet'
+) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.Set",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(brightness != null && offset != null) {
+    logWarn('Cannot set both brightness and brightness offset at same time, using brightness value')
+  }
+  if(on != null) {command.params["on"] = on}
+  if(brightness != null) {command.params["brightness"] = brightness}
+  if(transitionDuration != null) {command.params["transition_duration"] = transitionDuration}
+  if(toggleAfter != null) {command.params["toggle_after"] = toggleAfter}
+  if(offset != null && brightness == null) {command.params["offset"] = offset}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightSetCommand(LinkedHashMap args) {
+  Integer id = args?.id as Integer ?: 0
+  String src = 'lightSet'
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.Set",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(args?.brightness != null && args?.offset != null) {
+    logWarn('Cannot set both brightness and brightness offset at same time, using brightness value')
+  }
+  if(args?.on != null) {command.params["on"] = args?.on}
+  if(args?.brightness != null) {command.params["brightness"] = args?.brightness}
+  if(args?.transitionDuration != null) {command.params["transition_duration"] = args?.transitionDuration}
+  if(args?.toggleAfter != null) {command.params["toggle_after"] = args?.toggleAfter}
+  if(args?.offset != null && args?.brightness == null) {command.params["offset"] = args?.offset}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightToggleCommand(Integer id = 0, src = 'lightToggle') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.Toggle",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightDimUpCommand(Integer id = 0, Integer fadeRate = null, src = 'lightDimUp') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.DimUp",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(fadeRate != null) {command.params["fade_rate"] = fadeRate}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightDimDownCommand(Integer id = 0, Integer fadeRate = null, src = 'lightDimDown') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.DimDown",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(fadeRate != null) {command.params["fade_rate"] = fadeRate}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightDimStopCommand(Integer id = 0, src = 'lightDimStop') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.DimStop",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap lightSetAllCommand(
+  Integer id = 0,
+  Boolean on = null,
+  Integer brightness = null,
+  Integer transitionDuration = null,
+  Integer toggleAfter = null,
+  Integer offset = null,
+  src = 'lightSet'
+) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.Set",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(brightness != null && offset != null) {
+    logWarn('Cannot set both brightness and brightness offset at same time, using brightness value')
+  }
+  if(on != null) {command.params["on"] = on}
+  if(brightness != null) {command.params["brightness"] = brightness}
+  if(transitionDuration != null) {command.params["transition_duration"] = transitionDuration}
+  if(toggleAfter != null) {command.params["toggle_after"] = toggleAfter}
+  if(offset != null && brightness == null) {command.params["offset"] = offset}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbwSetCommand(LinkedHashMap args) {
+  Integer id = args?.id as Integer ?: 0
+  String src = 'rgbwSet'
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGBW.Set",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(args?.brightness != null && args?.offset != null) {
+    logWarn('Cannot set both brightness and brightness offset at same time, using brightness value')
+  }
+  if(args?.white != null && args?.offsetWhite != null) {
+    logWarn('Cannot set both white and offsetWhite offset at same time, using white value')
+  }
+  if(args?.on != null) {command.params["on"] = args?.on}
+  if(args?.brightness != null) {command.params["brightness"] = args?.brightness}
+  if(args?.rgb != null) {command.params["rgb"] = args?.rgb}
+  if(args?.white != null) {command.params["white"] = args?.white}
+  if(args?.transitionDuration != null) {command.params["transition_duration"] = args?.transitionDuration}
+  if(args?.toggleAfter != null) {command.params["toggle_after"] = args?.toggleAfter}
+  if(args?.offset != null && args?.brightness == null) {command.params["offset"] = args?.offset}
+  if(args?.offsetWhite != null && args?.white == null) {command.params["offset_white"] = args?.offsetWhite}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbwDimUpCommand(Integer id = 0, Integer fadeRate = null, src = 'lightDimUp') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGBW.DimUp",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(fadeRate != null) {command.params["fade_rate"] = fadeRate}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbwDimDownCommand(Integer id = 0, Integer fadeRate = null, src = 'rgbwDimDown') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGBW.DimDown",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(fadeRate != null) {command.params["fade_rate"] = fadeRate}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbwDimStopCommand(Integer id = 0, src = 'rgbwDimStop') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGBW.DimStop",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbSetCommand(LinkedHashMap args) {
+  Integer id = args?.id as Integer ?: 0
+  String src = 'rgbSet'
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGB.Set",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(args?.brightness != null && args?.offset != null) {
+    logWarn('Cannot set both brightness and brightness offset at same time, using brightness value')
+  }
+  if(args?.white != null && args?.offsetWhite != null) {
+    logWarn('Cannot set both white and offsetWhite offset at same time, using white value')
+  }
+  if(args?.on != null) {command.params["on"] = args?.on}
+  if(args?.brightness != null) {command.params["brightness"] = args?.brightness}
+  if(args?.rgb != null) {command.params["rgb"] = args?.rgb}
+  if(args?.white != null) {command.params["white"] = args?.white}
+  if(args?.transitionDuration != null) {command.params["transition_duration"] = args?.transitionDuration}
+  if(args?.toggleAfter != null) {command.params["toggle_after"] = args?.toggleAfter}
+  if(args?.offset != null && args?.brightness == null) {command.params["offset"] = args?.offset}
+  if(args?.offsetWhite != null && args?.white == null) {command.params["offset_white"] = args?.offsetWhite}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbDimUpCommand(Integer id = 0, Integer fadeRate = null, src = 'lightDimUp') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGB.DimUp",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(fadeRate != null) {command.params["fade_rate"] = fadeRate}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbDimDownCommand(Integer id = 0, Integer fadeRate = null, src = 'rgbDimDown') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGB.DimDown",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  if(fadeRate != null) {command.params["fade_rate"] = fadeRate}
+  return command
+}
+
+@CompileStatic
+LinkedHashMap rgbDimStopCommand(Integer id = 0, src = 'rgbDimStop') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "RGB.DimStop",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
 
 /* #endregion */
 /* #region Parse */
@@ -2806,6 +3294,16 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       if(update?.rh != null) {
         BigDecimal rh = (BigDecimal)update.rh
         if(rh != null) {setHumidityPercent(rh, id)}
+      }
+    }
+
+    // Lights
+    if(k.startsWith('light')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.brightness != null) {
+        Integer brightness = update?.brightness as Integer
+        logWarn("Brightness ${brightness} for ID: ${id}")
       }
     }
   }
@@ -3860,6 +4358,57 @@ ChildDeviceWrapper createChildSwitch(Integer id, String additionalId = null) {
 }
 
 @CompileStatic
+ChildDeviceWrapper createChildDimmer(Integer id) {
+  String dni =  "${getThisDeviceDNI()}-dimmer${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String driverName = 'Shelly Dimmer Component'
+    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - Dimmer ${id}" : "${driverName} - Dimmer ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  }
+  child.updateDataValue('switchLevelId',"${id}")
+  return child
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildRGB(Integer id) {
+  String dni =  "${getThisDeviceDNI()}-rgb${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String driverName = 'Shelly RGB Component'
+    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - RGB ${id}" : "${driverName} - RGB ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  }
+  child.updateDataValue('rgbId',"${id}")
+  return child
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildRGBW(Integer id) {
+  String dni =  "${getThisDeviceDNI()}-rgbw${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String driverName = 'Shelly RGBW Component'
+    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - RGBW ${id}" : "${driverName} - RGBW ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  }
+  child.updateDataValue('rgbwId',"${id}")
+  return child
+}
+
+@CompileStatic
 ChildDeviceWrapper createChildPmSwitch(Integer id) {
   String dni =  "${getThisDeviceDNI()}-switch${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
@@ -3869,11 +4418,11 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
-      child.updateDataValue('switchId',"${id}")
-      child.updateDataValue('hasPM','true')
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
+  child.updateDataValue('switchId',"${id}")
+  child.updateDataValue('hasPM','true')
   child.updateDataValue('currentId', "${id}")
   child.updateDataValue('energyId', "${id}")
   child.updateDataValue('powerId', "${id}")
@@ -4874,6 +5423,7 @@ BigDecimal fToC(BigDecimal val) { return fahrenheitToCelsius(val) }
 
 @CompileStatic
 Integer boundedLevel(Integer level, Integer min = 0, Integer max = 100) {
+  if(level == null) {return null}
   return (Math.min(Math.max(level, min), max) as Integer)
 }
 
