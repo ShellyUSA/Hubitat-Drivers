@@ -16,3 +16,12 @@ metadata {
 
 @Field static Boolean WS = true
 @Field static Boolean DEVICEISBLUGATEWAY = true
+
+void deviceSpecificConfigure() {
+  Integer index = 0
+  setDeviceDataValue('hasPM','true')
+  setDeviceDataValue('currentId', "${index}")
+  setDeviceDataValue('energyId', "${index}")
+  setDeviceDataValue('powerId', "${index}")
+  setDeviceDataValue('voltageId', "${index}")
+}

@@ -16,6 +16,7 @@ metadata {
     ]
     capability 'Refresh'
     attribute 'lastUpdated', 'string'
+    attribute 'whiteLevel', 'number'
   }
 }
 
