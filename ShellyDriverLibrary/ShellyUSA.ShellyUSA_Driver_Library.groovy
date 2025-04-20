@@ -55,6 +55,9 @@ Boolean hasPMGen1() { return HAS_PM_GEN1 == true }
 Boolean hasExtTempGen1() { return HAS_EXT_TEMP_GEN1 == true }
 Boolean hasExtHumGen1() { return HAS_EXT_HUM_GEN1 == true }
 
+Integer getCoolTemp() { return COOLTEMP != null ? COOLTEMP : 6500 }
+Integer getWarmTemp() { return WARMTEMP != null ? WARMTEMP : 3000 }
+
 Boolean hasActionsToCreateList() { return ACTIONS_TO_CREATE != null }
 List<String> getActionsToCreate() {
   if(hasActionsToCreateList() == true) { return ACTIONS_TO_CREATE }
@@ -71,6 +74,8 @@ Boolean deviceIsComponentInputSwitch() {return INPUTSWITCH == true}
 Boolean deviceIsOverUnderSwitch() {return OVERUNDERSWITCH == true}
 
 Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true }
+Boolean hasCapabilityColorControl() { return device.hasCapability('ColorControl') == true }
+Boolean hasCapabilityColorTemperature() { return device.hasCapability('ColorTemperature') == true }
 Boolean hasCapabilityLight() { return device.hasCapability('Light') == true }
 Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
 Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
@@ -78,6 +83,12 @@ Boolean hasCapabilityValve() { return device.hasCapability('Valve') == true }
 Boolean hasCapabilityCover() { return device.hasCapability('WindowShade') == true }
 Boolean hasCapabilityThermostatHeatingSetpoint() { return device.hasCapability('ThermostatHeatingSetpoint') == true }
 Boolean hasCapabilityCoverOrCoverChild() { return device.hasCapability('WindowShade') == true || getCoverChildren()?.size() > 0 }
+
+Boolean hasCapabilityCurrentMeter() { return device.hasCapability('CurrentMeter') == true }
+Boolean hasCapabilityPowerMeter() { return device.hasCapability('PowerMeter') == true }
+Boolean hasCapabilityVoltageMeasurement() { return device.hasCapability('VoltageMeasurement') == true }
+Boolean hasCapabilityEnergyMeter() { return device.hasCapability('EnergyMeter') == true }
+
 
 Boolean deviceIsBluGateway() {return DEVICEISBLUGATEWAY == true}
 
@@ -622,6 +633,12 @@ void getPreferencesFromShellyDeviceGen1() {
       setDeviceDataValue('lightId', "${index}")
       setDeviceDataValue('switchLevelId', "${index}")
       setDeviceDataValue('lightMode', mode)
+      if(hasCapabilityColorControl() == true) {
+        setDeviceDataValue('rgbwId', "${index}")
+      }
+      if(hasCapabilityColorTemperature() == true) {
+        setDeviceDataValue('ctId', "${index}")
+      }
     }
   }
 
@@ -1071,6 +1088,61 @@ void checkPresence() {
 }
 
 @CompileStatic
+void setLevelAttribute(Integer level, ChildDeviceWrapper child = null) {
+  if(child != null) {sendChildDeviceEvent([name: 'level', value: level, unit: '%'], child)}
+  else {sendDeviceEvent([name: 'level', value: level, unit: '%'])}
+}
+
+@CompileStatic
+void setSwitchAttribute(String switchState, ChildDeviceWrapper child = null) {
+  if(child != null) {sendChildDeviceEvent([name: 'switch', value: switchState], child)}
+  else {sendDeviceEvent([name: 'switch', value: switchState])}
+}
+
+@CompileStatic
+void setWhiteLevelAttribute(Integer whiteLevel, ChildDeviceWrapper child = null) {
+  if(child != null) {sendChildDeviceEvent([name: 'whiteLevel', value: whiteLevel, unit: '%'], child)}
+  else {sendDeviceEvent([name: 'whiteLevel', value: whiteLevel, unit: '%'])}
+}
+
+void setColorModeAttribute(String colorMode) {
+  if(colorMode in ['CT', 'RGB', 'EFFECTS']) {
+    sendDeviceEvent([name: 'colorMode', value: colorMode])
+  }
+}
+
+void setRGBAttribute(Integer red, Integer green, Integer blue, ChildDeviceWrapper child = null) {
+  if(child != null) {sendChildDeviceEvent([name: 'RGB', value: [red, green, blue].toString()], child)}
+  else {sendDeviceEvent([name: 'RGB', value: [red, green, blue].toString()])}
+}
+
+void setColorAttribute(Integer red, Integer green, Integer blue, ChildDeviceWrapper child = null) {
+  String rgb = hubitat.helper.ColorUtils.rgbToHEX([red,green,blue])
+  if(child != null) {sendChildDeviceEvent([name: 'color', value: rgb], child)}
+  else {sendDeviceEvent([name: 'color', value: rgb])}
+}
+
+void setColorNameAttribute(Integer red, Integer green, Integer blue, ChildDeviceWrapper child = null) {
+  List hsv = hubitat.helper.ColorUtils.rgbToHSV([red,green,blue])
+  String colorName = convertHueToGenericColorName(hsv[0], hsv[1])
+  if(child != null) {sendChildDeviceEvent([name: 'colorName', value: colorName], child)}
+  else {sendDeviceEvent([name: 'colorName', value: colorName])}
+}
+
+void setHueSaturationAttributes(Integer red, Integer green, Integer blue, ChildDeviceWrapper child = null) {
+  List hsv = hubitat.helper.ColorUtils.rgbToHSV([red,green,blue])
+  Integer hue = hsv[0] as Integer
+  Integer saturation = hsv[1] as Integer
+  if(child != null) {
+    sendChildDeviceEvent([name: 'hue', value: hue], child)
+    sendChildDeviceEvent([name: 'saturation', value: saturation, unit: '%'], child)
+  } else {
+    sendDeviceEvent([name: 'hue', value: hue])
+    sendDeviceEvent([name: 'saturation', value: saturation, unit: '%'])
+  }
+}
+
+@CompileStatic
 void setHumidityPercent(BigDecimal percent, Integer id = 0) {
   if(hasHumidityChildren() == true) {
     sendChildDeviceEvent([name: 'humidity', value: percent.setScale(1, BigDecimal.ROUND_HALF_UP), unit: '%'], getHumidityChildById(id))
@@ -1403,7 +1475,7 @@ Boolean thisDeviceHasPowerMonitoring() {return getDeviceDataValue('hasPM') == 't
 Boolean thisDeviceOrChildrenHasPowerMonitoring() {
   if(hasChildren() == false) {return getDeviceDataValue('hasPM') == 'true'}
   else {
-    return (anyChildHasDataValue('hasPM') || getDeviceDataValue('hasPM') == 'true')
+    return (anyChildHasDataValue('hasPM') || getDeviceDataValue('hasPM') == 'true' || hasCapabilityEnergyMeter() == true)
   }
 }
 
@@ -1718,17 +1790,44 @@ void stopLevelChange() {
 @CompileStatic
 void setColor(Map hls) {
   List rgbColors = hlsMapToRGB(hls)
-  if(deviceIsRGB(thisDevice())) {
-    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, rgb: rgbColors]))
-  } else if(deviceIsRGBW(thisDevice())) {
-    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true, rgb: rgbColors]))
+  Integer r = rgbColors[0] as Integer
+  Integer g = rgbColors[1] as Integer
+  Integer b = rgbColors[2] as Integer
+  if(isGen1Device() == true) {
+    parentSendGen1CommandAsync("light/${getDeviceDataValue('rgbwId')}/?turn=on&mode=color&red=${r}&green=${g}&blue=${b}", null, 'gen1LightCallback')
+  } else {
+    if(deviceIsRGB(thisDevice())) {
+      parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, rgb: rgbColors]))
+    } else if(deviceIsRGBW(thisDevice())) {
+      parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true, rgb: rgbColors]))
+    }
   }
 }
 
 List hlsMapToRGB(Map hls) {return hubitat.helper.ColorUtils.hsvToRGB([hls.hue,hls.saturation,hls.level])}
 
+// void setColorTemperature(BigDecimal colorTemp) {setColorTemperature(colorTemp, null, 0)}
+// void setColorTemperature(BigDecimal colorTemp, BigDecimal level) {setColorTemperature(colorTemp, level, 0)}
+
 @CompileStatic
-setWhiteLevel(BigDecimal level) {
+void setColorTemperature(BigDecimal colorTemp, BigDecimal level = null, BigDecimal transition = 0) {
+  if(isGen1Device() == true) {
+    Integer id = getDeviceDataValue('ctId') as Integer
+    Integer boundedTemp = 0
+    if(transition != 0) {transition = transition * 1000}
+    Integer boundedTransition = boundedLevel(transition as Integer, 0, 5000)
+    boundedTemp = boundedLevel(colorTemp as Integer, getWarmTemp(), getCoolTemp())
+    if(level == null) {
+      parentSendGen1CommandAsync("light/${id}/?turn=on&mode=white&temp=${boundedTemp}&transition=${boundedTransition}", null, 'gen1LightCallback')
+    } else {
+      Integer l = boundedLevel(level as Integer)
+      parentSendGen1CommandAsync("light/${id}/?turn=on&mode=white&temp=${boundedTemp}&transition=${boundedTransition}&brightness=${l}", null, 'gen1LightCallback')
+    }
+  }
+}
+
+@CompileStatic
+void setWhiteLevel(BigDecimal level) {
   Integer l = (boundedLevel(level as Integer) / 100 * 255).toInteger()
   if(deviceIsRGB(thisDevice())) {
     parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, white: l]))
@@ -1738,19 +1837,7 @@ setWhiteLevel(BigDecimal level) {
 }
 
 void on() {
-  if(deviceIsRGB(thisDevice()) == true) {
-    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true]))
-  } else if(deviceIsRGBW(thisDevice()) == true) {
-    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true]))
-  } else if(deviceIsDimmer(thisDevice()) == true) {
-    parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), true))
-  } else if(deviceIsInputSwitch(thisDevice()) == true) {
-    logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
-    sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
-  } else if(deviceIsOverUnderSwitch() == true) {
-    logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
-    sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
-  } else if(isGen1Device() == true) {
+  if(isGen1Device() == true) {
     String action = hasCapabilityLight() == true ? 'light' : 'relay'
     if(hasChildSwitches() == true) {
       getSwitchChildren().each{ child ->
@@ -1760,27 +1847,29 @@ void on() {
     } else {
       parentSendGen1CommandAsync("${action}/${getDeviceDataValue('switchId')}/?turn=on")
     }
-  } else if(hasChildSwitches() == true) {
-    getSwitchChildren().each{it.on()}
   } else {
-    parentPostCommandAsync(switchSetCommand(true, getIntegerDeviceDataValue('switchId')))
+    if(deviceIsRGB(thisDevice()) == true) {
+      parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true]))
+    } else if(deviceIsRGBW(thisDevice()) == true) {
+      parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true]))
+    } else if(deviceIsDimmer(thisDevice()) == true) {
+      parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), true))
+    } else if(deviceIsInputSwitch(thisDevice()) == true) {
+      logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
+      sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
+    } else if(deviceIsOverUnderSwitch() == true) {
+      logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
+      sendDeviceEvent([name: 'switch', value: 'off', isStateChange: false])
+    } else if(hasChildSwitches() == true) {
+      getSwitchChildren().each{it.on()}
+    } else {
+      parentPostCommandAsync(switchSetCommand(true, getIntegerDeviceDataValue('switchId')))
+    }
   }
 }
 
 void off() {
-  if(deviceIsRGB(thisDevice()) == true) {
-    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: false]))
-  } else if(deviceIsRGBW(thisDevice()) == true) {
-    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: false]))
-  } else if(deviceIsDimmer(thisDevice()) == true) {
-    parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), false))
-  } else if(deviceIsInputSwitch(thisDevice()) == true) {
-    logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
-    sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
-  } else if(deviceIsOverUnderSwitch() == true) {
-    logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
-    sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
-  } else if(isGen1Device() == true) {
+  if(isGen1Device() == true) {
     String action = hasCapabilityLight() == true ? 'light' : 'relay'
     if(hasChildSwitches() == true) {
       getSwitchChildren().each{ child ->
@@ -1790,10 +1879,24 @@ void off() {
     } else {
       parentSendGen1CommandAsync("${action}/${getDeviceDataValue('switchId')}/?turn=off")
     }
-  } else if(hasChildSwitches()) {
-    getSwitchChildren().each{it.off()}
   } else {
-    parentPostCommandAsync(switchSetCommand(false, getIntegerDeviceDataValue('switchId')))
+    if(deviceIsRGB(thisDevice()) == true) {
+      parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: false]))
+    } else if(deviceIsRGBW(thisDevice()) == true) {
+      parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: false]))
+    } else if(deviceIsDimmer(thisDevice()) == true) {
+      parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), false))
+    } else if(deviceIsInputSwitch(thisDevice()) == true) {
+      logWarn('Cannot change state of an input on a Shelly device from Hubitat!')
+      sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
+    } else if(deviceIsOverUnderSwitch() == true) {
+      logWarn('Cannot change state of an OverUnder on a Shelly device from Hubitat!')
+      sendDeviceEvent([name: 'switch', value: 'on', isStateChange: false])
+    } else if(hasChildSwitches()) {
+      getSwitchChildren().each{it.off()}
+    } else {
+      parentPostCommandAsync(switchSetCommand(false, getIntegerDeviceDataValue('switchId')))
+    }
   }
 }
 
@@ -1802,31 +1905,33 @@ void setLevel(BigDecimal level) {setLevel(level, null)}
 @CompileStatic
 void setLevel(BigDecimal level, BigDecimal duration) {
   Integer l = boundedLevel(level as Integer)
-  if(deviceIsRGB(thisDevice()) == true) {
-    if(duration == null) {
-      parentPostCommandAsync(rgbSetCommand(id: getIntegerDeviceDataValue('rgbId'), brightness: l))
-    } else {
-      Integer d = boundedLevel(duration as Integer, 0, 900)
-      parentPostCommandAsync(rgbSetCommand(id: getIntegerDeviceDataValue('rgbId'), brightness: l, transitionDuration: d))
-    }
-  } else if(deviceIsRGBW(thisDevice()) == true) {
-    if(duration == null) {
-      parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l))
-    } else {
-      Integer d = boundedLevel(duration as Integer, 0, 900)
-      parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l, transitionDuration: d))
-    }
-  } else if(deviceIsDimmer(thisDevice()) == true) {
-    if(duration == null) {
-      parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l))
-    } else {
-      Integer d = boundedLevel(duration as Integer, 0, 900)
-      parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l, transitionDuration: d))
-    }
-  } else {
+  if(isGen1Device() == true) {
     if(duration == null) {duration = 500}
     Integer d = boundedLevel(duration as Integer, 0, 5000)
-    parentSendGen1CommandAsync("light/${getDeviceDataValue('switchLevelId')}/?turn=on&brightness=${l}&transition=${d}")
+    parentSendGen1CommandAsync("light/${getDeviceDataValue('switchLevelId')}/?turn=on&brightness=${l}&transition=${d}", null, 'gen1LightCallback')
+  } else {
+    if(deviceIsRGB(thisDevice()) == true) {
+      if(duration == null) {
+        parentPostCommandAsync(rgbSetCommand(id: getIntegerDeviceDataValue('rgbId'), brightness: l))
+      } else {
+        Integer d = boundedLevel(duration as Integer, 0, 900)
+        parentPostCommandAsync(rgbSetCommand(id: getIntegerDeviceDataValue('rgbId'), brightness: l, transitionDuration: d))
+      }
+    } else if(deviceIsRGBW(thisDevice()) == true) {
+      if(duration == null) {
+        parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l))
+      } else {
+        Integer d = boundedLevel(duration as Integer, 0, 900)
+        parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l, transitionDuration: d))
+      }
+    } else if(deviceIsDimmer(thisDevice()) == true) {
+      if(duration == null) {
+        parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l))
+      } else {
+        Integer d = boundedLevel(duration as Integer, 0, 900)
+        parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l, transitionDuration: d))
+      }
+    }
   }
 }
 
@@ -3306,6 +3411,58 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
         logWarn("Brightness ${brightness} for ID: ${id}")
       }
     }
+
+    if(k.startsWith('rgb')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      ChildDeviceWrapper child = getRGBChildById(id)
+      if(child == null && k.startsWith('rgbw')) {child = getRGBWChildById(id)}
+      if(update?.brightness != null) {
+        Integer brightness = update?.brightness as Integer
+        if(brightness != null) {setLevelAttribute(brightness, child)}
+      }
+      if(update?.output != null) {
+        Boolean output = update?.output as Boolean
+        if(output != null) {
+          String switchState = output == true ? 'on' : 'off'
+          setSwitchAttribute(switchState, child)
+        }
+      }
+      if(update?.rgb != null) {
+        List<Integer> rgb = (List<Integer>)update?.rgb
+        if(rgb != null) {
+          setRGBAttribute(rgb[0], rgb[1], rgb[2], child)
+          setColorAttribute(rgb[0], rgb[1], rgb[2], child)
+          setColorNameAttribute(rgb[0], rgb[1], rgb[2], child)
+          setHueSaturationAttributes(rgb[0], rgb[1], rgb[2], child)
+        }
+      }
+      if(update?.white != null) {
+        Integer white = update?.white as Integer
+        white = (white / 2.55) as Integer
+        if(white != null) {setWhiteLevelAttribute(white, child)}
+      }
+      if(update?.aenergy != null) {
+        LinkedHashMap ae = (LinkedHashMap)update.aenergy
+        if(ae?.total != null) {
+          BigDecimal e = (BigDecimal)ae?.total
+          setEnergy(e/1000, id)
+        }
+      }
+      if(update?.apower != null) {
+        BigDecimal power = (BigDecimal)update?.apower
+        setPower(power)
+      }
+      if(update?.current != null) {
+        BigDecimal current = (BigDecimal)update?.current
+        setCurrent(current)
+      }
+      if(update?.voltage != null) {
+        BigDecimal voltage = (BigDecimal)update?.voltage
+        setVoltage(voltage)
+      }
+      logTrace("Update: ${prettyJson(update)}")
+    }
   }
   setLastUpdated()
 }
@@ -3524,10 +3681,7 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
     if(json?.lights != null) {
       List<LinkedHashMap> lights = (List<LinkedHashMap>)json?.lights
       lights.eachWithIndex{ light, index ->
-        Integer brightness = light?.brightness as Integer
-        if(brightness != null) {setSwitchLevelState(brightness, index)}
-        Boolean isOn = light?.ison as Boolean
-        if(isOn != null) {setSwitchState(isOn)}
+        processGen1LightStatus(light, index)
       }
     }
     if(json?.thermostats != null) {
@@ -3558,6 +3712,33 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
       }
     }
   }
+}
+
+@CompileStatic
+void gen1LightCallback(AsyncResponse response, Map data = null) {
+  logTrace('Processing gen1 light callback')
+  if(responseIsValid(response) == true) {
+    Map json = (LinkedHashMap)response.getJson()
+    processGen1LightStatus(json)
+  }
+}
+
+@CompileStatic
+void processGen1LightStatus(Map json, Integer index = 0) {
+  logTrace("gen1LightCallback JSON: ${prettyJson(json)}")
+  if(json?.red != null && json?.green != null && json?.blue != null) {
+    setColorAttribute(json.red as Integer, json.green as Integer, json.blue as Integer)
+    setRGBAttribute(json.red as Integer, json.green as Integer, json.blue as Integer)
+    setColorNameAttribute(json.red as Integer, json.green as Integer, json.blue as Integer)
+    setHueSaturationAttributes(json.red as Integer, json.green as Integer, json.blue as Integer)
+  }
+  if(json?.mode == 'color') {setColorModeAttribute('RGB')}
+  if(json?.mode == 'white') {setColorModeAttribute('CT')}
+  if(json?.mode != null) {setDeviceDataValue('lightMode', "${json.mode}")}
+  Integer brightness = json?.brightness as Integer
+  if(brightness != null) {setSwitchLevelState(brightness, index)}
+  Boolean isOn = json?.ison as Boolean
+  if(isOn != null) {setSwitchState(isOn)}
 }
 
 @CompileStatic
@@ -4785,6 +4966,42 @@ List<ChildDeviceWrapper> getHumiditySwitchChildren() {
 ChildDeviceWrapper getHumiditySwitchChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'humiditySwitchId') == id}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getLightChildren() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasDataValue(it,'lightId')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getLightChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'lightId') == id}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getRGBChildren() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasDataValue(it,'rgbId')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getRGBChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'rgbId') == id}
+}
+
+@CompileStatic
+List<ChildDeviceWrapper> getRGBWChildren() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.findAll{childHasDataValue(it,'rgbwId')}
+}
+
+@CompileStatic
+ChildDeviceWrapper getRGBWChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'rgbwId') == id}
 }
 
 @CompileStatic
