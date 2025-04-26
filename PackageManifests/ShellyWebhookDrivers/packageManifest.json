@@ -142,6 +142,19 @@
     },
 
 
+
+
+
+
+
+
+    {
+      "id": "80fbf971-7578-4823-ae3d-3c6c268a57eb",
+      "name": "Shelly 1",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/Shelly1.groovy",
+      "required": false
+    },
     {
       "id": "900b9944-a61c-4b15-9da0-a6528b93d3d8",
       "name": "Shelly 2.5",
