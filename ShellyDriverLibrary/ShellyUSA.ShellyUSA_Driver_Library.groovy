@@ -374,17 +374,19 @@ void getPreferencesFromShellyDevice() {
 
       if(inputs?.size() > 0) {
         logDebug('One or more inputs found, running Input.GetConfig for each...')
-        inputs?.each{ inp ->
-          Integer id = inp.tokenize(':')[1] as Integer
-          logDebug("Input ID: ${id}")
-          Map inputGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(inputGetConfigCommand(id))?.result
-          logTrace("Input.GetConfig Result: ${prettyJson(inputGetConfigResult)}")
-          logDebug('Creating child device for input...')
-          LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
-          String inputType = (inputConfig?.type as String).capitalize()
-          ChildDeviceWrapper child = createChildInput(id, inputType)
-          // Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
-          if(inputGetConfigResult != null && inputGetConfigResult.size() > 0) {setChildDevicePreferences(inputGetConfigResult, child)}
+        if(hasNoChildrenNeeded() == false) {
+          inputs?.each{ inp ->
+            Integer id = inp.tokenize(':')[1] as Integer
+            logDebug("Input ID: ${id}")
+            Map inputGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(inputGetConfigCommand(id))?.result
+            logTrace("Input.GetConfig Result: ${prettyJson(inputGetConfigResult)}")
+            logDebug('Creating child device for input...')
+            LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
+            String inputType = (inputConfig?.type as String).capitalize()
+            ChildDeviceWrapper child = createChildInput(id, inputType)
+            // Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
+            if(inputGetConfigResult != null && inputGetConfigResult.size() > 0) {setChildDevicePreferences(inputGetConfigResult, child)}
+          }
         }
       } else {
         logDebug('No inputs found...')
@@ -392,22 +394,24 @@ void getPreferencesFromShellyDevice() {
 
       if(covers?.size() > 0) {
         logDebug('Cover(s) found, running Cover.GetConfig for each...')
-        covers?.each{ cov ->
-          Integer id = cov.tokenize(':')[1] as Integer
-          logDebug("Cover ID: ${id}")
-          Map coverGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(id))?.result
-          Map<String, Object> coverStatus = postCommandSync(coverGetStatusCommand(id))
-          logTrace("Cover Status: ${prettyJson(coverStatus)}")
-          Map<String, Object> coverStatusResult = (LinkedHashMap<String, Object>)coverStatus?.result
-          Boolean hasPM = ('apower' in coverStatusResult.keySet())
-          logTrace("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
-          logDebug('Creating child device for cover...')
-          ChildDeviceWrapper child = null
-          if(coverGetConfigResult != null && coverGetConfigResult.size() > 0) {setChildDevicePreferences(coverGetConfigResult, child)}
-          if(hasPM == true) {
-            child = createChildPmCover(id)
-          } else {
-            child = createChildCover(id)
+        if(hasNoChildrenNeeded() == false) {
+          covers?.each{ cov ->
+            Integer id = cov.tokenize(':')[1] as Integer
+            logDebug("Cover ID: ${id}")
+            Map coverGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(coverGetConfigCommand(id))?.result
+            Map<String, Object> coverStatus = postCommandSync(coverGetStatusCommand(id))
+            logTrace("Cover Status: ${prettyJson(coverStatus)}")
+            Map<String, Object> coverStatusResult = (LinkedHashMap<String, Object>)coverStatus?.result
+            Boolean hasPM = ('apower' in coverStatusResult.keySet())
+            logTrace("Cover.GetConfig Result: ${prettyJson(coverGetConfigResult)}")
+            logDebug('Creating child device for cover...')
+            ChildDeviceWrapper child = null
+            if(coverGetConfigResult != null && coverGetConfigResult.size() > 0) {setChildDevicePreferences(coverGetConfigResult, child)}
+            if(hasPM == true) {
+              child = createChildPmCover(id)
+            } else {
+              child = createChildCover(id)
+            }
           }
         }
       } else {
@@ -458,10 +462,14 @@ void getPreferencesFromShellyDevice() {
         lights?.each{ light ->
           Integer id = light.tokenize(':')[1] as Integer
           logTrace("Light ID: ${id}")
-          LinkedHashMap<String, Object> lightConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[light]
-          logTrace("LightConfig: ${prettyJson(lightConfig)}")
-          logDebug("Creating child device for light:${id}...")
-          ChildDeviceWrapper child = createChildDimmer(id)
+          if(hasNoChildrenNeeded() == false) {
+            LinkedHashMap<String, Object> lightConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[light]
+            logTrace("LightConfig: ${prettyJson(lightConfig)}")
+            logDebug("Creating child device for light:${id}...")
+            ChildDeviceWrapper child = createChildDimmer(id)
+          } else {
+            setDeviceDataValue('switchLevelId', "${id}")
+          }
         }
       } else {
         logDebug('No lights found...')
@@ -469,13 +477,15 @@ void getPreferencesFromShellyDevice() {
 
       if(rgbs?.size() > 0) {
         logDebug('One or more RGBs found...')
-        rgbs?.each{ rgb ->
-          Integer id = rgb.tokenize(':')[1] as Integer
-          logTrace("RGB ID: ${id}")
-          LinkedHashMap<String, Object> rgbConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[rgb]
-          logTrace("RGBConfig: ${prettyJson(rgbConfig)}")
-          logDebug("Creating child device for rgb:${id}...")
-          ChildDeviceWrapper child = createChildRGB(id)
+        if(hasNoChildrenNeeded() == false) {
+          rgbs?.each{ rgb ->
+            Integer id = rgb.tokenize(':')[1] as Integer
+            logTrace("RGB ID: ${id}")
+            LinkedHashMap<String, Object> rgbConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[rgb]
+            logTrace("RGBConfig: ${prettyJson(rgbConfig)}")
+            logDebug("Creating child device for rgb:${id}...")
+            ChildDeviceWrapper child = createChildRGB(id)
+          }
         }
       } else {
         logDebug('No RGBs found...')
@@ -483,13 +493,15 @@ void getPreferencesFromShellyDevice() {
 
       if(rgbws?.size() > 0) {
         logDebug('One or more RGBWs found...')
-        rgbws?.each{ rgbw ->
-          Integer id = rgbw.tokenize(':')[1] as Integer
-          logTrace("RGBW ID: ${id}")
-          LinkedHashMap<String, Object> rgbwConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[rgbw]
-          logTrace("RGBWConfig: ${prettyJson(rgbwConfig)}")
-          logDebug("Creating child device for rgbw:${id}...")
-          ChildDeviceWrapper child = createChildRGBW(id)
+        if(hasNoChildrenNeeded() == false) {
+          rgbws?.each{ rgbw ->
+            Integer id = rgbw.tokenize(':')[1] as Integer
+            logTrace("RGBW ID: ${id}")
+            LinkedHashMap<String, Object> rgbwConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[rgbw]
+            logTrace("RGBWConfig: ${prettyJson(rgbwConfig)}")
+            logDebug("Creating child device for rgbw:${id}...")
+            ChildDeviceWrapper child = createChildRGBW(id)
+          }
         }
       } else {
         logDebug('No RGBWs found...')
@@ -1686,7 +1698,7 @@ void setValvePositionState(Integer level, Integer id = 0) {
 }
 
 @CompileStatic
-void setSwitchLevelState(Integer level, Integer id = 0) {
+void setSwitchLevelAttribute(Integer level, Integer id = 0) {
   if(level != null) {
     if(getDeviceDataValue('switchLevelId') == null && getDeviceDataValue('switchLevelId') != id){
       List<ChildDeviceWrapper> children = getSwitchLevelChildren()
@@ -3408,7 +3420,11 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       id = update?.id as Integer
       if(update?.brightness != null) {
         Integer brightness = update?.brightness as Integer
-        logWarn("Brightness ${brightness} for ID: ${id}")
+        setSwitchLevelAttribute(brightness, id)
+      }
+      if(update?.output != null) {
+        Boolean switchState = update?.output as Boolean
+        if(switchState != null) { setSwitchState(switchState, id) }
       }
     }
 
@@ -3736,7 +3752,7 @@ void processGen1LightStatus(Map json, Integer index = 0) {
   if(json?.mode == 'white') {setColorModeAttribute('CT')}
   if(json?.mode != null) {setDeviceDataValue('lightMode', "${json.mode}")}
   Integer brightness = json?.brightness as Integer
-  if(brightness != null) {setSwitchLevelState(brightness, index)}
+  if(brightness != null) {setSwitchLevelAttribute(brightness, index)}
   Boolean isOn = json?.ison as Boolean
   if(isOn != null) {setSwitchState(isOn)}
 }
@@ -3895,19 +3911,25 @@ void parseGen2Message(String raw) {
     String command = query[0]
     id = query[1] as Integer
     setCoverState(query[0].replace('cover.',''), id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
-    parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
+    getStatusGen2()
     runInSeconds('getStatusGen2', 30)
   }
   else if(query[0] in ['cover.stopped']) {
     String command = query[0]
     id = query[1] as Integer
     setCoverState('partially open', id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
-    parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
+    getStatusGen2()
     runInSeconds('getStatusGen2', 30)
   }
   else if(query[0] == 'smoke.alarm')      {setSmokeState('detected', query[1] as Integer)}
   else if(query[0] == 'smoke.alarm_off')  {setSmokeState('clear', query[1] as Integer)}
   else if(query[0] == 'smoke.alarm_test') {setSmokeState('tested', query[1] as Integer)}
+  else if(query[0].startsWith('light.o')) {
+    String command = query[0]
+    id = query[1] as Integer
+    setSwitchState(command.toString() == 'light.on', id)
+    getStatusGen2()
+  }
   setLastUpdated()
 }
 
@@ -4144,6 +4166,9 @@ void setDeviceActionsGen2() {
     Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
     Set<String> pm1s = shellyGetConfigResult.keySet().findAll{it.startsWith('pm1')}
     Set<String> smokes = shellyGetConfigResult.keySet().findAll{it.startsWith('smoke')}
+    Set<String> lights = shellyGetConfigResult.keySet().findAll{it.startsWith('light')}
+    Set<String> rgbs = shellyGetConfigResult.keySet().findAll{it.startsWith('rgb:')}
+    Set<String> rgbws = shellyGetConfigResult.keySet().findAll{it.startsWith('rgbw')}
 
     logDebug("Found Switches: ${switches}")
     logDebug("Found Inputs: ${inputs}")
@@ -4152,6 +4177,9 @@ void setDeviceActionsGen2() {
     logDebug("Found Humdities: ${hums}")
     logDebug("Found PM1s: ${pm1s}")
     logDebug("Found Smokes: ${smokes}")
+    logDebug("Found Lights: ${lights}")
+    logDebug("Found RGBs: ${rgbs}")
+    logDebug("Found RGBWs: ${rgbws}")
 
     // LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
     // String inputType = (inputConfig?.type as String).capitalize()
@@ -4231,6 +4259,30 @@ void setDeviceActionsGen2() {
           Integer cid = conf?.id as Integer
           String name = "hubitat.${type}".toString()
           logDebug("Processing webhook for smoke:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
+      } else if(type.startsWith('light')) {
+        lights.each{ light ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[light]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for light:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
+      } else if(type.startsWith('rgb:')) {
+        rgbs.each{ rgb ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[rgb]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for rgb:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
+      } else if(type.startsWith('rgbw')) {
+        rgbws.each{ rgbw ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[rgbw]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for rgbw:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
       }
