@@ -75,6 +75,7 @@ Boolean deviceIsOverUnderSwitch() {return OVERUNDERSWITCH == true}
 
 Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true }
 Boolean hasCapabilityColorControl() { return device.hasCapability('ColorControl') == true }
+Boolean hasCapabilityColorMode() { return device.hasCapability('ColorMode') == true }
 Boolean hasCapabilityColorTemperature() { return device.hasCapability('ColorTemperature') == true }
 Boolean hasCapabilityLight() { return device.hasCapability('Light') == true }
 Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
@@ -1841,10 +1842,20 @@ void setColorTemperature(BigDecimal colorTemp, BigDecimal level = null, BigDecim
 @CompileStatic
 void setWhiteLevel(BigDecimal level) {
   Integer l = (boundedLevel(level as Integer) / 100 * 255).toInteger()
-  if(deviceIsRGB(thisDevice())) {
-    parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, white: l]))
-  } else if(deviceIsRGBW(thisDevice())) {
-    parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true, white: l]))
+  if(isGen1Device() == true) {
+    if(deviceIsRGB(thisDevice())) {
+      Integer id = getDeviceDataValue('rgbId') as Integer
+      parentSendGen1CommandAsync("color/${id}/?isOn=true&white=${l}", null, 'gen1LightCallback')
+    } else if(deviceIsRGBW(thisDevice())) {
+      Integer id = getDeviceDataValue('rgbwId') as Integer
+      parentSendGen1CommandAsync("color/${id}/?isOn=true&white=${l}", null, 'gen1LightCallback')
+    }
+  } else {
+    if(deviceIsRGB(thisDevice())) {
+      parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, white: l]))
+    } else if(deviceIsRGBW(thisDevice())) {
+      parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true, white: l]))
+    }
   }
 }
 
@@ -3748,13 +3759,20 @@ void processGen1LightStatus(Map json, Integer index = 0) {
     setColorNameAttribute(json.red as Integer, json.green as Integer, json.blue as Integer)
     setHueSaturationAttributes(json.red as Integer, json.green as Integer, json.blue as Integer)
   }
-  if(json?.mode == 'color') {setColorModeAttribute('RGB')}
-  if(json?.mode == 'white') {setColorModeAttribute('CT')}
-  if(json?.mode != null) {setDeviceDataValue('lightMode', "${json.mode}")}
+  if(hasCapabilityColorMode() == true) {
+    if(json?.mode == 'color') {setColorModeAttribute('RGB')}
+    if(json?.mode == 'white') {setColorModeAttribute('CT')}
+    if(json?.mode != null) {setDeviceDataValue('lightMode', "${json.mode}")}
+  }
   Integer brightness = json?.brightness as Integer
   if(brightness != null) {setSwitchLevelAttribute(brightness, index)}
   Boolean isOn = json?.ison as Boolean
   if(isOn != null) {setSwitchState(isOn)}
+  Integer whiteLevel = json?.white as Integer
+  if(whiteLevel != null) {
+    whiteLevel = (Integer)(whiteLevel/255)
+    setWhiteLevelAttribute(whiteLevel)
+  }
 }
 
 @CompileStatic
