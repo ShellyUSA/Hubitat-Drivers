@@ -191,6 +191,13 @@
       "required": false
     },
     {
+      "id": "6d73fc2f-43fc-44ae-9a1b-a27452597088",
+      "name": "Shelly Duo WW CW",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyDuoWWCW.groovy",
+      "required": false
+    },
+    {
       "id": "2b2d10f3-c078-406f-aacf-936936d41a1d",
       "name": "Shelly Flood",
       "namespace": "ShellyUSA",
