@@ -317,6 +317,20 @@
       "required": false
     },
     {
+      "id": "6a003f0f-4611-4009-ad1c-06c6814b11d1",
+      "name": "Shelly Pro 1PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro1PM.groovy",
+      "required": false
+    },
+    {
+      "id": "86976ec8-811a-4848-8cbb-a017f48205ba",
+      "name": "Shelly Pro 2",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro2.groovy",
+      "required": false
+    },
+    {
       "id": "1fa12bb5-04b5-4c94-91e1-5565533bdc5d",
       "name": "Shelly Pro 2PM",
       "namespace": "ShellyUSA",
