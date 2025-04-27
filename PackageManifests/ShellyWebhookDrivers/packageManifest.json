@@ -1,7 +1,7 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "2.10.0",
+  "version": "2.11.0",
   "releaseNotes": "Add support for Shelly 1, Shelly RGBW (Gen1), Shelly RGBW White Mode (Gen1), Shelly Plus Wall Dimmer, Shelly Pro 1PM, Pro 2, Pro Dimmer 1PM, Pro Dimmer 2PM",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
