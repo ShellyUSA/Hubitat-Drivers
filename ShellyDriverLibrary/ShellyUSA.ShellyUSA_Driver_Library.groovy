@@ -640,18 +640,25 @@ void getPreferencesFromShellyDeviceGen1() {
   }
 
   List lights = (List)gen1SettingsResponse?.lights
-  if(lights != null && lights.size() > 0) {
+  if(lights != null && lights.size() > 0 && hasNoChildrenNeeded() == true) {
     lights.eachWithIndex{ it, index ->
       setDeviceDataValue('switchId', "${index}")
       setDeviceDataValue('lightId', "${index}")
       setDeviceDataValue('switchLevelId', "${index}")
-      setDeviceDataValue('lightMode', mode)
       if(hasCapabilityColorControl() == true) {
         setDeviceDataValue('rgbwId', "${index}")
+        setDeviceDataValue('lightMode', mode)
       }
       if(hasCapabilityColorTemperature() == true) {
         setDeviceDataValue('ctId', "${index}")
       }
+    }
+  } else if(lights != null && lights.size() > 0 && hasNoChildrenNeeded() == false) {
+    lights.eachWithIndex{ it, index ->
+      ChildDeviceWrapper child = createChildDimmer(index)
+      setChildDeviceDataValue(child, 'switchId', "${index}")
+      setChildDeviceDataValue(child, 'lightId', "${index}")
+      setChildDeviceDataValue(child, 'switchLevelId', "${index}")
     }
   }
 
@@ -1458,6 +1465,10 @@ String getChildDeviceDataValue(ChildDeviceWrapper child, String dataValueName) {
 @CompileStatic
 Boolean childHasDataValue(ChildDeviceWrapper child, String dataValueName) {
   return getChildDeviceDataValue(child, dataValueName) != null
+}
+
+void setChildDeviceDataValue(ChildDeviceWrapper child, String dataValueName, String valueToSet) {
+  child.updateDataValue(dataValueName, valueToSet)
 }
 
 @CompileStatic
@@ -3829,11 +3840,11 @@ void parseGen1Message(String raw) {
 
   else if(query[0] == 'out_on') {
     setSwitchState(true, query[1] as Integer)
-    if(hasCapabilityLight() == true) {getStatusGen1(true)}
+    if(hasCapabilityLight() == true || hasChildSwitches() == true) {getStatusGen1(true)}
   }
   else if(query[0] == 'out_off') {
     setSwitchState(false, query[1] as Integer)
-    if(hasCapabilityLight() == true) {getStatusGen1(true)}
+    if(hasCapabilityLight() == true || hasChildSwitches() == true) {getStatusGen1(true)}
   }
 
   else if(query[0] == 'btn_on') {
