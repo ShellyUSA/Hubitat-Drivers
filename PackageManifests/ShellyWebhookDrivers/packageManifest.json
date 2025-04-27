@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "2.9.0",
-  "releaseNotes": "Add support for Shelly Plus Wall Dimmer",
+  "version": "2.10.0",
+  "releaseNotes": "Add support for Shelly 1, Shelly RGBW (Gen1), Shelly RGBW White Mode (Gen1), Shelly Plus Wall Dimmer, Shelly Pro 1PM, Pro 2, Pro Dimmer 1PM, Pro Dimmer 2PM",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
@@ -142,6 +142,19 @@
     },
 
 
+
+
+
+
+
+
+    {
+      "id": "80fbf971-7578-4823-ae3d-3c6c268a57eb",
+      "name": "Shelly 1",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/Shelly1.groovy",
+      "required": false
+    },
     {
       "id": "900b9944-a61c-4b15-9da0-a6528b93d3d8",
       "name": "Shelly 2.5",
@@ -304,6 +317,20 @@
       "required": false
     },
     {
+      "id": "6a003f0f-4611-4009-ad1c-06c6814b11d1",
+      "name": "Shelly Pro 1PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro1PM.groovy",
+      "required": false
+    },
+    {
+      "id": "86976ec8-811a-4848-8cbb-a017f48205ba",
+      "name": "Shelly Pro 2",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro2.groovy",
+      "required": false
+    },
+    {
       "id": "1fa12bb5-04b5-4c94-91e1-5565533bdc5d",
       "name": "Shelly Pro 2PM",
       "namespace": "ShellyUSA",
@@ -325,10 +352,38 @@
       "required": false
     },
     {
+      "id": "dc8196b5-9fd9-43c8-baf9-bb4198a83e8d",
+      "name": "Shelly Pro Dimmer 1PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyProDimmer1PM.groovy",
+      "required": false
+    },
+    {
+      "id": "e5064638-734d-41ee-894f-e9c052473a78",
+      "name": "Shelly Pro Dimmer 2PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyProDimmer2PM.groovy",
+      "required": false
+    },
+    {
       "id": "73f4422d-0680-41e8-b17a-f99f63eabfa9",
       "name": "Shelly Pro Dual Cover PM",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyProDualCoverPM.groovy",
+      "required": false
+    },
+    {
+      "id": "1f82a3a4-5ab6-442e-b00a-024354aae1bf",
+      "name": "Shelly RGBW2 (Gen1)",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyRGBW2.groovy",
+      "required": false
+    },
+    {
+      "id": "2ddd5e15-c1b7-4b96-8dc8-5ab0a12c2200",
+      "name": "Shelly RGBW2 White (Gen1)",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyRGBW2White.groovy",
       "required": false
     },
     {

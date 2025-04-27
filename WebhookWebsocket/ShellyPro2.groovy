@@ -1,13 +1,11 @@
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
-  definition (name: 'Shelly Pro 4PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Pro 2', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
-    capability 'EnergyMeter' //energy - NUMBER, unit:kWh
-    command 'resetEnergyMonitors'
   }
 }
 
