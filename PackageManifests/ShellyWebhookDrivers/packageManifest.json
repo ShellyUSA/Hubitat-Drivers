@@ -1,7 +1,7 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "2.10.0",
+  "version": "2.11.0",
   "releaseNotes": "Add support for Shelly 1, Shelly RGBW (Gen1), Shelly RGBW White Mode (Gen1), Shelly Plus Wall Dimmer, Shelly Pro 1PM, Pro 2, Pro Dimmer 1PM, Pro Dimmer 2PM",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
@@ -188,6 +188,13 @@
       "name": "Shelly Dimmer 1 & 2",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyDimmer2.groovy",
+      "required": false
+    },
+    {
+      "id": "6d73fc2f-43fc-44ae-9a1b-a27452597088",
+      "name": "Shelly Duo WW CW",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyDuoWWCW.groovy",
       "required": false
     },
     {
