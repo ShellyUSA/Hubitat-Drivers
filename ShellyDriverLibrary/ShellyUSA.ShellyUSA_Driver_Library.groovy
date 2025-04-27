@@ -77,6 +77,7 @@ Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true 
 Boolean hasCapabilityColorControl() { return device.hasCapability('ColorControl') == true }
 Boolean hasCapabilityColorMode() { return device.hasCapability('ColorMode') == true }
 Boolean hasCapabilityColorTemperature() { return device.hasCapability('ColorTemperature') == true }
+Boolean hasCapabilityWhiteLevel() { return device.hasAttribute('whiteLevel') == true }
 Boolean hasCapabilityLight() { return device.hasCapability('Light') == true }
 Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
 Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
@@ -1123,6 +1124,12 @@ void setSwitchAttribute(String switchState, ChildDeviceWrapper child = null) {
 void setWhiteLevelAttribute(Integer whiteLevel, ChildDeviceWrapper child = null) {
   if(child != null) {sendChildDeviceEvent([name: 'whiteLevel', value: whiteLevel, unit: '%'], child)}
   else {sendDeviceEvent([name: 'whiteLevel', value: whiteLevel, unit: '%'])}
+}
+
+@CompileStatic
+void setColorTemperatureAttribute(Integer colorTemperature, ChildDeviceWrapper child = null) {
+  if(child != null) {sendChildDeviceEvent([name: 'colorTemperature', value: colorTemperature, unit: '°K'], child)}
+  else {sendDeviceEvent([name: 'colorTemperature', value: colorTemperature, unit: '°K'])}
 }
 
 void setColorModeAttribute(String colorMode) {
@@ -3780,9 +3787,13 @@ void processGen1LightStatus(Map json, Integer index = 0) {
   Boolean isOn = json?.ison as Boolean
   if(isOn != null) {setSwitchState(isOn)}
   Integer whiteLevel = json?.white as Integer
-  if(whiteLevel != null) {
+  if(whiteLevel != null && hasCapabilityWhiteLevel() == true) {
     whiteLevel = (Integer)(whiteLevel/255)
     setWhiteLevelAttribute(whiteLevel)
+  }
+  Integer colorTemp = json?.temp as Integer
+  if(colorTemp != null && hasCapabilityColorTemperature() == true) {
+    setColorTemperatureAttribute(colorTemp)
   }
 }
 
