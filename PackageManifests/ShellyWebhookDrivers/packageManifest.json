@@ -352,6 +352,20 @@
       "required": false
     },
     {
+      "id": "dc8196b5-9fd9-43c8-baf9-bb4198a83e8d",
+      "name": "Shelly Pro Dimmer 1PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyProDimmer1PM.groovy",
+      "required": false
+    },
+    {
+      "id": "e5064638-734d-41ee-894f-e9c052473a78",
+      "name": "Shelly Pro Dimmer 2PM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyProDimmer2PM.groovy",
+      "required": false
+    },
+    {
       "id": "73f4422d-0680-41e8-b17a-f99f63eabfa9",
       "name": "Shelly Pro Dual Cover PM",
       "namespace": "ShellyUSA",
