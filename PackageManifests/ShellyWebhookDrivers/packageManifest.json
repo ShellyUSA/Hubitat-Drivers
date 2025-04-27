@@ -352,6 +352,13 @@
       "required": false
     },
     {
+      "id": "2ddd5e15-c1b7-4b96-8dc8-5ab0a12c2200",
+      "name": "Shelly RGBW2 White (Gen1)",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyRGBW2White.groovy",
+      "required": false
+    },
+    {
       "id": "7de01dd9-9df2-4bc3-b91d-7b6b4a4bc0bd",
       "name": "Shelly TRV",
       "namespace": "ShellyUSA",
