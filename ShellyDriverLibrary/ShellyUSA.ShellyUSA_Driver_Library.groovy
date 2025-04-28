@@ -90,6 +90,8 @@ Boolean hasCapabilityCurrentMeter() { return device.hasCapability('CurrentMeter'
 Boolean hasCapabilityPowerMeter() { return device.hasCapability('PowerMeter') == true }
 Boolean hasCapabilityVoltageMeasurement() { return device.hasCapability('VoltageMeasurement') == true }
 Boolean hasCapabilityEnergyMeter() { return device.hasCapability('EnergyMeter') == true }
+Boolean hasCapabilityReturnedEnergyMeter() { return device.hasAttribute('returnedEnergy') == true }
+Boolean deviceIsEm1Data() {return EM1DATA == true}
 
 
 Boolean deviceIsBluGateway() {return DEVICEISBLUGATEWAY == true}
@@ -279,8 +281,8 @@ void configureNightlyPowerMonitoringReset() {
     logDebug('Power monitoring is disabled in device preferences, setting current, power, and energy to zero...')
     logDebug('Hubitat does not allow for dynamically enabling/disabling device capabilities. Disabling power monitoring in device drivers require setting attribute to zero and not processing incoming power monitoring data.')
     setCurrent(0 as BigDecimal)
-    setPower(0 as BigDecimal)
-    setEnergy(0 as BigDecimal)
+    setPowerAttribute(0 as BigDecimal)
+    setEnergyAttribute(0 as BigDecimal)
     setFrequency(0 as BigDecimal)
     unscheduleTask('switchResetCounters')
     if(wsShouldBeConnected() == false) {
@@ -327,6 +329,7 @@ void getPreferencesFromShellyDevice() {
       Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
       Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
       Set<String> pm1s = shellyGetConfigResult.keySet().findAll{it.startsWith('pm1')}
+      Set<String> em1s = shellyGetConfigResult.keySet().findAll{it.startsWith('em1:')}
       Set<String> lights = shellyGetConfigResult.keySet().findAll{it.startsWith('light')}
       Set<String> rgbs = shellyGetConfigResult.keySet().findAll{it.startsWith('rgb:')}
       Set<String> rgbws = shellyGetConfigResult.keySet().findAll{it.startsWith('rgbw')}
@@ -337,6 +340,7 @@ void getPreferencesFromShellyDevice() {
       logDebug("Found Temperatures: ${temps}")
       logDebug("Found Humidites: ${hums}")
       logDebug("Found PM1s: ${pm1s}")
+      logDebug("Found EM1s: ${em1s}")
       logDebug("Found Lights: ${lights}")
       logDebug("Found RGBs: ${rgbs}")
       logDebug("Found RGBWs: ${rgbws}")
@@ -457,6 +461,19 @@ void getPreferencesFromShellyDevice() {
         setDeviceDataValue('powerId', "${id}")
         setDeviceDataValue('voltageId', "${id}")
         setDeviceDataValue('frequencyId', "${id}")
+      }
+
+      if(em1s?.size() > 0 && hasNoChildrenNeeded() == false) {
+        em1s.each{ em1 ->
+          Integer id = em1.tokenize(':')[1] as Integer
+          logTrace("EM1 ID: ${id}")
+          String k = "em1:${id}".toString()
+          logTrace("Shelly Config Result Key: ${k}")
+          LinkedHashMap<String, Object> em1Config = (LinkedHashMap<String, Object>)shellyGetConfigResult[k]
+          logTrace("EM1Config: ${prettyJson(em1Config)}")
+          logDebug("Creating child device for em1:${id}...")
+          ChildDeviceWrapper child = createChildEM(id)
+        }
       }
 
       if(lights?.size() > 0) {
@@ -901,6 +918,7 @@ ArrayList<BigDecimal> voltageAvgs(Integer id = 0) {
 
 @CompileStatic
 void setCurrent(BigDecimal value, Integer id = 0) {
+  logTrace("Set current event processing for id:${id}, value:${value}")
   if(getIntegerDeviceDataValue('currentId') == id) {sendDeviceEvent([name: 'amperage', value: value, unit:'A'])}
   else {
     ChildDeviceWrapper c = getCurrentChildById(id)
@@ -935,10 +953,20 @@ BigDecimal getCurrent(Integer id = 0) {
 }
 
 @CompileStatic
-void setPower(BigDecimal value, Integer id = 0) {
+void setApparentPowerAttribute(BigDecimal value, Integer id = 0) {
+  if(getIntegerDeviceDataValue('apparentPowerId') == id) {sendDeviceEvent([name: 'apparentPower', value: value, unit:'VA'])}
+  else {
+    ChildDeviceWrapper c = getApparentPowerChildById(id)
+    if(c != null) { sendChildDeviceEvent([name: 'apparentPower', value: value, unit:'VA'], c) }
+  }
+}
+
+@CompileStatic
+void setPowerAttribute(BigDecimal value, Integer id = 0) {
   if(getIntegerDeviceDataValue('currentId') == id) {sendDeviceEvent([name: 'power', value: value, unit:'W'])}
   else {
     ChildDeviceWrapper c = getCurrentChildById(id)
+    logTrace("Got current child: ${c}")
     if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
   }
   // ArrayList<BigDecimal> p = powerAvgs()
@@ -1022,7 +1050,7 @@ BigDecimal getVoltage(Integer id = 0) {
 }
 
 @CompileStatic
-void setEnergy(BigDecimal value, Integer id = 0) {
+void setEnergyAttribute(BigDecimal value, Integer id = 0) {
   value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
 
   ChildDeviceWrapper c = getEnergyChildById(id)
@@ -1066,6 +1094,50 @@ void updateParentEnergyTotal() {
 }
 
 @CompileStatic
+void setReturnedEnergyAttribute(BigDecimal value, Integer id = 0) {
+  value = value.setScale(2, BigDecimal.ROUND_HALF_UP)
+
+  ChildDeviceWrapper c = getReturnedEnergyChildById(id)
+  if(value == -1) {
+    if(c != null) {
+      logTrace("Setting returnedEnergy to 'null' on ${c}")
+      sendChildDeviceEvent([name: 'returnedEnergy', value: null, unit:'kWh'], c)
+    }
+    else {
+      if(deviceHasDataValue('returnedEnergyId') == true && getIntegerDeviceDataValue('returnedEnergyId') == id) {
+        logTrace("Setting returnedEnergy to 'null'")
+        sendDeviceEvent([name: 'returnedEnergy', value: null, unit:'kWh'])
+      }
+    }
+  }
+  else if(value != null) {
+    if(c != null) {
+      logTrace("Setting returnedEnergy to ${value} on ${c}")
+      sendChildDeviceEvent([name: 'returnedEnergy', value: value, unit:'kWh'], c)
+      updateParentReturnedEnergyTotal()
+    }
+    else {
+      if(deviceHasDataValue('returnedEnergyId') == true && getIntegerDeviceDataValue('returnedEnergyId') == id) {
+        logTrace("Setting returnedEnergy to ${value}")
+        sendDeviceEvent([name: 'returnedEnergy', value: value, unit:'kWh'])
+      }
+    }
+  }
+}
+
+@CompileStatic
+void updateParentReturnedEnergyTotal() {
+  if(hasChildren() == true) {
+    List<ChildDeviceWrapper> returnedEnergyChildren = getThisDeviceChildren().findAll{it.currentValue('returnedEnergy') != null}
+    List<BigDecimal> childReturnedEnergies = []
+    if(returnedEnergyChildren != null && returnedEnergyChildren?.size() > 0) {
+      childReturnedEnergies = returnedEnergyChildren.collect{it.currentValue('returnedEnergy') as BigDecimal}
+    }
+    sendDeviceEvent([name: 'returnedEnergy', value: childReturnedEnergies.sum() as BigDecimal, unit:'kWh'])
+  }
+}
+
+@CompileStatic
 BigDecimal getEnergy(Integer id = 0) {
   ChildDeviceWrapper c = getSwitchChildById(id)
   if(c != null) { return getSwitchChildById(id).currentValue('energy', true) as BigDecimal }
@@ -1075,13 +1147,35 @@ BigDecimal getEnergy(Integer id = 0) {
 @CompileStatic
 void resetEnergyMonitors(Integer id = 0) {
   if(hasParent() == true) {
-    id = getIntegerDeviceDataValue('switchId')
-    switchResetCounters(id, "resetEnergyMonitor-switch${id}")
+    if(hasCapabilityEnergyMeter() == true && hasCapabilitySwitch() == true) {
+      id = getIntegerDeviceDataValue('energyId')
+      switchResetCounters(id, "resetEnergyMonitor-switch${id}")
+    } else if(hasCapabilityEnergyMeter() == true && hasCapabilityLight() == true) {
+      id = getIntegerDeviceDataValue('energyId')
+      lightResetCounters(id, "resetEnergyMonitor-light${id}")
+    } else if(hasCapabilityEnergyMeter() == true && hasCapabilityCover() == true) {
+      id = getIntegerDeviceDataValue('energyId')
+      coverResetCounters(id, "resetEnergyMonitor-cover${id}")
+    } else if(hasCapabilityEnergyMeter() == true && deviceIsEm1Data() == true) {
+      id = getIntegerDeviceDataValue('energyId')
+      em1DataResetCounters(id, "resetEnergyMonitor-em1data${id}")
+    }
   } else {
     ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
     allChildren.each{child ->
-      id = getChildDeviceIntegerDataValue(child, 'switchId')
-      switchResetCounters(id, "resetEnergyMonitor-switch${id}")
+      if(hasCapabilityEnergyMeter() == true && hasCapabilitySwitch() == true) {
+        id = getChildDeviceIntegerDataValue(child, 'energyId')
+        switchResetCounters(id, "resetEnergyMonitor-switch${id}")
+      } else if(hasCapabilityEnergyMeter() == true && hasCapabilityLight() == true) {
+        id = getChildDeviceIntegerDataValue(child, 'energyId')
+        lightResetCounters(id, "resetEnergyMonitor-light${id}")
+      } else if(hasCapabilityEnergyMeter() == true && hasCapabilityCover() == true) {
+        id = getChildDeviceIntegerDataValue(child, 'energyId')
+        coverResetCounters(id, "resetEnergyMonitor-cover${id}")
+      } else if(hasCapabilityEnergyMeter() == true && deviceIsEm1Data() == true) {
+        id = getChildDeviceIntegerDataValue(child, 'energyId')
+        em1DataResetCounters(id, "resetEnergyMonitor-em1data${id}")
+      }
     }
   }
 }
@@ -2288,6 +2382,28 @@ LinkedHashMap switchResetCountersCommand(Integer id = 0, String src = 'switchRes
 }
 
 @CompileStatic
+LinkedHashMap lightResetCountersCommand(Integer id = 0, String src = 'lightResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Light.ResetCounters",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap coverResetCountersCommand(Integer id = 0, String src = 'coverResetCounters') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Cover.ResetCounters",
+    "params" : ["id" : id]
+  ]
+  return command
+}
+
+@CompileStatic
 LinkedHashMap coverGetConfigCommand(Integer id = 0, String src = 'coverGetConfigCommand') {
   LinkedHashMap command = [
     "id" : 0,
@@ -3304,7 +3420,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
 
         if(update?.apower != null && update?.apower != '') {
           BigDecimal apower =  (BigDecimal)update.apower
-          if(apower != null) { setPower(apower, id) }
+          if(apower != null) { setPowerAttribute(apower, id) }
         }
 
         if(update?.voltage != null && update?.voltage != '') {
@@ -3320,7 +3436,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
         if(update?.aenergy != null && update?.aenergy != '') {
           LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
           BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
-          if(aenergy != null) { setEnergy(aenergy/1000, id) }
+          if(aenergy != null) { setEnergyAttribute(aenergy/1000, id) }
         }
       }
     }
@@ -3347,7 +3463,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
 
         if(update?.apower != null && update?.apower != '') {
           BigDecimal apower =  (BigDecimal)update.apower
-          if(apower != null) { setPower(apower, id) }
+          if(apower != null) { setPowerAttribute(apower, id) }
         }
 
         if(update?.voltage != null && update?.voltage != '') {
@@ -3363,7 +3479,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
         if(update?.aenergy != null && update?.aenergy != '') {
           LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
           BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
-          if(aenergy != null) { setEnergy(aenergy/1000, id) }
+          if(aenergy != null) { setEnergyAttribute(aenergy/1000, id) }
         }
       }
     }
@@ -3378,7 +3494,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
 
       if(update?.apower != null && update?.apower != '') {
         BigDecimal apower =  (BigDecimal)update.apower
-        if(apower != null) {setPower(apower, id)}
+        if(apower != null) {setPowerAttribute(apower, id)}
       }
 
       if(update?.voltage != null && update?.voltage != '') {
@@ -3389,12 +3505,52 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       if(update?.aenergy != null && update?.aenergy != '') {
         LinkedHashMap aenergyMap = (LinkedHashMap)update?.aenergy
         BigDecimal aenergy =  (BigDecimal)aenergyMap?.total
-        if(aenergy != null) {setEnergy(aenergy/1000, id)}
+        if(aenergy != null) {setEnergyAttribute(aenergy/1000, id)}
       }
 
       if(update?.freq != null && update?.freq != '') {
         BigDecimal freq =  (BigDecimal)update.freq
         if(freq != null) {setFrequency(freq, id)}
+      }
+    }
+
+    if(k.startsWith('em1')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      logTrace("Processing EM1 update: ${prettyJson(update)}")
+      id = update?.id as Integer
+      if(update?.current != null && update?.current != '') {
+        BigDecimal current =  (BigDecimal)update.current
+        if(current != null) {setCurrent(current, id)}
+      }
+
+      if(update?.act_power != null && update?.act_power != '') {
+        BigDecimal act_power =  (BigDecimal)update.act_power
+        if(act_power != null) {setPowerAttribute(act_power, id)}
+      }
+
+      if(update?.aprt_power != null && update?.aprt_power != '') {
+        BigDecimal aprt_power =  (BigDecimal)update.aprt_power
+        if(aprt_power != null) {setPowerAttribute(aprt_power, id)}
+      }
+
+      if(update?.voltage != null && update?.voltage != '') {
+        BigDecimal voltage =  (BigDecimal)update.voltage
+        if(voltage != null) {setVoltage(voltage, id)}
+      }
+
+      if(update?.freq != null && update?.freq != '') {
+        BigDecimal freq =  (BigDecimal)update.freq
+        if(freq != null) {setFrequency(freq, id)}
+      }
+
+      if(update?.total_act_energy != null && update?.total_act_energy != '') {
+        BigDecimal total_act_energy =  (BigDecimal)update?.total_act_energy
+        if(total_act_energy != null) {setEnergyAttribute(total_act_energy/1000, id)}
+      }
+
+      if(update?.total_act_ret_energy != null && update?.total_act_ret_energy != '') {
+        BigDecimal total_act_ret_energy =  (BigDecimal)update?.total_act_ret_energy
+        if(total_act_ret_energy != null) {setReturnedEnergyAttribute(total_act_ret_energy/1000, id)}
       }
     }
 
@@ -3491,12 +3647,12 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
         LinkedHashMap ae = (LinkedHashMap)update.aenergy
         if(ae?.total != null) {
           BigDecimal e = (BigDecimal)ae?.total
-          setEnergy(e/1000, id)
+          setEnergyAttribute(e/1000, id)
         }
       }
       if(update?.apower != null) {
         BigDecimal power = (BigDecimal)update?.apower
-        setPower(power)
+        setPowerAttribute(power)
       }
       if(update?.current != null) {
         BigDecimal current = (BigDecimal)update?.current
@@ -3752,8 +3908,8 @@ void getStatusGen1Callback(AsyncResponse response, Map data = null) {
     if(json?.meters != null) {
       List<LinkedHashMap> meters = (List<LinkedHashMap>)json?.meters
       meters.eachWithIndex{ meter, index ->
-        if(meter?.power != null) {setPower((BigDecimal)meter.power)}
-        if(meter?.total != null) {setEnergy(wattMinuteToKWh((BigDecimal)meter.total))}
+        if(meter?.power != null) {setPowerAttribute((BigDecimal)meter.power)}
+        if(meter?.total != null) {setEnergyAttribute(wattMinuteToKWh((BigDecimal)meter.total))}
       }
     }
   }
@@ -3898,7 +4054,7 @@ void parseGen1Message(String raw) {
   else if(query[0] == 'ext_hum_over') {setGen1HumiditySwitchState('on', query[1] as Integer)}
   else if(query[0] == 'ext_hum_under') {setGen1HumiditySwitchState('off', query[1] as Integer)}
 
-  else if(query[0] == 'pm1.apower_change'  && query.size() == 4) {setPower(new BigDecimal(query[2]), query[3] as Integer)}
+  else if(query[0] == 'pm1.apower_change'  && query.size() == 4) {setPowerAttribute(new BigDecimal(query[2]), query[3] as Integer)}
   else if(query[0] == 'pm1.current_change' && query.size() == 4) {setCurrent(new BigDecimal(query[2]), query[3] as Integer)}
   else if(query[0] == 'pm1.voltage_change' && query.size() == 4) {setVoltage(new BigDecimal(query[2]), query[3] as Integer)}
 
@@ -4086,6 +4242,27 @@ void inputSetConfigJson(Map jsonConfigToSend, Integer inputId = 0) {
 @CompileStatic
 void switchResetCounters(Integer id = 0, String src = 'switchResetCounters') {
   LinkedHashMap command = switchResetCountersCommand(id, src)
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  parentPostCommandSync(command)
+}
+
+@CompileStatic
+void lightResetCounters(Integer id = 0, String src = 'lightResetCounters') {
+  LinkedHashMap command = lightResetCountersCommand(id, src)
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  parentPostCommandSync(command)
+}
+
+@CompileStatic
+void coverResetCounters(Integer id = 0, String src = 'coverResetCounters') {
+  LinkedHashMap command = coverResetCountersCommand(id, src)
+  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+  parentPostCommandSync(command)
+}
+
+@CompileStatic
+void em1DataResetCounters(Integer id = 0, String src = 'em1DataResetCounters') {
+  LinkedHashMap command = em1DataResetCountersCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
@@ -4705,6 +4882,29 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
 }
 
 @CompileStatic
+ChildDeviceWrapper createChildEM(Integer id) {
+  String dni =  "${getThisDeviceDNI()}-em${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String driverName = 'Shelly EM Component'
+    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - EM ${id}" : "${driverName} - EM ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  }
+  child.updateDataValue('currentId', "${id}")
+  child.updateDataValue('powerId', "${id}")
+  child.updateDataValue('voltageId', "${id}")
+  child.updateDataValue('frequencyId', "${id}")
+  child.updateDataValue('apparentPowerId', "${id}")
+  child.updateDataValue('energyId', "${id}")
+  child.updateDataValue('returnedEnergyId', "${id}")
+  return child
+}
+
+@CompileStatic
 ChildDeviceWrapper createChildInput(Integer id, String inputType) {
   logDebug("Input type is: ${inputType}")
   String driverName = "Shelly Input ${inputType} Component"
@@ -4846,9 +5046,21 @@ ChildDeviceWrapper getFrequencyChildById(Integer id) {
 }
 
 @CompileStatic
+ChildDeviceWrapper getApparentPowerChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'apparentPowerId') == id}
+}
+
+@CompileStatic
 ChildDeviceWrapper getCurrentChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'currentId') == id}
+}
+
+@CompileStatic
+ChildDeviceWrapper getReturnedEnergyChildById(Integer id) {
+  List<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'returnedEnergyId') == id}
 }
 
 @CompileStatic
