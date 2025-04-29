@@ -14,4 +14,3 @@ metadata {
 }
 
 @Field static Boolean COMP = true
-@Field static Boolean EM1DATA = true
