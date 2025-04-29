@@ -1147,38 +1147,28 @@ BigDecimal getEnergy(Integer id = 0) {
 @CompileStatic
 void resetEnergyMonitors(Integer id = 0) {
   if(hasParent() == true) {
-    if(hasCapabilityEnergyMeter() == true && hasCapabilitySwitch() == true) {
-      id = getIntegerDeviceDataValue('energyId')
+    id = getIntegerDeviceDataValue('energyId')
+    if(id != null) {
       switchResetCounters(id, "resetEnergyMonitor-switch${id}")
-    } else if(hasCapabilityEnergyMeter() == true && hasCapabilityLight() == true) {
-      id = getIntegerDeviceDataValue('energyId')
       lightResetCounters(id, "resetEnergyMonitor-light${id}")
-    } else if(hasCapabilityEnergyMeter() == true && hasCapabilityCover() == true) {
-      id = getIntegerDeviceDataValue('energyId')
       coverResetCounters(id, "resetEnergyMonitor-cover${id}")
-    } else if(hasCapabilityEnergyMeter() == true && deviceIsEm1Data() == true) {
-      id = getIntegerDeviceDataValue('energyId')
       em1DataResetCounters(id, "resetEnergyMonitor-em1data${id}")
     }
   } else {
     ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
     allChildren.each{child ->
-      if(hasCapabilityEnergyMeter() == true && hasCapabilitySwitch() == true) {
-        id = getChildDeviceIntegerDataValue(child, 'energyId')
+      logWarn("Child ${child}")
+      id = getChildDeviceIntegerDataValue(child, 'energyId')
+      if(id != null) {
         switchResetCounters(id, "resetEnergyMonitor-switch${id}")
-      } else if(hasCapabilityEnergyMeter() == true && hasCapabilityLight() == true) {
-        id = getChildDeviceIntegerDataValue(child, 'energyId')
         lightResetCounters(id, "resetEnergyMonitor-light${id}")
-      } else if(hasCapabilityEnergyMeter() == true && hasCapabilityCover() == true) {
-        id = getChildDeviceIntegerDataValue(child, 'energyId')
         coverResetCounters(id, "resetEnergyMonitor-cover${id}")
-      } else if(hasCapabilityEnergyMeter() == true && deviceIsEm1Data() == true) {
-        id = getChildDeviceIntegerDataValue(child, 'energyId')
         em1DataResetCounters(id, "resetEnergyMonitor-em1data${id}")
       }
     }
   }
 }
+
 /* #endregion */
 /* #region Device Getters and Setters */
 @CompileStatic
@@ -4243,28 +4233,37 @@ void inputSetConfigJson(Map jsonConfigToSend, Integer inputId = 0) {
 void switchResetCounters(Integer id = 0, String src = 'switchResetCounters') {
   LinkedHashMap command = switchResetCountersCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  parentPostCommandSync(command)
+  parentPostCommandAsync(command, 'resetCountersCallback')
 }
 
 @CompileStatic
 void lightResetCounters(Integer id = 0, String src = 'lightResetCounters') {
   LinkedHashMap command = lightResetCountersCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  parentPostCommandSync(command)
+  parentPostCommandAsync(command, 'resetCountersCallback')
 }
 
 @CompileStatic
 void coverResetCounters(Integer id = 0, String src = 'coverResetCounters') {
   LinkedHashMap command = coverResetCountersCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  parentPostCommandSync(command)
+  parentPostCommandAsync(command, 'resetCountersCallback')
 }
 
 @CompileStatic
 void em1DataResetCounters(Integer id = 0, String src = 'em1DataResetCounters') {
   LinkedHashMap command = em1DataResetCountersCommand(id, src)
   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-  parentPostCommandSync(command)
+  parentPostCommandAsync(command, 'resetCountersCallback')
+}
+
+@CompileStatic
+void resetCountersCallback(AsyncResponse response, Map data = null) {
+  logTrace('Processing reset counters callback')
+  if(responseIsValid(response) == true) {
+    Map json = (LinkedHashMap)response.getJson()
+    logTrace("resetCountersCallback JSON: ${prettyJson(json)}")
+  }
 }
 
 @CompileStatic
@@ -4901,6 +4900,7 @@ ChildDeviceWrapper createChildEM(Integer id) {
   child.updateDataValue('apparentPowerId', "${id}")
   child.updateDataValue('energyId', "${id}")
   child.updateDataValue('returnedEnergyId', "${id}")
+  child.updateDataValue('em1Data', "${id}")
   return child
 }
 
