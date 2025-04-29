@@ -1,7 +1,7 @@
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
-  definition (name: 'Shelly 3EM400', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Pro 3EM400', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
