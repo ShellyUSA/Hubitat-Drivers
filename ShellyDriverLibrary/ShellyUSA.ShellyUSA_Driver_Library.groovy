@@ -328,6 +328,7 @@ void getPreferencesFromShellyDevice() {
       Set<String> hums = shellyGetConfigResult.keySet().findAll{it.startsWith('humidity')}
       Set<String> pm1s = shellyGetConfigResult.keySet().findAll{it.startsWith('pm1')}
       Set<String> em1s = shellyGetConfigResult.keySet().findAll{it.startsWith('em1:')}
+      Set<String> ems = shellyGetConfigResult.keySet().findAll{it.startsWith('em:')}
       Set<String> lights = shellyGetConfigResult.keySet().findAll{it.startsWith('light')}
       Set<String> rgbs = shellyGetConfigResult.keySet().findAll{it.startsWith('rgb:')}
       Set<String> rgbws = shellyGetConfigResult.keySet().findAll{it.startsWith('rgbw')}
@@ -339,6 +340,7 @@ void getPreferencesFromShellyDevice() {
       logDebug("Found Humidites: ${hums}")
       logDebug("Found PM1s: ${pm1s}")
       logDebug("Found EM1s: ${em1s}")
+      logDebug("Found EMs: ${ems}")
       logDebug("Found Lights: ${lights}")
       logDebug("Found RGBs: ${rgbs}")
       logDebug("Found RGBWs: ${rgbws}")
@@ -470,7 +472,22 @@ void getPreferencesFromShellyDevice() {
           LinkedHashMap<String, Object> em1Config = (LinkedHashMap<String, Object>)shellyGetConfigResult[k]
           logTrace("EM1Config: ${prettyJson(em1Config)}")
           logDebug("Creating child device for em1:${id}...")
-          ChildDeviceWrapper child = createChildEM(id)
+          ChildDeviceWrapper child = createChildEM1(id)
+        }
+      }
+
+      if(ems?.size() > 0 && hasNoChildrenNeeded() == false) {
+        ems.each{ em ->
+          Integer id = em.tokenize(':')[1] as Integer
+          logTrace("EM ID: ${id}")
+          String k = "em:${id}".toString()
+          logTrace("Shelly Config Result Key: ${k}")
+          LinkedHashMap<String, Object> emConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[k]
+          logTrace("EMConfig: ${prettyJson(emConfig)}")
+          logDebug("Creating child devices for em:${id}...")
+          ['a','b','c'].eachWithIndex{ phase, index ->
+            ChildDeviceWrapper child = createChildEM(index, phase)
+          }
         }
       }
 
@@ -916,32 +933,12 @@ ArrayList<BigDecimal> voltageAvgs(Integer id = 0) {
 
 @CompileStatic
 void setCurrent(BigDecimal value, Integer id = 0) {
-  logTrace("Set current event processing for id:${id}, value:${value}")
-  if(getIntegerDeviceDataValue('currentId') == id) {sendDeviceEvent([name: 'amperage', value: value, unit:'A'])}
-  else {
+  if(getIntegerDeviceDataValue('currentId') == id || id == null) {
+    sendDeviceEvent([name: 'amperage', value: value, unit:'A'])
+  } else {
     ChildDeviceWrapper c = getCurrentChildById(id)
     if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
   }
-  // ArrayList<BigDecimal> a = amperageAvgs(id)
-  // ChildDeviceWrapper c = getSwitchChildById(id)
-  // if(a.size() == 0) {
-  //   if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
-  //   else { sendDeviceEvent([name: 'amperage', value: value, unit:'A']) }
-  // }
-  // a.add(value)
-  // if(a.size() >= 10) {
-  //   value = (((BigDecimal)a.sum()) / 10)
-  //   value = value.setScale(1, BigDecimal.ROUND_HALF_UP)
-  //   if(value == -1) {
-  //     if(c != null) { sendChildDeviceEvent([name: 'amperage', value: null, unit:'A'], c) }
-  //     else { sendDeviceEvent([name: 'amperage', value: null, unit:'A']) }
-  //   }
-  //   else if(value != null && value != getCurrent(id)) {
-  //     if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
-  //     else { sendDeviceEvent([name: 'amperage', value: value, unit:'A']) }
-  //   }
-  //   a.removeAt(0)
-  // }
 }
 @CompileStatic
 BigDecimal getCurrent(Integer id = 0) {
@@ -952,7 +949,7 @@ BigDecimal getCurrent(Integer id = 0) {
 
 @CompileStatic
 void setApparentPowerAttribute(BigDecimal value, Integer id = 0) {
-  if(getIntegerDeviceDataValue('apparentPowerId') == id) {sendDeviceEvent([name: 'apparentPower', value: value, unit:'VA'])}
+  if(getIntegerDeviceDataValue('apparentPowerId') == id || id == null) {sendDeviceEvent([name: 'apparentPower', value: value, unit:'VA'])}
   else {
     ChildDeviceWrapper c = getApparentPowerChildById(id)
     if(c != null) { sendChildDeviceEvent([name: 'apparentPower', value: value, unit:'VA'], c) }
@@ -961,32 +958,11 @@ void setApparentPowerAttribute(BigDecimal value, Integer id = 0) {
 
 @CompileStatic
 void setPowerAttribute(BigDecimal value, Integer id = 0) {
-  if(getIntegerDeviceDataValue('currentId') == id) {sendDeviceEvent([name: 'power', value: value, unit:'W'])}
+  if(getIntegerDeviceDataValue('currentId') == id || id == null) {sendDeviceEvent([name: 'power', value: value, unit:'W'])}
   else {
     ChildDeviceWrapper c = getCurrentChildById(id)
-    logTrace("Got current child: ${c}")
     if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
   }
-  // ArrayList<BigDecimal> p = powerAvgs()
-  // ChildDeviceWrapper c = getSwitchChildById(id)
-  // if(p.size() == 0) {
-  //   if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
-  //   else { sendDeviceEvent([name: 'power', value: value, unit:'W']) }
-  // }
-  // p.add(value)
-  // if(p.size() >= 10) {
-  //   value = (((BigDecimal)p.sum()) / 10)
-  //   value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
-  //   if(value == -1) {
-  //     if(c != null) { sendChildDeviceEvent([name: 'power', value: null, unit:'W'], c) }
-  //     else { sendDeviceEvent([name: 'power', value: null, unit:'W']) }
-  //   }
-  //   else if(value != null && value != getPower()) {
-  //     if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
-  //     else { sendDeviceEvent([name: 'power', value: value, unit:'W']) }
-  //   }
-  //   p.removeAt(0)
-  // }
 }
 @CompileStatic
 BigDecimal getPower(Integer id = 0) {
@@ -1011,34 +987,6 @@ void setVoltage(BigDecimal value, Integer id = 0) {
     ChildDeviceWrapper c = getVoltageChildById(id)
     if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
   }
-
-  // if(id == 100) { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
-  // if(hasADCGen1() == true) {
-  //   ChildDeviceWrapper c = getVoltageChildById(id)
-  //   if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
-  // }
-  // else {
-  //   ArrayList<BigDecimal> v = voltageAvgs()
-  //   ChildDeviceWrapper c = getSwitchChildById(id)
-  //   if(v.size() == 0) {
-  //     if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
-  //     else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
-  //   }
-  //   v.add(value)
-  //   if(v.size() >= 10) {
-  //     value = (((BigDecimal)v.sum()) / 10)
-  //     value = value.setScale(0, BigDecimal.ROUND_HALF_UP)
-  //     if(value == -1) {
-  //       if(c != null) { sendChildDeviceEvent([name: 'voltage', value: null, unit:'V'], c) }
-  //       else { sendDeviceEvent([name: 'voltage', value: null, unit:'V']) }
-  //     }
-  //     else if(value != null && value != getPower()) {
-  //       if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
-  //       else { sendDeviceEvent([name: 'voltage', value: value, unit:'V']) }
-  //     }
-  //     v.removeAt(0)
-  //   }
-  // }
 }
 @CompileStatic
 BigDecimal getVoltage(Integer id = 0) {
@@ -1053,28 +1001,22 @@ void setEnergyAttribute(BigDecimal value, Integer id = 0) {
 
   ChildDeviceWrapper c = getEnergyChildById(id)
   if(value == -1) {
-    if(c != null) {
+    if(getIntegerDeviceDataValue('energyId') == id || id == null) {
+      logTrace("Setting energy to 'null'")
+      sendDeviceEvent([name: 'energy', value: null, unit:'kWh'])
+    } else if(c != null) {
       logTrace("Setting energy to 'null' on ${c}")
       sendChildDeviceEvent([name: 'energy', value: null, unit:'kWh'], c)
     }
-    else {
-      if(deviceHasDataValue('energyId') == true && getIntegerDeviceDataValue('energyId') == id) {
-        logTrace("Setting energy to 'null'")
-        sendDeviceEvent([name: 'energy', value: null, unit:'kWh'])
-      }
-    }
   }
   else if(value != null) {
-    if(c != null) {
+    if(getIntegerDeviceDataValue('energyId') == id || id == null) {
+      logTrace("Setting energy to ${value}")
+      sendDeviceEvent([name: 'energy', value: value, unit:'kWh'])
+    } else if(c != null) {
       logTrace("Setting energy to ${value} on ${c}")
       sendChildDeviceEvent([name: 'energy', value: value, unit:'kWh'], c)
       updateParentEnergyTotal()
-    }
-    else {
-      if(deviceHasDataValue('energyId') == true && getIntegerDeviceDataValue('energyId') == id) {
-        logTrace("Setting energy to ${value}")
-        sendDeviceEvent([name: 'energy', value: value, unit:'kWh'])
-      }
     }
   }
 }
@@ -1097,28 +1039,22 @@ void setReturnedEnergyAttribute(BigDecimal value, Integer id = 0) {
 
   ChildDeviceWrapper c = getReturnedEnergyChildById(id)
   if(value == -1) {
-    if(c != null) {
+    if(getIntegerDeviceDataValue('energyId') == id || id == null) {
+      logTrace("Setting returnedEnergy to 'null'")
+      sendDeviceEvent([name: 'returnedEnergy', value: null, unit:'kWh'])
+    } else if(c != null) {
       logTrace("Setting returnedEnergy to 'null' on ${c}")
       sendChildDeviceEvent([name: 'returnedEnergy', value: null, unit:'kWh'], c)
     }
-    else {
-      if(deviceHasDataValue('returnedEnergyId') == true && getIntegerDeviceDataValue('returnedEnergyId') == id) {
-        logTrace("Setting returnedEnergy to 'null'")
-        sendDeviceEvent([name: 'returnedEnergy', value: null, unit:'kWh'])
-      }
-    }
   }
   else if(value != null) {
-    if(c != null) {
+    if(getIntegerDeviceDataValue('energyId') == id || id == null) {
+      logTrace("Setting returnedEnergy to ${value}")
+      sendDeviceEvent([name: 'returnedEnergy', value: value, unit:'kWh'])
+    } else if(c != null) {
       logTrace("Setting returnedEnergy to ${value} on ${c}")
       sendChildDeviceEvent([name: 'returnedEnergy', value: value, unit:'kWh'], c)
       updateParentReturnedEnergyTotal()
-    }
-    else {
-      if(deviceHasDataValue('returnedEnergyId') == true && getIntegerDeviceDataValue('returnedEnergyId') == id) {
-        logTrace("Setting returnedEnergy to ${value}")
-        sendDeviceEvent([name: 'returnedEnergy', value: value, unit:'kWh'])
-      }
     }
   }
 }
@@ -3518,7 +3454,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
 
       if(update?.aprt_power != null && update?.aprt_power != '') {
         BigDecimal aprt_power =  (BigDecimal)update.aprt_power
-        if(aprt_power != null) {setPowerAttribute(aprt_power, id)}
+        if(aprt_power != null) {setApparentPowerAttribute(aprt_power, id)}
       }
 
       if(update?.voltage != null && update?.voltage != '') {
@@ -3539,6 +3475,124 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       if(update?.total_act_ret_energy != null && update?.total_act_ret_energy != '') {
         BigDecimal total_act_ret_energy =  (BigDecimal)update?.total_act_ret_energy
         if(total_act_ret_energy != null) {setReturnedEnergyAttribute(total_act_ret_energy/1000, id)}
+      }
+    }
+
+    if(k.startsWith('em:') || k.startsWith('emdata:')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      logTrace("Processing EM update: ${prettyJson(update)}")
+      id = update?.id as Integer
+
+      if(update?.a_current != null && update?.a_current != '') {
+        BigDecimal current =  (BigDecimal)update.a_current
+        if(current != null) {setCurrent(current, 0)}
+      }
+      if(update?.b_current != null && update?.b_current != '') {
+        BigDecimal current =  (BigDecimal)update.b_current
+        if(current != null) {setCurrent(current, 1)}
+      }
+      if(update?.c_current != null && update?.c_current != '') {
+        BigDecimal current =  (BigDecimal)update.c_current
+        if(current != null) {setCurrent(current, 2)}
+      }
+      if(update?.total_current != null && update?.total_current != '') {
+        BigDecimal current =  (BigDecimal)update.total_current
+        if(current != null) {setCurrent(current, null)}
+      }
+
+
+      if(update?.a_act_power != null && update?.a_act_power != '') {
+        BigDecimal act_power =  (BigDecimal)update.a_act_power
+        if(act_power != null) {setPowerAttribute(act_power, 0)}
+      }
+      if(update?.b_act_power != null && update?.b_act_power != '') {
+        BigDecimal act_power =  (BigDecimal)update.b_act_power
+        if(act_power != null) {setPowerAttribute(act_power, 1)}
+      }
+      if(update?.c_act_power != null && update?.c_act_power != '') {
+        BigDecimal act_power =  (BigDecimal)update.c_act_power
+        if(act_power != null) {setPowerAttribute(act_power, 2)}
+      }
+      if(update?.total_act_power != null && update?.total_act_power != '') {
+        BigDecimal act_power =  (BigDecimal)update.total_act_power
+        if(act_power != null) {setPowerAttribute(act_power, null)}
+      }
+
+      if(update?.a_aprt_power != null && update?.a_aprt_power != '') {
+        BigDecimal aprt_power =  (BigDecimal)update.a_aprt_power
+        if(aprt_power != null) {setApparentPowerAttribute(aprt_power, 0)}
+      }
+      if(update?.b_aprt_power != null && update?.b_aprt_power != '') {
+        BigDecimal aprt_power =  (BigDecimal)update.b_aprt_power
+        if(aprt_power != null) {setApparentPowerAttribute(aprt_power, 1)}
+      }
+      if(update?.c_aprt_power != null && update?.c_aprt_power != '') {
+        BigDecimal aprt_power =  (BigDecimal)update.c_aprt_power
+        if(aprt_power != null) {setApparentPowerAttribute(aprt_power, 2)}
+      }
+      if(update?.total_aprt_power != null && update?.total_aprt_power != '') {
+        BigDecimal aprt_power =  (BigDecimal)update.total_aprt_power
+        if(aprt_power != null) {setApparentPowerAttribute(aprt_power, null)}
+      }
+
+      if(update?.a_voltage != null && update?.a_voltage != '') {
+        BigDecimal voltage =  (BigDecimal)update.a_voltage
+        if(voltage != null) {setVoltage(voltage, 0)}
+      }
+      if(update?.b_voltage != null && update?.b_voltage != '') {
+        BigDecimal voltage =  (BigDecimal)update.b_voltage
+        if(voltage != null) {setVoltage(voltage, 1)}
+      }
+      if(update?.c_voltage != null && update?.c_voltage != '') {
+        BigDecimal voltage =  (BigDecimal)update.c_voltage
+        if(voltage != null) {setVoltage(voltage, 2)}
+      }
+
+      if(update?.a_freq != null && update?.a_freq != '') {
+        BigDecimal freq =  (BigDecimal)update.a_freq
+        if(freq != null) {setFrequency(freq, 0)}
+      }
+      if(update?.b_freq != null && update?.b_freq != '') {
+        BigDecimal freq =  (BigDecimal)update.b_freq
+        if(freq != null) {setFrequency(freq, 1)}
+      }
+      if(update?.c_freq != null && update?.c_freq != '') {
+        BigDecimal freq =  (BigDecimal)update.c_freq
+        if(freq != null) {setFrequency(freq, 2)}
+      }
+
+      if(update?.a_total_act_energy != null && update?.a_total_act_energy != '') {
+        BigDecimal total_act_energy =  (BigDecimal)update?.a_total_act_energy
+        if(total_act_energy != null) {setEnergyAttribute(total_act_energy/1000, 0)}
+      }
+      if(update?.b_total_act_energy != null && update?.b_total_act_energy != '') {
+        BigDecimal total_act_energy =  (BigDecimal)update?.b_total_act_energy
+        if(total_act_energy != null) {setEnergyAttribute(total_act_energy/1000, 1)}
+      }
+      if(update?.c_total_act_energy != null && update?.c_total_act_energy != '') {
+        BigDecimal total_act_energy =  (BigDecimal)update?.c_total_act_energy
+        if(total_act_energy != null) {setEnergyAttribute(total_act_energy/1000, 2)}
+      }
+      if(update?.total_act != null && update?.total_act != '') {
+        BigDecimal total_act_energy =  (BigDecimal)update?.total_act
+        if(total_act_energy != null) {setEnergyAttribute(total_act_energy/1000, null)}
+      }
+
+      if(update?.a_total_act_ret_energy != null && update?.a_total_act_ret_energy != '') {
+        BigDecimal total_act_ret_energy =  (BigDecimal)update?.a_total_act_ret_energy
+        if(total_act_ret_energy != null) {setReturnedEnergyAttribute(total_act_ret_energy/1000, 0)}
+      }
+      if(update?.b_total_act_ret_energy != null && update?.b_total_act_ret_energy != '') {
+        BigDecimal total_act_ret_energy =  (BigDecimal)update?.b_total_act_ret_energy
+        if(total_act_ret_energy != null) {setReturnedEnergyAttribute(total_act_ret_energy/1000, 1)}
+      }
+      if(update?.c_total_act_ret_energy != null && update?.c_total_act_ret_energy != '') {
+        BigDecimal total_act_ret_energy =  (BigDecimal)update?.c_total_act_ret_energy
+        if(total_act_ret_energy != null) {setReturnedEnergyAttribute(total_act_ret_energy/1000, 2)}
+      }
+      if(update?.total_act_ret != null && update?.total_act_ret != '') {
+        BigDecimal total_act_ret_energy =  (BigDecimal)update?.total_act_ret
+        if(total_act_ret_energy != null) {setReturnedEnergyAttribute(total_act_ret_energy/1000, null)}
       }
     }
 
@@ -4879,7 +4933,31 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
 }
 
 @CompileStatic
-ChildDeviceWrapper createChildEM(Integer id) {
+ChildDeviceWrapper createChildEM(Integer id, String phase) {
+  String dni =  "${getThisDeviceDNI()}-em${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String driverName = 'Shelly EM Component'
+    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - EM${id} - phase ${phase}" : "${driverName} - EM${id} - phase ${phase}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  }
+  child.updateDataValue('currentId', "${id}")
+  child.updateDataValue('powerId', "${id}")
+  child.updateDataValue('voltageId', "${id}")
+  child.updateDataValue('frequencyId', "${id}")
+  child.updateDataValue('apparentPowerId', "${id}")
+  child.updateDataValue('energyId', "${id}")
+  child.updateDataValue('returnedEnergyId', "${id}")
+  child.updateDataValue('emData', "${id}")
+  return child
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildEM1(Integer id) {
   String dni =  "${getThisDeviceDNI()}-em${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
