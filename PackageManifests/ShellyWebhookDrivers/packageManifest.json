@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "2.12.0",
-  "releaseNotes": "2.12.0 Add Shelly Pro EM support/r/n2.11.0 Add support for Shelly 1, Shelly RGBW (Gen1), Shelly RGBW White Mode (Gen1), Shelly Plus Wall Dimmer, Shelly Pro 1PM, Pro 2, Pro Dimmer 1PM, Pro Dimmer 2PM",
+  "version": "2.13.0",
+  "releaseNotes": "2.13.0 Add Shelly Pro 3EM400 Support/r/n2.12.0 Add Shelly Pro EM support/r/n2.11.0 Add support for Shelly 1, Shelly RGBW (Gen1), Shelly RGBW White Mode (Gen1), Shelly Plus Wall Dimmer, Shelly Pro 1PM, Pro 2, Pro Dimmer 1PM, Pro Dimmer 2PM",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
@@ -47,6 +47,13 @@
       "name": "Shelly Dimmer Component",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyDimmerComponent.groovy",
+      "required": true
+    },
+    {
+      "id": "c3962a9b-d54c-4cd8-a576-656d679244b4",
+      "name": "Shelly EM Component",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/ComponentDrivers/ShellyEMComponent.groovy",
       "required": true
     },
     {
@@ -349,6 +356,13 @@
       "name": "Shelly Pro 3",
       "namespace": "ShellyUSA",
       "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro3.groovy",
+      "required": false
+    },
+    {
+      "id": "3267e205-3caa-4dd2-bd5e-b8be7a05cc61",
+      "name": "Shelly Pro 3EM400",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyPro3EM400.groovy",
       "required": false
     },
     {
