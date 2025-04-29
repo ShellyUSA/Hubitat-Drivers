@@ -91,8 +91,6 @@ Boolean hasCapabilityPowerMeter() { return device.hasCapability('PowerMeter') ==
 Boolean hasCapabilityVoltageMeasurement() { return device.hasCapability('VoltageMeasurement') == true }
 Boolean hasCapabilityEnergyMeter() { return device.hasCapability('EnergyMeter') == true }
 Boolean hasCapabilityReturnedEnergyMeter() { return device.hasAttribute('returnedEnergy') == true }
-Boolean deviceIsEm1Data() {return EM1DATA == true}
-
 
 Boolean deviceIsBluGateway() {return DEVICEISBLUGATEWAY == true}
 
