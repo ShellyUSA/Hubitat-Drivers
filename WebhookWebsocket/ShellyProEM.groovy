@@ -14,4 +14,3 @@ metadata {
 
 @Field static Boolean WS = true
 @Field static Boolean DEVICEISBLUGATEWAY = true
-@Field static Boolean EM1DATA = true
