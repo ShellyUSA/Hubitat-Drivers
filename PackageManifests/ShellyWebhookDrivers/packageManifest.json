@@ -170,6 +170,13 @@
       "required": false
     },
     {
+      "id": "62ee7ce0-bb10-4800-a504-234a7bc66eec",
+      "name": "Shelly 3EM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/Shelly3EM.groovy",
+      "required": false
+    },
+    {
       "id": "4900ccee-fbb9-4df7-bd3a-2a479335ba79",
       "name": "Shelly Blu Gateway",
       "namespace": "ShellyUSA",
