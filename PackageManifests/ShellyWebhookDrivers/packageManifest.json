@@ -205,6 +205,13 @@
       "required": false
     },
     {
+      "id": "9e02af5d-ab78-401c-9a57-99ecd78c0b81",
+      "name": "Shelly EM",
+      "namespace": "ShellyUSA",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/WebhookWebsocket/ShellyEM.groovy",
+      "required": false
+    },
+    {
       "id": "2b2d10f3-c078-406f-aacf-936936d41a1d",
       "name": "Shelly Flood",
       "namespace": "ShellyUSA",
