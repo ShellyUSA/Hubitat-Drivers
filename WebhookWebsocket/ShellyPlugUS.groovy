@@ -1,7 +1,7 @@
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
-  definition (name: 'Shelly Plug US (Websocket)', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Plug', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'Initialize'
     capability 'Configuration'
