@@ -463,7 +463,7 @@ void getPreferencesFromShellyDevice() {
         setDeviceDataValue('frequencyId', "${id}")
       }
 
-      if(em1s?.size() > 0 && hasNoChildrenNeeded() == false) {
+      if(em1s?.size() > 0) {
         em1s.each{ em1 ->
           Integer id = em1.tokenize(':')[1] as Integer
           logTrace("EM1 ID: ${id}")
@@ -476,7 +476,7 @@ void getPreferencesFromShellyDevice() {
         }
       }
 
-      if(ems?.size() > 0 && hasNoChildrenNeeded() == false) {
+      if(ems?.size() > 0) {
         ems.each{ em ->
           Integer id = em.tokenize(':')[1] as Integer
           logTrace("EM ID: ${id}")
