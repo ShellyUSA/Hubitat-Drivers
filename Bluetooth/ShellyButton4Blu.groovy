@@ -15,7 +15,7 @@ metadata {
     capability 'ReleasableButton' //released - NUMBER
     capability 'PresenceSensor' //presence - ENUM ["present", "not present"]
 
-    command 'tripleTap'
+    command 'tripleTap', ['number']
     attribute 'tripleTapped', 'number'
     attribute 'lastUpdated', 'string'
   }
