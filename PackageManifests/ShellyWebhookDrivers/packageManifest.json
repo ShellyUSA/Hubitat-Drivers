@@ -1,8 +1,8 @@
 {
   "packageName": "Shelly Webhook/Websocket Drivers",
   "author": "ShellyUSA, Daniel Winks",
-  "version": "2.14.0",
-  "releaseNotes": "2.14.0 Add Shelly EM, Shelly 3EM/r/n2.13.0 Add Shelly Pro 3EM400 Support/r/n2.12.0 Add Shelly Pro EM support/r/n2.11.0 Add support for Shelly 1, Shelly RGBW (Gen1), Shelly RGBW White Mode (Gen1), Shelly Plus Wall Dimmer, Shelly Pro 1PM, Pro 2, Pro Dimmer 1PM, Pro Dimmer 2PM",
+  "version": "2.15.0",
+  "releaseNotes": "2.15.0 Fixes for Blu devices expecting BigDecimal when getting an integer/r/n2.14.0 Add Shelly EM, Shelly 3EM/r/n2.13.0 Add Shelly Pro 3EM400 Support/r/n2.12.0 Add Shelly Pro EM support/r/n2.11.0 Add support for Shelly 1, Shelly RGBW (Gen1), Shelly RGBW White Mode (Gen1), Shelly Plus Wall Dimmer, Shelly Pro 1PM, Pro 2, Pro Dimmer 1PM, Pro Dimmer 2PM",
   "minimumHEVersion": "2.3.7.114",
   "dateReleased": "2024-02-10",
   "licenseFile": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/LICENSE",
