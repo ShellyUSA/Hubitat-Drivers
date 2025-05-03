@@ -1995,16 +1995,16 @@ void setLevel(BigDecimal level, BigDecimal duration) {
 }
 
 @CompileStatic
-void push(Integer buttonNumber) {sendDeviceEvent([name: 'pushed', value: buttonNumber, isStateChange: true]) }
+void push(BigDecimal buttonNumber) {sendDeviceEvent([name: 'pushed', value: buttonNumber, isStateChange: true]) }
 
 @CompileStatic
-void hold(Integer buttonNumber) {sendDeviceEvent([name: 'held', value: buttonNumber, isStateChange: true]) }
+void hold(BigDecimal buttonNumber) {sendDeviceEvent([name: 'held', value: buttonNumber, isStateChange: true]) }
 
 @CompileStatic
-void doubleTap(Integer buttonNumber) {sendDeviceEvent([name: 'doubleTapped', value: buttonNumber, isStateChange: true]) }
+void doubleTap(BigDecimal buttonNumber) {sendDeviceEvent([name: 'doubleTapped', value: buttonNumber, isStateChange: true]) }
 
 @CompileStatic
-void tripleTap(Integer buttonNumber) {sendDeviceEvent([name: 'tripleTapped', value: buttonNumber, isStateChange: true]) }
+void tripleTap(BigDecimal buttonNumber) {sendDeviceEvent([name: 'tripleTapped', value: buttonNumber, isStateChange: true]) }
 
 @CompileStatic
 void setInputSwitchState(Boolean on, Integer id = 0) {

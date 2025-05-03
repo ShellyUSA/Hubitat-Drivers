@@ -47,11 +47,11 @@ void shellyButtonDeviceEventsHandler(Event evt) {
       buttons.eachWithIndex{ button, buttonNumber ->
         b = button as Integer
         if(b == 0 && buttonNumber == 0) {sendEvent(macAddress, [name: 'presence', value: 'present', isStateChange: true])}
-        else if(b == 1) {sendEvent(macAddress, [name: 'pushed', value: buttonNumber+1, isStateChange: true])}
-        else if(b == 2) {sendEvent(macAddress, [name: 'doubleTapped', value: buttonNumber+1, isStateChange: true])}
-        else if(b == 3) {sendEvent(macAddress, [name: 'tripleTapped', value: buttonNumber+1, isStateChange: true])}
-        else if(b == 4) {sendEvent(macAddress, [name: 'released', value: buttonNumber+1, isStateChange: true])}
-        else if(b > 32) {sendEvent(macAddress, [name: 'held', value: buttonNumber+1, isStateChange: true])}
+        else if(b == 1) {sendEvent(macAddress, [name: 'pushed', value: new BigDecimal(buttonNumber+1), isStateChange: true])}
+        else if(b == 2) {sendEvent(macAddress, [name: 'doubleTapped', value: new BigDecimal(buttonNumber+1), isStateChange: true])}
+        else if(b == 3) {sendEvent(macAddress, [name: 'tripleTapped', value: new BigDecimal(buttonNumber+1), isStateChange: true])}
+        else if(b == 4) {sendEvent(macAddress, [name: 'released', value: new BigDecimal(buttonNumber+1), isStateChange: true])}
+        else if(b > 32) {sendEvent(macAddress, [name: 'held', value: new BigDecimal(buttonNumber+1), isStateChange: true])}
       }
     } catch(e) {
       logWarn("No device found for DNI/MAC address: ${macAddress}, received button device event...")
