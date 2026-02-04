@@ -323,6 +323,11 @@ jobs:
               # Update version
               data['version'] = new_version
 
+              # Update release notes to point to GitHub release page
+              release_url = f'https://github.com/ShellyUSA/Hubitat-Drivers/releases/tag/v{new_version}'
+              data['releaseNotes'] = release_url
+              print(f'Updated release notes to: {release_url}')
+
               # Update all location URLs to point to GitHub release assets
               release_base_url = f'https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v{new_version}'
 
