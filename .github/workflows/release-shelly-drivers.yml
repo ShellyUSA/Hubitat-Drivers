@@ -260,6 +260,11 @@ jobs:
 
           echo "All driver files versioned and ready for release"
 
+      - name: Pull latest changes before committing
+        run: |
+          git config pull.rebase true
+          git pull origin master || echo "No changes to pull"
+
       - name: Commit version updates
         uses: EndBug/add-and-commit@v9
         with:
