@@ -76,45 +76,41 @@ jobs:
               else:
                   data['releaseNotes'] = new_notes
 
-              # Update all location URLs to point to master branch (not releases)
-              # HPM pulls directly from master branch
-              base_url = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master'
+              # Update all location URLs to point to GitHub release assets
+              # HPM will download from the versioned release files
+              release_base_url = f'https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v{new_version}'
 
-              # Update bundle locations
+              # Library version is same as driver version (they're released together)
+              lib_version = new_version
+
+              # Update bundle locations to point to versioned release asset
               if 'bundles' in data:
                   for bundle in data['bundles']:
                       if 'location' in bundle:
-                          # Keep bundle pointing to root ZIP file
-                          bundle['location'] = 'https://github.com/ShellyUSA/Hubitat-Drivers/raw/master/ShellyUSA_Driver_Library.zip'
+                          bundle['location'] = f'{release_base_url}/ShellyUSA_Driver_Library-v{lib_version}.zip'
+                          print(f'Updated bundle location to: {bundle["location"]}')
 
-              # Update app locations
+              # Update app locations to point to versioned release assets
               if 'apps' in data:
                   for app in data['apps']:
                       if 'location' in app:
-                          # Extract filename and rebuild URL
-                          filename = app['location'].split('/')[-1]
-                          # Determine path based on common patterns
-                          if 'Bluetooth' in app['location']:
-                              app['location'] = f'{base_url}/Bluetooth/{filename}'
-                          else:
-                              app['location'] = f'{base_url}/{filename}'
+                          # Extract base filename without extension
+                          old_filename = app['location'].split('/')[-1]
+                          filename_noext = old_filename.replace('.groovy', '')
+                          versioned_filename = f'{filename_noext}-v{new_version}.groovy'
+                          app['location'] = f'{release_base_url}/{versioned_filename}'
+                          print(f'Updated app location: {old_filename} -> {versioned_filename}')
 
-              # Update driver locations (only non-legacy folders)
+              # Update driver locations to point to versioned release assets
               if 'drivers' in data:
                   for driver in data['drivers']:
                       if 'location' in driver:
-                          filename = driver['location'].split('/')[-1]
-                          # Determine path based on common patterns (only valid folders)
-                          if 'Component' in filename:
-                              driver['location'] = f'{base_url}/ComponentDrivers/{filename}'
-                          elif 'Bluetooth' in driver.get('name', '') or 'Blu' in filename:
-                              driver['location'] = f'{base_url}/Bluetooth/{filename}'
-                          elif 'WebhookWebsocket' in driver['location'] or 'location' not in ['ComponentDrivers', 'Bluetooth']:
-                              # Default to WebhookWebsocket for non-Component, non-Bluetooth drivers
-                              driver['location'] = f'{base_url}/WebhookWebsocket/{filename}'
-                          else:
-                              print(f'Warning: Could not determine folder for {filename}')
-                              driver['location'] = f'{base_url}/WebhookWebsocket/{filename}'
+                          # Extract base filename without extension
+                          old_filename = driver['location'].split('/')[-1]
+                          filename_noext = old_filename.replace('.groovy', '')
+                          versioned_filename = f'{filename_noext}-v{new_version}.groovy'
+                          driver['location'] = f'{release_base_url}/{versioned_filename}'
+                          print(f'Updated driver location: {old_filename} -> {versioned_filename}')
 
               # Write updated manifest
               with open(manifest_path, 'w') as f:

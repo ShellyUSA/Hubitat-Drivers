@@ -1,3 +1,6 @@
+/**
+ * Version: 2.0.0
+ */
 library(
   name: 'ShellyUSA_Driver_Library',
   namespace: 'ShellyUSA',
@@ -9,6 +12,8 @@ library(
 /* #region Fields */
 // MARK: Fields
 @Field static Integer WS_CONNECT_INTERVAL = 600
+@Field static List<Integer> WS_RECONNECT_BACKOFF_SEQUENCE = [3, 5, 10, 30, 60, 120, 300]
+@Field static Integer WS_MAX_BACKOFF = 300
 @Field static ConcurrentHashMap<String, MessageDigest> messageDigests = new java.util.concurrent.ConcurrentHashMap<String, MessageDigest>()
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
@@ -260,6 +265,12 @@ void initializeSettingsToDefaults() {
     if(getDeviceSettings().gen1_status_polling_rate == null) { setDeviceSetting('gen1_status_polling_rate', 60) }
     runEveryCustomSeconds(getDeviceSettings().gen1_status_polling_rate as Integer, 'refresh')
   }
+
+  // Schedule daily websocket connection stats logging at midnight
+  if(hasParent() == false && wsShouldBeConnected() == true) {
+    scheduleTask('0 0 0 * * ?', 'logWebsocketConnectionStats')
+  }
+
   logTrace('Finished initializing settings to defaults')
 }
 
@@ -3287,9 +3298,9 @@ void processWebsocketMessagesConnectivity(LinkedHashMap json) {
     logDebug("Connectivity check started ${checkStarted}")
     if(checkStarted != null) {
       long seconds = unixTimeSeconds() - checkStarted
-      if(seconds < 5) { setWebsocketStatus('open') }
-      else { setWebsocketStatus('connection timed out') }
-    } else { setWebsocketStatus('connection timed out') }
+      if(seconds < 5) { setWebsocketStatus('open', 'connectivity check passed') }
+      else { setWebsocketStatus('connection timed out', "response took ${seconds} seconds") }
+    } else { setWebsocketStatus('connection timed out', 'no timestamp in check') }
     if(((LinkedHashMap)json.result)?.auth_en != null) {
       setAuthIsEnabled((Boolean)(((LinkedHashMap)json.result)?.auth_en))
       shellyGetStatusWs('authCheck')
@@ -5643,32 +5654,72 @@ LinkedHashMap<String, List> getDeviceActionsGen1() {
 /* #endregion */
 /* #region Websocket Connection */
 void webSocketStatus(String message) {
-  if(message == 'failure: null' || message == 'failure: Connection reset') {
-    setWebsocketStatus('closed')
-  }
-  else if(message == 'failure: connect timed out') { setWebsocketStatus('connect timed out')}
-  else if(message == 'status: open') {
-    setWebsocketStatus('open')
-  } else {
-    logWarn("Websocket Status Message: ${message}")
-    setWebsocketStatus('unknown')
-  }
   logTrace("Incoming Socket Status message: ${message}")
+
+  // Handle different failure types with specific status codes
+  if(message == 'status: open') {
+    setWebsocketStatus('open')
+  } else if(message == 'failure: null') {
+    setWebsocketStatus('closed', 'connection lost (null)')
+  } else if(message == 'failure: Connection reset') {
+    setWebsocketStatus('closed', 'connection reset by peer')
+  } else if(message == 'failure: connect timed out') {
+    setWebsocketStatus('connect timed out', 'connection attempt timed out')
+  } else if(message.startsWith('failure: ')) {
+    String reason = message.replace('failure: ', '')
+    setWebsocketStatus('closed', reason)
+  } else {
+    logWarn("Unexpected websocket status message: ${message}")
+    setWebsocketStatus('unknown', message)
+  }
 }
 
 void wsConnect() {
+  // Prevent concurrent connection attempts
+  if(atomicState.connectionInProgress == true) {
+    logDebug('Connection attempt already in progress, skipping duplicate request')
+    return
+  }
+
   String uri = getWebSocketUri()
   if(uri != null && uri != '') {
-    interfaces.webSocket.connect(uri, headers: [:], ignoreSSLIssues: true)
-    unschedule('checkWebsocketConnection')
-    runEveryCustomSeconds(WS_CONNECT_INTERVAL, 'checkWebsocketConnection')
+    atomicState.connectionInProgress = true
+    atomicState.lastConnectionAttempt = now()
+
+    try {
+      logDebug("Attempting websocket connection to ${uri}")
+      interfaces.webSocket.connect(uri, headers: [:], ignoreSSLIssues: true)
+      unschedule('checkWebsocketConnection')
+      runEveryCustomSeconds(WS_CONNECT_INTERVAL, 'checkWebsocketConnection')
+    } catch(Exception e) {
+      logError("Exception during websocket connection attempt: ${e}")
+      atomicState.connectionInProgress = false
+      setWebsocketStatus('failed', "exception: ${e.message}")
+    }
+  } else {
+    logWarn('Cannot connect websocket: invalid or empty URI')
   }
 }
 
 void sendWsMessage(String message) {
-  if(getWebsocketIsConnected() == false) { wsConnect() }
-  logTrace("Sending json message via websocket: ${message}")
-  interfaces.webSocket.sendMessage(message)
+  if(getWebsocketIsConnected() == false) {
+    logDebug('Websocket not connected, attempting to connect before sending message')
+    wsConnect()
+    // Queue message to send after connection establishes
+    atomicState.pendingWsMessage = message
+    return
+  }
+
+  try {
+    logTrace("Sending json message via websocket: ${message}")
+    interfaces.webSocket.sendMessage(message)
+    atomicState.remove('pendingWsMessage')
+  } catch(Exception e) {
+    logError("Failed to send websocket message: ${e}")
+    setWebsocketStatus('failed', "send failed: ${e.message}")
+    // Store message for retry after reconnection
+    atomicState.pendingWsMessage = message
+  }
 }
 
 void parentSendWsMessage(String message) {
@@ -5690,7 +5741,12 @@ void initializeWebsocketConnection() {
 }
 
 void initializeWebsocketConnectionIfNeeded() {
+  // Reset reconnection state when explicitly initializing
   atomicState.remove('reconnectTimer')
+  atomicState.remove('reconnectAttempt')
+  atomicState.remove('consecutiveFailures')
+  atomicState.remove('connectionInProgress')
+
   if(wsShouldBeConnected() == true) {
     initializeWebsocketConnection()
     runIn(2, 'checkWebsocketConnection')
@@ -5714,39 +5770,141 @@ void connectWebsocketAfterDelay(Integer delay = 15) {
 
 void wsClose() { interfaces.webSocket.close() }
 
-void setWebsocketStatus(String status) {
-  logDebug("Websocket Status: ${status}")
+void setWebsocketStatus(String status, String reason = null) {
+  String prevStatus = getDeviceDataValue('websocketStatus')
+  String logMsg = "Websocket Status: ${status}"
+  if(reason) { logMsg += " (${reason})" }
+
   if(status != 'open') {
+    atomicState.connectionInProgress = false
+
     if(wsShouldBeConnected() == true) {
-      Integer t = getReconnectTimer()
-      logDebug("Websocket not open, attempting to reconnect in ${t} seconds...")
-      connectWebsocketAfterDelay(t)
+      // Track consecutive failures for monitoring
+      Integer failures = (atomicState.consecutiveFailures ?: 0) as Integer
+      atomicState.consecutiveFailures = failures + 1
+
+      Integer delay = getReconnectDelay()
+
+      // Log at appropriate level based on delay/severity
+      if(delay >= 30) {
+        logError("${logMsg} - Reconnect attempt #${atomicState.consecutiveFailures} scheduled in ${delay} seconds")
+      } else {
+        logDebug("${logMsg} - Reconnect attempt #${atomicState.consecutiveFailures} scheduled in ${delay} seconds")
+      }
+
+      scheduleReconnect(delay)
+    } else {
+      logDebug(logMsg)
     }
   }
+
   if(status == 'open') {
-    logDebug('Websocket connection is open, cancelling any pending reconnection attempts...')
+    atomicState.connectionInProgress = false
+    Long connectionTime = now()
+    Long lastAttempt = atomicState.lastConnectionAttempt ?: connectionTime
+    Long connectDuration = connectionTime - lastAttempt
+
+    // Reset reconnection tracking on successful connection
+    Integer previousFailures = atomicState.consecutiveFailures ?: 0
+    atomicState.consecutiveFailures = 0
+    atomicState.remove('reconnectAttempt')
+    atomicState.lastSuccessfulConnection = connectionTime
+    atomicState.connectionStartTime = connectionTime
+
+    // Log successful connection with timing info
+    if(previousFailures > 0) {
+      logDebug("Websocket connection established after ${previousFailures} failed attempts (${connectDuration}ms to connect)")
+    } else {
+      logDebug("Websocket connection established (${connectDuration}ms to connect)")
+    }
+
+    // Cancel any pending reconnection attempts
     unschedule('initializeWebsocketConnection')
     unschedule('initializeWebsocketConnectionIfNeeded')
     atomicState.remove('initInProgress')
-    atomicState.remove('reconnectTimer')
+
+    // Send any pending messages
+    if(atomicState.pendingWsMessage) {
+      String pendingMsg = atomicState.pendingWsMessage
+      atomicState.remove('pendingWsMessage')
+      runIn(1, 'sendPendingWsMessage', [data: [message: pendingMsg]])
+    }
+
+    // Perform authentication check
     runIn(1, 'performAuthCheck')
   }
+
   setDeviceDataValue('websocketStatus', status)
+  if(prevStatus != status) {
+    setDeviceDataValue('websocketStatusChanged', new Date().toString())
+  }
 }
 
-Integer getReconnectTimer() {
-  Integer t = 3
-  if(atomicState.reconnectTimer == null) {
-    atomicState.reconnectTimer = t
-  } else {
-    t = atomicState.reconnectTimer as Integer
-    atomicState.reconnectTimer = 2*t <= 300 ? 2*t : 300
+void sendPendingWsMessage(Map data) {
+  if(data?.message) {
+    logDebug('Sending previously queued websocket message')
+    sendWsMessage(data.message as String)
   }
-  return t
+}
+
+Integer getReconnectDelay() {
+  Integer attempt = (atomicState.reconnectAttempt ?: 0) as Integer
+  Integer delay
+
+  if(attempt < WS_RECONNECT_BACKOFF_SEQUENCE.size()) {
+    delay = WS_RECONNECT_BACKOFF_SEQUENCE[attempt]
+  } else {
+    delay = WS_MAX_BACKOFF
+  }
+
+  // Increment attempt counter for next time
+  atomicState.reconnectAttempt = attempt + 1
+
+  return delay
+}
+
+void scheduleReconnect(Integer delaySeconds) {
+  // Cancel any existing reconnection attempts to avoid duplicates
+  unschedule('initializeWebsocketConnectionIfNeeded')
+  unschedule('initializeWebsocketConnection')
+
+  // Schedule the reconnection attempt
+  runIn(delaySeconds, 'initializeWebsocketConnectionIfNeeded', [overwrite: true])
 }
 
 @CompileStatic
 Boolean getWebsocketIsConnected() { return getDeviceDataValue('websocketStatus') == 'open' }
+
+void logWebsocketConnectionStats() {
+  if(wsShouldBeConnected() == false) { return }
+
+  String status = getDeviceDataValue('websocketStatus') ?: 'unknown'
+  Integer consecutiveFailures = atomicState.consecutiveFailures ?: 0
+  Long lastSuccess = atomicState.lastSuccessfulConnection
+  Long connectionStart = atomicState.connectionStartTime
+
+  StringBuilder stats = new StringBuilder('Daily Websocket Connection Stats: ')
+  stats.append("Status=${status}")
+
+  if(status == 'open' && connectionStart) {
+    Long uptime = now() - connectionStart
+    Long uptimeMinutes = uptime / 60000
+    Long uptimeHours = uptimeMinutes / 60
+    stats.append(", Uptime=${uptimeHours}h ${uptimeMinutes % 60}m")
+  }
+
+  if(lastSuccess) {
+    Long timeSinceSuccess = now() - lastSuccess
+    Long minutesSince = timeSinceSuccess / 60000
+    stats.append(", Last Success=${minutesSince} minutes ago")
+  }
+
+  if(consecutiveFailures > 0) {
+    stats.append(", Consecutive Failures=${consecutiveFailures}")
+  }
+
+  logDebug(stats.toString())
+}
 /* #endregion */
 /* #region Authentication */
 @CompileStatic

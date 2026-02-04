@@ -1,3 +1,6 @@
+/**
+ * Version: 2.0.0
+ */
 definition(
   name: 'Shelly Bluetooth Helper',
   namespace: 'ShellyUSA',

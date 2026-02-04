@@ -49,8 +49,8 @@ jobs:
       - name: Get current version and calculate new version
         id: version
         run: |
-          # Extract current version from resources/version.json
-          CURRENT_VERSION=$(jq -r '.versions.Driver."ShellyAsASwitch" // "3.0.10"' resources/version.json)
+          # Extract current version from any driver file's version comment
+          CURRENT_VERSION=$(grep -m 1 "Version:" WebhookWebsocket/*.groovy | head -1 | sed -n 's/.*Version: \([0-9.]*\).*/\1/p' || echo "2.0.0")
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
           # Parse version
@@ -76,13 +76,12 @@ jobs:
 
           echo "Updating version from $OLD_VERSION to $NEW_VERSION for category: $CATEGORY"
 
-          # Function to update version in a driver file
+          # Function to update version comment in a driver file
           update_driver_version() {
             local file=$1
             if [ -f "$file" ]; then
-              # Update version in metadata block
-              sed -i "s/version: '$OLD_VERSION'/version: '$NEW_VERSION'/" "$file" || true
-              sed -i "s/version: \"$OLD_VERSION\"/version: \"$NEW_VERSION\"/" "$file" || true
+              # Update version in comment block at top of file
+              sed -i "s/Version: $OLD_VERSION/Version: $NEW_VERSION/" "$file"
               echo "Updated $file"
             fi
           }
@@ -106,50 +105,10 @@ jobs:
             done
           fi
 
+          # Always update library version
+          sed -i "s/Version: $OLD_VERSION/Version: $NEW_VERSION/" ShellyDriverLibrary/*.groovy
+
           echo "Version update complete"
-
-      - name: Update resources/version.json
-        run: |
-          NEW_VERSION="${{ steps.version.outputs.new_version }}"
-          RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
-          DATE=$(date +%m/%d/%Y)
-
-          # Create Python script to update version.json
-          cat > update_version.py << 'EOF'
-          import json
-          import sys
-
-          version_path = 'resources/version.json'
-          new_version = sys.argv[1]
-          release_notes = sys.argv[2]
-          date_updated = sys.argv[3]
-
-          with open(version_path, 'r') as f:
-              data = json.load(f)
-
-          # Update Comment (date)
-          data['Comment'] = f"Last updated: {date_updated}"
-
-          # Update all driver versions to new version
-          # This is a simplified approach - in practice you might want to track individual driver versions
-          for driver_name in data['versions']['Driver'].keys():
-              data['versions']['Driver'][driver_name] = new_version
-
-          # Update UpdateInfo for drivers
-          update_text = f"<br>- {release_notes}"
-          for driver_name in data['versions']['Driver'].keys():
-              if driver_name in data['UpdateInfo']['Driver']:
-                  data['UpdateInfo']['Driver'][driver_name] = update_text
-              else:
-                  data['UpdateInfo']['Driver'][driver_name] = update_text
-
-          with open(version_path, 'w') as f:
-              json.dump(data, f, indent=2)
-
-          print(f"Updated version.json to version {new_version}")
-          EOF
-
-          python3 update_version.py "$NEW_VERSION" "$RELEASE_NOTES" "$DATE"
 
       - name: Trigger library bundle workflow
         uses: actions/github-script@v7
@@ -224,13 +183,11 @@ jobs:
               Bluetooth/ \
               ComponentDrivers/ \
               ShellyDriverLibrary/ \
-              PackageManifests/ \
-              resources/version.json || echo "- Release ${NEW_VERSION}")
+              PackageManifests/ || echo "- Release ${NEW_VERSION}")
           else
             CHANGELOG=$(git log $COMMIT_RANGE --pretty=format:"- %s" --no-merges -- \
               "${CATEGORY}/" \
-              "ShellyDriverLibrary/" \
-              "resources/version.json" || echo "- Release ${NEW_VERSION}")
+              "ShellyDriverLibrary/" || echo "- Release ${NEW_VERSION}")
           fi
 
           # Save changelog to file
@@ -257,6 +214,52 @@ jobs:
 
           echo "Changelog generated"
 
+      - name: Create versioned copies of driver files
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          CATEGORY="${{ github.event.inputs.driver_category }}"
+
+          mkdir -p release-files
+
+          # Function to create versioned copy
+          version_file() {
+            local file=$1
+            local basename=$(basename "$file")
+            local dirname=$(dirname "$file")
+            local filename_noext="${basename%.groovy}"
+            local versioned_name="${filename_noext}-v${NEW_VERSION}.groovy"
+
+            # Copy to release-files with versioned name
+            cp "$file" "release-files/$versioned_name"
+            echo "Created versioned file: $versioned_name"
+          }
+
+          # Version files based on category (only non-legacy folders)
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "WebhookWebsocket" ]; then
+            for file in WebhookWebsocket/*.groovy; do
+              [ -f "$file" ] && version_file "$file"
+            done
+          fi
+
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "Bluetooth" ]; then
+            for file in Bluetooth/*.groovy; do
+              [ -f "$file" ] && version_file "$file"
+            done
+          fi
+
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "ComponentDrivers" ]; then
+            for file in ComponentDrivers/*.groovy; do
+              [ -f "$file" ] && version_file "$file"
+            done
+          fi
+
+          # Always version the library
+          for file in ShellyDriverLibrary/*.groovy; do
+            [ -f "$file" ] && version_file "$file"
+          done
+
+          echo "All driver files versioned and ready for release"
+
       - name: Commit version updates
         uses: EndBug/add-and-commit@v9
         with:
@@ -264,8 +267,7 @@ jobs:
             WebhookWebsocket/*.groovy
             Bluetooth/*.groovy
             ComponentDrivers/*.groovy
-            ShellyDriverLibrary/
-            resources/version.json
+            ShellyDriverLibrary/*.groovy
           message: "Release Shelly Drivers ${{ steps.version.outputs.new_version }}"
           tag: "v${{ steps.version.outputs.new_version }}"
           push: true
@@ -279,11 +281,8 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            WebhookWebsocket/*.groovy
-            Bluetooth/*.groovy
-            ComponentDrivers/*.groovy
-            ShellyDriverLibrary/*.groovy
-            ShellyUSA_Driver_Library.zip
+            release-files/*
+            ShellyUSA_Driver_Library*.zip
             resources/version.json
             PackageManifests/**/packageManifest.json
             README.md
@@ -362,22 +361,22 @@ jobs:
           **${{ github.event.inputs.driver_category }}**
 
           ## What was done
-          1. ✅ Updated version numbers in driver files
-          2. ✅ Updated resources/version.json
-          3. ✅ Triggered library bundle workflow
-          4. ✅ Created git tag: v${{ steps.version.outputs.new_version }}
-          5. ✅ Created GitHub Release with driver files
+          1. ✅ Updated version comments in all driver files
+          2. ✅ Triggered library bundle workflow
+          3. ✅ Created git tag: v${{ steps.version.outputs.new_version }}
+          4. ✅ Created GitHub Release with versioned driver files
+          5. ✅ Committed version updates back to repository
           6. ✅ Attempted to create discussion announcement
 
           ## Next Steps
           - Verify the release at: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.new_version }}
+          - Run "Update Package Manifests" workflow with version ${{ steps.version.outputs.new_version }}
           - Test the updated drivers on your Hubitat hub
-          - Update Hubitat Package Manager manifests if applicable
           - Announce the release to the Hubitat community
 
           ## Files Released
-          - All driver files from selected category
-          - Shelly Driver Library
-          - Updated version.json
+          - All driver files from selected category (versioned)
+          - Shelly Driver Library (versioned bundle)
+          - Package manifests
           - README.md
           EOF

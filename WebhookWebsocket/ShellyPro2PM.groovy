@@ -1,3 +1,6 @@
+/**
+ * Version: 2.0.0
+ */
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
