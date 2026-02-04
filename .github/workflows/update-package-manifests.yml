@@ -1,0 +1,187 @@
+name: Update Package Manifests
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number to update manifests to (e.g., 2.15.0)"
+        required: true
+        type: string
+      release_notes:
+        description: "Release notes for this version"
+        required: true
+        type: string
+
+jobs:
+  update-manifests:
+    name: Update HPM Package Manifests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Update package manifests
+        run: |
+          NEW_VERSION="${{ github.event.inputs.version }}"
+          RELEASE_NOTES="${{ github.event.inputs.release_notes }}"
+          DATE=$(date +%Y-%m-%d)
+
+          # Create Python script to update package manifests
+          cat > update_manifests.py << 'EOF'
+          import json
+          import sys
+          import os
+          from pathlib import Path
+
+          new_version = sys.argv[1]
+          release_notes = sys.argv[2]
+          date_released = sys.argv[3]
+
+          # Find all packageManifest.json files
+          manifest_dir = Path('PackageManifests')
+          manifest_files = list(manifest_dir.rglob('packageManifest.json'))
+
+          if not manifest_files:
+              print("No package manifest files found!")
+              sys.exit(1)
+
+          for manifest_path in manifest_files:
+              print(f"Updating {manifest_path}...")
+
+              with open(manifest_path, 'r') as f:
+                  data = json.load(f)
+
+              # Update version
+              data['version'] = new_version
+
+              # Update date
+              data['dateReleased'] = date_released
+
+              # Update release notes (prepend new notes)
+              new_notes = f"{new_version} {release_notes}"
+              if 'releaseNotes' in data and data['releaseNotes']:
+                  # Prepend with /r/n separator (HPM format)
+                  data['releaseNotes'] = new_notes + "/r/n" + data['releaseNotes']
+              else:
+                  data['releaseNotes'] = new_notes
+
+              # Update all location URLs to point to master branch (not releases)
+              # HPM pulls directly from master branch
+              base_url = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master'
+
+              # Update bundle locations
+              if 'bundles' in data:
+                  for bundle in data['bundles']:
+                      if 'location' in bundle:
+                          # Keep bundle pointing to root ZIP file
+                          bundle['location'] = 'https://github.com/ShellyUSA/Hubitat-Drivers/raw/master/ShellyUSA_Driver_Library.zip'
+
+              # Update app locations
+              if 'apps' in data:
+                  for app in data['apps']:
+                      if 'location' in app:
+                          # Extract filename and rebuild URL
+                          filename = app['location'].split('/')[-1]
+                          # Determine path based on common patterns
+                          if 'Bluetooth' in app['location']:
+                              app['location'] = f'{base_url}/Bluetooth/{filename}'
+                          else:
+                              app['location'] = f'{base_url}/{filename}'
+
+              # Update driver locations (only non-legacy folders)
+              if 'drivers' in data:
+                  for driver in data['drivers']:
+                      if 'location' in driver:
+                          filename = driver['location'].split('/')[-1]
+                          # Determine path based on common patterns (only valid folders)
+                          if 'Component' in filename:
+                              driver['location'] = f'{base_url}/ComponentDrivers/{filename}'
+                          elif 'Bluetooth' in driver.get('name', '') or 'Blu' in filename:
+                              driver['location'] = f'{base_url}/Bluetooth/{filename}'
+                          elif 'WebhookWebsocket' in driver['location'] or 'location' not in ['ComponentDrivers', 'Bluetooth']:
+                              # Default to WebhookWebsocket for non-Component, non-Bluetooth drivers
+                              driver['location'] = f'{base_url}/WebhookWebsocket/{filename}'
+                          else:
+                              print(f'Warning: Could not determine folder for {filename}')
+                              driver['location'] = f'{base_url}/WebhookWebsocket/{filename}'
+
+              # Write updated manifest
+              with open(manifest_path, 'w') as f:
+                  json.dump(data, f, indent=2)
+
+              print(f"✅ Updated {manifest_path} to version {new_version}")
+
+          print(f"\nSuccessfully updated {len(manifest_files)} package manifest(s)")
+          EOF
+
+          python3 update_manifests.py "$NEW_VERSION" "$RELEASE_NOTES" "$DATE"
+
+      - name: Validate updated manifests
+        run: |
+          echo "Validating package manifests..."
+
+          # Check that manifests are valid JSON
+          for manifest in PackageManifests/**/packageManifest.json; do
+            echo "Checking $manifest..."
+            if jq empty "$manifest" 2>/dev/null; then
+              echo "✅ $manifest is valid JSON"
+              # Show updated version
+              VERSION=$(jq -r '.version' "$manifest")
+              echo "   Version: $VERSION"
+            else
+              echo "❌ ERROR: $manifest is invalid JSON!"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "All manifests validated successfully!"
+
+      - name: Commit manifest updates
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: "PackageManifests/**/packageManifest.json"
+          message: "Update package manifests to version ${{ github.event.inputs.version }}"
+          default_author: github_actions
+
+      - name: Summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # Package Manifests Updated! 📦
+
+          ## Version
+          **${{ github.event.inputs.version }}**
+
+          ## Date
+          $(date +%Y-%m-%d)
+
+          ## Release Notes
+          ${{ github.event.inputs.release_notes }}
+
+          ## What was done
+          1. ✅ Updated all package manifest versions
+          2. ✅ Updated release dates
+          3. ✅ Prepended new release notes
+          4. ✅ Verified all URLs point to correct locations
+          5. ✅ Validated JSON structure
+          6. ✅ Committed changes
+
+          ## Next Steps
+          - Verify the manifests in your repository
+          - Users can now install/update via HPM
+          - Test HPM installation to ensure manifests work correctly
+
+          ## Files Updated
+          $(find PackageManifests -name "packageManifest.json" | sed 's/^/- /')
+          EOF

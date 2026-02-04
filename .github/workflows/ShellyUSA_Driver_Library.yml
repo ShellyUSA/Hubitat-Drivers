@@ -1,31 +1,46 @@
-name: Build Library Bundle
+name: Build Shelly Driver Library Bundle
+
 on:
   push:
-    branches: [ "master" ]
+    branches: ["master"]
     paths:
       - ShellyDriverLibrary/ShellyUSA.ShellyUSA_Driver_Library.groovy
   workflow_dispatch:
 
 jobs:
   build:
-    name: Copy ShellyUSA_Driver_Library Files To Bundle Directory
-    runs-on: [ubuntu-latest]
+    name: Build and Bundle Shelly Driver Library
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
-      - name: Checkout 🛎️
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Zip Bundle
-        uses: thedoctor0/zip-release@0.7.5
         with:
-          type: 'zip'
-          filename: 'ShellyUSA_Driver_Library.zip'
-          directory: 'ShellyDriverLibrary'
+          fetch-depth: 0
 
-      - name: Move Bundle to parent directory
+      - name: Create library bundle
         run: |
-          mv ShellyDriverLibrary/ShellyUSA_Driver_Library.zip ShellyUSA_Driver_Library.zip
+          echo "Creating Shelly Driver Library bundle..."
+          cd ShellyDriverLibrary
+          zip -r ../ShellyUSA_Driver_Library.zip *.groovy *.txt
+          cd ..
+          echo "Bundle created successfully"
 
-      - name: Commit changes
+      - name: Verify bundle
+        run: |
+          if [ -f "ShellyUSA_Driver_Library.zip" ]; then
+            echo "Bundle file created: ShellyUSA_Driver_Library.zip"
+            unzip -l ShellyUSA_Driver_Library.zip
+          else
+            echo "ERROR: Bundle file not created!"
+            exit 1
+          fi
+
+      - name: Commit and push bundle
         uses: EndBug/add-and-commit@v9
+        with:
+          add: "ShellyUSA_Driver_Library.zip"
+          message: "Update Shelly Driver Library bundle"
+          default_author: github_actions
