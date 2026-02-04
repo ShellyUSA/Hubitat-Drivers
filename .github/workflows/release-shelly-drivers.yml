@@ -270,6 +270,7 @@ jobs:
             ShellyDriverLibrary/*.groovy
           message: "Release Shelly Drivers ${{ steps.version.outputs.new_version }}"
           tag: "v${{ steps.version.outputs.new_version }}"
+          pull: "--rebase --autostash"
           push: true
 
       - name: Create GitHub Release
