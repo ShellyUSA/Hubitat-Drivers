@@ -289,11 +289,93 @@ jobs:
           files: |
             release-files/*
             ShellyUSA_Driver_Library*.zip
-            resources/version.json
             PackageManifests/**/packageManifest.json
             README.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Package Manifests with release URLs
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+
+          # Create Python script to update package manifests
+          cat > update_manifests.py << 'EOF'
+          import json
+          import sys
+          from pathlib import Path
+
+          new_version = sys.argv[1]
+
+          # Find all packageManifest.json files
+          manifest_dir = Path('PackageManifests')
+          manifest_files = list(manifest_dir.rglob('packageManifest.json'))
+
+          if not manifest_files:
+              print("No package manifest files found!")
+              sys.exit(1)
+
+          for manifest_path in manifest_files:
+              print(f"Updating {manifest_path}...")
+
+              with open(manifest_path, 'r') as f:
+                  data = json.load(f)
+
+              # Update version
+              data['version'] = new_version
+
+              # Update all location URLs to point to GitHub release assets
+              release_base_url = f'https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v{new_version}'
+
+              # Library version matches driver version (released together)
+              lib_version = new_version
+
+              # Update bundle locations to point to versioned release asset
+              if 'bundles' in data:
+                  for bundle in data['bundles']:
+                      if 'location' in bundle:
+                          bundle['location'] = f'{release_base_url}/ShellyUSA_Driver_Library-v{lib_version}.zip'
+                          print(f'Updated bundle location to: {bundle["location"]}')
+
+              # Update app locations to point to versioned release assets
+              if 'apps' in data:
+                  for app in data['apps']:
+                      if 'location' in app:
+                          # Extract base filename without extension
+                          old_filename = app['location'].split('/')[-1]
+                          filename_noext = old_filename.replace('.groovy', '')
+                          versioned_filename = f'{filename_noext}-v{new_version}.groovy'
+                          app['location'] = f'{release_base_url}/{versioned_filename}'
+                          print(f'Updated app location: {old_filename} -> {versioned_filename}')
+
+              # Update driver locations to point to versioned release assets
+              if 'drivers' in data:
+                  for driver in data['drivers']:
+                      if 'location' in driver:
+                          # Extract base filename without extension
+                          old_filename = driver['location'].split('/')[-1]
+                          filename_noext = old_filename.replace('.groovy', '')
+                          versioned_filename = f'{filename_noext}-v{new_version}.groovy'
+                          driver['location'] = f'{release_base_url}/{versioned_filename}'
+                          print(f'Updated driver location: {old_filename} -> {versioned_filename}')
+
+              # Write updated manifest
+              with open(manifest_path, 'w') as f:
+                  json.dump(data, f, indent=2)
+
+              print(f"✅ Updated {manifest_path} to version {new_version}")
+
+          print(f"\nSuccessfully updated {len(manifest_files)} package manifest(s)")
+          EOF
+
+          python3 update_manifests.py "$NEW_VERSION"
+
+      - name: Commit updated package manifests
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: "PackageManifests/**/packageManifest.json"
+          message: "Update package manifests to v${{ steps.version.outputs.new_version }} with release URLs"
+          pull: "--rebase --autostash"
+          push: true
 
       - name: Create Discussion Announcement
         uses: actions/github-script@v7
