@@ -183,12 +183,8 @@ jobs:
             local basename_val=$(basename "$file")
             local filename_noext="${basename_val%.groovy}"
             local versioned_name="${filename_noext}-v${NEW_VERSION}.groovy"
-
-            # URL-encode special characters in the filename (& -> %26)
-            local safe_name="${versioned_name//&/%26}"
-
-            cp "$file" "release-files/$safe_name"
-            echo "Created versioned file: $safe_name"
+            cp "$file" "release-files/$versioned_name"
+            echo "Created versioned file: $versioned_name"
           }
 
           if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "WebhookWebsocket" ]; then
@@ -240,17 +236,33 @@ jobs:
           push: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ steps.version.outputs.new_version }}
-          name: Shelly Drivers ${{ steps.version.outputs.new_version }}
-          body_path: changelog.md
-          draft: false
-          prerelease: false
-          files: |
-            release-files/*
-            ShellyUSA_Driver_Library-v${{ steps.version.outputs.new_version }}.zip
-            PackageManifests/**/packageManifest.json
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          TAG="v${NEW_VERSION}"
+
+          gh release create "$TAG" \
+            --title "Shelly Drivers ${NEW_VERSION}" \
+            --notes-file changelog.md
+
+          echo "Release $TAG created, uploading assets..."
+
+          for file in release-files/*; do
+            if [ -f "$file" ]; then
+              echo "Uploading: $file"
+              gh release upload "$TAG" "$file" --clobber
+            fi
+          done
+
+          gh release upload "$TAG" "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" --clobber
+
+          for manifest in PackageManifests/*/packageManifest.json; do
+            if [ -f "$manifest" ]; then
+              echo "Uploading: $manifest"
+              gh release upload "$TAG" "$manifest" --clobber
+            fi
+          done
+
+          echo "All release assets uploaded"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
