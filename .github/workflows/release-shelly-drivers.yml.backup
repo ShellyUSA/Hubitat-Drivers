@@ -1,0 +1,506 @@
+name: Release Shelly Drivers
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_increment:
+        description: "Version increment type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+      release_notes:
+        description: "Release notes for this version (summarize changes)"
+        required: true
+        type: string
+      driver_category:
+        description: "Driver category to release (or 'all')"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - WebhookWebsocket
+          - Bluetooth
+          - ComponentDrivers
+
+jobs:
+  release:
+    name: Release Shelly Drivers
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Get current version and calculate new version
+        id: version
+        run: |
+          # Extract current version from any driver file's version comment
+          CURRENT_VERSION=$(grep -m 1 "Version:" WebhookWebsocket/*.groovy | head -1 | sed -n 's/.*Version: \([0-9.]*\).*/\1/p' || echo "2.0.0")
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+          # Parse version
+          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+
+          # Increment based on input
+          if [ "${{ github.event.inputs.version_increment }}" == "minor" ]; then
+            minor=$((minor + 1))
+            patch=0
+          else
+            patch=$((patch + 1))
+          fi
+
+          NEW_VERSION="${major}.${minor}.${patch}"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Incrementing from $CURRENT_VERSION to $NEW_VERSION"
+
+      - name: Update driver versions
+        run: |
+          OLD_VERSION="${{ steps.version.outputs.current_version }}"
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          CATEGORY="${{ github.event.inputs.driver_category }}"
+
+          echo "Updating version from $OLD_VERSION to $NEW_VERSION for category: $CATEGORY"
+
+          # Function to update version comment in a driver file
+          update_driver_version() {
+            local file=$1
+            if [ -f "$file" ]; then
+              # Update version in comment block at top of file
+              sed -i "s/Version: $OLD_VERSION/Version: $NEW_VERSION/" "$file"
+              echo "Updated $file"
+            fi
+          }
+
+          # Update based on category (only non-legacy folders)
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "WebhookWebsocket" ]; then
+            for file in WebhookWebsocket/*.groovy; do
+              update_driver_version "$file"
+            done
+          fi
+
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "Bluetooth" ]; then
+            for file in Bluetooth/*.groovy; do
+              update_driver_version "$file"
+            done
+          fi
+
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "ComponentDrivers" ]; then
+            for file in ComponentDrivers/*.groovy; do
+              update_driver_version "$file"
+            done
+          fi
+
+          # Always update library version
+          sed -i "s/Version: $OLD_VERSION/Version: $NEW_VERSION/" ShellyDriverLibrary/*.groovy
+
+          echo "Version update complete"
+
+      - name: Create library bundle with updated version
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          echo "Creating Shelly Driver Library bundle v$NEW_VERSION..."
+
+          cd ShellyDriverLibrary
+
+          # Create versioned bundle with NEW version (already updated in files)
+          zip -r ../ShellyUSA_Driver_Library-v${NEW_VERSION}.zip *.groovy *.txt
+
+          # Also create unversioned bundle for backward compatibility
+          zip -r ../ShellyUSA_Driver_Library.zip *.groovy *.txt
+
+          cd ..
+
+          # Verify bundles were created
+          if [ -f "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" ]; then
+            echo "✅ Versioned bundle created: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+            ls -lh ShellyUSA_Driver_Library*.zip
+            echo ""
+            echo "Bundle contents:"
+            unzip -l "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+          else
+            echo "❌ ERROR: Failed to create versioned bundle!"
+            exit 1
+          fi
+
+      - name: Generate changelog from git commits
+        id: changelog
+        run: |
+          OLD_VERSION="${{ steps.version.outputs.current_version }}"
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          CATEGORY="${{ github.event.inputs.driver_category }}"
+
+          # Try to find the last version tag
+          LAST_TAG=$(git tag -l "v${OLD_VERSION}" | head -n 1)
+
+          if [ -z "$LAST_TAG" ]; then
+            COMMIT_RANGE="--since='30 days ago'"
+            echo "No previous tag found, using commits from last 30 days"
+          else
+            COMMIT_RANGE="${LAST_TAG}..HEAD"
+            echo "Using commits since ${LAST_TAG}"
+          fi
+
+          # Generate changelog based on category (only non-legacy folders)
+          if [ "$CATEGORY" == "all" ]; then
+            CHANGELOG=$(git log $COMMIT_RANGE --pretty=format:"- %s" --no-merges -- \
+              WebhookWebsocket/ \
+              Bluetooth/ \
+              ComponentDrivers/ \
+              ShellyDriverLibrary/ \
+              PackageManifests/ || echo "- Release ${NEW_VERSION}")
+          else
+            CHANGELOG=$(git log $COMMIT_RANGE --pretty=format:"- %s" --no-merges -- \
+              "${CATEGORY}/" \
+              "ShellyDriverLibrary/" || echo "- Release ${NEW_VERSION}")
+          fi
+
+          # Save changelog to file
+          cat > changelog.md << EOF
+## Shelly Drivers ${NEW_VERSION}
+
+### Release Notes
+${{ github.event.inputs.release_notes }}
+
+### Category
+${CATEGORY}
+
+### Changes in this release
+${CHANGELOG}
+
+### Installation
+- Download the driver files from the release assets
+- Install via Hubitat Package Manager (HPM) - recommended
+- Or manually copy the code to Hubitat Drivers Code section
+
+### Documentation
+See the [README](https://github.com/${{ github.repository }}) for detailed installation and usage instructions.
+EOF
+
+          echo "Changelog generated"
+
+      - name: Create versioned copies of driver files
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          CATEGORY="${{ github.event.inputs.driver_category }}"
+
+          mkdir -p release-files
+
+          # Function to create versioned copy
+          version_file() {
+            local file=$1
+            local basename=$(basename "$file")
+            local dirname=$(dirname "$file")
+            local filename_noext="${basename%.groovy}"
+            local versioned_name="${filename_noext}-v${NEW_VERSION}.groovy"
+
+            # Copy to release-files with versioned name
+            cp "$file" "release-files/$versioned_name"
+            echo "Created versioned file: $versioned_name"
+          }
+
+          # Version files based on category (only non-legacy folders)
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "WebhookWebsocket" ]; then
+            for file in WebhookWebsocket/*.groovy; do
+              [ -f "$file" ] && version_file "$file"
+            done
+          fi
+
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "Bluetooth" ]; then
+            for file in Bluetooth/*.groovy; do
+              [ -f "$file" ] && version_file "$file"
+            done
+          fi
+
+          if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "ComponentDrivers" ]; then
+            for file in ComponentDrivers/*.groovy; do
+              [ -f "$file" ] && version_file "$file"
+            done
+          fi
+
+          # Always version the library
+          for file in ShellyDriverLibrary/*.groovy; do
+            [ -f "$file" ] && version_file "$file"
+          done
+
+          echo "All driver files versioned and ready for release"
+
+      - name: Pull latest changes before committing
+        run: |
+          git config pull.rebase true
+          git pull origin master || echo "No changes to pull"
+
+      - name: Commit version updates
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: |
+            WebhookWebsocket/*.groovy
+            Bluetooth/*.groovy
+            ComponentDrivers/*.groovy
+            ShellyDriverLibrary/*.groovy
+            ShellyUSA_Driver_Library*.zip
+          message: "Release Shelly Drivers ${{ steps.version.outputs.new_version }}"
+          tag: "v${{ steps.version.outputs.new_version }}"
+          pull: "--rebase --autostash"
+          push: true
+
+      - name: Verify release files before creating release
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          echo "Verifying all release files exist..."
+
+          # Check for library bundle
+          if [ ! -f "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" ]; then
+            echo "❌ ERROR: Versioned library bundle not found: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+            echo "Available zip files:"
+            ls -lh *.zip 2>/dev/null || echo "No zip files found in root directory"
+            exit 1
+          else
+            echo "✅ Found library bundle: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+          fi
+
+          # Check for driver files
+          DRIVER_COUNT=$(ls -1 release-files/*.groovy 2>/dev/null | wc -l)
+          if [ "$DRIVER_COUNT" -eq 0 ]; then
+            echo "❌ ERROR: No driver files found in release-files/"
+            exit 1
+          else
+            echo "✅ Found $DRIVER_COUNT driver/app files in release-files/"
+          fi
+
+          # List all files that will be included in the release
+          echo ""
+          echo "Files to be released:"
+          echo "---"
+          ls -lh ShellyUSA_Driver_Library*.zip
+          echo ""
+          echo "Driver/App files (showing first 10):"
+          ls -1 release-files/*.groovy | head -10
+          REMAINING=$(ls -1 release-files/*.groovy | wc -l)
+          if [ "$REMAINING" -gt 10 ]; then
+            echo "... and $((REMAINING - 10)) more files"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.new_version }}
+          name: Shelly Drivers ${{ steps.version.outputs.new_version }}
+          body_path: changelog.md
+          draft: false
+          prerelease: false
+          files: |
+            release-files/*
+            ShellyUSA_Driver_Library*.zip
+            PackageManifests/**/packageManifest.json
+            README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Package Manifests with release URLs
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+
+          # Create Python script to update package manifests
+          cat > update_manifests.py << 'EOF'
+          import json
+          import sys
+          import re
+          from pathlib import Path
+
+          new_version = sys.argv[1]
+
+          # Find all packageManifest.json files
+          manifest_dir = Path('PackageManifests')
+          manifest_files = list(manifest_dir.rglob('packageManifest.json'))
+
+          if not manifest_files:
+              print("No package manifest files found!")
+              sys.exit(1)
+
+          # Function to strip existing version suffix from filename
+          def strip_version_suffix(filename):
+              """Remove -vX.Y.Z suffix from filename before .groovy extension"""
+              # Match pattern like: SomeDriver-v1.2.3.groovy -> SomeDriver.groovy
+              return re.sub(r'-v\d+\.\d+\.\d+\.groovy$', '.groovy', filename)
+
+          for manifest_path in manifest_files:
+              print(f"Updating {manifest_path}...")
+
+              with open(manifest_path, 'r') as f:
+                  data = json.load(f)
+
+              # Update version
+              data['version'] = new_version
+
+              # Update release notes to point to GitHub release page
+              release_url = f'https://github.com/ShellyUSA/Hubitat-Drivers/releases/tag/v{new_version}'
+              data['releaseNotes'] = release_url
+              print(f'Updated release notes to: {release_url}')
+
+              # Update all location URLs to point to GitHub release assets
+              release_base_url = f'https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v{new_version}'
+
+              # Library version matches driver version (released together)
+              lib_version = new_version
+
+              # Update bundle locations to point to versioned release asset
+              if 'bundles' in data:
+                  for bundle in data['bundles']:
+                      if 'location' in bundle:
+                          bundle['location'] = f'{release_base_url}/ShellyUSA_Driver_Library-v{lib_version}.zip'
+                          print(f'Updated bundle location to: {bundle["location"]}')
+
+              # Update app locations to point to versioned release assets
+              if 'apps' in data:
+                  for app in data['apps']:
+                      if 'location' in app:
+                          # Extract base filename without extension
+                          old_filename = app['location'].split('/')[-1]
+                          # Strip any existing version suffix
+                          clean_filename = strip_version_suffix(old_filename)
+                          # Add new version suffix
+                          filename_noext = clean_filename.replace('.groovy', '')
+                          versioned_filename = f'{filename_noext}-v{new_version}.groovy'
+                          app['location'] = f'{release_base_url}/{versioned_filename}'
+                          print(f'Updated app location: {old_filename} -> {versioned_filename}')
+
+              # Update driver locations to point to versioned release assets
+              if 'drivers' in data:
+                  for driver in data['drivers']:
+                      if 'location' in driver:
+                          # Extract base filename without extension
+                          old_filename = driver['location'].split('/')[-1]
+                          # Strip any existing version suffix
+                          clean_filename = strip_version_suffix(old_filename)
+                          # Add new version suffix
+                          filename_noext = clean_filename.replace('.groovy', '')
+                          versioned_filename = f'{filename_noext}-v{new_version}.groovy'
+                          driver['location'] = f'{release_base_url}/{versioned_filename}'
+                          print(f'Updated driver location: {old_filename} -> {versioned_filename}')
+
+              # Write updated manifest
+              with open(manifest_path, 'w') as f:
+                  json.dump(data, f, indent=2)
+
+              print(f"✅ Updated {manifest_path} to version {new_version}")
+
+          print(f"\nSuccessfully updated {len(manifest_files)} package manifest(s)")
+          EOF
+
+          python3 update_manifests.py "$NEW_VERSION"
+
+      - name: Commit updated package manifests
+        uses: EndBug/add-and-commit@v9
+        with:
+          add: "PackageManifests/**/packageManifest.json"
+          message: "Update package manifests to v${{ steps.version.outputs.new_version }} with release URLs"
+          pull: "--rebase --autostash"
+          push: true
+
+      - name: Create Discussion Announcement
+        uses: actions/github-script@v7
+        continue-on-error: true
+        with:
+          script: |
+            const fs = require('fs');
+            const changelog = fs.readFileSync('changelog.md', 'utf8');
+
+            try {
+              const categories = await github.graphql(`
+                query($owner: String!, $repo: String!) {
+                  repository(owner: $owner, name: $repo) {
+                    discussionCategories(first: 10) {
+                      nodes {
+                        id
+                        name
+                      }
+                    }
+                  }
+                }
+              `, {
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
+
+              const announcementCategory = categories.repository.discussionCategories.nodes.find(
+                cat => cat.name === 'Announcements'
+              );
+
+              if (!announcementCategory) {
+                console.log('Announcements category not found, skipping discussion creation');
+                return;
+              }
+
+              await github.graphql(`
+                mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+                  createDiscussion(input: {
+                    repositoryId: $repositoryId,
+                    categoryId: $categoryId,
+                    title: $title,
+                    body: $body
+                  }) {
+                    discussion {
+                      url
+                    }
+                  }
+                }
+              `, {
+                repositoryId: context.payload.repository.node_id,
+                categoryId: announcementCategory.id,
+                title: `Shelly Drivers ${{ steps.version.outputs.new_version }} Released`,
+                body: changelog
+              });
+
+              console.log('Discussion announcement created successfully');
+            } catch (error) {
+              console.log('Could not create discussion:', error.message);
+            }
+
+      - name: Summary
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << EOF
+          # Release Complete! 🎉
+
+          ## Version
+          - **From:** ${{ steps.version.outputs.current_version }}
+          - **To:** ${{ steps.version.outputs.new_version }}
+
+          ## Category
+          **${{ github.event.inputs.driver_category }}**
+
+          ## What was done
+          1. ✅ Updated version comments in all driver files
+          2. ✅ Created library bundle with new version
+          3. ✅ Created git tag: v${{ steps.version.outputs.new_version }}
+          4. ✅ Created GitHub Release with versioned driver files
+          5. ✅ Committed version updates and library bundle back to repository
+          6. ✅ Updated package manifests with release URLs
+          7. ✅ Attempted to create discussion announcement
+
+          ## Next Steps
+          - Verify the release at: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.new_version }}
+          - Run "Update Package Manifests" workflow with version ${{ steps.version.outputs.new_version }}
+          - Test the updated drivers on your Hubitat hub
+          - Announce the release to the Hubitat community
+
+          ## Files Released
+          - All driver files from selected category (versioned)
+          - Shelly Driver Library (versioned bundle)
+          - Package manifests
+          - README.md
+          EOF
