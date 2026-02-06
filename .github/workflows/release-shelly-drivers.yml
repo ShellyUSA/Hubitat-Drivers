@@ -110,74 +110,31 @@ jobs:
 
           echo "Version update complete"
 
-      - name: Trigger library bundle workflow
-        uses: actions/github-script@v7
-        continue-on-error: true
-        with:
-          script: |
-            try {
-              await github.rest.actions.createWorkflowDispatch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'ShellyUSA_Driver_Library.yml',
-                ref: 'master'
-              });
-              console.log('Triggered library bundle workflow');
-
-              // Wait for it to complete
-              let attempts = 0;
-              const maxAttempts = 30;
-
-              while (attempts < maxAttempts) {
-                await new Promise(resolve => setTimeout(resolve, 5000));
-
-                const runs = await github.rest.actions.listWorkflowRuns({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  workflow_id: 'ShellyUSA_Driver_Library.yml',
-                  branch: 'master',
-                  per_page: 5
-                });
-
-                const latestRun = runs.data.workflow_runs[0];
-
-                if (latestRun && latestRun.status === 'completed') {
-                  if (latestRun.conclusion === 'success') {
-                    console.log('Library bundle workflow completed successfully');
-                    break;
-                  } else {
-                    console.log(`Library bundle workflow failed: ${latestRun.conclusion}`);
-                    break;
-                  }
-                }
-
-                attempts++;
-                console.log(`Waiting for library bundle... (${attempts}/${maxAttempts})`);
-              }
-            } catch (error) {
-              console.log('Could not trigger library bundle workflow:', error.message);
-            }
-
-      - name: Pull library bundle from repository
+      - name: Create library bundle with updated version
         run: |
-          echo "Pulling library bundle changes from repository..."
-          git config pull.rebase true
-          git pull origin master || echo "No changes to pull"
-
-          # Verify the versioned bundle was pulled
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
-          if [ -f "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" ]; then
-            echo "✅ Found versioned library bundle: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
-            ls -lh ShellyUSA_Driver_Library*.zip
-          else
-            echo "⚠️  WARNING: Versioned library bundle not found. Release may fail."
-            echo "Looking for any library bundles..."
-            ls -lh ShellyUSA_Driver_Library*.zip || echo "No library bundles found!"
-          fi
+          echo "Creating Shelly Driver Library bundle v$NEW_VERSION..."
 
-      - name: Generate changelog from git commits
-        id: changelog
-        run: |
+          cd ShellyDriverLibrary
+
+          # Create versioned bundle with NEW version (already updated in files)
+          zip -r ../ShellyUSA_Driver_Library-v${NEW_VERSION}.zip *.groovy *.txt
+
+          # Also create unversioned bundle for backward compatibility
+          zip -r ../ShellyUSA_Driver_Library.zip *.groovy *.txt
+
+          cd ..
+
+          # Verify bundles were created
+          if [ -f "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" ]; then
+            echo "✅ Versioned bundle created: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+            ls -lh ShellyUSA_Driver_Library*.zip
+            echo ""
+            echo "Bundle contents:"
+            unzip -l "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+          else
+            echo "❌ ERROR: Failed to create versioned bundle!"
+            exit 1
           OLD_VERSION="${{ steps.version.outputs.current_version }}"
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
           CATEGORY="${{ github.event.inputs.driver_category }}"
@@ -290,6 +247,7 @@ jobs:
             Bluetooth/*.groovy
             ComponentDrivers/*.groovy
             ShellyDriverLibrary/*.groovy
+            ShellyUSA_Driver_Library*.zip
           message: "Release Shelly Drivers ${{ steps.version.outputs.new_version }}"
           tag: "v${{ steps.version.outputs.new_version }}"
           pull: "--rebase --autostash"
@@ -522,11 +480,12 @@ jobs:
 
           ## What was done
           1. ✅ Updated version comments in all driver files
-          2. ✅ Triggered library bundle workflow
+          2. ✅ Created library bundle with new version
           3. ✅ Created git tag: v${{ steps.version.outputs.new_version }}
           4. ✅ Created GitHub Release with versioned driver files
-          5. ✅ Committed version updates back to repository
-          6. ✅ Attempted to create discussion announcement
+          5. ✅ Committed version updates and library bundle back to repository
+          6. ✅ Updated package manifests with release URLs
+          7. ✅ Attempted to create discussion announcement
 
           ## Next Steps
           - Verify the release at: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.new_version }}
