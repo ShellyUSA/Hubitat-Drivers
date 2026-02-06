@@ -3,7 +3,6 @@
 
 import json
 import sys
-import urllib.parse
 from pathlib import Path
 
 
@@ -26,11 +25,10 @@ def main():
         for section in ('apps', 'drivers'):
             for entry in data.get(section, []):
                 fn = entry['location'].split('/')[-1]
-                fn_decoded = urllib.parse.unquote(fn)
-                if Path(f'release-files/{fn}').exists() or Path(f'release-files/{fn_decoded}').exists():
-                    print(f"  OK {section}: {fn}")
-                else:
+                if not Path(f'release-files/{fn}').exists():
                     errors.append(f"Missing {section}: {fn}")
+                else:
+                    print(f"  OK {section}: {fn}")
                 checked += 1
 
     print(f"\nChecked {checked} files")

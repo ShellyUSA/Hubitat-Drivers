@@ -12,6 +12,11 @@ def strip_version_suffix(filename):
     return re.sub(r'-v\d+\.\d+\.\d+(?=\.(groovy|zip)$)', '', filename)
 
 
+def sanitize_filename(filename):
+    """Replace & and %26 with . to match GitHub Release asset name mangling."""
+    return filename.replace('%26', '.').replace('&', '.')
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: update_manifests.py <new_version>")
@@ -52,6 +57,7 @@ def main():
                     if 'location' in entry:
                         old_filename = entry['location'].split('/')[-1]
                         clean = strip_version_suffix(old_filename)
+                        clean = sanitize_filename(clean)
                         name_part, ext = clean.rsplit('.', 1)
                         new_filename = f'{name_part}-v{new_version}.{ext}'
                         entry['location'] = f'{release_base_url}/{new_filename}'
