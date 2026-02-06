@@ -135,6 +135,11 @@ jobs:
           else
             echo "❌ ERROR: Failed to create versioned bundle!"
             exit 1
+          fi
+
+      - name: Generate changelog from git commits
+        id: changelog
+        run: |
           OLD_VERSION="${{ steps.version.outputs.current_version }}"
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
           CATEGORY="${{ github.event.inputs.driver_category }}"
