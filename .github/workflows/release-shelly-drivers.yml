@@ -185,6 +185,13 @@ jobs:
             local versioned_name="${filename_noext}-v${NEW_VERSION}.groovy"
             cp "$file" "release-files/$versioned_name"
             echo "Created versioned file: $versioned_name"
+
+            # If filename contains &, also create a URL-encoded copy (%26)
+            if [[ "$versioned_name" == *'&'* ]]; then
+              local encoded_name="${versioned_name//&/%26}"
+              cp "$file" "release-files/$encoded_name"
+              echo "Created URL-encoded copy: $encoded_name"
+            fi
           }
 
           if [ "$CATEGORY" == "all" ] || [ "$CATEGORY" == "WebhookWebsocket" ]; then
