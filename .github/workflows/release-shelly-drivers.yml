@@ -158,6 +158,23 @@ jobs:
               console.log('Could not trigger library bundle workflow:', error.message);
             }
 
+      - name: Pull library bundle from repository
+        run: |
+          echo "Pulling library bundle changes from repository..."
+          git config pull.rebase true
+          git pull origin master || echo "No changes to pull"
+
+          # Verify the versioned bundle was pulled
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          if [ -f "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" ]; then
+            echo "✅ Found versioned library bundle: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+            ls -lh ShellyUSA_Driver_Library*.zip
+          else
+            echo "⚠️  WARNING: Versioned library bundle not found. Release may fail."
+            echo "Looking for any library bundles..."
+            ls -lh ShellyUSA_Driver_Library*.zip || echo "No library bundles found!"
+          fi
+
       - name: Generate changelog from git commits
         id: changelog
         run: |
@@ -278,6 +295,43 @@ jobs:
           pull: "--rebase --autostash"
           push: true
 
+      - name: Verify release files before creating release
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          echo "Verifying all release files exist..."
+
+          # Check for library bundle
+          if [ ! -f "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" ]; then
+            echo "❌ ERROR: Versioned library bundle not found: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+            echo "Available zip files:"
+            ls -lh *.zip 2>/dev/null || echo "No zip files found in root directory"
+            exit 1
+          else
+            echo "✅ Found library bundle: ShellyUSA_Driver_Library-v${NEW_VERSION}.zip"
+          fi
+
+          # Check for driver files
+          DRIVER_COUNT=$(ls -1 release-files/*.groovy 2>/dev/null | wc -l)
+          if [ "$DRIVER_COUNT" -eq 0 ]; then
+            echo "❌ ERROR: No driver files found in release-files/"
+            exit 1
+          else
+            echo "✅ Found $DRIVER_COUNT driver/app files in release-files/"
+          fi
+
+          # List all files that will be included in the release
+          echo ""
+          echo "Files to be released:"
+          echo "---"
+          ls -lh ShellyUSA_Driver_Library*.zip
+          echo ""
+          echo "Driver/App files (showing first 10):"
+          ls -1 release-files/*.groovy | head -10
+          REMAINING=$(ls -1 release-files/*.groovy | wc -l)
+          if [ "$REMAINING" -gt 10 ]; then
+            echo "... and $((REMAINING - 10)) more files"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
@@ -302,6 +356,7 @@ jobs:
           cat > update_manifests.py << 'EOF'
           import json
           import sys
+          import re
           from pathlib import Path
 
           new_version = sys.argv[1]
@@ -313,6 +368,12 @@ jobs:
           if not manifest_files:
               print("No package manifest files found!")
               sys.exit(1)
+
+          # Function to strip existing version suffix from filename
+          def strip_version_suffix(filename):
+              """Remove -vX.Y.Z suffix from filename before .groovy extension"""
+              # Match pattern like: SomeDriver-v1.2.3.groovy -> SomeDriver.groovy
+              return re.sub(r'-v\d+\.\d+\.\d+\.groovy$', '.groovy', filename)
 
           for manifest_path in manifest_files:
               print(f"Updating {manifest_path}...")
@@ -347,7 +408,10 @@ jobs:
                       if 'location' in app:
                           # Extract base filename without extension
                           old_filename = app['location'].split('/')[-1]
-                          filename_noext = old_filename.replace('.groovy', '')
+                          # Strip any existing version suffix
+                          clean_filename = strip_version_suffix(old_filename)
+                          # Add new version suffix
+                          filename_noext = clean_filename.replace('.groovy', '')
                           versioned_filename = f'{filename_noext}-v{new_version}.groovy'
                           app['location'] = f'{release_base_url}/{versioned_filename}'
                           print(f'Updated app location: {old_filename} -> {versioned_filename}')
@@ -358,7 +422,10 @@ jobs:
                       if 'location' in driver:
                           # Extract base filename without extension
                           old_filename = driver['location'].split('/')[-1]
-                          filename_noext = old_filename.replace('.groovy', '')
+                          # Strip any existing version suffix
+                          clean_filename = strip_version_suffix(old_filename)
+                          # Add new version suffix
+                          filename_noext = clean_filename.replace('.groovy', '')
                           versioned_filename = f'{filename_noext}-v{new_version}.groovy'
                           driver['location'] = f'{release_base_url}/{versioned_filename}'
                           print(f'Updated driver location: {old_filename} -> {versioned_filename}')

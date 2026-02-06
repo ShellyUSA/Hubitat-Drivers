@@ -42,6 +42,7 @@ jobs:
           import json
           import sys
           import os
+          import re
           from pathlib import Path
 
           new_version = sys.argv[1]
@@ -55,6 +56,12 @@ jobs:
           if not manifest_files:
               print("No package manifest files found!")
               sys.exit(1)
+
+          # Function to strip existing version suffix from filename
+          def strip_version_suffix(filename):
+              """Remove -vX.Y.Z suffix from filename before .groovy extension"""
+              # Match pattern like: SomeDriver-v1.2.3.groovy -> SomeDriver.groovy
+              return re.sub(r'-v\d+\.\d+\.\d+\.groovy$', '.groovy', filename)
 
           for manifest_path in manifest_files:
               print(f"Updating {manifest_path}...")
@@ -96,7 +103,10 @@ jobs:
                       if 'location' in app:
                           # Extract base filename without extension
                           old_filename = app['location'].split('/')[-1]
-                          filename_noext = old_filename.replace('.groovy', '')
+                          # Strip any existing version suffix
+                          clean_filename = strip_version_suffix(old_filename)
+                          # Add new version suffix
+                          filename_noext = clean_filename.replace('.groovy', '')
                           versioned_filename = f'{filename_noext}-v{new_version}.groovy'
                           app['location'] = f'{release_base_url}/{versioned_filename}'
                           print(f'Updated app location: {old_filename} -> {versioned_filename}')
@@ -107,7 +117,10 @@ jobs:
                       if 'location' in driver:
                           # Extract base filename without extension
                           old_filename = driver['location'].split('/')[-1]
-                          filename_noext = old_filename.replace('.groovy', '')
+                          # Strip any existing version suffix
+                          clean_filename = strip_version_suffix(old_filename)
+                          # Add new version suffix
+                          filename_noext = clean_filename.replace('.groovy', '')
                           versioned_filename = f'{filename_noext}-v{new_version}.groovy'
                           driver['location'] = f'{release_base_url}/{versioned_filename}'
                           print(f'Updated driver location: {old_filename} -> {versioned_filename}')
