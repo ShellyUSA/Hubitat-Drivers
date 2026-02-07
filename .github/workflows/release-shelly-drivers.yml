@@ -3,8 +3,13 @@ name: Release Shelly Drivers
 on:
   workflow_dispatch:
     inputs:
+      version:
+        description: "Explicit version to release (e.g. 3.1.0). Leave blank to auto-increment."
+        required: false
+        default: ""
+        type: string
       version_increment:
-        description: "Version increment type"
+        description: "Version increment type (ignored when explicit version is set)"
         required: true
         default: "patch"
         type: choice
@@ -52,18 +57,29 @@ jobs:
           CURRENT_VERSION=$(grep -m 1 "Version:" WebhookWebsocket/*.groovy | head -1 | sed -n 's/.*Version: \([0-9.]*\).*/\1/p' || echo "2.0.0")
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
-          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
-
-          if [ "${{ github.event.inputs.version_increment }}" == "minor" ]; then
-            minor=$((minor + 1))
-            patch=0
+          EXPLICIT_VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$EXPLICIT_VERSION" ]; then
+            if ! echo "$EXPLICIT_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "ERROR: version must be in MAJOR.MINOR.PATCH format (e.g. 3.1.0)"
+              exit 1
+            fi
+            NEW_VERSION="$EXPLICIT_VERSION"
+            echo "Using explicit version: $NEW_VERSION"
           else
-            patch=$((patch + 1))
+            IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+
+            if [ "${{ github.event.inputs.version_increment }}" == "minor" ]; then
+              minor=$((minor + 1))
+              patch=0
+            else
+              patch=$((patch + 1))
+            fi
+
+            NEW_VERSION="${major}.${minor}.${patch}"
+            echo "Incrementing from $CURRENT_VERSION to $NEW_VERSION"
           fi
 
-          NEW_VERSION="${major}.${minor}.${patch}"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "Incrementing from $CURRENT_VERSION to $NEW_VERSION"
 
       - name: Update driver versions
         run: |
