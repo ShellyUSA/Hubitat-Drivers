@@ -216,10 +216,63 @@ void refresh() {
     if(getWebsocketIsConnected() == true) {parentSendWsCommand(shellyGetStatusCommand())}
     else {parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')}
   }
+  refreshPlugsUiIfPresent()
   tryRefreshDeviceSpecificInfo()
 }
 
 void tryRefreshDeviceSpecificInfo() {try{refreshDeviceSpecificInfo()} catch(ex) {}}
+
+@CompileStatic
+void refreshPlugsUiIfPresent() {
+  ChildDeviceWrapper child = getPlugsUiRgbChild()
+  if(child != null) {
+    logDebug('Refreshing PLUGS_UI RGB LED child device...')
+    parentPostCommandAsync(plugsUiGetConfigCommand(), 'refreshPlugsUiCallback')
+  }
+}
+
+@CompileStatic
+void refreshPlugsUiCallback(AsyncResponse response, Map data = null) {
+  logTrace('Processing PLUGS_UI GetConfig callback')
+  if(responseIsValid(response) == true) {
+    Map json = (LinkedHashMap)response.getJson()
+    logTrace("refreshPlugsUiCallback JSON: ${prettyJson(json)}")
+    LinkedHashMap result = (LinkedHashMap)json?.result
+    if(result != null) {
+      LinkedHashMap leds = (LinkedHashMap)result?.get('leds')
+      LinkedHashMap colors = (LinkedHashMap)leds?.get('colors')
+      LinkedHashMap sw0 = (LinkedHashMap)colors?.get('switch:0')
+      LinkedHashMap onState = (LinkedHashMap)sw0?.get('on')
+
+      if(onState != null) {
+        List<Integer> rgbShelly = (List<Integer>)onState?.get('rgb')
+        Integer brightnessShelly = onState?.get('brightness') as Integer
+
+        if(rgbShelly != null && rgbShelly.size() == 3) {
+          // Convert from Shelly RGB (0-100) to Hubitat RGB (0-255)
+          Integer r = Math.round((rgbShelly[0] * 255 / 100) as Double) as Integer
+          Integer g = Math.round((rgbShelly[1] * 255 / 100) as Double) as Integer
+          Integer b = Math.round((rgbShelly[2] * 255 / 100) as Double) as Integer
+
+          ChildDeviceWrapper child = getPlugsUiRgbChild()
+          if(child != null) {
+            setRGBAttribute(r, g, b, child)
+            setColorAttribute(r, g, b, child)
+            setColorNameAttribute(r, g, b, child)
+            setHueSaturationAttributes(r, g, b, child)
+
+            if(brightnessShelly != null) {
+              setLevelAttribute(brightnessShelly, child)
+              String switchState = brightnessShelly > 0 ? 'on' : 'off'
+              setSwitchAttribute(switchState, child)
+            }
+            logDebug("Updated PLUGS_UI RGB LED: rgb=[${r},${g},${b}], brightness=${brightnessShelly}")
+          }
+        }
+      }
+    }
+  }
+}
 
 
 /* #endregion */
@@ -343,6 +396,8 @@ void getPreferencesFromShellyDevice() {
       Set<String> lights = shellyGetConfigResult.keySet().findAll{it.startsWith('light')}
       Set<String> rgbs = shellyGetConfigResult.keySet().findAll{it.startsWith('rgb:')}
       Set<String> rgbws = shellyGetConfigResult.keySet().findAll{it.startsWith('rgbw')}
+      Set<String> illuminances = shellyGetConfigResult.keySet().findAll{it.startsWith('illuminance')}
+      Boolean hasPlugsUi = shellyGetConfigResult.keySet().any{it == 'plugs_ui'}
 
       logDebug("Found Switches: ${switches}")
       logDebug("Found Inputs: ${inputs}")
@@ -355,6 +410,8 @@ void getPreferencesFromShellyDevice() {
       logDebug("Found Lights: ${lights}")
       logDebug("Found RGBs: ${rgbs}")
       logDebug("Found RGBWs: ${rgbws}")
+      logDebug("Found Illuminances: ${illuminances}")
+      logDebug("Found PLUGS_UI: ${hasPlugsUi}")
 
       if(switches?.size() > 0) {
         logDebug('One or more switches found, running Switch.GetConfig for each...')
@@ -550,6 +607,35 @@ void getPreferencesFromShellyDevice() {
         }
       } else {
         logDebug('No RGBWs found...')
+      }
+
+      if(illuminances?.size() > 0) {
+        logDebug('One or more Illuminance sensors found...')
+        if(hasNoChildrenNeeded() == false) {
+          illuminances?.each{ illum ->
+            Integer id = illum.tokenize(':')[1] as Integer
+            logTrace("Illuminance ID: ${id}")
+            Map illuminanceGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(illuminanceGetConfigCommand(id))?.result
+            logTrace("Illuminance.GetConfig Result: ${prettyJson(illuminanceGetConfigResult)}")
+            logDebug("Creating child device for illuminance:${id}...")
+            ChildDeviceWrapper child = createChildIlluminance(id)
+            if(illuminanceGetConfigResult != null && illuminanceGetConfigResult.size() > 0) {setChildDevicePreferences(illuminanceGetConfigResult, child)}
+          }
+        } else if(illuminances?.size() == 1) {
+          Integer id = illuminances[0].tokenize(':')[1] as Integer
+          setDeviceDataValue('illuminanceId', "${id}")
+        }
+      } else {
+        logDebug('No Illuminance sensors found...')
+      }
+
+      if(hasPlugsUi == true) {
+        logDebug('PLUGS_UI component found, creating RGB child device for LED control...')
+        Map plugsUiGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(plugsUiGetConfigCommand())?.result
+        logTrace("PLUGS_UI.GetConfig Result: ${prettyJson(plugsUiGetConfigResult)}")
+        ChildDeviceWrapper child = createChildPlugsUiRGB()
+      } else {
+        logDebug('No PLUGS_UI found...')
       }
     } else {
       getPreferencesFromShellyDeviceGen1()
@@ -1280,6 +1366,16 @@ void setIlluminance(Integer illuminance) {
 }
 
 @CompileStatic
+void setIlluminanceLux(BigDecimal lux, Integer id = 0) {
+  ChildDeviceWrapper child = getIlluminanceChildById(id)
+  if(child != null) {
+    child.sendEvent([name: 'illuminance', value: lux, unit: 'lux'])
+  } else if(hasNoChildrenNeeded() == true) {
+    sendDeviceEvent([name: 'illuminance', value: lux, unit: 'lux'])
+  }
+}
+
+@CompileStatic
 void setGasDetectedOn(Boolean tamper) {
   if(tamper == true) {
     sendDeviceEvent([name: 'naturalGas', value: 'detected'])
@@ -1291,6 +1387,43 @@ void setGasDetectedOn(Boolean tamper) {
 @CompileStatic
 void setGasPPM(Integer ppm) {
   sendDeviceEvent([name: 'ppm', value: ppm])
+}
+
+@CompileStatic
+void setPlugsUiRgbColor(List<Integer> rgb, Integer brightness = null) {
+  // Get current config to preserve other settings
+  Map currentConfig = (LinkedHashMap<String, Object>)parentPostCommandSync(plugsUiGetConfigCommand())?.result
+  logTrace("Current PLUGS_UI config: ${prettyJson(currentConfig)}")
+
+  LinkedHashMap ledsConfig = (LinkedHashMap)currentConfig?.get('leds') ?: [:]
+  LinkedHashMap colorsConfig = (LinkedHashMap)ledsConfig?.get('colors') ?: [:]
+  LinkedHashMap sw0Config = (LinkedHashMap)colorsConfig['switch:0'] ?: [:]
+  LinkedHashMap onConfig = (LinkedHashMap)sw0Config?.get('on') ?: [rgb: [0,0,0], brightness: 100]
+  LinkedHashMap offConfig = (LinkedHashMap)sw0Config?.get('off') ?: [rgb: [0,0,0], brightness: 100]
+
+  // Update RGB for both on and off states
+  if(rgb != null) {
+    onConfig['rgb'] = rgb
+    offConfig['rgb'] = rgb
+  }
+
+  // Update brightness if provided
+  if(brightness != null) {
+    onConfig['brightness'] = brightness
+    offConfig['brightness'] = brightness
+  }
+
+  // Build the config to send
+  sw0Config['on'] = onConfig
+  sw0Config['off'] = offConfig
+  colorsConfig['switch:0'] = sw0Config
+  ledsConfig['colors'] = colorsConfig
+  ledsConfig['mode'] = 'switch'  // Set to switch mode to enable RGB control
+
+  LinkedHashMap plugsUiConfig = [leds: ledsConfig]
+
+  logDebug("Setting PLUGS_UI LED color, config: ${prettyJson(plugsUiConfig)}")
+  parentPostCommandAsync(plugsUiSetConfigCommand(plugsUiConfig))
 }
 
 /* #endregion */
@@ -1481,6 +1614,12 @@ Boolean deviceIsInputAnalog(DeviceWrapper dev) {return deviceHasDataValue('input
 
 @CompileStatic
 Boolean deviceIsInput(DeviceWrapper dev) {return deviceIsInputSwitch(dev) || deviceIsInputCount(dev) || deviceIsInputButton(dev) || deviceIsInputAnalog(dev)}
+
+@CompileStatic
+Boolean deviceIsIlluminance(DeviceWrapper dev) {return deviceHasDataValue('illuminanceId', dev)}
+
+@CompileStatic
+Boolean deviceIsPlugsUiRgb(DeviceWrapper dev) {return deviceHasDataValue('plugsUiRgb', dev)}
 
 Boolean childHasAttribute(ChildDeviceWrapper child, String attributeName) {
   return child.hasAttribute(attributeName)
@@ -1860,6 +1999,18 @@ void setColor(Map hls) {
       parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true, rgb: rgbColors]))
     } else if(deviceIsRGBW(thisDevice())) {
       parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true, rgb: rgbColors]))
+    } else if(deviceIsPlugsUiRgb(thisDevice())) {
+      // Convert Hubitat RGB (0-255) to Shelly RGB (0-100)
+      Integer rShelly = Math.round((r * 100 / 255) as Double) as Integer
+      Integer gShelly = Math.round((g * 100 / 255) as Double) as Integer
+      Integer bShelly = Math.round((b * 100 / 255) as Double) as Integer
+      setPlugsUiRgbColor([rShelly, gShelly, bShelly], null)
+      // Update device state
+      setRGBAttribute(r, g, b, null)
+      setColorAttribute(r, g, b, null)
+      setColorNameAttribute(r, g, b, null)
+      setHueSaturationAttributes(r, g, b, null)
+      sendDeviceEvent([name: 'switch', value: 'on'])
     }
   }
 }
@@ -1922,6 +2073,10 @@ void on() {
       parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: true]))
     } else if(deviceIsRGBW(thisDevice()) == true) {
       parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: true]))
+    } else if(deviceIsPlugsUiRgb(thisDevice()) == true) {
+      setPlugsUiRgbColor(null, 100)
+      sendDeviceEvent([name: 'switch', value: 'on'])
+      sendDeviceEvent([name: 'level', value: 100])
     } else if(deviceIsDimmer(thisDevice()) == true) {
       parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), true))
     } else if(deviceIsInputSwitch(thisDevice()) == true) {
@@ -1954,6 +2109,10 @@ void off() {
       parentPostCommandAsync(rgbSetCommand([id: getIntegerDeviceDataValue('rgbId'), on: false]))
     } else if(deviceIsRGBW(thisDevice()) == true) {
       parentPostCommandAsync(rgbwSetCommand([id: getIntegerDeviceDataValue('rgbwId'), on: false]))
+    } else if(deviceIsPlugsUiRgb(thisDevice()) == true) {
+      setPlugsUiRgbColor(null, 0)
+      sendDeviceEvent([name: 'switch', value: 'off'])
+      sendDeviceEvent([name: 'level', value: 0])
     } else if(deviceIsDimmer(thisDevice()) == true) {
       parentPostCommandAsync(lightSetCommand(getIntegerDeviceDataValue('switchLevelId'), false))
     } else if(deviceIsInputSwitch(thisDevice()) == true) {
@@ -1994,6 +2153,8 @@ void setLevel(BigDecimal level, BigDecimal duration) {
         Integer d = boundedLevel(duration as Integer, 0, 900)
         parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l, transitionDuration: d))
       }
+    } else if(deviceIsPlugsUiRgb(thisDevice()) == true) {
+      setPlugsUiRgbColor(null, l)
     } else if(deviceIsDimmer(thisDevice()) == true) {
       if(duration == null) {
         parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l))
@@ -2921,6 +3082,81 @@ LinkedHashMap smokeMuteCommand(Integer id = 0, src = 'smokeMute') {
 }
 
 @CompileStatic
+LinkedHashMap illuminanceGetConfigCommand(Integer id = 0, String src = 'illuminanceGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Illuminance.GetConfig",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap illuminanceSetConfigCommand(Integer id = 0, illuminanceConfig = [], String src = 'illuminanceSetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Illuminance.SetConfig",
+    "params" : [
+      "id" : id,
+      "config" : illuminanceConfig
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap illuminanceGetStatusCommand(Integer id = 0, String src = 'illuminanceGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Illuminance.GetStatus",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap plugsUiGetConfigCommand(String src = 'plugsUiGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "PLUGS_UI.GetConfig",
+    "params" : [:]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap plugsUiSetConfigCommand(LinkedHashMap plugsUiConfig, String src = 'plugsUiSetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "PLUGS_UI.SetConfig",
+    "params" : [
+      "config" : plugsUiConfig
+    ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap plugsUiGetStatusCommand(String src = 'plugsUiGetStatus') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "PLUGS_UI.GetStatus",
+    "params" : [:]
+  ]
+  return command
+}
+
+@CompileStatic
 LinkedHashMap lightGetConfigCommand(Integer id = 0, src = 'lightGetConfig') {
   LinkedHashMap command = [
     "id" : 0,
@@ -3649,6 +3885,16 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       if(update?.rh != null) {
         BigDecimal rh = (BigDecimal)update.rh
         if(rh != null) {setHumidityPercent(rh, id)}
+      }
+    }
+
+    // Illuminance
+    if(k.startsWith('illuminance')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.lux != null) {
+        BigDecimal lux = (BigDecimal)update.lux
+        if(lux != null) {setIlluminanceLux(lux, id)}
       }
     }
 
@@ -5097,6 +5343,40 @@ ChildDeviceWrapper createChildTemperatureHumidity(Integer id) {
 }
 
 @CompileStatic
+ChildDeviceWrapper createChildIlluminance(Integer id) {
+  String driverName = "Generic Component Illuminance Sensor"
+  String dni = "${getThisDeviceDNI()}-illuminance${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String label = "${thisDevice().getLabel()} - Illuminance ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+      child.updateDataValue('illuminanceId',"${id}")
+      return child
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  } else { return child }
+}
+
+@CompileStatic
+ChildDeviceWrapper createChildPlugsUiRGB() {
+  String driverName = "Shelly RGB Component"
+  String dni = "${getThisDeviceDNI()}-plugsui-rgb"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String label = "${thisDevice().getLabel()} - LED RGB"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+      child.updateDataValue('plugsUiRgb','true')
+      return child
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  } else { return child }
+}
+
+@CompileStatic
 ChildDeviceWrapper createChildVoltage(Integer id) {
   String driverName = "Shelly Polling Voltage Sensor Component"
   String dni = "${getThisDeviceDNI()}-adc${id}"
@@ -5393,6 +5673,18 @@ List<ChildDeviceWrapper> getRGBWChildren() {
 ChildDeviceWrapper getRGBWChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'rgbwId') == id}
+}
+
+@CompileStatic
+ChildDeviceWrapper getIlluminanceChildById(Integer id) {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'illuminanceId') == id}
+}
+
+@CompileStatic
+ChildDeviceWrapper getPlugsUiRgbChild() {
+  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
+  return allChildren.find{getChildDeviceDataValue(it,'plugsUiRgb') == 'true'}
 }
 
 @CompileStatic
