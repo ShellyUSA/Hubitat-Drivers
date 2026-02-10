@@ -19,5 +19,6 @@ metadata {
 }
 
 @Field static Boolean WS = true
-@Field static Boolean NOCHILDREN = true
+@Field static Boolean NOCHILDSWITCH = true
+@Field static Boolean NOCHILDILLUMINANCE = true
 @Field static Boolean DEVICEISBLUGATEWAY = true

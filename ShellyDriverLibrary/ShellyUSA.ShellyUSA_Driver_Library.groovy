@@ -54,7 +54,16 @@ Boolean hasCapabilityTempGen1() { return HAS_TEMP_GEN1 == true }
 Boolean hasCapabilityHumGen1() { return HAS_HUM_GEN1 == true }
 Boolean hasCapabilityMotionGen1() { return HAS_MOTION_GEN1 == true }
 Boolean hasCapabilityFloodGen1() { return HAS_FLOOD_GEN1 == true }
-Boolean hasNoChildrenNeeded() { return NOCHILDREN == true }
+Boolean hasNoChildSwitch() { return NOCHILDSWITCH == true }
+Boolean hasNoChildInput() { return NOCHILDINPUT == true }
+Boolean hasNoChildCover() { return NOCHILDCOVER == true }
+Boolean hasNoChildTemp() { return NOCHILDTEMP == true }
+Boolean hasNoChildHumidity() { return NOCHILDHUMIDITY == true }
+Boolean hasNoChildLight() { return NOCHILDLIGHT == true }
+Boolean hasNoChildRgb() { return NOCHILDRGB == true }
+Boolean hasNoChildRgbw() { return NOCHILDRGBW == true }
+Boolean hasNoChildIlluminance() { return NOCHILDILLUMINANCE == true }
+Boolean hasNoChildPm1() { return NOCHILDPM1 == true }
 Boolean hasADCGen1() { return HAS_ADC_GEN1 == true }
 Boolean hasPMGen1() { return HAS_PM_GEN1 == true }
 Boolean hasExtTempGen1() { return HAS_EXT_TEMP_GEN1 == true }
@@ -420,7 +429,7 @@ void getPreferencesFromShellyDevice() {
           Boolean hasPM = checkDeviceForPM(id)
           logDebug("Running Switch.GetConfig for switch ID: ${id}")
           Map switchGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(switchGetConfigCommand(id))?.result
-          if(switchGetConfigResult != null && switchGetConfigResult?.size() > 0 && hasNoChildrenNeeded() == false) {
+          if(switchGetConfigResult != null && switchGetConfigResult?.size() > 0 && hasNoChildSwitch() == false) {
             logDebug('Creating child device for switch...')
             logTrace("Switch.GetConfig Result: ${prettyJson(switchGetConfigResult)}")
             ChildDeviceWrapper child = null
@@ -448,7 +457,7 @@ void getPreferencesFromShellyDevice() {
 
       if(inputs?.size() > 0) {
         logDebug('One or more inputs found, running Input.GetConfig for each...')
-        if(hasNoChildrenNeeded() == false) {
+        if(hasNoChildInput() == false) {
           inputs?.each{ inp ->
             Integer id = inp.tokenize(':')[1] as Integer
             logDebug("Input ID: ${id}")
@@ -468,7 +477,7 @@ void getPreferencesFromShellyDevice() {
 
       if(covers?.size() > 0) {
         logDebug('Cover(s) found, running Cover.GetConfig for each...')
-        if(hasNoChildrenNeeded() == false) {
+        if(hasNoChildCover() == false) {
           covers?.each{ cov ->
             Integer id = cov.tokenize(':')[1] as Integer
             logDebug("Cover ID: ${id}")
@@ -492,7 +501,7 @@ void getPreferencesFromShellyDevice() {
         logDebug('No covers found...')
       }
 
-      if(temps?.size() > 1 && hasNoChildrenNeeded() == false) {
+      if(temps?.size() > 1 && hasNoChildTemp() == false) {
         logDebug('Temperature(s) found, running Temperature.GetConfig for each...')
         temps?.each{ temp ->
           Integer id = temp.tokenize(':')[1] as Integer
@@ -503,7 +512,7 @@ void getPreferencesFromShellyDevice() {
           ChildDeviceWrapper child = createChildTemperature(id)
           if(tempGetConfigResult != null && tempGetConfigResult.size() > 0) {setChildDevicePreferences(tempGetConfigResult, child)}
         }
-      } else if(temps?.size() == 1 && hums.size() == 1) {
+      } else if(temps?.size() == 1 && hums.size() == 1 && hasNoChildTemp() == false && hasNoChildHumidity() == false) {
         temps?.each{ temp ->
           Integer id = temp.tokenize(':')[1] as Integer
           logDebug("Temperature ID: ${id}")
@@ -516,13 +525,13 @@ void getPreferencesFromShellyDevice() {
           if(tempGetConfigResult != null && tempGetConfigResult.size() > 0) {setChildDevicePreferences(tempGetConfigResult, child)}
           if(humGetConfigResult != null && humGetConfigResult.size() > 0) {setChildDevicePreferences(humGetConfigResult, child)}
         }
-      } else if(temps?.size() == 1 && hums.size() == 1 && hasNoChildrenNeeded() == true) {
+      } else if(temps?.size() == 1 && hums.size() == 1 && (hasNoChildTemp() == true || hasNoChildHumidity() == true)) {
         Integer id = temps[0].tokenize(':')[1] as Integer
         setDeviceDataValue('temperatureId', "${id}")
         setDeviceDataValue('humidityId', "${id}")
       }
 
-      if(pm1s?.size() == 1 && hasNoChildrenNeeded() == true) {
+      if(pm1s?.size() == 1 && hasNoChildPm1() == true) {
         Integer id = pm1s[0].tokenize(':')[1] as Integer
         logDebug('PM1 found, configuring device IDs')
         setDeviceDataValue('currentId', "${id}")
@@ -564,7 +573,7 @@ void getPreferencesFromShellyDevice() {
         lights?.each{ light ->
           Integer id = light.tokenize(':')[1] as Integer
           logTrace("Light ID: ${id}")
-          if(hasNoChildrenNeeded() == false) {
+          if(hasNoChildLight() == false) {
             LinkedHashMap<String, Object> lightConfig = (LinkedHashMap<String, Object>)shellyGetConfigResult[light]
             logTrace("LightConfig: ${prettyJson(lightConfig)}")
             logDebug("Creating child device for light:${id}...")
@@ -579,7 +588,7 @@ void getPreferencesFromShellyDevice() {
 
       if(rgbs?.size() > 0) {
         logDebug('One or more RGBs found...')
-        if(hasNoChildrenNeeded() == false) {
+        if(hasNoChildRgb() == false) {
           rgbs?.each{ rgb ->
             Integer id = rgb.tokenize(':')[1] as Integer
             logTrace("RGB ID: ${id}")
@@ -595,7 +604,7 @@ void getPreferencesFromShellyDevice() {
 
       if(rgbws?.size() > 0) {
         logDebug('One or more RGBWs found...')
-        if(hasNoChildrenNeeded() == false) {
+        if(hasNoChildRgbw() == false) {
           rgbws?.each{ rgbw ->
             Integer id = rgbw.tokenize(':')[1] as Integer
             logTrace("RGBW ID: ${id}")
@@ -611,7 +620,7 @@ void getPreferencesFromShellyDevice() {
 
       if(illuminances?.size() > 0) {
         logDebug('One or more Illuminance sensors found...')
-        if(hasNoChildrenNeeded() == false) {
+        if(hasNoChildIlluminance() == false) {
           illuminances?.each{ illum ->
             Integer id = illum.tokenize(':')[1] as Integer
             logTrace("Illuminance ID: ${id}")
@@ -747,7 +756,7 @@ void getPreferencesFromShellyDeviceGen1() {
     relays.eachWithIndex{ it, index ->
       if(mode == 'roller') {
         if(index == 0) {createChildCover(index)}
-      } else if(relays.size() == 1 && hasNoChildrenNeeded() == true && hasCapabilitySwitch() == true) {
+      } else if(relays.size() == 1 && hasNoChildSwitch() == true && hasCapabilitySwitch() == true) {
         setDeviceDataValue('switchId', "${index}")
         if(hasPMGen1() == true) {
           setDeviceDataValue('hasPM','true')
@@ -770,7 +779,7 @@ void getPreferencesFromShellyDeviceGen1() {
   }
 
   List lights = (List)gen1SettingsResponse?.lights
-  if(lights != null && lights.size() > 0 && hasNoChildrenNeeded() == true) {
+  if(lights != null && lights.size() > 0 && hasNoChildLight() == true) {
     lights.eachWithIndex{ it, index ->
       setDeviceDataValue('switchId', "${index}")
       setDeviceDataValue('lightId', "${index}")
@@ -783,7 +792,7 @@ void getPreferencesFromShellyDeviceGen1() {
         setDeviceDataValue('ctId', "${index}")
       }
     }
-  } else if(lights != null && lights.size() > 0 && hasNoChildrenNeeded() == false) {
+  } else if(lights != null && lights.size() > 0 && hasNoChildLight() == false) {
     lights.eachWithIndex{ it, index ->
       ChildDeviceWrapper child = createChildDimmer(index)
       setChildDeviceDataValue(child, 'switchId', "${index}")
@@ -1370,7 +1379,7 @@ void setIlluminanceLux(BigDecimal lux, Integer id = 0) {
   ChildDeviceWrapper child = getIlluminanceChildById(id)
   if(child != null) {
     child.sendEvent([name: 'illuminance', value: lux, unit: 'lux'])
-  } else if(hasNoChildrenNeeded() == true) {
+  } else if(hasNoChildIlluminance() == true) {
     sendDeviceEvent([name: 'illuminance', value: lux, unit: 'lux'])
   }
 }

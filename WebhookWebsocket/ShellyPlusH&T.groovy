@@ -13,4 +13,5 @@ metadata {
   }
 }
 
-@Field static Boolean NOCHILDREN = true
+@Field static Boolean NOCHILDTEMP = true
+@Field static Boolean NOCHILDHUMIDITY = true

@@ -16,7 +16,7 @@ metadata {
 }
 
 @Field static Boolean GEN1 = true
-@Field static Boolean NOCHILDREN = true
+@Field static Boolean NOCHILDLIGHT = true
 @Field static List<String> ACTIONS_TO_CREATE = [
   'out_on_url',
   'out_off_url',
