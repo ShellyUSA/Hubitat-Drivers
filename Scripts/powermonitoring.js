@@ -9,7 +9,14 @@
 
 // === USER CONFIGURATION ===
 let REPORT_INTERVAL = 60; // Seconds between reports to Hubitat
-let REMOTE_URL = "http://192.168.1.4:39501"; // Hubitat hub IP:port
+
+// Hubitat KVS configuration
+let HUBITAT_KVS_KEY = "hubitat_ip"; // store only the IP (no protocol/port) in Shelly KVS
+let HUBITAT_DEFAULT_IP = "192.168.1.4"; // fallback if KVS lookup fails
+let HUBITAT_PORT = 39501;
+let HUBITAT_PROTO = "http://";
+// REMOTE_URL is built from KVS value (or fallback)
+let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 
 // === Internal accumulators ===
 let voltages = [];
@@ -24,6 +31,57 @@ let compId = 0; // Component id number
 function onHTTPResponse(result, error_code, error_message) {
   if (error_code !== 0) {
     print("HTTP error:", error_code, error_message);
+  }
+}
+
+// Build a full URL from a KVS-stored IP (handles already-present protocol/port gracefully)
+function buildRemoteUrlFromRaw(raw) {
+  if (!raw || typeof raw !== "string")
+    return HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
+  let s = raw.trim();
+  // if already contains protocol, return as-is (but ensure port exists)
+  if (s.indexOf("http://") === 0 || s.indexOf("https://") === 0) {
+    return s.indexOf(":") === -1 ? s + ":" + HUBITAT_PORT : s;
+  }
+  // if host:port provided, just add protocol
+  if (s.indexOf(":") !== -1) return HUBITAT_PROTO + s;
+  // otherwise append port
+  return HUBITAT_PROTO + s + ":" + HUBITAT_PORT;
+}
+
+// Try to read hub IP from Shelly KVS; on success replace REMOTE_URL. Graceful no-ops if KVS isn't available.
+function fetchRemoteUrlFromKVS() {
+  if (typeof Shelly.call !== "function") {
+    print("Shelly.call() not available; using REMOTE_URL=" + REMOTE_URL);
+    return;
+  }
+  try {
+    Shelly.call("KVS.Get", { key: HUBITAT_KVS_KEY }, function (res, err, msg) {
+      if (err !== 0 || res === undefined || res === null) {
+        print("KVS.Get did not return a value; using REMOTE_URL=" + REMOTE_URL);
+        return;
+      }
+      // attempt to extract value from common response shapes
+      let ipVal = null;
+      if (typeof res.value === "string") ipVal = res.value;
+      else if (res.result && typeof res.result.value === "string")
+        ipVal = res.result.value;
+      else if (typeof res === "string") ipVal = res;
+      if (ipVal) {
+        REMOTE_URL = buildRemoteUrlFromRaw(ipVal);
+        print("KVS hubitat_ip found; REMOTE_URL set to " + REMOTE_URL);
+      } else {
+        print("KVS hubitat_ip empty; using REMOTE_URL=" + REMOTE_URL);
+      }
+    });
+  } catch (e) {
+    print(
+      "KVS.Get invocation failed; using REMOTE_URL=" +
+        REMOTE_URL +
+        " (" +
+        e +
+        ")",
+    );
   }
 }
 
@@ -77,7 +135,13 @@ function sendReport() {
   let p = average(apowers);
   let f = average(freqs);
 
-  if (v === null && c === null && p === null && f === null && latestAenergy === null) {
+  if (
+    v === null &&
+    c === null &&
+    p === null &&
+    f === null &&
+    latestAenergy === null
+  ) {
     print("No readings to report");
     return;
   }
@@ -102,7 +166,7 @@ function sendReport() {
   Shelly.call(
     "HTTP.POST",
     { url: REMOTE_URL, body: body, content_type: "application/json" },
-    onHTTPResponse
+    onHTTPResponse,
   );
 
   print("Reported:", body);
@@ -114,7 +178,8 @@ function sendReport() {
   freqs = [];
 }
 
-// Register status handler and reporting timer
+// Initialize REMOTE_URL from KVS (async) then start handlers/timer
+fetchRemoteUrlFromKVS();
 Shelly.addStatusHandler(onStatus);
 Timer.set(REPORT_INTERVAL * 1000, true, sendReport);
 
@@ -122,5 +187,5 @@ print(
   "Power monitor started: interval=" +
     JSON.stringify(REPORT_INTERVAL) +
     "s url=" +
-    REMOTE_URL
+    REMOTE_URL,
 );

@@ -8,7 +8,12 @@
 // ==========================================
 
 // === USER CONFIGURATION ===
-let REMOTE_URL = "http://192.168.1.4:39501"; // Hubitat hub IP:port
+// Hubitat KVS configuration
+let HUBITAT_KVS_KEY = "hubitat_ip"; // store only the IP (no protocol/port) in Shelly KVS
+let HUBITAT_DEFAULT_IP = "192.168.1.4"; // fallback if KVS lookup fails
+let HUBITAT_PORT = 39501;
+let HUBITAT_PROTO = "http://";
+let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 let MIN_INTERVAL = 300; // Minimum heartbeat interval (seconds)
 let MAX_INTERVAL = 420; // Maximum heartbeat interval (seconds)
 
@@ -27,6 +32,53 @@ function randomInterval() {
   return (
     MIN_INTERVAL + Math.floor(Math.random() * (MAX_INTERVAL - MIN_INTERVAL + 1))
   );
+}
+
+// Build a full URL from a KVS-stored IP (handles already-present protocol/port gracefully)
+function buildRemoteUrlFromRaw(raw) {
+  if (!raw || typeof raw !== "string")
+    return HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
+  let s = raw.trim();
+  if (s.indexOf("http://") === 0 || s.indexOf("https://") === 0) {
+    return s.indexOf(":") === -1 ? s + ":" + HUBITAT_PORT : s;
+  }
+  if (s.indexOf(":") !== -1) return HUBITAT_PROTO + s;
+  return HUBITAT_PROTO + s + ":" + HUBITAT_PORT;
+}
+
+// Try to read hub IP from Shelly KVS; on success replace REMOTE_URL. Graceful no-ops if KVS isn't available.
+function fetchRemoteUrlFromKVS() {
+  if (typeof Shelly.call !== "function") {
+    print("Shelly.call() not available; using REMOTE_URL=" + REMOTE_URL);
+    return;
+  }
+  try {
+    Shelly.call("KVS.Get", { key: HUBITAT_KVS_KEY }, function (res, err, msg) {
+      if (err !== 0 || res === undefined || res === null) {
+        print("KVS.Get did not return a value; using REMOTE_URL=" + REMOTE_URL);
+        return;
+      }
+      let ipVal = null;
+      if (typeof res.value === "string") ipVal = res.value;
+      else if (res.result && typeof res.result.value === "string")
+        ipVal = res.result.value;
+      else if (typeof res === "string") ipVal = res;
+      if (ipVal) {
+        REMOTE_URL = buildRemoteUrlFromRaw(ipVal);
+        print("KVS hubitat_ip found; REMOTE_URL set to " + REMOTE_URL);
+      } else {
+        print("KVS hubitat_ip empty; using REMOTE_URL=" + REMOTE_URL);
+      }
+    });
+  } catch (e) {
+    print(
+      "KVS.Get invocation failed; using REMOTE_URL=" +
+        REMOTE_URL +
+        " (" +
+        e +
+        ")",
+    );
+  }
 }
 
 // Extract switch id from component name (e.g. "switch:0") with fallback
@@ -127,6 +179,9 @@ Shelly.addEventHandler(function (event) {
   postSwitchState(comp, id, event.info.output);
   resetTimer();
 });
+
+// Initialize REMOTE_URL from KVS (async)
+fetchRemoteUrlFromKVS();
 
 // Start first heartbeat
 resetTimer();
