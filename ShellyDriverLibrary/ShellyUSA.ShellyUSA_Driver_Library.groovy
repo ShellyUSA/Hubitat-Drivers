@@ -838,11 +838,12 @@ void getPreferencesFromShellyDeviceGen1() {
   String mode = gen1SettingsResponse?.mode
   if(relays != null && relays.size() > 0) {
     relays.eachWithIndex{ it, index ->
-      if(mode == 'roller') {
-        if(index == 0) {createChildCover(index)}
-      } else if(relays.size() == 1 && hasNoChildSwitch() == true && hasCapabilitySwitch() == true) {
+      if (mode == 'roller') {
+        if (index == 0) { createChildCover(index) }
+      } else if (relays.size() == 1 && hasNoChildSwitch() == true) {
+        logDebug("Single relay detected (index=${index}) and NOCHILDSWITCH=true; treating as parent switch. hasCapabilitySwitch=${hasCapabilitySwitch()}")
         setDeviceDataValue('switchId', "${index}")
-        if(hasPMGen1() == true) {
+        if (hasPMGen1() == true) {
           setDeviceDataValue('hasPM','true')
           setDeviceDataValue('currentId', "${index}")
           setDeviceDataValue('energyId', "${index}")
@@ -851,6 +852,7 @@ void getPreferencesFromShellyDeviceGen1() {
           setDeviceDataValue('frequencyId', "${index}")
         }
       } else {
+        logDebug("Creating child switch for relay ${index} (relays.size=${relays?.size()}, NOCHILDSWITCH=${hasNoChildSwitch()}, hasCapabilitySwitch=${hasCapabilitySwitch()})")
         createChildSwitch(index)
       }
 
@@ -927,6 +929,11 @@ void configure() {
       try {setDeviceActionsGen1()}
       catch(e) {logDebug("No device actions configured. Encountered error :${e}")}
     } else if(wsShouldBeConnected() == false) {
+      wsClose()
+      unscheduleTask('checkWebsocketConnection')
+      unscheduleTask('initializeWebsocketConnectionIfNeeded')
+      unscheduleTask('initializeWebsocketConnection')
+      setDeviceDataValue('websocketStatus', 'closed')
       try {setDeviceActionsGen2()}
       catch(e) {logDebug("No device actions configured. Encountered error :${e}")}
     } else {
@@ -1124,10 +1131,16 @@ ArrayList<BigDecimal> voltageAvgs(Integer id = 0) {
 @CompileStatic
 void setCurrent(BigDecimal value, Integer id = 0) {
   if(getIntegerDeviceDataValue('currentId') == id || id == null) {
+    logTrace("Setting current to ${value}")
     sendDeviceEvent([name: 'amperage', value: value, unit:'A'])
   } else {
     ChildDeviceWrapper c = getCurrentChildById(id)
-    if(c != null) { sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c) }
+    if(c != null) {
+      logTrace("Setting current to ${value} on ${c}")
+      sendChildDeviceEvent([name: 'amperage', value: value, unit:'A'], c)
+    } else {
+      logTrace("No current child found for id=${id}; dropping current update (${value})")
+    }
   }
 }
 @CompileStatic
@@ -1139,19 +1152,41 @@ BigDecimal getCurrent(Integer id = 0) {
 
 @CompileStatic
 void setApparentPowerAttribute(BigDecimal value, Integer id = 0) {
-  if(getIntegerDeviceDataValue('apparentPowerId') == id || id == null) {sendDeviceEvent([name: 'apparentPower', value: value, unit:'VA'])}
-  else {
+  if(getIntegerDeviceDataValue('apparentPowerId') == id || id == null) {
+    logTrace("Setting apparentPower to ${value}")
+    sendDeviceEvent([name: 'apparentPower', value: value, unit:'VA'])
+  } else {
     ChildDeviceWrapper c = getApparentPowerChildById(id)
-    if(c != null) { sendChildDeviceEvent([name: 'apparentPower', value: value, unit:'VA'], c) }
+    if(c != null) {
+      logTrace("Setting apparentPower to ${value} on ${c}")
+      sendChildDeviceEvent([name: 'apparentPower', value: value, unit:'VA'], c)
+    } else {
+      // fallback: allow delivering apparent power to a power child if present
+      ChildDeviceWrapper p = getThisDeviceChildren().find{ getChildDeviceIntegerDataValue(it,'powerId') == id }
+      if(p != null) {
+        logTrace("Setting apparentPower to ${value} on fallback power child ${p}")
+        sendChildDeviceEvent([name: 'apparentPower', value: value, unit:'VA'], p)
+      } else {
+        logTrace("No apparentPower child found for id=${id}; dropping apparentPower update (${value})")
+      }
+    }
   }
 }
 
 @CompileStatic
 void setPowerAttribute(BigDecimal value, Integer id = 0) {
-  if(getIntegerDeviceDataValue('currentId') == id || id == null) {sendDeviceEvent([name: 'power', value: value, unit:'W'])}
-  else {
-    ChildDeviceWrapper c = getCurrentChildById(id)
-    if(c != null) { sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c) }
+  // Prefer 'powerId' for routing; keep 'currentId' check for backward compatibility.
+  if(getIntegerDeviceDataValue('powerId') == id || getIntegerDeviceDataValue('currentId') == id || id == null) {
+    logTrace("Setting power to ${value}")
+    sendDeviceEvent([name: 'power', value: value, unit:'W'])
+  } else {
+    ChildDeviceWrapper c = getThisDeviceChildren().find{ getChildDeviceIntegerDataValue(it,'powerId') == id || getChildDeviceIntegerDataValue(it,'currentId') == id }
+    if(c != null) {
+      logTrace("Setting power to ${value} on ${c}")
+      sendChildDeviceEvent([name: 'power', value: value, unit:'W'], c)
+    } else {
+      logTrace("No power/current child found for id=${id}; dropping power update (${value})")
+    }
   }
 }
 @CompileStatic
@@ -1172,10 +1207,18 @@ void setFrequency(BigDecimal value, Integer id = 0) {
 
 @CompileStatic
 void setVoltage(BigDecimal value, Integer id = 0) {
-  if(getIntegerDeviceDataValue('voltageId') == id) {sendDeviceEvent([name: 'voltage', value: value, unit:'V'])}
-  else {
+  // Send to parent when configured for this id (or when id is null), otherwise deliver to the matching child.
+  if(getIntegerDeviceDataValue('voltageId') == id || id == null) {
+    logTrace("Setting voltage to ${value}")
+    sendDeviceEvent([name: 'voltage', value: value, unit:'V'])
+  } else {
     ChildDeviceWrapper c = getVoltageChildById(id)
-    if(c != null) { sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c) }
+    if(c != null) {
+      logTrace("Setting voltage to ${value} on ${c}")
+      sendChildDeviceEvent([name: 'voltage', value: value, unit:'V'], c)
+    } else {
+      logTrace("No voltage child found for id=${id}; dropping voltage update (${value})")
+    }
   }
 }
 @CompileStatic
@@ -4488,6 +4531,23 @@ void parseGen2Message(String raw) {
   getBatteryStatusGen2()
   LinkedHashMap message = decodeLanMessage(raw)
   logTrace("Received incoming message: ${prettyJson(message)}")
+
+  // If this is a powermon POST (device -> Hubitat HTTP listener carrying JSON),
+  // delegate to a dedicated powermon parser and stop further processing here.
+  if(message?.json instanceof Map && ((Map)message.json).get('dst') == 'powermon') {
+    logDebug("powermon message detected, delegating to parsePowermonMessage()")
+    parsePowermonMessage((LinkedHashMap)message.json)
+    return
+  }
+
+  // If this is a switchmon POST (device -> Hubitat HTTP listener carrying JSON),
+  // parse the reported switch output state and stop further processing here.
+  if(message?.json instanceof Map && ((Map)message.json).get('dst') == 'switchmon') {
+    logDebug("switchmon message detected, delegating to parseSwitchmonMessage()")
+    parseSwitchmonMessage((LinkedHashMap)message.json)
+    return
+  }
+
   LinkedHashMap headers = message?.headers as LinkedHashMap
   List<String> res = ((String)headers.keySet()[0]).tokenize(' ')
   List<String> query = ((String)res[1]).tokenize('/')
@@ -4547,6 +4607,96 @@ void parseGen2Message(String raw) {
 @CompileStatic
 void getStatusGen2() {
   parentPostCommandAsync(shellyGetStatusCommand(), 'getStatusGen2Callback')
+}
+
+@CompileStatic
+void parsePowermonMessage(LinkedHashMap<String, Object> payload) {
+  if (payload == null) return
+  if (!('dst' in payload.keySet()) || payload.get('dst') != 'powermon') return
+
+  LinkedHashMap result = (LinkedHashMap)payload.get('result')
+  if (result == null && payload.containsKey('data')) { result = (LinkedHashMap)((LinkedHashMap)payload.get('data')).get('result') }
+  if (result == null) return
+
+  // Iterate over reported switches (keys like 'switch:0')
+  result.each { Object rawKey, Object rawVal ->
+    if (!(rawKey instanceof String)) return
+    String key = (String)rawKey
+    java.util.regex.Matcher m = (key =~ /switch:(\d+)/)
+    if (!m.find()) return
+    Integer id = Integer.valueOf(m.group(1))
+    if (!(rawVal instanceof Map)) return
+    LinkedHashMap sw = (LinkedHashMap) rawVal
+
+    // Safely convert fields to BigDecimal when present
+    BigDecimal voltage = null
+    BigDecimal current = null
+    BigDecimal apower = null
+    BigDecimal energyKwh = null
+
+    try {
+      if (sw.containsKey('voltage') && sw.voltage != null) voltage = new BigDecimal(sw.voltage.toString())
+      if (sw.containsKey('current') && sw.current != null) current = new BigDecimal(sw.current.toString())
+      if (sw.containsKey('apower') && sw.apower != null) apower = new BigDecimal(sw.apower.toString())
+      if (sw.containsKey('aenergy') && sw.aenergy instanceof Map && ((Map)sw.aenergy).containsKey('total') && ((Map)sw.aenergy).get('total') != null) {
+        BigDecimal totalWh = new BigDecimal(((Map)sw.aenergy).get('total').toString())
+        energyKwh = totalWh.divide(new BigDecimal(1000), 3, BigDecimal.ROUND_HALF_UP)
+      }
+    } catch(Exception e) {
+      logWarn("parsePowermonMessage: failed to convert powermon fields for ${key}: ${e}")
+    }
+
+    if (voltage != null) { setVoltage(voltage, id) }
+    if (current != null) { setCurrent(current, id) }
+    if (apower != null) { setPowerAttribute(apower, id) }
+    if (energyKwh != null) { setEnergyAttribute(energyKwh, id) }
+
+    logTrace("Processed powermon for ${key}: voltage=${voltage}, current=${current}, apower=${apower}, energy_kWh=${energyKwh}")
+  }
+
+  setLastUpdated()
+}
+
+@CompileStatic
+void parseSwitchmonMessage(LinkedHashMap<String, Object> payload) {
+  if (payload == null) return
+  if (!('dst' in payload.keySet()) || payload.get('dst') != 'switchmon') return
+
+  LinkedHashMap result = (LinkedHashMap)payload.get('result')
+  if (result == null && payload.containsKey('data')) { result = (LinkedHashMap)((LinkedHashMap)payload.get('data')).get('result') }
+  if (result == null) return
+
+  result.each { Object rawKey, Object rawVal ->
+    if (!(rawKey instanceof String)) return
+    String key = (String)rawKey
+    if (!(rawVal instanceof Map)) return
+
+    java.util.regex.Matcher m = (key =~ /switch:(\d+)/)
+    Integer id = null
+    if (m.find()) { id = Integer.valueOf(m.group(1)) }
+
+    LinkedHashMap sw = (LinkedHashMap) rawVal
+    if (id == null && sw.containsKey('id') && sw.id != null) { id = sw.id as Integer }
+    if (id == null) { id = 0 }
+
+    Boolean output = null
+    Object outputRaw = sw.get('output')
+    if (outputRaw instanceof Boolean) {
+      output = (Boolean)outputRaw
+    } else if (outputRaw != null) {
+      String outputString = outputRaw.toString().toLowerCase()
+      if (outputString == 'true' || outputString == 'false') {
+        output = Boolean.valueOf(outputString)
+      }
+    }
+
+    if (output != null) {
+      setSwitchState(output, id)
+      logTrace("Processed switchmon for ${key}: id=${id}, output=${output}")
+    }
+  }
+
+  setLastUpdated()
 }
 
 /* #endregion */
@@ -5555,7 +5705,10 @@ ChildDeviceWrapper getShellyDevice(String dni) {return getChildDevice(dni)}
 @CompileStatic
 ChildDeviceWrapper getVoltageChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceIntegerDataValue(it,'adcId') == id}
+  // Prefer a child explicitly mapped to 'voltageId' (PM/EM children), but fall back to ADC polling child ('adcId').
+  ChildDeviceWrapper byVoltageId = allChildren.find{ getChildDeviceIntegerDataValue(it,'voltageId') == id }
+  if(byVoltageId != null) { return byVoltageId }
+  return allChildren.find{ getChildDeviceIntegerDataValue(it,'adcId') == id }
 }
 
 @CompileStatic
@@ -5567,13 +5720,21 @@ ChildDeviceWrapper getFrequencyChildById(Integer id) {
 @CompileStatic
 ChildDeviceWrapper getApparentPowerChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceIntegerDataValue(it,'apparentPowerId') == id}
+  ChildDeviceWrapper byAppPowerId = allChildren.find{ getChildDeviceIntegerDataValue(it,'apparentPowerId') == id }
+  if(byAppPowerId != null) { return byAppPowerId }
+  // fallback to powerId for devices that expose a single power child
+  return allChildren.find{ getChildDeviceIntegerDataValue(it,'powerId') == id }
 }
 
 @CompileStatic
 ChildDeviceWrapper getCurrentChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceIntegerDataValue(it,'currentId') == id}
+  ChildDeviceWrapper byCurrentId = allChildren.find{ getChildDeviceIntegerDataValue(it,'currentId') == id }
+  if(byCurrentId != null) { return byCurrentId }
+  // fallback to powerId for components that map current/power to the same child
+  ChildDeviceWrapper byPowerId = allChildren.find{ getChildDeviceIntegerDataValue(it,'powerId') == id }
+  if(byPowerId != null) { return byPowerId }
+  return null
 }
 
 @CompileStatic
