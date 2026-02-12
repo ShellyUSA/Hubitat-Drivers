@@ -429,15 +429,15 @@ String getFoundShellys() {
         String gen = (device?.gen ?: '') as String
         String deviceApp = (device?.deviceApp ?: '') as String
         String ver = (device?.ver ?: '') as String
-        String info = "${name} (${ip}:${port})"
+        StringBuilder infoSb = new StringBuilder("${name} (${ip}:${port})")
         if (deviceApp || gen || ver) {
             List<String> extras = []
-            if (deviceApp) { extras << deviceApp }
-            if (gen) { extras << "Gen${gen}" }
-            if (ver) { extras << "v${ver}" }
-            info += " [${extras.join(', ')}]"
+            if (deviceApp) { extras.add(deviceApp) }
+            if (gen) { extras.add("Gen${gen}") }
+            if (ver) { extras.add("v${ver}") }
+            infoSb.append(' [').append(extras.join(', ')).append(']')
         }
-        return info
+        return infoSb.toString()
     }
 
     names.sort()
@@ -459,9 +459,10 @@ void sendFoundShellyEvents() {
 // ═══════════════════════════════════════════════════════════════
 
 // Fetch comprehensive device info, config, and status for a discovered IP.
-// Follows the driver library pattern: POST JSON-RPC to /rpc, capture result
-// in a variable outside the closure (return from inside httpPostJson closure
-// only returns from the closure, not the outer method).
+// Uses the existing command map helpers (shellyGetDeviceInfoCommand, etc.) to
+// build the JSON-RPC body and postRpcCommand() to send it — same pattern as
+// postCommandSync but targeting an arbitrary discovered IP instead of
+// getBaseUriRpc().
 private void fetchAndStoreDeviceInfo(String ipKey) {
     if (!ipKey) { return }
     Map device = state.discoveredShellys[ipKey]
@@ -472,24 +473,27 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
     String ip = (device.ipAddress ?: ipKey).toString()
     Integer port = (device.port ?: 80) as Integer
-    String baseUrl = (port == 80) ? "http://${ip}" : "http://${ip}:${port}"
+    String rpcUri = (port == 80) ? "http://${ip}/rpc" : "http://${ip}:${port}/rpc"
 
-    logDebug("fetchAndStoreDeviceInfo: fetching from ${baseUrl}")
+    logDebug("fetchAndStoreDeviceInfo: fetching from ${rpcUri}")
     appendLog('debug', "Getting device info from ${ip}")
 
     try {
         // 1) Shelly.GetDeviceInfo — device identity (id, mac, model, gen, fw, app, auth, profile)
-        Map deviceInfo = rpcCall(baseUrl, 'Shelly.GetDeviceInfo', [ident: true])
+        LinkedHashMap deviceInfoCmd = shellyGetDeviceInfoCommand(true, 'discovery')
+        Map deviceInfo = postRpcCommand(rpcUri, deviceInfoCmd)
         if (!deviceInfo) {
             appendLog('warn', "No device info returned from ${ip} — device may be offline or not Gen2+")
             return
         }
 
         // 2) Shelly.GetConfig — full component configuration (switch, input, sys, wifi, etc.)
-        Map deviceConfig = rpcCall(baseUrl, 'Shelly.GetConfig')
+        LinkedHashMap configCmd = shellyGetConfigCommand('discovery')
+        Map deviceConfig = postRpcCommand(rpcUri, configCmd)
 
         // 3) Shelly.GetStatus — live status of all components (power, temperature, relay state, etc.)
-        Map deviceStatus = rpcCall(baseUrl, 'Shelly.GetStatus')
+        LinkedHashMap statusCmd = shellyGetStatusCommand('discovery')
+        Map deviceStatus = postRpcCommand(rpcUri, statusCmd)
 
         // Build a comprehensive merged record
         device.name = (deviceInfo.id ?: device.name ?: "Shelly ${ip}")
@@ -512,14 +516,14 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
         // Build a human-readable summary
         List<String> parts = []
-        parts << "model=${device.model ?: 'n/a'}"
-        parts << "gen=${device.gen ?: 'n/a'}"
-        parts << "ver=${device.ver ?: 'n/a'}"
-        if (device.mac) { parts << "mac=${device.mac}" }
-        if (device.profile) { parts << "profile=${device.profile}" }
-        if (device.auth_en) { parts << "auth=enabled" }
-        if (deviceConfig) { parts << "config=OK" }
-        if (deviceStatus) { parts << "status=OK" }
+        parts.add("model=${device.model ?: 'n/a'}")
+        parts.add("gen=${device.gen ?: 'n/a'}")
+        parts.add("ver=${device.ver ?: 'n/a'}")
+        if (device.mac) { parts.add("mac=${device.mac}") }
+        if (device.profile) { parts.add("profile=${device.profile}") }
+        if (device.auth_en) { parts.add("auth=enabled") }
+        if (deviceConfig) { parts.add("config=OK") }
+        if (deviceStatus) { parts.add("status=OK") }
         appendLog('info', "Device info for ${device.name} (${ip}): ${parts.join(', ')}")
 
         logDebug("fetchAndStoreDeviceInfo: deviceInfo keys=${deviceInfo.keySet()}")
@@ -534,62 +538,30 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 }
 
 /**
- * Execute a Shelly Gen2+ JSON-RPC call over HTTP.
- * Tries POST /rpc first (full JSON-RPC envelope), falls back to GET /rpc/Method convenience path.
- * Uses the driver library pattern of capturing the response in a variable outside the closure.
- *
- * @param baseUrl  e.g. "http://192.168.1.41"
- * @param method   e.g. "Shelly.GetDeviceInfo"
- * @param params   optional params map, e.g. [ident: true]
- * @return         the "result" map from the RPC response, or null on failure
+ * Post a command map to an arbitrary RPC URI.
+ * Modeled after postCommandSync() but takes an explicit URI so it can target
+ * any discovered device rather than using getBaseUriRpc().
+ * Returns the "result" portion of the JSON-RPC response, or null on failure.
  */
-private Map rpcCall(String baseUrl, String method, Map params = [:]) {
-    Map result = null
-
-    // --- Attempt 1: POST /rpc with JSON-RPC body (preferred, matches driver library pattern) ---
+private Map postRpcCommand(String rpcUri, LinkedHashMap command) {
+    LinkedHashMap json = null
+    Map params = [uri: rpcUri]
+    params.contentType = 'application/json'
+    params.requestContentType = 'application/json'
+    params.body = command
+    params.timeout = 10
+    logTrace("postRpcCommand sending to ${rpcUri}: ${command}")
     try {
-        Map rpcBody = [id: 0, src: 'hubitat-discovery', method: method]
-        if (params && params.size() > 0) { rpcBody.params = params }
-
-        Map httpParams = [
-            uri: "${baseUrl}/rpc",
-            body: rpcBody,
-            contentType: 'application/json',
-            requestContentType: 'application/json',
-            timeout: 10
-        ]
-
-        httpPost(httpParams) { resp ->
-            if (resp?.status == 200 && resp?.data) {
-                // JSON-RPC response wraps the actual data in a "result" key
-                result = (resp.data instanceof Map && resp.data.containsKey('result')) ? resp.data.result : resp.data
-            }
+        httpPost(params) { resp ->
+            if (resp.getStatus() == 200) { json = resp.getData() }
         }
     } catch (Exception e) {
-        logDebug("rpcCall POST ${method} failed for ${baseUrl}: ${e.class.simpleName}: ${e.message}")
+        logDebug("postRpcCommand failed for ${rpcUri}: ${e.class.simpleName}: ${e.message}")
+        return null
     }
-
-    if (result) { return result }
-
-    // --- Attempt 2: GET /rpc/Method convenience path (result is returned directly, no wrapper) ---
-    try {
-        String getUri = "${baseUrl}/rpc/${method}"
-        // Append query params for GET requests if needed
-        if (params && params.size() > 0) {
-            List<String> queryParts = params.collect { k, v -> "${k}=${v}" }
-            getUri += "?${queryParts.join('&')}"
-        }
-
-        httpGet([uri: getUri, contentType: 'application/json', timeout: 10]) { resp ->
-            if (resp?.status == 200 && resp?.data) {
-                result = (resp.data instanceof Map) ? resp.data : null
-            }
-        }
-    } catch (Exception e) {
-        logDebug("rpcCall GET ${method} failed for ${baseUrl}: ${e.class.simpleName}: ${e.message}")
-    }
-
-    return result
+    logTrace("postRpcCommand returned: ${json}")
+    // JSON-RPC wraps the payload in a "result" key
+    return (json instanceof Map && json.containsKey('result')) ? json.result : json
 }
 
 // Small helper to truncate long response bodies for logs
@@ -643,7 +615,7 @@ private void appendLog(String level, String msg) {
     // Only append messages that meet the app display threshold
     String displayLevel = (settings?.displayLogLevel ?: (settings?.logLevel ?: 'warn'))?.toString()
     if (levelPriority(level) >= levelPriority(displayLevel)) {
-        state.recentLogs << "${new Date().format('yyyy-MM-dd HH:mm:ss')} - ${level?.toUpperCase()}: ${msg}"
+        state.recentLogs.add("${new Date().format('yyyy-MM-dd HH:mm:ss')} - ${level?.toUpperCase()}: ${msg}")
         if (state.recentLogs.size() > 300) {
             state.recentLogs = state.recentLogs[-300..-1]
         }
