@@ -459,10 +459,9 @@ void sendFoundShellyEvents() {
 // ═══════════════════════════════════════════════════════════════
 
 // Fetch comprehensive device info, config, and status for a discovered IP.
-// Uses the existing command map helpers (shellyGetDeviceInfoCommand, etc.) to
-// build the JSON-RPC body and postRpcCommand() to send it — same pattern as
-// postCommandSync but targeting an arbitrary discovered IP instead of
-// getBaseUriRpc().
+// Uses the existing command map helpers (shellyGetDeviceInfoCommand, etc.) and
+// the shared `postCommandSync(command, uri)` helper to send JSON-RPC to a
+// discovered device (targets an arbitrary IP instead of getBaseUriRpc()).
 private void fetchAndStoreDeviceInfo(String ipKey) {
     if (!ipKey) { return }
     Map device = state.discoveredShellys[ipKey]
@@ -479,21 +478,22 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
     appendLog('debug', "Getting device info from ${ip}")
 
     try {
-        // 1) Shelly.GetDeviceInfo — device identity (id, mac, model, gen, fw, app, auth, profile)
+        // Use shared helper: postCommandSync supports an optional URI parameter
         LinkedHashMap deviceInfoCmd = shellyGetDeviceInfoCommand(true, 'discovery')
-        Map deviceInfo = postRpcCommand(rpcUri, deviceInfoCmd)
+        LinkedHashMap deviceInfoResp = postCommandSync(deviceInfoCmd, rpcUri)
+        Map deviceInfo = (deviceInfoResp instanceof Map && deviceInfoResp.containsKey('result')) ? deviceInfoResp.result : deviceInfoResp
         if (!deviceInfo) {
             appendLog('warn', "No device info returned from ${ip} — device may be offline or not Gen2+")
             return
         }
 
-        // 2) Shelly.GetConfig — full component configuration (switch, input, sys, wifi, etc.)
         LinkedHashMap configCmd = shellyGetConfigCommand('discovery')
-        Map deviceConfig = postRpcCommand(rpcUri, configCmd)
+        LinkedHashMap deviceConfigResp = postCommandSync(configCmd, rpcUri)
+        Map deviceConfig = (deviceConfigResp instanceof Map && deviceConfigResp.containsKey('result')) ? deviceConfigResp.result : deviceConfigResp
 
-        // 3) Shelly.GetStatus — live status of all components (power, temperature, relay state, etc.)
         LinkedHashMap statusCmd = shellyGetStatusCommand('discovery')
-        Map deviceStatus = postRpcCommand(rpcUri, statusCmd)
+        LinkedHashMap deviceStatusResp = postCommandSync(statusCmd, rpcUri)
+        Map deviceStatus = (deviceStatusResp instanceof Map && deviceStatusResp.containsKey('result')) ? deviceStatusResp.result : deviceStatusResp
 
         // Build a comprehensive merged record
         device.name = (deviceInfo.id ?: device.name ?: "Shelly ${ip}")
@@ -530,39 +530,42 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         if (deviceConfig) { logDebug("fetchAndStoreDeviceInfo: deviceConfig keys=${deviceConfig.keySet()}") }
         if (deviceStatus) { logDebug("fetchAndStoreDeviceInfo: deviceStatus keys=${deviceStatus.keySet()}") }
 
+
         sendFoundShellyEvents()
+        determineDeviceDriver(deviceStatus)
     } catch (Exception e) {
         appendLog('error', "Failed to get device info from ${ip}: ${e.message}")
         logDebug("fetchAndStoreDeviceInfo exception: ${e.class.simpleName}: ${e.message}")
     }
 }
 
-/**
- * Post a command map to an arbitrary RPC URI.
- * Modeled after postCommandSync() but takes an explicit URI so it can target
- * any discovered device rather than using getBaseUriRpc().
- * Returns the "result" portion of the JSON-RPC response, or null on failure.
- */
-private Map postRpcCommand(String rpcUri, LinkedHashMap command) {
-    LinkedHashMap json = null
-    Map params = [uri: rpcUri]
-    params.contentType = 'application/json'
-    params.requestContentType = 'application/json'
-    params.body = command
-    params.timeout = 10
-    logTrace("postRpcCommand sending to ${rpcUri}: ${command}")
-    try {
-        httpPost(params) { resp ->
-            if (resp.getStatus() == 200) { json = resp.getData() }
-        }
-    } catch (Exception e) {
-        logDebug("postRpcCommand failed for ${rpcUri}: ${e.class.simpleName}: ${e.message}")
-        return null
+private void determineDeviceDriver(Map deviceStatus ) {
+    // Placeholder for future device-type determination logic
+    if (!deviceStatus) {
+        logDebug("determineDeviceDriver: no deviceStatus provided, cannot determine capabilities")
+        return
     }
-    logTrace("postRpcCommand returned: ${json}")
-    // JSON-RPC wraps the payload in a "result" key
-    return (json instanceof Map && json.containsKey('result')) ? json.result : json
+    logDebug("determineDeviceDriver: deviceStatus keys=${deviceStatus?.keySet() ?: 'n/a'}")
+    int switchesFound = deviceStatus.findAll { k, v -> k.toString().toLowerCase().startsWith('switch') }.size()
+    int inputsFound = deviceStatus.findAll { k, v -> k.toString().toLowerCase().contains('input') }.size()
+    if (switchesFound == 0 && inputsFound == 0) {
+        logDebug("determineDeviceDriver: no switches or inputs found in status, cannot determine device type")
+        return
+    }
+    if (switchesFound == 1 && inputsFound == 0) {
+        logDebug("Device is likely a plug or basic relay device (1 switch, no inputs)")
+        // Use ShellySingleSwitch or ShellySingleSwitchPM based on presence of power metering in status
+    } else if (switchesFound == 1 && inputsFound >= 1) {
+        logDebug("Device is likely a roller shutter or similar (1 switch, 1+ inputs)")
+    } else if (switchesFound > 1) {
+        logDebug("Device is likely a multi-relay model (multiple switches)")
+    } else {
+        logDebug("Device has an unexpected combination of switches and inputs, manual review may be needed")
+    }
+    logDebug("Device has the following capabilities: Switches:${switchesFound} Inputs:${inputsFound}")
+
 }
+
 
 // Small helper to truncate long response bodies for logs
 private String truncateForLog(Object obj, Integer maxLen = 240) {
@@ -2023,13 +2026,14 @@ String pm1GetStatus() {
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region HTTP Methods */
 // MARK: HTTP Methods
-LinkedHashMap postCommandSync(LinkedHashMap command) {
+LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
   LinkedHashMap json
-  Map params = [uri: "${getBaseUriRpc()}"]
+  Map params = [uri: (uri ? uri : "${getBaseUriRpc()}")]
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
-  logTrace("postCommandSync sending: ${prettyJson(params)}")
+  params.timeout = 10
+  logTrace("postCommandSync sending to ${params.uri}: ${prettyJson(params)}")
   try {
     httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
     setAuthIsEnabled(false)
@@ -2047,13 +2051,13 @@ LinkedHashMap postCommandSync(LinkedHashMap command) {
       logError('Auth failed a second time. Double check password correctness.')
     }
   }
-  logTrace("postCommandSync returned: ${prettyJson(json)}")
+  logTrace("postCommandSync returned from ${params.uri}: ${prettyJson(json)}")
   return json
 }
 
-LinkedHashMap parentPostCommandSync(LinkedHashMap command) {
-  if(hasParent() == true) { return parent?.postCommandSync(command) }
-  else { return postCommandSync(command) }
+LinkedHashMap parentPostCommandSync(LinkedHashMap command, String uri = null) {
+  if(hasParent() == true) { return parent?.postCommandSync(command, uri) }
+  else { return postCommandSync(command, uri) }
 }
 
 void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '') {
