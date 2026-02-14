@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.17"
+@Field static final String APP_VERSION = "1.0.18"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.17"
+    version: "1.0.18"
 )
 
 preferences {
@@ -1683,7 +1683,7 @@ void processNextDiscoveryDriver() {
 private void scheduleNextDiscoveryDriver() {
     List<String> remaining = state.discoveryDriverQueue ?: []
     if (!remaining.isEmpty()) {
-        runIn(5, 'processNextDiscoveryDriver')
+        runIn(10, 'processNextDiscoveryDriver')
     } else {
         state.discoveryDriverInProgress = false
         logDebug("Discovery driver queue complete")
@@ -1855,10 +1855,38 @@ void watchdogProcessResults() {
 // Device Info / Config / Status Fetching (Gen2+ RPC over HTTP)
 // ═══════════════════════════════════════════════════════════════
 
-// Fetch comprehensive device info, config, and status for a discovered IP.
-// Uses the existing command map helpers (shellyGetDeviceInfoCommand, etc.) and
-// the shared `postCommandSync(command, uri)` helper to send JSON-RPC to a
-// discovered device (targets an arbitrary IP instead of getBaseUriRpc()).
+/**
+ * Sends a JSON-RPC command to a Shelly device with retry logic.
+ * Retries up to 3 times with increasing delays (2s, 4s) between attempts.
+ * Logs failures at debug level for retries and error level only on final failure.
+ *
+ * @param command The JSON-RPC command map to send
+ * @param uri The target device RPC URI
+ * @param commandName Human-readable command name for logging
+ * @param maxRetries Maximum number of attempts (default 3)
+ * @return The response LinkedHashMap, or null if all attempts failed
+ */
+private LinkedHashMap postCommandSyncWithRetry(LinkedHashMap command, String uri, String commandName, int maxRetries = 3) {
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            LinkedHashMap result = postCommandSync(command, uri)
+            if (attempt > 1) {
+                logDebug("${commandName} succeeded on attempt ${attempt} for ${uri}")
+            }
+            return result
+        } catch (Exception e) {
+            if (attempt < maxRetries) {
+                int delaySecs = attempt * 2
+                logDebug("${commandName} attempt ${attempt}/${maxRetries} failed for ${uri}: ${e.message} — retrying in ${delaySecs}s")
+                pauseExecution(delaySecs * 1000)
+            } else {
+                logError("${commandName} failed after ${maxRetries} attempts for ${uri}: ${e.message}")
+            }
+        }
+    }
+    return null
+}
+
 /**
  * Fetches comprehensive device information from a discovered Shelly device.
  * Queries the device for its info, configuration, and status via JSON-RPC commands
@@ -1891,11 +1919,9 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
     appendLog('debug', "Getting device info from ${ip}")
 
     try {
-        // Use shared helper: postCommandSync supports an optional URI parameter
+        // Query device info, config, and status with retry logic
         LinkedHashMap deviceInfoCmd = shellyGetDeviceInfoCommand(true, 'discovery')
-        logDebug("fetchAndStoreDeviceInfo: sending Shelly.GetDeviceInfo command to ${rpcUri}")
-        LinkedHashMap deviceInfoResp = postCommandSync(deviceInfoCmd, rpcUri)
-        logDebug("fetchAndStoreDeviceInfo: received response: ${deviceInfoResp ? 'OK' : 'NULL'}")
+        LinkedHashMap deviceInfoResp = postCommandSyncWithRetry(deviceInfoCmd, rpcUri, "Shelly.GetDeviceInfo")
         Map deviceInfo = (deviceInfoResp instanceof Map && deviceInfoResp.containsKey('result')) ? deviceInfoResp.result : deviceInfoResp
         if (!deviceInfo) {
             appendLog('warn', "No device info returned from ${ip} — device may be offline or not Gen2+")
@@ -1903,11 +1929,11 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         }
 
         LinkedHashMap configCmd = shellyGetConfigCommand('discovery')
-        LinkedHashMap deviceConfigResp = postCommandSync(configCmd, rpcUri)
+        LinkedHashMap deviceConfigResp = postCommandSyncWithRetry(configCmd, rpcUri, "Shelly.GetConfig")
         Map deviceConfig = (deviceConfigResp instanceof Map && deviceConfigResp.containsKey('result')) ? deviceConfigResp.result : deviceConfigResp
 
         LinkedHashMap statusCmd = shellyGetStatusCommand('discovery')
-        LinkedHashMap deviceStatusResp = postCommandSync(statusCmd, rpcUri)
+        LinkedHashMap deviceStatusResp = postCommandSyncWithRetry(statusCmd, rpcUri, "Shelly.GetStatus")
         Map deviceStatus = (deviceStatusResp instanceof Map && deviceStatusResp.containsKey('result')) ? deviceStatusResp.result : deviceStatusResp
 
         // Build a comprehensive merged record
