@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.29"
+@Field static final String APP_VERSION = "1.0.30"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.29"
+    version: "1.0.30"
 )
 
 preferences {
@@ -975,7 +975,22 @@ private String renderRebuildStatusHtml() {
         Integer remaining = (state.driverRebuildQueue?.size() ?: 0) as Integer
         return "<b>Rebuild in progress...</b> (${remaining} remaining)"
     }
-    return "<b>Drivers are up to date.</b>"
+
+    // Check if any tracked drivers are at an older version than the current app
+    String currentVersion = getAppVersion()
+    Map allDrivers = state.autoDrivers ?: [:]
+    List<String> outdated = []
+    allDrivers.each { key, info ->
+        String driverVersion = info.version ?: ''
+        if (driverVersion && driverVersion != currentVersion) {
+            outdated.add("${info.name} (v${driverVersion})")
+        }
+    }
+
+    if (outdated.size() > 0) {
+        return "<b>${outdated.size()} driver(s) need rebuilding:</b><br>${outdated.join('<br>')}"
+    }
+    return "<b>All drivers are up to date (v${currentVersion}).</b>"
 }
 
 /**
@@ -1839,7 +1854,16 @@ void initialize() {
             logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver rebuild disabled)")
         }
     } else {
-        logDebug("App version unchanged (${currentVersion}), no driver regeneration needed")
+        // Even if app version hasn't changed, check if any tracked drivers are outdated
+        // (e.g., from a failed rebuild or interrupted update)
+        Map allDrivers = state.autoDrivers ?: [:]
+        Boolean hasOutdated = allDrivers.any { key, info -> info.version != currentVersion }
+        if (hasOutdated && settings?.rebuildOnUpdate != false) {
+            logInfo("Found outdated drivers at app version ${currentVersion}, triggering rebuild")
+            rebuildAllTrackedDrivers()
+        } else {
+            logDebug("App version unchanged (${currentVersion}), no driver regeneration needed")
+        }
     }
 
     // Schedule periodic watchdog to detect IP address changes via mDNS
