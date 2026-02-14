@@ -1,5 +1,6 @@
 @Field static ConcurrentHashMap<String, MessageDigest> messageDigests = new java.util.concurrent.ConcurrentHashMap<String, MessageDigest>()
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
+@Field static ConcurrentHashMap<String, Boolean> foundDevices = new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
 
 definition(
@@ -19,6 +20,13 @@ preferences {
     page(name: "createDevicesPage")
 }
 
+/**
+ * Renders the main discovery page for the Shelly mDNS Discovery app.
+ * Initializes state variables, starts discovery if not running, and displays
+ * the discovery timer, discovered devices list, and logging controls.
+ *
+ * @return Map containing the dynamic page definition
+ */
 Map mainPage() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
@@ -102,6 +110,12 @@ Map mainPage() {
     }
 }
 
+/**
+ * Handles button click events from the app UI.
+ * Processes actions for extending scan, creating devices, and getting device info.
+ *
+ * @param buttonName The name of the button that was clicked
+ */
 void appButtonHandler(String buttonName) {
     if (buttonName == 'btnExtendScan') { extendDiscovery(120) }
 
@@ -127,8 +141,17 @@ void appButtonHandler(String buttonName) {
     }
 }
 
+/**
+ * Called when the app is first installed.
+ * Initializes the app by calling {@link #initialize()}.
+ */
 void installed() { initialize() }
 
+/**
+ * Called when the app settings are updated.
+ * Detects logging level changes, prunes displayed logs accordingly,
+ * updates state with new settings, and reinitializes the app.
+ */
 void updated() {
     // Detect logging-level changes and prune displayed logs immediately
     String oldDisplay = state.displayLogLevel
@@ -149,6 +172,10 @@ void updated() {
     initialize()
 }
 
+/**
+ * Called when the app is uninstalled.
+ * Stops discovery, unregisters mDNS listeners, and cleans up subscriptions and schedules.
+ */
 void uninstalled() {
     stopDiscovery()
     // Only unregister listeners when app is uninstalled
@@ -162,6 +189,13 @@ void uninstalled() {
     unschedule()
 }
 
+/**
+ * Renders the device creation page where users can select discovered Shelly devices to create.
+ * Builds a list of available devices, tracks selected devices, and provides
+ * buttons for creating devices and getting detailed device information.
+ *
+ * @return Map containing the dynamic page definition
+ */
 Map createDevicesPage() {
     // Build options from discoveredShellys (keyed by IP) — use LinkedHashMap to preserve order
     LinkedHashMap<String,String> options = [:] as LinkedHashMap
@@ -221,6 +255,12 @@ Map createDevicesPage() {
     }
 }
 
+/**
+ * Initializes the app state and sets up mDNS discovery.
+ * Initializes state variables for discovered devices and logs,
+ * mirrors logging settings to state, subscribes to system start events,
+ * and registers mDNS listeners.
+ */
 void initialize() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
@@ -237,6 +277,13 @@ void initialize() {
     startMdnsDiscovery()
 }
 
+/**
+ * Starts the mDNS discovery process for Shelly devices.
+ * Optionally clears previously discovered devices, sets discovery state to running,
+ * registers mDNS listeners, and schedules discovery processing and timer updates.
+ *
+ * @param resetFound If true, clears the list of previously discovered devices
+ */
 void startDiscovery(Boolean resetFound = false) {
     if (resetFound) {
         state.discoveredShellys = [:]
@@ -261,6 +308,13 @@ void startDiscovery(Boolean resetFound = false) {
     runIn(10, 'processMdnsDiscovery')
 }
 
+/**
+ * Extends the discovery period by the specified number of seconds.
+ * If discovery is stopped, restarts it without clearing discovered devices.
+ * Updates the discovery end time and reschedules the stop task.
+ *
+ * @param seconds Number of seconds to extend the discovery period
+ */
 void extendDiscovery(Integer seconds) {
     if (!state.discoveryRunning) {
         // Sonos-style: if stopped, start again without clearing discovered list.
@@ -279,6 +333,11 @@ void extendDiscovery(Integer seconds) {
     appendLog('info', "Discovery extended by ${seconds} seconds")
 }
 
+/**
+ * Registers mDNS listeners for Shelly device discovery.
+ * Registers listeners for both _shelly._tcp and _http._tcp service types
+ * to discover Shelly devices on the local network.
+ */
 void startMdnsDiscovery() {
     try {
         registerMDNSListener('_shelly._tcp')
@@ -294,11 +353,24 @@ void startMdnsDiscovery() {
     }
 }
 
+/**
+ * Handles system startup events.
+ * Re-registers mDNS listeners when the Hubitat hub restarts,
+ * as mDNS listeners must be registered on each system start.
+ *
+ * @param evt The system start event
+ */
 void systemStartHandler(evt) {
     logDebug('System start detected, registering mDNS listeners')
     startMdnsDiscovery()
 }
 
+/**
+ * Stops the discovery process.
+ * Sets discovery state to not running, clears the discovery end time,
+ * and unschedules all discovery-related tasks. Note that mDNS listeners
+ * remain active to allow data accumulation.
+ */
 void stopDiscovery() {
     state.discoveryRunning = false
     state.discoveryEndTime = null
@@ -312,13 +384,17 @@ void stopDiscovery() {
     logDebug('Discovery stopped (mDNS listeners remain active)')
 }
 
+/**
+ * Updates the discovery timer display in real-time.
+ * Sends an event to the UI showing remaining discovery time and reschedules
+ * itself every second while discovery is active. Stops automatically when
+ * the timer reaches zero or discovery is no longer running.
+ */
 void updateDiscoveryTimer() {
     if (!state.discoveryRunning || !state.discoveryEndTime) {
-        logDebug("updateDiscoveryTimer: not running, stopping timer updates")
         return
     }
     Integer remainingSecs = getRemainingDiscoverySeconds()
-    logDebug("updateDiscoveryTimer: sending event with ${remainingSecs} seconds remaining")
 
     // Send event for real-time browser update
     app.sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds")
@@ -326,11 +402,16 @@ void updateDiscoveryTimer() {
     // Continue scheduling if time remaining
     if (remainingSecs > 0) {
         runIn(1, 'updateDiscoveryTimer')
-    } else {
-        logDebug("updateDiscoveryTimer: timer reached 0, stopping updates")
     }
 }
 
+/**
+ * Updates the recent logs display in the UI.
+ * Retrieves the most recent 10 log entries from state, reverses them
+ * (most recent first), and sends them to the UI via an app event.
+ * Reschedules itself every second while discovery is running to provide
+ * real-time log updates.
+ */
 void updateRecentLogs() {
     // Send the most recent 10 log lines to the browser for the app-state binding
     String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
@@ -343,6 +424,17 @@ void updateRecentLogs() {
     }
 }
 
+/**
+ * Processes mDNS discovery by querying for Shelly devices on the network.
+ * Retrieves mDNS entries for both _shelly._tcp and _http._tcp service types,
+ * filters for Shelly devices, extracts device information (name, IP, port, generation,
+ * firmware version), and stores discovered devices in state. Updates the UI with
+ * discovery results and reschedules itself periodically while discovery is active.
+ * <p>
+ * Only processes entries that appear to be Shelly devices (based on server name,
+ * gen field, or app field) and have valid IPv4 addresses. Tracks the timestamp
+ * of each discovery to enable aging and cleanup of stale entries.
+ */
 void processMdnsDiscovery() {
     if (!state.discoveryRunning) {
         logDebug('processMdnsDiscovery: discovery not running, returning')
@@ -390,9 +482,15 @@ void processMdnsDiscovery() {
                 String deviceName = server.replaceAll(/\.local\.$/, '').replaceAll(/\.$/, '')
 
                 String key = ip4
-                if (!state.discoveredShellys.containsKey(key)) {
+                Boolean isNewToState = !state.discoveredShellys.containsKey(key)
+                Boolean alreadyLogged = foundDevices.containsKey(key)
+
+                // Only log if this is a newly discovered device AND we haven't logged it yet this run
+                if (isNewToState && !alreadyLogged) {
                     logDebug("Found NEW Shelly: ${deviceName} at ${ip4}:${port} (gen=${gen}, app=${deviceApp}, ver=${ver})")
+                    foundDevices.put(key, true)
                 }
+
                 state.discoveredShellys[key] = [
                     name: deviceName ?: "Shelly ${ip4}",
                     ipAddress: ip4,
@@ -419,6 +517,15 @@ void processMdnsDiscovery() {
     }
 }
 
+/**
+ * Formats the list of discovered Shelly devices for display in the UI.
+ * Generates an HTML-formatted string with device information including name,
+ * IP address, port, generation, application type, and firmware version.
+ * Devices are sorted alphabetically by name.
+ *
+ * @return HTML-formatted string with one device per line separated by {@code <br/>} tags,
+ *         or empty string if no devices have been discovered
+ */
 String getFoundShellys() {
     if (!state.discoveredShellys || state.discoveredShellys.size() == 0) { return '' }
 
@@ -447,6 +554,13 @@ String getFoundShellys() {
     return names.join('<br/>')
 }
 
+/**
+ * Sends discovery events to update the UI with found devices.
+ * Publishes two app events: one with the count of discovered devices
+ * and another with the formatted list of all discovered devices.
+ * These events are used by the UI to provide real-time feedback
+ * during the discovery process.
+ */
 void sendFoundShellyEvents() {
     String countValue = "Found Devices (${state.discoveredShellys.size()}): "
     String devicesValue = getFoundShellys()
@@ -463,6 +577,22 @@ void sendFoundShellyEvents() {
 // Uses the existing command map helpers (shellyGetDeviceInfoCommand, etc.) and
 // the shared `postCommandSync(command, uri)` helper to send JSON-RPC to a
 // discovered device (targets an arbitrary IP instead of getBaseUriRpc()).
+/**
+ * Fetches comprehensive device information from a discovered Shelly device.
+ * Queries the device for its info, configuration, and status via JSON-RPC commands
+ * over HTTP. Stores all retrieved data in state for use in device creation and
+ * driver determination. Also updates the UI with device details and invokes
+ * driver determination logic.
+ * <p>
+ * Makes three RPC calls to the device:
+ * <ul>
+ *   <li>Shelly.GetDeviceInfo - device identity, model, firmware, auth status</li>
+ *   <li>Shelly.GetConfig - device configuration settings</li>
+ *   <li>Shelly.GetStatus - current device status including component states</li>
+ * </ul>
+ *
+ * @param ipKey The IP address key identifying the device in discoveredShellys map
+ */
 private void fetchAndStoreDeviceInfo(String ipKey) {
     if (!ipKey) { return }
     Map device = state.discoveredShellys[ipKey]
@@ -481,7 +611,9 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
     try {
         // Use shared helper: postCommandSync supports an optional URI parameter
         LinkedHashMap deviceInfoCmd = shellyGetDeviceInfoCommand(true, 'discovery')
+        logDebug("fetchAndStoreDeviceInfo: sending Shelly.GetDeviceInfo command to ${rpcUri}")
         LinkedHashMap deviceInfoResp = postCommandSync(deviceInfoCmd, rpcUri)
+        logDebug("fetchAndStoreDeviceInfo: received response: ${deviceInfoResp ? 'OK' : 'NULL'}")
         Map deviceInfo = (deviceInfoResp instanceof Map && deviceInfoResp.containsKey('result')) ? deviceInfoResp.result : deviceInfoResp
         if (!deviceInfo) {
             appendLog('warn', "No device info returned from ${ip} — device may be offline or not Gen2+")
@@ -535,11 +667,37 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         sendFoundShellyEvents()
         determineDeviceDriver(deviceStatus)
     } catch (Exception e) {
-        appendLog('error', "Failed to get device info from ${ip}: ${e.message}")
-        logDebug("fetchAndStoreDeviceInfo exception: ${e.class.simpleName}: ${e.message}")
+        String errorMsg = e.message ?: e.toString() ?: e.class.simpleName
+        appendLog('error', "Failed to get device info from ${ip}: ${errorMsg}")
+        logDebug("fetchAndStoreDeviceInfo exception: ${e.class.name}: ${errorMsg}")
+        if (e.stackTrace && e.stackTrace.length > 0) {
+            logDebug("fetchAndStoreDeviceInfo stack trace (first 3 lines): ${e.stackTrace.take(3).join(' | ')}")
+        }
     }
 }
 
+/**
+ * Analyzes device status to determine the appropriate Hubitat driver.
+ * Inspects the device status map for switches and inputs, logs the discovered
+ * component counts, builds a list of Shelly components, and invokes driver
+ * generation. Provides heuristic determination of device type based on the
+ * combination of switches and inputs found.
+ * <p>
+ * Component detection:
+ * <ul>
+ *   <li>Switches: status keys starting with "switch"</li>
+ *   <li>Inputs: status keys containing "input"</li>
+ * </ul>
+ * <p>
+ * Device type heuristics:
+ * <ul>
+ *   <li>1 switch, 0 inputs: plug or basic relay</li>
+ *   <li>1 switch, 1+ inputs: roller shutter or similar</li>
+ *   <li>Multiple switches: multi-relay model</li>
+ * </ul>
+ *
+ * @param deviceStatus Map containing the device status with component keys
+ */
 private void determineDeviceDriver(Map deviceStatus ) {
     // Placeholder for future device-type determination logic
     if (!deviceStatus) {
@@ -549,6 +707,25 @@ private void determineDeviceDriver(Map deviceStatus ) {
     logDebug("determineDeviceDriver: deviceStatus keys=${deviceStatus?.keySet() ?: 'n/a'}")
     int switchesFound = deviceStatus.findAll { k, v -> k.toString().toLowerCase().startsWith('switch') }.size()
     int inputsFound = deviceStatus.findAll { k, v -> k.toString().toLowerCase().contains('input') }.size()
+
+    // Log discovered device capabilities
+    logInfo("Discovered device has switch(es): ${switchesFound}")
+    logInfo("Discovered device has input(s): ${inputsFound}")
+
+    // Build list of Shelly components found
+    List<String> components = []
+    deviceStatus.each { k, v ->
+        String key = k.toString().toLowerCase()
+        if (key.startsWith('switch')) { components.add("switch:${k}") }
+        if (key.contains('input')) { components.add("input:${k}") }
+    }
+
+    // Generate driver for discovered components
+    if (components.size() > 0) {
+        String driverCode = generateHubitatDriver(components)
+        logDebug("Generated driver code (${driverCode?.length() ?: 0} chars)")
+    }
+
     if (switchesFound == 0 && inputsFound == 0) {
         logDebug("determineDeviceDriver: no switches or inputs found in status, cannot determine device type")
         return
@@ -563,12 +740,44 @@ private void determineDeviceDriver(Map deviceStatus ) {
     } else {
         logDebug("Device has an unexpected combination of switches and inputs, manual review may be needed")
     }
-    logDebug("Device has the following capabilities: Switches:${switchesFound} Inputs:${inputsFound}")
 
 }
 
+/**
+ * Generates a Hubitat device driver based on discovered Shelly components.
+ * Uses StringBuilder to construct the driver code incrementally. Currently
+ * a placeholder implementation that will be expanded to generate complete
+ * driver definitions with capabilities, attributes, commands, and component
+ * handling logic.
+ *
+ * @param components List of component identifiers discovered in the device
+ *                   (e.g., ["switch:switch:0", "input:input:0"])
+ * @return String containing the generated driver code, currently a placeholder
+ */
+private String generateHubitatDriver(List<String> components) {
+    logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components}")
 
-// Small helper to truncate long response bodies for logs
+    // TODO: Implement driver generation logic
+    // This will use StringBuilder to construct the driver file piece by piece
+    StringBuilder driver = new StringBuilder()
+
+    // Placeholder for future implementation
+    driver.append("// Generated Hubitat Driver\n")
+    driver.append("// Components: ${components.join(', ')}\n")
+
+    return driver.toString()
+}
+
+/**
+ * Truncates long objects to a safe length for logging.
+ * Prevents log spam and memory issues when logging large response bodies
+ * or data structures.
+ *
+ * @param obj The object to convert to string and potentially truncate
+ * @param maxLen Maximum length of the returned string (default: 240)
+ * @return Truncated string representation with "..." appended if shortened,
+ *         or empty string if obj is null
+ */
 private String truncateForLog(Object obj, Integer maxLen = 240) {
     if (!obj) { return '' }
     String s = obj.toString()
@@ -576,15 +785,41 @@ private String truncateForLog(Object obj, Integer maxLen = 240) {
     return s.substring(0, maxLen) + '...'
 }
 
+/**
+ * Calculates the remaining discovery time in seconds.
+ * Compares the discovery end time stored in state with the current time
+ * to determine how many seconds remain before discovery automatically stops.
+ *
+ * @return Number of seconds remaining in the discovery period, or 0 if
+ *         discovery is not running or end time is not set
+ */
 private Integer getRemainingDiscoverySeconds() {
     if (!state.discoveryEndTime) { return 0 }
     Long remainingMs = Math.max(0L, (state.discoveryEndTime as Long) - now())
     return (Integer)(remainingMs / 1000L)
 }
 
+/**
+ * Returns the configured discovery duration.
+ *
+ * @return Discovery duration in seconds (default: 120)
+ */
 private Integer getDiscoveryDurationSeconds() { 120 }
+
+/**
+ * Returns the mDNS polling interval.
+ *
+ * @return Interval between mDNS queries in seconds (default: 5)
+ */
 private Integer getMdnsPollSeconds() { 5 }
 
+/**
+ * Applies a pending display log level change.
+ * If a display level change was stored in state (typically during the updated()
+ * lifecycle method), applies it to the app settings and clears the pending state.
+ * This deferred application prevents infinite update loops when settings changes
+ * trigger the updated() method.
+ */
 private void applyPendingDisplayLevel() {
     String pending = state.pendingDisplayLevel?.toString()
     if (pending) {
@@ -593,6 +828,14 @@ private void applyPendingDisplayLevel() {
     }
 }
 
+/**
+ * Removes log entries below the specified display level threshold.
+ * Parses each log entry to extract its level and filters out entries
+ * with priority lower than the threshold. Updates the UI with the pruned
+ * log list. Entries that cannot be parsed are kept by default.
+ *
+ * @param displayLevel The minimum log level to retain (trace, debug, info, warn, error)
+ */
 private void pruneDisplayedLogs(String displayLevel) {
     if (!state.recentLogs) { return }
     int threshold = levelPriority(displayLevel?.toString())
@@ -615,6 +858,15 @@ private void pruneDisplayedLogs(String displayLevel) {
 }
 
 
+/**
+ * Appends a log message to the in-app log buffer.
+ * Adds the message with timestamp and level to state if it meets the display
+ * threshold, maintains a rolling buffer of the most recent 300 entries, and
+ * sends the 10 most recent entries to the UI for real-time display.
+ *
+ * @param level The log level (trace, debug, info, warn, error)
+ * @param msg The message to log
+ */
 private void appendLog(String level, String msg) {
     state.recentLogs = state.recentLogs ?: []
 
@@ -633,46 +885,109 @@ private void appendLog(String level, String msg) {
     }
 }
 
+/**
+ * Returns the ordered list of log levels from lowest to highest priority.
+ *
+ * @return List of log level names: trace, debug, info, warn, error, off
+ */
 private List<String> LOG_LEVELS() { ['trace','debug','info','warn','error','off'] }
 
+/**
+ * Determines the numeric priority of a log level.
+ * Lower index values indicate lower priority (trace=0), higher index values
+ * indicate higher priority (error=4). Used for filtering log messages.
+ *
+ * @param level The log level name (case-insensitive)
+ * @return The priority index, or the debug level index if level is null or invalid
+ */
 private Integer levelPriority(String level) {
     if (!level) { return LOG_LEVELS().indexOf('debug') }
     int idx = LOG_LEVELS().indexOf(level.toString().toLowerCase())
     return idx >= 0 ? idx : LOG_LEVELS().indexOf('debug')
 }
 
+/**
+ * Determines if a message at the given level should be logged to Hubitat logs.
+ * Compares the message level against the configured logLevel setting.
+ *
+ * @param level The log level to check
+ * @return true if the message should be logged, false otherwise
+ */
 private Boolean shouldLogOverall(String level) {
     return levelPriority(level) >= levelPriority(settings?.logLevel ?: 'debug')
 }
 
+/**
+ * Determines if a message at the given level should be displayed in the app UI.
+ * Compares the message level against the configured displayLogLevel setting
+ * (or logLevel if displayLogLevel is not set).
+ *
+ * @param level The log level to check
+ * @return true if the message should be displayed in the UI, false otherwise
+ */
 private Boolean shouldDisplay(String level) {
     return levelPriority(level) >= levelPriority(settings?.displayLogLevel ?: (settings?.logLevel ?: 'warn'))
 }
 
+/**
+ * Logs a trace-level message.
+ * Outputs to Hubitat logs if trace logging is enabled and adds to the
+ * in-app log buffer if the display level allows it.
+ *
+ * @param msg The message to log
+ */
 private void logTrace(String msg) {
     if (!shouldLogOverall('trace')) { return }
     log.trace msg
     if (shouldDisplay('trace')) { appendLog('trace', msg) }
 }
 
+/**
+ * Logs a debug-level message.
+ * Outputs to Hubitat logs if debug logging is enabled and adds to the
+ * in-app log buffer if the display level allows it.
+ *
+ * @param msg The message to log
+ */
 private void logDebug(String msg) {
     if (!shouldLogOverall('debug')) { return }
     log.debug msg
     if (shouldDisplay('debug')) { appendLog('debug', msg) }
 }
 
+/**
+ * Logs an info-level message.
+ * Outputs to Hubitat logs if info logging is enabled and adds to the
+ * in-app log buffer if the display level allows it.
+ *
+ * @param msg The message to log
+ */
 private void logInfo(String msg) {
     if (!shouldLogOverall('info')) { return }
     log.info msg
     if (shouldDisplay('info')) { appendLog('info', msg) }
 }
 
+/**
+ * Logs a warning-level message.
+ * Outputs to Hubitat logs if warn logging is enabled and adds to the
+ * in-app log buffer if the display level allows it.
+ *
+ * @param msg The message to log
+ */
 private void logWarn(String msg) {
     if (!shouldLogOverall('warn')) { return }
     log.warn msg
     if (shouldDisplay('warn')) { appendLog('warn', msg) }
 }
 
+/**
+ * Logs an error-level message.
+ * Outputs to Hubitat logs if error logging is enabled and adds to the
+ * in-app log buffer if the display level allows it.
+ *
+ * @param msg The message to log
+ */
 private void logError(String msg) {
     if (!shouldLogOverall('error')) { return }
     log.error msg
@@ -2042,9 +2357,17 @@ LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
     httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
     setAuthIsEnabled(false)
   } catch(HttpResponseException ex) {
-    if(ex.getStatusCode() != 401) {logWarn("Exception: ${ex}")}
+    if(ex.getStatusCode() != 401) {
+      logWarn("HTTP Exception (${ex.getStatusCode()}): ${ex.message ?: ex.toString()}")
+      throw ex
+    }
     setAuthIsEnabled(true)
-    String authToProcess = ex.getResponse().getAllHeaders().find{ it.getValue().contains('nonce')}.getValue().replace('Digest ', '')
+    def authHeader = ex.getResponse()?.getAllHeaders()?.find{ it.getValue()?.contains('nonce')}
+    if (!authHeader) {
+      logError("Device requires authentication but no auth header found in response")
+      throw new Exception("Authentication required but auth header missing")
+    }
+    String authToProcess = authHeader.getValue().replace('Digest ', '')
     authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
     processUnauthorizedMessage("{${authToProcess}}".toString())
     try {
@@ -2052,8 +2375,12 @@ LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
       params.body = command
       httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
     } catch(HttpResponseException ex2) {
-      logError('Auth failed a second time. Double check password correctness.')
+      logError("Auth failed a second time (${ex2.getStatusCode()}). Double check password correctness.")
+      throw ex2
     }
+  } catch(Exception ex) {
+    logError("postCommandSync exception for ${params.uri}: ${ex.class.simpleName}: ${ex.message ?: ex.toString()}")
+    throw ex
   }
   logTrace("postCommandSync returned from ${params.uri}: ${prettyJson(json)}")
   return json
@@ -2286,7 +2613,7 @@ ChildDeviceWrapper createParentSwitch(String dni, Boolean isPm = false, String l
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = isPm == false ? 'Shelly Single Switch' : 'Shelly Single Switch PM'
-    String labelText = labelText != '' ? labelText : isPm == false ? 'Shelly Switch' : 'Shelly Switch PM'
+    labelText = labelText != '' ? labelText : isPm == false ? 'Shelly Switch' : 'Shelly Switch PM'
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${labelText}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${labelText}"])
@@ -2305,7 +2632,7 @@ ChildDeviceWrapper createChildSwitch(Integer id, String additionalId = null) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = additionalId == null ? 'Shelly Switch Component' : 'Shelly OverUnder Switch Component'
-    String labelText = thisDevice().getLabel() != null ? "${thisDevice().getLabel()}" : "${driverName}"
+    String labelText = getAppLabel() != null ? "${getAppLabel()}" : "${driverName}"
     String label = additionalId == null ? "${labelText} - Switch ${id}" : "${labelText} - ${additionalId} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -2323,7 +2650,7 @@ ChildDeviceWrapper createChildDimmer(Integer id) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = 'Shelly Dimmer Component'
-    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - Dimmer ${id}" : "${driverName} - Dimmer ${id}"
+    String label = getAppLabel() != null ? "${getAppLabel()} - Dimmer ${id}" : "${driverName} - Dimmer ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2340,7 +2667,7 @@ ChildDeviceWrapper createChildRGB(Integer id) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = 'Shelly RGB Component'
-    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - RGB ${id}" : "${driverName} - RGB ${id}"
+    String label = getAppLabel() != null ? "${getAppLabel()} - RGB ${id}" : "${driverName} - RGB ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2357,7 +2684,7 @@ ChildDeviceWrapper createChildRGBW(Integer id) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = 'Shelly RGBW Component'
-    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - RGBW ${id}" : "${driverName} - RGBW ${id}"
+    String label = getAppLabel() != null ? "${getAppLabel()} - RGBW ${id}" : "${driverName} - RGBW ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2374,7 +2701,7 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = 'Shelly Switch PM Component'
-    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - Switch ${id}" : "${driverName} - Switch ${id}"
+    String label = getAppLabel() != null ? "${getAppLabel()} - Switch ${id}" : "${driverName} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2397,7 +2724,7 @@ ChildDeviceWrapper createChildEM(Integer id, String phase) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = 'Shelly EM Component'
-    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - EM${id} - phase ${phase}" : "${driverName} - EM${id} - phase ${phase}"
+    String label = getAppLabel() != null ? "${getAppLabel()} - EM${id} - phase ${phase}" : "${driverName} - EM${id} - phase ${phase}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2421,7 +2748,7 @@ ChildDeviceWrapper createChildEM1(Integer id) {
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String driverName = 'Shelly EM Component'
-    String label = thisDevice().getLabel() != null ? "${thisDevice().getLabel()} - EM ${id}" : "${driverName} - EM ${id}"
+    String label = getAppLabel() != null ? "${getAppLabel()} - EM ${id}" : "${driverName} - EM ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2446,7 +2773,7 @@ ChildDeviceWrapper createChildInput(Integer id, String inputType) {
   String dni = "${getThisDeviceDNI()}-input${inputType}${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - Input ${inputType} ${id}"
+    String label = "${getAppLabel()} - Input ${inputType} ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2469,7 +2796,7 @@ ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Cove
   String dni = "${getThisDeviceDNI()}-cover${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - Cover ${id}"
+    String label = "${getAppLabel()} - Cover ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2498,7 +2825,7 @@ ChildDeviceWrapper createChildTemperature(Integer id) {
   String dni = "${getThisDeviceDNI()}-temperature${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - Temperature ${id}"
+    String label = "${getAppLabel()} - Temperature ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2515,7 +2842,7 @@ ChildDeviceWrapper createChildHumidity(Integer id) {
   String dni = "${getThisDeviceDNI()}-humidity${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - Temperature ${id}"
+    String label = "${getAppLabel()} - Temperature ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2532,7 +2859,7 @@ ChildDeviceWrapper createChildTemperatureHumidity(Integer id) {
   String dni = "${getThisDeviceDNI()}-temperatureHumidity${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - Temperature & Humidity${id}"
+    String label = "${getAppLabel()} - Temperature & Humidity${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2550,7 +2877,7 @@ ChildDeviceWrapper createChildIlluminance(Integer id) {
   String dni = "${getThisDeviceDNI()}-illuminance${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - Illuminance ${id}"
+    String label = "${getAppLabel()} - Illuminance ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2567,7 +2894,7 @@ ChildDeviceWrapper createChildPlugsUiRGB() {
   String dni = "${getThisDeviceDNI()}-plugsui-rgb"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - LED RGB"
+    String label = "${getAppLabel()} - LED RGB"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2584,7 +2911,7 @@ ChildDeviceWrapper createChildPlugsUiRGBOn() {
   String dni = "${getThisDeviceDNI()}-plugsui-rgb-on"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - LED RGB Power On"
+    String label = "${getAppLabel()} - LED RGB Power On"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2602,7 +2929,7 @@ ChildDeviceWrapper createChildPlugsUiRGBOff() {
   String dni = "${getThisDeviceDNI()}-plugsui-rgb-off"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - LED RGB Power Off"
+    String label = "${getAppLabel()} - LED RGB Power Off"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2620,7 +2947,7 @@ ChildDeviceWrapper createChildVoltage(Integer id) {
   String dni = "${getThisDeviceDNI()}-adc${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${thisDevice().getLabel()} - ADC ${id}"
+    String label = "${getAppLabel()} - ADC ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -2987,7 +3314,7 @@ void processUnauthorizedMessage(String message) {
 }
 
 @CompileStatic
-String getPassword() { return getDeviceSettings().devicePassword as String }
+String getPassword() { return getAppSettings().devicePassword as String }
 LinkedHashMap getAuth() {
   LinkedHashMap authMap = getAuthMap()
   if(authMap == null || authMap.size() == 0) {return [:]}
@@ -3046,20 +3373,29 @@ void setAuthMap(LinkedHashMap map) {
 
 @CompileStatic
 Boolean authIsEnabled() {
-  return thisDevice().getDataValue('auth') == 'true'
+  // In app context, use state instead of device data values
+  return getAppState('authEnabled') == true
 }
 @CompileStatic
 void setAuthIsEnabled(Boolean auth) {
-  thisDevice().updateDataValue('auth', auth.toString())
+  // In app context, use state instead of device data values
+  setAppState('authEnabled', auth)
+}
+
+String getAppState(String key) {
+  return state[key]
+}
+void setAppState(String key, value) {
+  state[key] = value
 }
 
 @CompileStatic
 Boolean authIsEnabledGen1() {
   Boolean authEnabled = (
-    getDeviceSettings()?.deviceUsername != null &&
-    getDeviceSettings()?.devicePassword != null &&
-    getDeviceSettings()?.deviceUsername != '' &&
-    getDeviceSettings()?.devicePassword != ''
+    getAppSettings()?.deviceUsername != null &&
+    getAppSettings()?.devicePassword != null &&
+    getAppSettings()?.deviceUsername != '' &&
+    getAppSettings()?.devicePassword != ''
   )
   setAuthIsEnabled(authEnabled)
   return authEnabled
@@ -3070,8 +3406,8 @@ Boolean authIsEnabledGen1() {
 
 @CompileStatic
 String getBasicAuthHeader() {
-  if(getDeviceSettings()?.deviceUsername != null && getDeviceSettings()?.devicePassword != null) {
-    return base64Encode("${getDeviceSettings().deviceUsername}:${getDeviceSettings().devicePassword}".toString())
+  if(getAppSettings()?.deviceUsername != null && getAppSettings()?.devicePassword != null) {
+    return base64Encode("${getAppSettings().deviceUsername}:${getAppSettings().devicePassword}".toString())
   }
 }
 /* #endregion */
@@ -3221,53 +3557,184 @@ import java.io.StringWriter
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region Device Properties, Settings & Helpers */
 // MARK: Device Properties, Settings & Helpers
+// ═══════════════════════════════════════════════════════════════
+// App Context Helpers (non-static for app/device/parent access)
+// ═══════════════════════════════════════════════════════════════
+
+/** Helper to access app label (non-static to avoid compilation errors) */
+private String getAppLabelHelper() {
+  return app.getLabel() ?: app.label ?: 'Shelly Discovery'
+}
+
+/** Helper to access app ID (non-static to avoid compilation errors) */
+private Long getAppIdHelper() {
+  return app.id
+}
+
+/** Helper to send app events (non-static to avoid compilation errors) */
+private void sendAppEventHelper(Map properties) {
+  app.sendEvent(properties)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Device/Child Operation Helpers (non-static for dynamic dispatch)
+// ═══════════════════════════════════════════════════════════════
+
+/** Helper for dev.updateSetting() calls */
+private void deviceUpdateSettingHelper(DeviceWrapper dev, String name, Object value) {
+  dev.updateSetting(name, value)
+}
+
+/** Helper for dev.getDataValue() calls */
+private String deviceGetDataValueHelper(DeviceWrapper dev, String name) {
+  return dev.getDataValue(name)
+}
+
+/** Helper for dev.updateDataValue() calls */
+private void deviceUpdateDataValueHelper(DeviceWrapper dev, String name, String value) {
+  dev.updateDataValue(name, value)
+}
+
+/** Helper for dev.hasCapability() calls */
+private Boolean deviceHasCapabilityHelper(DeviceWrapper dev, String capability) {
+  return dev.hasCapability(capability)
+}
+
+/** Helper for dev.hasAttribute() calls */
+private Boolean deviceHasAttributeHelper(DeviceWrapper dev, String attribute) {
+  return dev.hasAttribute(attribute)
+}
+
+/** Helper for child.sendEvent() calls */
+private void childSendEventHelper(ChildDeviceWrapper child, Map properties) {
+  child.sendEvent(properties)
+}
+
+/** Helper for child.updateDataValue() calls */
+private void childUpdateDataValueHelper(ChildDeviceWrapper child, String name, String value) {
+  child.updateDataValue(name, value)
+}
+
+/** Helper for child.hasAttribute() calls */
+private Boolean childHasAttributeHelper(ChildDeviceWrapper child, String attribute) {
+  return child.hasAttribute(attribute)
+}
+
+/** Helper for child.getDeviceDataValue() calls */
+private String childGetDeviceDataValueHelper(ChildDeviceWrapper child, String name) {
+  return child.getDeviceDataValue(name)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Hubitat Built-in Method Helpers (non-static for dynamic dispatch)
+// ═══════════════════════════════════════════════════════════════
+
+/** Helper for schedule() calls */
+private void scheduleHelper(String cronExpression, String handlerMethod) {
+  schedule(cronExpression, handlerMethod)
+}
+
+/** Helper for unschedule() calls */
+private void unscheduleHelper(String handlerMethod) {
+  unschedule(handlerMethod)
+}
+
+/** Helper for getLocation() calls */
+private Object getLocationHelper() {
+  return getLocation()
+}
+
+/** Helper for parent property access */
+private Object getParentHelper() {
+  return parent
+}
+
+/** Helper for httpGet() calls */
+private void httpGetHelper(Map params, Closure closure) {
+  httpGet(params, closure)
+}
+
+/** Helper for httpPost() calls */
+private void httpPostHelper(Map params, Closure closure) {
+  httpPost(params, closure)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// App Context Functions (with @CompileStatic type safety)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Gets the app's label for use in child device naming.
+ * In app context, we use the app's label instead of a device label.
+ *
+ * @return The app's label, or 'Shelly Discovery' if not set
+ */
+@CompileStatic
+String getAppLabel() {
+  return getAppLabelHelper()
+}
+
+/**
+ * Gets the base identifier for child device DNIs.
+ * In app context, we use the app ID instead of a device DNI.
+ * Child devices will have DNIs in the format: app-<appId>-<component>-<id>
+ *
+ * @return Base DNI string for this app's child devices
+ */
+@CompileStatic
+String getBaseDNI() {
+  return "app-${getAppIdHelper()}"
+}
+
+// Legacy function - kept for backward compatibility with driver code
+// In app context, this doesn't apply, but some functions may still reference it
 DeviceWrapper thisDevice() { return this.device }
 ArrayList<ChildDeviceWrapper> getThisDeviceChildren() { return getChildDevices() }
 ArrayList<ChildDeviceWrapper> getParentDeviceChildren() { return parent?.getChildDevices() }
 
-LinkedHashMap getDeviceSettings() { return this.settings }
+LinkedHashMap getAppSettings() { return this.settings }
 LinkedHashMap getParentDeviceSettings() { return this.parent?.settings }
 LinkedHashMap getChildDeviceSettings(ChildDeviceWrapper child) { return child?.settings }
 Boolean hasParent() { return parent != null }
 
 
 @CompileStatic
-Boolean thisDeviceHasSetting(String settingName) {
-  Boolean hasSetting = getDeviceSettings().containsKey("${settingName}".toString())
+Boolean thisAppHasSetting(String settingName) {
+  Boolean hasSetting = getAppSettings().containsKey("${settingName}".toString())
   return hasSetting
 }
 
 @CompileStatic
 Boolean getBooleanDeviceSetting(String settingName) {
-  return thisDeviceHasSetting(settingName) ? getDeviceSettings()[settingName] as Boolean : null
+  return thisAppHasSetting(settingName) ? getAppSettings()[settingName] as Boolean : null
 }
 
 @CompileStatic
 String getStringDeviceSetting(String settingName) {
-  return thisDeviceHasSetting(settingName) ? getDeviceSettings()[settingName] as String : null
+  return thisAppHasSetting(settingName) ? getAppSettings()[settingName] as String : null
 }
 
 @CompileStatic
-BigDecimal getBigDecimalDeviceSetting(String settingName) {
-  return thisDeviceHasSetting(settingName) ? getDeviceSettings()[settingName] as BigDecimal : null
+BigDecimal getBigDecimalAppSetting(String settingName) {
+  return thisAppHasSetting(settingName) ? getAppSettings()[settingName] as BigDecimal : null
 }
 
 @CompileStatic
-BigDecimal getBigDecimalDeviceSettingAsCelcius(String settingName) {
-  if(thisDeviceHasSetting(settingName)) {
-    BigDecimal val = getDeviceSettings()[settingName]
+BigDecimal getBigDecimalAppSettingAsCelcius(String settingName) {
+  if(thisAppHasSetting(settingName)) {
+    BigDecimal val = getAppSettings()[settingName]
     return isCelciusScale() == true ? val : fToC(val)
   } else { return null }
 }
 
 @CompileStatic
-Integer getIntegerDeviceSetting(String settingName) {
-  return thisDeviceHasSetting(settingName) ? getDeviceSettings()[settingName] as Integer : null
+Integer getIntegerAppSetting(String settingName) {
+  return thisAppHasSetting(settingName) ? getAppSettings()[settingName] as Integer : null
 }
 
 @CompileStatic
-String getEnumDeviceSetting(String settingName) {
-  return thisDeviceHasSetting(settingName) ? "${getDeviceSettings()[settingName]}".toString() : null
+String getEnumAppSetting(String settingName) {
+  return thisAppHasSetting(settingName) ? "${getAppSettings()[settingName]}".toString() : null
 }
 
 
@@ -3278,10 +3745,29 @@ Boolean hasChildren() {
 }
 
 @CompileStatic
-String getThisDeviceDNI() { return thisDevice().getDeviceNetworkId() }
+/**
+ * Gets the DNI base for child devices.
+ * In app context, uses the app ID. This is called by legacy driver code
+ * that was adapted for app use.
+ *
+ * @return Base DNI for child devices
+ */
+String getThisDeviceDNI() {
+  // In app context, use app-based DNI instead of device DNI
+  return getBaseDNI()
+}
 
+/**
+ * Sets the device network ID.
+ * In app context, this is not applicable (apps don't have DNIs).
+ * Kept for backward compatibility with driver code but logs warning if called.
+ *
+ * @param newDni The new device network ID
+ */
 @CompileStatic
-void setThisDeviceNetworkId(String newDni) { thisDevice().setDeviceNetworkId(newDni) }
+void setThisDeviceNetworkId(String newDni) {
+  logWarn("setThisDeviceNetworkId() called in app context - apps don't have DNIs. Ignoring.")
+}
 
 String getMACFromIPAddress(String ipAddress) { return getMACFromIP(ipAddress) }
 
@@ -3291,107 +3777,240 @@ String getIpAddressFromHexAddress(String hexString) {
   return ip
 }
 
+/**
+ * Sends an event in app context.
+ * In app context, this sends an app event instead of a device event.
+ * For child device events, use sendChildDeviceEvent() instead.
+ *
+ * @param name Event name
+ * @param value Event value
+ * @param unit Optional unit
+ * @param descriptionText Optional description
+ * @param isStateChange Whether this is a state change
+ */
 @CompileStatic
 void sendDeviceEvent(String name, Object value, String unit = null, String descriptionText = null, Boolean isStateChange = false) {
-  thisDevice().sendEvent([name: name, value: value, unit: unit, descriptionText: descriptionText, isStateChange: isStateChange])
+  // In app context, send app event instead of device event
+  sendAppEventHelper([name: name, value: value, unit: unit, descriptionText: descriptionText, isStateChange: isStateChange])
+}
+
+/**
+ * Sends an event in app context using a properties map.
+ * In app context, this sends an app event instead of a device event.
+ * For child device events, use sendChildDeviceEvent() instead.
+ *
+ * @param properties Map of event properties
+ */
+@CompileStatic
+void sendDeviceEvent(Map properties) {
+  // In app context, send app event instead of device event
+  sendAppEventHelper(properties)
 }
 
 @CompileStatic
-void sendDeviceEvent(Map properties) {thisDevice().sendEvent(properties)}
-
-@CompileStatic
-void sendChildDeviceEvent(Map properties, ChildDeviceWrapper child) {if(child != null){child.sendEvent(properties)}}
-
-@CompileStatic
-Boolean hasExtTempGen1(String settingName) {return getDeviceSettings().containsKey(settingName) == true}
-
-@CompileStatic
-void setDeviceSetting(String name, Map options, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  dev.updateSetting(name, options)
-}
-
-void setDeviceSetting(String name, Long value, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  dev.updateSetting(name, value)
-}
-
-void setDeviceSetting(String name, Boolean value, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  dev.updateSetting(name, value)
-}
-
-void setDeviceSetting(String name, String value, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  dev.updateSetting(name, value)
-}
-
-void setDeviceSetting(String name, Double value, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  dev.updateSetting(name, value)
-}
-
-void setDeviceSetting(String name, Date value, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  dev.updateSetting(name, value)
-}
-
-void setDeviceSetting(String name, List value, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  dev.updateSetting(name, value)
-}
-
-
-
-void removeDeviceSetting(String name) {thisDevice().removeSetting(name)}
-
-@CompileStatic
-void setDeviceNetworkIdByMacAddress(String ipAddress) {
-  String oldDni = getThisDeviceDNI()
-  String newDni = getMACFromIPAddress(ipAddress)
-  if(oldDni != newDni) {
-    logDebug("Current DNI does not match device MAC address... Setting device network ID to ${newDni}")
-    setThisDeviceNetworkId(newDni)
-  } else {
-    logTrace('Device DNI does not need updated, moving on...')
+void sendChildDeviceEvent(Map properties, ChildDeviceWrapper child) {
+  if(child != null) {
+    childSendEventHelper(child, properties)
   }
 }
 
-void scheduleTask(String sched, String taskName) {schedule(sched, taskName)}
-void unscheduleTask(String taskName) { unschedule(taskName) }
+@CompileStatic
+Boolean hasExtTempGen1(String settingName) {return getAppSettings().containsKey(settingName) == true}
 
-Boolean isCelciusScale() { getLocation().temperatureScale == 'C' }
+/**
+ * Sets a device setting with Map options.
+ * In app context, the device parameter is required (apps don't have device settings).
+ *
+ * @param name Setting name
+ * @param options Setting options map
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceSetting(String name, Map options, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceSetting() called without device parameter in app context - ignoring")
+    return
+  }
+  deviceUpdateSettingHelper(dev, name, options)
+}
 
+/**
+ * Sets a device setting with Long value.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceSetting(String name, Long value, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceSetting() called without device parameter in app context - ignoring")
+    return
+  }
+  deviceUpdateSettingHelper(dev, name, value)
+}
+
+/**
+ * Sets a device setting with Boolean value.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceSetting(String name, Boolean value, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceSetting() called without device parameter in app context - ignoring")
+    return
+  }
+  deviceUpdateSettingHelper(dev, name, value)
+}
+
+/**
+ * Sets a device setting with String value.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceSetting(String name, String value, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceSetting() called without device parameter in app context - ignoring")
+    return
+  }
+  deviceUpdateSettingHelper(dev, name, value)
+}
+
+/**
+ * Sets a device setting with Double value.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceSetting(String name, Double value, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceSetting() called without device parameter in app context - ignoring")
+    return
+  }
+  deviceUpdateSettingHelper(dev, name, value)
+}
+
+/**
+ * Sets a device setting with Date value.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceSetting(String name, Date value, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceSetting() called without device parameter in app context - ignoring")
+    return
+  }
+  deviceUpdateSettingHelper(dev, name, value)
+}
+
+/**
+ * Sets a device setting with List value.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceSetting(String name, List value, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceSetting() called without device parameter in app context - ignoring")
+    return
+  }
+  deviceUpdateSettingHelper(dev, name, value)
+}
+
+/**
+ * Removes a device setting.
+ * In app context, this is not applicable (apps use different settings management).
+ * Kept for backward compatibility with driver code.
+ *
+ * @param name The setting name to remove
+ */
+@CompileStatic
+void removeDeviceSetting(String name) {
+  logWarn("removeDeviceSetting() called in app context - not applicable for apps. Use app.removeSetting() instead.")
+}
+
+/**
+ * Sets the device network ID based on MAC address.
+ * In app context, this is not applicable (apps don't have DNIs).
+ * Kept for backward compatibility with driver code.
+ *
+ * @param ipAddress IP address to derive MAC from
+ */
+@CompileStatic
+void setDeviceNetworkIdByMacAddress(String ipAddress) {
+  logWarn("setDeviceNetworkIdByMacAddress() called in app context - not applicable for apps. Ignoring.")
+}
+
+@CompileStatic
+void scheduleTask(String sched, String taskName) {
+  scheduleHelper(sched, taskName)
+}
+
+@CompileStatic
+void unscheduleTask(String taskName) {
+  unscheduleHelper(taskName)
+}
+
+Boolean isCelciusScale() {
+  return getLocationHelper().temperatureScale == 'C'
+}
+
+/**
+ * Gets a device data value.
+ * In app context, the device parameter is required (apps use state, not data values).
+ *
+ * @param dataValueName Name of the data value
+ * @param dev Target device (required in app context)
+ * @return Data value as string, or null if device not specified
+ */
+@CompileStatic
 String getDeviceDataValue(String dataValueName, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  return dev.getDataValue(dataValueName)
+  if(dev == null) {
+    logWarn("getDeviceDataValue() called without device parameter in app context - returning null")
+    return null
+  }
+  return deviceGetDataValueHelper(dev, dataValueName)
 }
 
+/**
+ * Gets a device data value as Integer.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
 Integer getIntegerDeviceDataValue(String dataValueName, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  return dev.getDataValue(dataValueName) as Integer
+  if(dev == null) {
+    logWarn("getIntegerDeviceDataValue() called without device parameter in app context - returning null")
+    return null
+  }
+  return deviceGetDataValueHelper(dev, dataValueName) as Integer
 }
 
+/**
+ * Gets a device data value as Boolean.
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
 Boolean getBooleanDeviceDataValue(String dataValueName, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  return dev.getDataValue(dataValueName) == 'true'
+  if(dev == null) {
+    logWarn("getBooleanDeviceDataValue() called without device parameter in app context - returning false")
+    return false
+  }
+  return deviceGetDataValueHelper(dev, dataValueName) == 'true'
 }
 
-
+@CompileStatic
 Boolean childHasAttribute(ChildDeviceWrapper child, String attributeName) {
-  return child.hasAttribute(attributeName)
+  return childHasAttributeHelper(child, attributeName)
 }
 
 String getParentDeviceDataValue(String dataValueName) {
-  return parent?.getDeviceDataValue(dataValueName)
+  def parentObj = getParentHelper()
+  return parentObj?.getDeviceDataValue(dataValueName)
 }
 
+@CompileStatic
 Integer getChildDeviceIntegerDataValue(ChildDeviceWrapper child, String dataValueName) {
-  return child.getDeviceDataValue(dataValueName) as Integer
+  return childGetDeviceDataValueHelper(child, dataValueName) as Integer
 }
 
+@CompileStatic
 String getChildDeviceDataValue(ChildDeviceWrapper child, String dataValueName) {
-  return child.getDeviceDataValue(dataValueName)
+  return childGetDeviceDataValueHelper(child, dataValueName)
 }
 
 @CompileStatic
@@ -3399,14 +4018,26 @@ Boolean childHasDataValue(ChildDeviceWrapper child, String dataValueName) {
   return getChildDeviceDataValue(child, dataValueName) != null
 }
 
+@CompileStatic
 void setChildDeviceDataValue(ChildDeviceWrapper child, String dataValueName, String valueToSet) {
-  child.updateDataValue(dataValueName, valueToSet)
+  childUpdateDataValueHelper(child, dataValueName, valueToSet)
 }
 
+/**
+ * Checks if a device has a specific data value.
+ * In app context, the device parameter is required.
+ *
+ * @param dataValueName Name of the data value to check
+ * @param dev Target device (required in app context)
+ * @return true if the data value exists, false otherwise
+ */
 @CompileStatic
 Boolean deviceHasDataValue(String dataValueName, DeviceWrapper dev = null) {
-  if(dev == null) {dev = thisDevice()}
-  getDeviceDataValue(dataValueName, dev) != null
+  if(dev == null) {
+    logWarn("deviceHasDataValue() called without device parameter in app context - returning false")
+    return false
+  }
+  return getDeviceDataValue(dataValueName, dev) != null
 }
 
 @CompileStatic
@@ -3416,10 +4047,25 @@ Boolean anyChildHasDataValue(String dataValueName) {
   return allChildren.any{childHasDataValue(it, dataValueName)}
 }
 
-void setDeviceDataValue(String dataValueName, String valueToSet) {
-  thisDevice().updateDataValue(dataValueName, valueToSet)
+/**
+ * Sets a data value on a device.
+ * In app context, you must specify which child device to update.
+ * Apps themselves don't have data values (use state instead).
+ *
+ * @param dataValueName Name of the data value
+ * @param valueToSet Value to set
+ * @param dev Target device (required in app context)
+ */
+@CompileStatic
+void setDeviceDataValue(String dataValueName, String valueToSet, DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("setDeviceDataValue() called without device parameter in app context - ignoring. Use child device parameter.")
+    return
+  }
+  deviceUpdateDataValueHelper(dev, dataValueName, valueToSet)
 }
 
+@CompileStatic
 String getChildDeviceNetworkId(ChildDeviceWrapper child) {
   return child.getDeviceNetworkId()
 }
@@ -3429,7 +4075,7 @@ String getBaseUri() {
   if(hasParent() == true) {
     return "http://${getParentDeviceSettings().ipAddress}"
   } else {
-    return "http://${getDeviceSettings().ipAddress}"
+    return "http://${getAppSettings().ipAddress}"
   }
 }
 
@@ -3438,7 +4084,7 @@ String getBaseUriRpc() {
   if(hasParent() == true) {
     return "http://${getParentDeviceSettings().ipAddress}/rpc"
   } else {
-    return "http://${getDeviceSettings().ipAddress}/rpc"
+    return "http://${getAppSettings().ipAddress}/rpc"
   }
 }
 
@@ -3453,7 +4099,7 @@ Long unixTimeSeconds() {
 
 @CompileStatic
 String getWebSocketUri() {
-  if(getDeviceSettings()?.ipAddress != null && getDeviceSettings()?.ipAddress != '') {return "ws://${getDeviceSettings()?.ipAddress}/rpc"}
+  if(getAppSettings()?.ipAddress != null && getAppSettings()?.ipAddress != '') {return "ws://${getAppSettings()?.ipAddress}/rpc"}
   else {return null}
 }
 @CompileStatic
@@ -3463,7 +4109,7 @@ Boolean hasWebsocketUri() {
 
 @CompileStatic
 Boolean hasIpAddress() {
-  Boolean hasIpAddress = (getDeviceSettings()?.ipAddress != null && getDeviceSettings()?.ipAddress != '' && ((String)getDeviceSettings()?.ipAddress).length() > 6)
+  Boolean hasIpAddress = (getAppSettings()?.ipAddress != null && getAppSettings()?.ipAddress != '' && ((String)getAppSettings()?.ipAddress).length() > 6)
   return hasIpAddress
 }
 
@@ -3528,24 +4174,117 @@ Boolean deviceIsComponent() {return COMP == true}
 Boolean deviceIsComponentInputSwitch() {return INPUTSWITCH == true}
 Boolean deviceIsOverUnderSwitch() {return OVERUNDERSWITCH == true}
 
-Boolean hasCapabilityBattery() { return device.hasCapability('Battery') == true }
-Boolean hasCapabilityColorControl() { return device.hasCapability('ColorControl') == true }
-Boolean hasCapabilityColorMode() { return device.hasCapability('ColorMode') == true }
-Boolean hasCapabilityColorTemperature() { return device.hasCapability('ColorTemperature') == true }
-Boolean hasCapabilityWhiteLevel() { return device.hasAttribute('whiteLevel') == true }
-Boolean hasCapabilityLight() { return device.hasCapability('Light') == true }
-Boolean hasCapabilitySwitch() { return device.hasCapability('Switch') == true }
-Boolean hasCapabilityPresence() { return device.hasCapability('PresenceSensor') == true }
-Boolean hasCapabilityValve() { return device.hasCapability('Valve') == true }
-Boolean hasCapabilityCover() { return device.hasCapability('WindowShade') == true }
-Boolean hasCapabilityThermostatHeatingSetpoint() { return device.hasCapability('ThermostatHeatingSetpoint') == true }
-Boolean hasCapabilityCoverOrCoverChild() { return device.hasCapability('WindowShade') == true || getCoverChildren()?.size() > 0 }
+/**
+ * Checks if a device has a specific capability.
+ * In app context, you must specify which device to check.
+ *
+ * @param dev The device to check (required in app context)
+ * @return true if device has the capability
+ */
+@CompileStatic
+Boolean hasCapabilityBattery(DeviceWrapper dev = null) {
+  if(dev == null) {
+    logWarn("hasCapabilityBattery() called without device parameter in app context - returning false")
+    return false
+  }
+  return deviceHasCapabilityHelper(dev, 'Battery') == true
+}
 
-Boolean hasCapabilityCurrentMeter() { return device.hasCapability('CurrentMeter') == true }
-Boolean hasCapabilityPowerMeter() { return device.hasCapability('PowerMeter') == true }
-Boolean hasCapabilityVoltageMeasurement() { return device.hasCapability('VoltageMeasurement') == true }
-Boolean hasCapabilityEnergyMeter() { return device.hasCapability('EnergyMeter') == true }
-Boolean hasCapabilityReturnedEnergyMeter() { return device.hasAttribute('returnedEnergy') == true }
+@CompileStatic
+Boolean hasCapabilityColorControl(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityColorControl() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'ColorControl') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityColorMode(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityColorMode() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'ColorMode') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityColorTemperature(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityColorTemperature() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'ColorTemperature') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityWhiteLevel(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityWhiteLevel() requires device parameter in app context"); return false }
+  return deviceHasAttributeHelper(dev, 'whiteLevel') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityLight(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityLight() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'Light') == true
+}
+
+@CompileStatic
+Boolean hasCapabilitySwitch(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilitySwitch() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'Switch') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityPresence(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityPresence() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'PresenceSensor') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityValve(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityValve() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'Valve') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityCover(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityCover() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'WindowShade') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityThermostatHeatingSetpoint(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityThermostatHeatingSetpoint() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'ThermostatHeatingSetpoint') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityCoverOrCoverChild(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityCoverOrCoverChild() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'WindowShade') == true || getCoverChildren()?.size() > 0
+}
+
+@CompileStatic
+Boolean hasCapabilityCurrentMeter(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityCurrentMeter() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'CurrentMeter') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityPowerMeter(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityPowerMeter() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'PowerMeter') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityVoltageMeasurement(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityVoltageMeasurement() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'VoltageMeasurement') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityEnergyMeter(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityEnergyMeter() requires device parameter in app context"); return false }
+  return deviceHasCapabilityHelper(dev, 'EnergyMeter') == true
+}
+
+@CompileStatic
+Boolean hasCapabilityReturnedEnergyMeter(DeviceWrapper dev = null) {
+  if(dev == null) { logWarn("hasCapabilityReturnedEnergyMeter() requires device parameter in app context"); return false }
+  return deviceHasAttributeHelper(dev, 'returnedEnergy') == true
+}
 
 Boolean deviceIsBluGateway() {return DEVICEISBLUGATEWAY == true}
 
@@ -3608,3 +4347,538 @@ void logInfoJson(Map message) {
   String prettyJson = prettyJson(message)
   logInfo(prettyJson)
 }
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Driver Management & Version Tracking                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+/* #region Driver Management */
+// MARK: Driver Management
+
+/**
+ * Authenticates with the Hubitat hub to obtain a session cookie.
+ * Reuses existing cookie from state if available. The cookie is required
+ * for all driver management operations via the hub's internal API.
+ *
+ * @return Session cookie string, or null if authentication fails
+ */
+private String login() {
+  // If we already have a valid cookie, try to reuse it
+  if(state.hubCookie) {
+    logDebug("Reusing existing cookie")
+    return state.hubCookie
+  }
+
+  try {
+    Map params = [
+      uri: "http://127.0.0.1:8080",
+      path: '/login',
+      requestContentType: 'application/x-www-form-urlencoded',
+      body: [
+        username: '',
+        password: '',
+        submit: 'Login'
+      ],
+      followRedirects: false,
+      textParser: true,
+      timeout: 15
+    ]
+
+    String cookie = null
+
+    httpPost(params) { resp ->
+      logDebug("Login response status: ${resp?.status}")
+      if(resp?.status == 200 || resp?.status == 302) {
+        def setCookieHeader = resp.headers['Set-Cookie']
+        if(setCookieHeader) {
+          String cookieValue = setCookieHeader.value ?: setCookieHeader.toString()
+          cookie = cookieValue.split(';')[0]
+          state.hubCookie = cookie  // Store for reuse
+          logDebug("Got cookie: ${cookie?.take(20)}...")
+        } else {
+          logWarn("No Set-Cookie header in login response")
+        }
+      } else {
+        logWarn("Unexpected login status: ${resp?.status}")
+      }
+    }
+
+    if(!cookie) {
+      logWarn("Failed to get authentication cookie")
+    }
+    return cookie
+  } catch(Exception e) {
+    logError("Login error: ${e.message}")
+    return null
+  }
+}
+
+/**
+ * Retrieves all user-installed drivers from the hub.
+ *
+ * @return List of driver maps with id, name, and namespace properties
+ */
+private List getDriverList() {
+  try {
+    String cookie = login()
+    if(!cookie) { return [] }
+
+    Map params = [
+      uri: "http://127.0.0.1:8080",
+      path: '/device/drivers',
+      headers: [
+        'Cookie': cookie
+      ],
+      timeout: 15
+    ]
+
+    List drivers = []
+
+    httpGet(params) { resp ->
+      if(resp?.status == 200 && resp.data?.drivers) {
+        // Filter to only user drivers
+        drivers = resp.data.drivers.findAll { it.type == 'usr' }
+      }
+    }
+
+    return drivers
+  } catch(Exception e) {
+    logError("Error getting driver list: ${e.message}")
+    return []
+  }
+}
+
+/**
+ * Gets the installed version of a specific driver from the hub.
+ * Retrieves the driver's source code and extracts the version string
+ * from the driver definition metadata.
+ *
+ * @param driverName The driver name to search for
+ * @param namespace The driver namespace (e.g., 'ShellyUSA')
+ * @return Version string extracted from driver source, or null if not found
+ */
+private String getInstalledDriverVersion(String driverName, String namespace) {
+  String foundVersion = null
+
+  try {
+    String cookie = login()
+    if(!cookie) {
+      logWarn('Failed to authenticate with hub')
+      return null
+    }
+
+    Map params = [
+      uri: "http://127.0.0.1:8080",
+      path: '/device/drivers',
+      headers: [Cookie: cookie]
+    ]
+
+    httpGet(params) { resp ->
+      if(resp?.status == 200) {
+        logDebug("Driver list response received, checking for ${driverName} in namespace ${namespace}")
+
+        def userDrivers = resp.data?.drivers?.findAll { it.type == 'usr' }
+        logDebug("Found ${userDrivers?.size()} user drivers")
+
+        def driver = resp.data?.drivers?.find {
+          it.type == 'usr' && it?.name == driverName && it?.namespace == namespace
+        }
+
+        if(driver && driver.id) {
+          Integer driverId = driver.id
+          logDebug("Found driver ${driverName}, getting source code...")
+
+          Map codeParams = [
+            uri: "http://127.0.0.1:8080",
+            path: '/driver/ajax/code',
+            headers: [Cookie: cookie],
+            query: [id: driverId]
+          ]
+
+          httpGet(codeParams) { codeResp ->
+            if(codeResp?.status == 200 && codeResp.data?.source) {
+              String source = codeResp.data.source
+              def matcher = (source =~ /version:\s*['"]([^'"]+)['"]/)
+              if(matcher.find()) {
+                foundVersion = matcher.group(1)
+                logDebug("Extracted version ${foundVersion} from ${driverName}")
+              } else {
+                logWarn("Could not find version pattern in source for ${driverName}")
+              }
+            } else {
+              logWarn("Failed to get source code for ${driverName}, status: ${codeResp?.status}")
+            }
+          }
+        } else if(!driver) {
+          logDebug("Driver not found in hub: ${driverName} (${namespace})")
+        }
+      } else {
+        logWarn("Failed to get driver list, status: ${resp?.status}")
+      }
+    }
+  } catch(Exception e) {
+    logWarn("Error getting version for ${driverName}: ${e.message}")
+  }
+
+  return foundVersion
+}
+
+/**
+ * Gets the hub's internal version number for a driver.
+ * This is different from the semantic version in the driver metadata and
+ * is used by the hub for tracking updates.
+ *
+ * @param driverName The driver name
+ * @param namespace The driver namespace
+ * @return Hub's internal version string, or null if not found
+ */
+private String getDriverVersionForUpdate(String driverName, String namespace) {
+  String hubVersion = null
+
+  try {
+    String cookie = login()
+    if(!cookie) { return null }
+
+    Map params = [
+      uri: "http://127.0.0.1:8080",
+      path: '/device/drivers',
+      headers: [Cookie: cookie]
+    ]
+
+    httpGet(params) { resp ->
+      def driver = resp.data?.drivers?.find {
+        it.type == 'usr' && it?.name == driverName && it?.namespace == namespace
+      }
+
+      if(driver?.id) {
+        Map codeParams = [
+          uri: "http://127.0.0.1:8080",
+          path: '/driver/ajax/code',
+          headers: [Cookie: cookie],
+          query: [id: driver.id]
+        ]
+
+        httpGet(codeParams) { codeResp ->
+          if(codeResp?.status == 200 && codeResp.data?.version) {
+            hubVersion = codeResp.data.version.toString()
+            logDebug("Got hub version ${hubVersion} for ${driverName}")
+          }
+        }
+      }
+    }
+  } catch(Exception e) {
+    logWarn("Error getting hub version for ${driverName}: ${e.message}")
+  }
+
+  return hubVersion
+}
+
+/**
+ * Creates or updates a driver on the hub.
+ * If the driver doesn't exist, creates it. If it exists, updates the source code.
+ * Uses the hub's internal API endpoints for driver management.
+ *
+ * @param driverName The name of the driver
+ * @param namespace The driver namespace (e.g., 'ShellyUSA')
+ * @param sourceCode Complete driver source code
+ * @param newVersionForLogging Version string for logging purposes
+ * @return true if successful, false otherwise
+ */
+private Boolean updateDriver(String driverName, String namespace, String sourceCode, String newVersionForLogging) {
+  try {
+    String cookie = login()
+    if(!cookie) {
+      logError('Failed to authenticate with hub')
+      return false
+    }
+
+    List allDrivers = getDriverList()
+    Map targetDriver = allDrivers.find { driver ->
+      driver.name == driverName && driver.namespace == namespace
+    }
+
+    if(!targetDriver) {
+      // Driver doesn't exist - create it
+      logInfo("Driver not found, creating new driver: ${namespace}.${driverName}")
+
+      Map createParams = [
+        uri: "http://127.0.0.1:8080",
+        path: '/driver/save',
+        requestContentType: 'application/x-www-form-urlencoded',
+        headers: [
+          'Cookie': cookie
+        ],
+        body: [
+          id: '',
+          version: '',
+          create: '',
+          source: sourceCode
+        ],
+        timeout: 300,
+        ignoreSSLIssues: true
+      ]
+
+      Boolean result = false
+      httpPost(createParams) { resp ->
+        if(resp.headers?.Location != null) {
+          String newId = resp.headers.Location.replaceAll("https?://127.0.0.1:(?:8080|8443)/driver/editor/", "")
+          logInfo("Successfully created driver ${driverName} with id ${newId}")
+          result = true
+        } else {
+          logError("Driver ${driverName} creation failed - no Location header")
+          result = false
+        }
+      }
+      return result
+    }
+
+    // Driver exists - update it
+    logInfo("Updating existing driver ${driverName} (id: ${targetDriver.id})")
+
+    String currentHubVersion = getDriverVersionForUpdate(driverName, namespace) ?: ''
+    logDebug("Updating driver ${driverName}: hub version=${currentHubVersion}, new version=${newVersionForLogging}")
+
+    Map updateParams = [
+      uri: "http://127.0.0.1:8080",
+      path: '/driver/ajax/update',
+      requestContentType: 'application/x-www-form-urlencoded',
+      headers: [
+        'Cookie': cookie
+      ],
+      body: [
+        id: targetDriver.id,
+        version: currentHubVersion,
+        source: sourceCode
+      ],
+      timeout: 300,
+      ignoreSSLIssues: true
+    ]
+
+    Boolean result = false
+    httpPost(updateParams) { resp ->
+      logDebug("Driver update response: ${resp.data}")
+      if(resp.data?.status == 'success') {
+        logInfo("Successfully updated driver ${driverName}")
+        result = true
+      } else {
+        logError("Driver ${driverName} update failed - response: ${resp.data}")
+        result = false
+      }
+    }
+    return result
+  } catch(Exception e) {
+    logError("Error updating/creating driver ${driverName}: ${e.message}")
+    return false
+  }
+}
+
+/**
+ * Downloads a file from a URL.
+ *
+ * @param uri The URL to download from
+ * @return File contents as a string, or null on error
+ */
+private String downloadFile(String uri) {
+  try {
+    Map params = [
+      uri: uri,
+      contentType: 'text/plain',
+      timeout: 30
+    ]
+
+    String fileContent = null
+
+    httpGet(params) { resp ->
+      if(resp?.status == 200) {
+        fileContent = resp.data.text
+      }
+    }
+
+    return fileContent
+  } catch(Exception e) {
+    logError("Error downloading file from ${uri}: ${e.message}")
+    return null
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Auto-Generated Driver Version Tracking                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+/* #region Driver Version Tracking */
+// MARK: Driver Version Tracking
+
+/**
+ * Initializes the auto-generated driver tracking state.
+ * Creates the state structure if it doesn't exist to track installed
+ * drivers, their versions, and which devices are using them.
+ */
+private void initializeDriverTracking() {
+  if(!state.autoDrivers) {
+    state.autoDrivers = [:]
+  }
+  logDebug("Driver tracking initialized, currently tracking ${state.autoDrivers.size()} drivers")
+}
+
+/**
+ * Registers an auto-generated driver in the tracking system.
+ * Stores the driver name, namespace, version, components it supports,
+ * and timestamp of installation/update.
+ *
+ * @param driverName The name of the generated driver
+ * @param namespace The driver namespace (e.g., 'ShellyUSA')
+ * @param version The semantic version of the driver
+ * @param components List of Shelly components this driver supports
+ */
+private void registerAutoDriver(String driverName, String namespace, String version, List<String> components) {
+  initializeDriverTracking()
+
+  String key = "${namespace}.${driverName}"
+  state.autoDrivers[key] = [
+    name: driverName,
+    namespace: namespace,
+    version: version,
+    components: components,
+    installedAt: now(),
+    lastUpdated: now(),
+    devicesUsing: []
+  ]
+
+  logInfo("Registered auto-generated driver: ${key} v${version} with components: ${components}")
+}
+
+/**
+ * Associates a device with an auto-generated driver.
+ * Tracks which devices are using which auto-generated drivers to enable
+ * proper version management and cleanup.
+ *
+ * @param driverName The driver name
+ * @param namespace The driver namespace
+ * @param deviceDNI The device network ID using this driver
+ */
+private void associateDeviceWithDriver(String driverName, String namespace, String deviceDNI) {
+  initializeDriverTracking()
+
+  String key = "${namespace}.${driverName}"
+  if(!state.autoDrivers[key]) {
+    logWarn("Cannot associate device ${deviceDNI} with unknown driver ${key}")
+    return
+  }
+
+  if(!state.autoDrivers[key].devicesUsing) {
+    state.autoDrivers[key].devicesUsing = []
+  }
+
+  if(!state.autoDrivers[key].devicesUsing.contains(deviceDNI)) {
+    state.autoDrivers[key].devicesUsing.add(deviceDNI)
+    logDebug("Associated device ${deviceDNI} with driver ${key}")
+  }
+}
+
+/**
+ * Removes a device association from an auto-generated driver.
+ * Called when a device is deleted or switches to a different driver.
+ *
+ * @param driverName The driver name
+ * @param namespace The driver namespace
+ * @param deviceDNI The device network ID to disassociate
+ */
+private void disassociateDeviceFromDriver(String driverName, String namespace, String deviceDNI) {
+  initializeDriverTracking()
+
+  String key = "${namespace}.${driverName}"
+  if(state.autoDrivers[key]?.devicesUsing) {
+    state.autoDrivers[key].devicesUsing.remove(deviceDNI)
+    logDebug("Disassociated device ${deviceDNI} from driver ${key}")
+
+    // If no devices are using this driver anymore, we could optionally clean it up
+    if(state.autoDrivers[key].devicesUsing.size() == 0) {
+      logInfo("Driver ${key} is no longer in use by any devices")
+    }
+  }
+}
+
+/**
+ * Gets the version of a tracked auto-generated driver.
+ *
+ * @param driverName The driver name
+ * @param namespace The driver namespace
+ * @return Version string, or null if driver is not tracked
+ */
+private String getTrackedDriverVersion(String driverName, String namespace) {
+  initializeDriverTracking()
+  String key = "${namespace}.${driverName}"
+  return state.autoDrivers[key]?.version
+}
+
+/**
+ * Updates the version of a tracked auto-generated driver.
+ *
+ * @param driverName The driver name
+ * @param namespace The driver namespace
+ * @param newVersion The new version string
+ */
+private void updateTrackedDriverVersion(String driverName, String namespace, String newVersion) {
+  initializeDriverTracking()
+  String key = "${namespace}.${driverName}"
+
+  if(state.autoDrivers[key]) {
+    String oldVersion = state.autoDrivers[key].version
+    state.autoDrivers[key].version = newVersion
+    state.autoDrivers[key].lastUpdated = now()
+    logInfo("Updated driver ${key} version from ${oldVersion} to ${newVersion}")
+  }
+}
+
+/**
+ * Gets all devices using a specific auto-generated driver.
+ *
+ * @param driverName The driver name
+ * @param namespace The driver namespace
+ * @return List of device DNIs using this driver
+ */
+private List<String> getDevicesUsingDriver(String driverName, String namespace) {
+  initializeDriverTracking()
+  String key = "${namespace}.${driverName}"
+  return state.autoDrivers[key]?.devicesUsing ?: []
+}
+
+/**
+ * Gets a summary of all tracked auto-generated drivers.
+ *
+ * @return Map of driver keys to their tracking information
+ */
+private Map getAllTrackedDrivers() {
+  initializeDriverTracking()
+  return state.autoDrivers
+}
+
+/**
+ * Checks if an auto-generated driver needs to be updated.
+ * Compares the installed version on the hub with the tracked version
+ * in app state to detect version mismatches.
+ *
+ * @param driverName The driver name
+ * @param namespace The driver namespace
+ * @return true if the driver needs updating, false otherwise
+ */
+private Boolean driverNeedsUpdate(String driverName, String namespace) {
+  String trackedVersion = getTrackedDriverVersion(driverName, namespace)
+  if(!trackedVersion) {
+    logDebug("Driver ${namespace}.${driverName} is not tracked")
+    return false
+  }
+
+  String installedVersion = getInstalledDriverVersion(driverName, namespace)
+  if(!installedVersion) {
+    logWarn("Driver ${namespace}.${driverName} is tracked but not installed on hub")
+    return true
+  }
+
+  Boolean needsUpdate = trackedVersion != installedVersion
+  if(needsUpdate) {
+    logInfo("Driver ${namespace}.${driverName} version mismatch: tracked=${trackedVersion}, installed=${installedVersion}")
+  }
+
+  return needsUpdate
+}
+
+/* #endregion Driver Version Tracking */
