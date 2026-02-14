@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.23"
+@Field static final String APP_VERSION = "1.0.24"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.23"
+    version: "1.0.24"
 )
 
 preferences {
@@ -444,6 +444,9 @@ private void createShellyDevice(String ipKey) {
         // Track this device against its driver
         associateDeviceWithDriver(driverName, 'ShellyUSA', dni)
 
+        // Store device component config for later reference (config page, capability checks)
+        storeDeviceConfig(dni, deviceInfo, driverName)
+
         // Set device attributes
         childDevice.updateSetting('ipAddress', ipKey)
         childDevice.initialize()
@@ -617,143 +620,161 @@ Map deviceConfigPage() {
             if (selectedDevice) {
                 String ip = selectedDevice.getDataValue('ipAddress')
                 if (ip) {
-                    // Fetch installed scripts from device
-                    List<Map> installedScripts = listDeviceScripts(ip)
-                    List<String> installedScriptNames = []
-                    if (installedScripts != null) {
-                        installedScriptNames = installedScripts.collect { (it.name ?: '') as String }
-                    }
-
-                    // Determine required scripts from component_driver.json
-                    Set<String> requiredScriptNames = getRequiredScriptsForDevice(selectedDevice)
-
-                    // Compute missing scripts (required but not installed)
-                    Set<String> requiredNames = requiredScriptNames.collect { stripJsExtension(it) } as Set<String>
-                    List<String> missingScripts = requiredScriptNames.findAll { String req ->
-                        !installedScriptNames.any { it == stripJsExtension(req) }
-                    } as List<String>
-
-                    // Compute removable scripts (installed, managed by us, but not required)
-                    List<String> removableScripts = installedScriptNames.findAll { String name ->
-                        MANAGED_SCRIPT_NAMES.contains(name) && !requiredNames.contains(name)
-                    } as List<String>
-
-                    section("Installed Scripts") {
-                        if (installedScripts == null) {
-                            paragraph "Unable to retrieve scripts from device."
-                        } else if (installedScripts.size() == 0) {
-                            paragraph "No scripts installed on this device."
-                        } else {
-                            StringBuilder sb = new StringBuilder()
-                            installedScripts.each { Map script ->
-                                String name = script.name ?: 'unnamed'
-                                Boolean enabled = script.enable as Boolean
-                                Boolean running = script.running as Boolean
-                                Boolean isRequired = requiredNames.contains(name)
-                                Boolean isManaged = MANAGED_SCRIPT_NAMES.contains(name)
-                                String status = "${enabled ? 'enabled' : 'disabled'}, ${running ? 'running' : 'stopped'}"
-                                String tag = isRequired ? '' : (isManaged ? ' (not required)' : '')
-                                sb.append("${name} — ${status}${tag}\n")
-                            }
-                            paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
-
-                            if (removableScripts.size() > 0) {
-                                paragraph "<b>${removableScripts.size()} removable script(s):</b> ${removableScripts.join(', ')}"
-                                input 'btnRemoveNonRequiredScripts', 'button', title: 'Remove Non-Required Script(s)', submitOnChange: true
-                            }
+                    // Check if this is a sleepy battery device
+                    Boolean isSleepyBattery = isSleepyBatteryDevice(selectedDevice)
+                    if (isSleepyBattery) {
+                        section() {
+                            paragraph "<b>This is a battery-powered device that sleeps to conserve power.</b><br>" +
+                                "It can only be reached when it is awake (briefly, when sending sensor updates).<br>" +
+                                "Scripts and webhooks must be configured while the device is awake, or via the Shelly app/web UI."
                         }
                     }
 
-                    // Compute required scripts that are installed but not fully active
-                    List<String> inactiveScripts = []
-                    if (installedScripts != null) {
-                        requiredNames.each { String reqName ->
-                            Map script = installedScripts.find { (it.name ?: '') == reqName }
-                            if (script && (!(script.enable as Boolean) || !(script.running as Boolean))) {
-                                inactiveScripts.add(reqName)
-                            }
+                    // Scripts section — only for always-on devices
+                    if (!isSleepyBattery) {
+                        List<Map> installedScripts = listDeviceScripts(ip)
+                        List<String> installedScriptNames = []
+                        if (installedScripts != null) {
+                            installedScriptNames = installedScripts.collect { (it.name ?: '') as String }
                         }
-                    }
 
-                    section("Required Scripts") {
-                        if (requiredScriptNames.size() == 0) {
-                            paragraph "No scripts required for this device's capabilities."
-                        } else {
-                            StringBuilder sb = new StringBuilder()
-                            requiredScriptNames.each { String scriptFile ->
-                                String scriptName = stripJsExtension(scriptFile)
-                                Map script = installedScripts?.find { (it.name ?: '') == scriptName }
-                                if (!script) {
-                                    sb.append("${scriptFile} — MISSING\n")
-                                } else {
+                        Set<String> requiredScriptNames = getRequiredScriptsForDevice(selectedDevice)
+                        Set<String> requiredNames = requiredScriptNames.collect { stripJsExtension(it) } as Set<String>
+                        List<String> missingScripts = requiredScriptNames.findAll { String req ->
+                            !installedScriptNames.any { it == stripJsExtension(req) }
+                        } as List<String>
+                        List<String> removableScripts = installedScriptNames.findAll { String name ->
+                            MANAGED_SCRIPT_NAMES.contains(name) && !requiredNames.contains(name)
+                        } as List<String>
+
+                        section("Installed Scripts") {
+                            if (installedScripts == null) {
+                                paragraph "Unable to retrieve scripts from device."
+                            } else if (installedScripts.size() == 0) {
+                                paragraph "No scripts installed on this device."
+                            } else {
+                                StringBuilder sb = new StringBuilder()
+                                installedScripts.each { Map script ->
+                                    String name = script.name ?: 'unnamed'
                                     Boolean enabled = script.enable as Boolean
                                     Boolean running = script.running as Boolean
-                                    if (enabled && running) {
-                                        sb.append("${scriptFile} — installed, enabled, running\n")
-                                    } else {
-                                        List<String> issues = []
-                                        if (!enabled) { issues.add('not enabled') }
-                                        if (!running) { issues.add('not running') }
-                                        sb.append("${scriptFile} — installed, ${issues.join(', ')}\n")
-                                    }
+                                    Boolean isRequired = requiredNames.contains(name)
+                                    Boolean isManaged = MANAGED_SCRIPT_NAMES.contains(name)
+                                    String status = "${enabled ? 'enabled' : 'disabled'}, ${running ? 'running' : 'stopped'}"
+                                    String tag = isRequired ? '' : (isManaged ? ' (not required)' : '')
+                                    sb.append("${name} — ${status}${tag}\n")
+                                }
+                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+
+                                if (removableScripts.size() > 0) {
+                                    paragraph "<b>${removableScripts.size()} removable script(s):</b> ${removableScripts.join(', ')}"
+                                    input 'btnRemoveNonRequiredScripts', 'button', title: 'Remove Non-Required Script(s)', submitOnChange: true
                                 }
                             }
-                            paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+                        }
 
-                            if (missingScripts.size() > 0) {
-                                paragraph "<b>${missingScripts.size()} missing script(s):</b> ${missingScripts.join(', ')}"
-                                input 'btnInstallScripts', 'button', title: 'Install Missing Script(s)', submitOnChange: true
+                        List<String> inactiveScripts = []
+                        if (installedScripts != null) {
+                            requiredNames.each { String reqName ->
+                                Map script = installedScripts.find { (it.name ?: '') == reqName }
+                                if (script && (!(script.enable as Boolean) || !(script.running as Boolean))) {
+                                    inactiveScripts.add(reqName)
+                                }
                             }
-                            if (inactiveScripts.size() > 0) {
-                                paragraph "<b>${inactiveScripts.size()} inactive script(s):</b> ${inactiveScripts.join(', ')}"
-                                input 'btnEnableStartScripts', 'button', title: 'Enable & Start Script(s)', submitOnChange: true
-                            }
-                            if (missingScripts.size() == 0 && inactiveScripts.size() == 0) {
-                                paragraph "<b>All required scripts are installed and running.</b>"
+                        }
+
+                        section("Required Scripts") {
+                            if (requiredScriptNames.size() == 0) {
+                                paragraph "No scripts required for this device's capabilities."
+                            } else {
+                                StringBuilder sb = new StringBuilder()
+                                requiredScriptNames.each { String scriptFile ->
+                                    String scriptName = stripJsExtension(scriptFile)
+                                    Map script = installedScripts?.find { (it.name ?: '') == scriptName }
+                                    if (!script) {
+                                        sb.append("${scriptFile} — MISSING\n")
+                                    } else {
+                                        Boolean enabled = script.enable as Boolean
+                                        Boolean running = script.running as Boolean
+                                        if (enabled && running) {
+                                            sb.append("${scriptFile} — installed, enabled, running\n")
+                                        } else {
+                                            List<String> issues = []
+                                            if (!enabled) { issues.add('not enabled') }
+                                            if (!running) { issues.add('not running') }
+                                            sb.append("${scriptFile} — installed, ${issues.join(', ')}\n")
+                                        }
+                                    }
+                                }
+                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+
+                                if (missingScripts.size() > 0) {
+                                    paragraph "<b>${missingScripts.size()} missing script(s):</b> ${missingScripts.join(', ')}"
+                                    input 'btnInstallScripts', 'button', title: 'Install Missing Script(s)', submitOnChange: true
+                                }
+                                if (inactiveScripts.size() > 0) {
+                                    paragraph "<b>${inactiveScripts.size()} inactive script(s):</b> ${inactiveScripts.join(', ')}"
+                                    input 'btnEnableStartScripts', 'button', title: 'Enable & Start Script(s)', submitOnChange: true
+                                }
+                                if (missingScripts.size() == 0 && inactiveScripts.size() == 0) {
+                                    paragraph "<b>All required scripts are installed and running.</b>"
+                                }
                             }
                         }
                     }
 
                     // Actions (webhooks) section
                     List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice)
-                    List<Map> installedHooks = listDeviceWebhooks(ip)
-                    String hubIp = location.hub.localIP
 
                     if (requiredActions.size() > 0) {
-                        // Determine which actions are missing or misconfigured
-                        List<Map> missingActions = []
-                        List<Map> okActions = []
-                        requiredActions.each { Map action ->
-                            Map hook = installedHooks?.find { Map h ->
-                                h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
+                        if (isSleepyBattery) {
+                            // Battery devices: show required webhooks but note they must be configured via Shelly UI
+                            section("Required Actions (Webhooks)") {
+                                paragraph "<b>This device is battery-powered and currently asleep.</b><br>" +
+                                    "Webhook status cannot be checked while the device is sleeping."
+                                StringBuilder sb = new StringBuilder()
+                                requiredActions.each { Map action ->
+                                    sb.append("${action.name} (${action.event} cid:${action.cid}) — status unknown (device asleep)\n")
+                                }
+                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
                             }
-                            if (hook) {
-                                List<String> urls = hook.urls as List<String>
-                                Boolean enabled = hook.enable as Boolean
-                                if (urls?.any { it?.contains(hubIp) } && enabled) {
-                                    okActions.add(action)
+                        } else {
+                            List<Map> installedHooks = listDeviceWebhooks(ip)
+                            String hubIp = location.hub.localIP
+                            List<Map> missingActions = []
+                            List<Map> okActions = []
+                            requiredActions.each { Map action ->
+                                Map hook = installedHooks?.find { Map h ->
+                                    h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
+                                }
+                                if (hook) {
+                                    List<String> urls = hook.urls as List<String>
+                                    Boolean enabled = hook.enable as Boolean
+                                    if (urls?.any { it?.contains(hubIp) } && enabled) {
+                                        okActions.add(action)
+                                    } else {
+                                        missingActions.add(action)
+                                    }
                                 } else {
                                     missingActions.add(action)
                                 }
-                            } else {
-                                missingActions.add(action)
                             }
-                        }
 
-                        section("Required Actions (Webhooks)") {
-                            StringBuilder sb = new StringBuilder()
-                            requiredActions.each { Map action ->
-                                Boolean isOk = okActions.contains(action)
-                                String status = isOk ? 'configured' : 'MISSING'
-                                sb.append("${action.name} (${action.event} cid:${action.cid}) — ${status}\n")
-                            }
-                            paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+                            section("Required Actions (Webhooks)") {
+                                StringBuilder sb = new StringBuilder()
+                                requiredActions.each { Map action ->
+                                    Boolean isOk = okActions.contains(action)
+                                    String status = isOk ? 'configured' : 'MISSING'
+                                    sb.append("${action.name} (${action.event} cid:${action.cid}) — ${status}\n")
+                                }
+                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
 
-                            if (missingActions.size() > 0) {
-                                paragraph "<b>${missingActions.size()} action(s) need to be configured.</b>"
-                                input 'btnInstallActions', 'button', title: 'Install Missing Action(s)', submitOnChange: true
-                            } else {
-                                paragraph "<b>All required actions are configured.</b>"
+                                if (missingActions.size() > 0) {
+                                    paragraph "<b>${missingActions.size()} action(s) need to be configured.</b>"
+                                    input 'btnInstallActions', 'button', title: 'Install Missing Action(s)', submitOnChange: true
+                                } else {
+                                    paragraph "<b>All required actions are configured.</b>"
+                                }
                             }
                         }
                     }
@@ -769,6 +790,71 @@ Map deviceConfigPage() {
             href "mainPage", title: "Back to main page", description: ""
         }
     }
+}
+
+/**
+ * Stores device component configuration in app state for later reference.
+ * Extracts component types from the device status and stores them keyed by DNI.
+ * Used by {@link #isSleepyBatteryDevice} and the device config page to make
+ * intelligent decisions without needing to contact the device.
+ *
+ * @param dni The device network ID
+ * @param deviceInfo The discovered device info map (from state.discoveredShellys)
+ * @param driverName The assigned driver name
+ */
+private void storeDeviceConfig(String dni, Map deviceInfo, String driverName) {
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+
+    // Extract component types from device status keys
+    Map deviceStatus = deviceInfo.deviceStatus ?: [:]
+    Set<String> componentTypes = []
+    deviceStatus.each { k, v ->
+        String key = k.toString().toLowerCase()
+        String baseType = key.contains(':') ? key.split(':')[0] : key
+        componentTypes.add(baseType)
+    }
+
+    deviceConfigs[dni] = [
+        driverName: driverName,
+        model: deviceInfo.model ?: 'Unknown',
+        gen: deviceInfo.gen,
+        componentTypes: componentTypes as List<String>,
+        hasBattery: componentTypes.contains('devicepower'),
+        hasScript: componentTypes.contains('script'),
+        hasBthome: componentTypes.contains('bthome'),
+        hasSwitch: componentTypes.any { it.startsWith('switch') },
+        hasTemperature: componentTypes.contains('temperature'),
+        hasHumidity: componentTypes.contains('humidity'),
+        storedAt: now()
+    ]
+
+    state.deviceConfigs = deviceConfigs
+    logDebug("Stored device config for ${dni}: ${deviceConfigs[dni]}")
+}
+
+/**
+ * Determines if a child device is a sleepy battery device.
+ * Checks stored device config for battery capability without BTHome or Script
+ * components, indicating the device is not always awake.
+ *
+ * @param childDevice The child device to check
+ * @return true if the device is a sleepy battery device
+ */
+private Boolean isSleepyBatteryDevice(def childDevice) {
+    if (!childDevice) { return false }
+
+    String dni = childDevice.deviceNetworkId
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Map config = deviceConfigs[dni] as Map
+
+    if (config) {
+        return config.hasBattery && !config.hasBthome && !config.hasScript
+    }
+
+    // Fallback: check driver name for "TH Sensor" or similar battery-only patterns
+    String typeName = childDevice.typeName ?: ''
+    return typeName.contains('TH Sensor') || typeName.contains('Temperature Sensor') ||
+           typeName.contains('Humidity Sensor') || typeName.contains('Battery Device')
 }
 
 /**
@@ -788,7 +874,11 @@ List<Map> listDeviceScripts(String ipAddress) {
         }
         return []
     } catch (Exception ex) {
-        logError("Failed to list scripts for ${ipAddress}: ${ex.message}")
+        if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
+            logDebug("Device at ${ipAddress} is unreachable (may be asleep): ${ex.message}")
+        } else {
+            logError("Failed to list scripts for ${ipAddress}: ${ex.message}")
+        }
         return null
     }
 }
@@ -810,7 +900,11 @@ List<Map> listDeviceWebhooks(String ipAddress) {
         }
         return []
     } catch (Exception ex) {
-        logError("Failed to list webhooks for ${ipAddress}: ${ex.message}")
+        if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
+            logDebug("Device at ${ipAddress} is unreachable (may be asleep): ${ex.message}")
+        } else {
+            logError("Failed to list webhooks for ${ipAddress}: ${ex.message}")
+        }
         return null
     }
 }
