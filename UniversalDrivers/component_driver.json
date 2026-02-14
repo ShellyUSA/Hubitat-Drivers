@@ -1,0 +1,2355 @@
+{
+  "capabilities": [
+    {
+      "attributes": [
+        {
+          "name": "acceleration",
+          "type": "enum",
+          "values": [
+            "inactive",
+            "active"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "AccelerationSensor"
+    },
+    {
+      "attributes": [],
+      "commands": [],
+      "id": "Actuator"
+    },
+    {
+      "attributes": [
+        {
+          "name": "alarm",
+          "type": "enum",
+          "values": [
+            "strobe",
+            "off",
+            "both",
+            "siren"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "both"
+        },
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "siren"
+        },
+        {
+          "arguments": [],
+          "name": "strobe"
+        }
+      ],
+      "id": "Alarm"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Text to play",
+              "name": "text",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playText"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Text to play",
+              "name": "text",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playTextAndRestore"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Text to play",
+              "name": "text",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playTextAndResume"
+        },
+        {
+          "arguments": [
+            {
+              "description": "URI/URL of track to play",
+              "name": "trackuri",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playTrack"
+        },
+        {
+          "arguments": [
+            {
+              "description": "URI/URL of track to play",
+              "name": "trackuri",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playTrackAndRestore"
+        },
+        {
+          "arguments": [
+            {
+              "description": "URI/URL of track to play",
+              "name": "trackuri",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playTrackAndResume"
+        }
+      ],
+      "id": "AudioNotification"
+    },
+    {
+      "attributes": [
+        {
+          "name": "mute",
+          "type": "enum",
+          "values": [
+            "unmuted",
+            "muted"
+          ]
+        },
+        {
+          "name": "volume",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "mute"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Volume level (0 to 100)",
+              "name": "volumelevel",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setVolume"
+        },
+        {
+          "arguments": [],
+          "name": "unmute"
+        },
+        {
+          "arguments": [],
+          "name": "volumeDown"
+        },
+        {
+          "arguments": [],
+          "name": "volumeUp"
+        }
+      ],
+      "id": "AudioVolume"
+    },
+    {
+      "attributes": [
+        {
+          "name": "battery",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "Battery"
+    },
+    {
+      "attributes": [
+        {
+          "name": "presence",
+          "type": "enum",
+          "values": [
+            "not present",
+            "present"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "Beacon"
+    },
+    {
+      "attributes": [
+        {
+          "name": "switch",
+          "type": "enum",
+          "values": [
+            "on",
+            "off"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "on"
+        }
+      ],
+      "id": "Bulb"
+    },
+    {
+      "attributes": [
+        {
+          "name": "button",
+          "type": "number"
+        },
+        {
+          "name": "holdableButton",
+          "type": "enum",
+          "values": [
+            "true",
+            "false"
+          ]
+        },
+        {
+          "name": "numberOfButtons",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "Button (Deprecated)"
+    },
+    {
+      "attributes": [
+        {
+          "name": "carbonDioxide",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "CarbonDioxideMeasurement"
+    },
+    {
+      "attributes": [
+        {
+          "name": "carbonMonoxide",
+          "type": "enum",
+          "values": [
+            "detected",
+            "tested",
+            "clear"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "CarbonMonoxideDetector"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Direction for level change request",
+              "name": "direction",
+              "required": true,
+              "type": "enum"
+            }
+          ],
+          "name": "startLevelChange"
+        },
+        {
+          "arguments": [],
+          "name": "stopLevelChange"
+        }
+      ],
+      "id": "ChangeLevel"
+    },
+    {
+      "attributes": [
+        {
+          "name": "soundEffects",
+          "type": "json_object"
+        },
+        {
+          "name": "soundName",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "enum",
+          "values": [
+            "playing",
+            "stopped"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Sound number to play",
+              "name": "soundnumber",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "playSound"
+        },
+        {
+          "arguments": [],
+          "name": "stop"
+        }
+      ],
+      "id": "Chime"
+    },
+    {
+      "attributes": [
+        {
+          "name": "RGB",
+          "type": "string"
+        },
+        {
+          "name": "color",
+          "type": "string"
+        },
+        {
+          "name": "colorName",
+          "type": "string"
+        },
+        {
+          "name": "hue",
+          "type": "number"
+        },
+        {
+          "name": "saturation",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Color map settings [hue*:(0 to 100), saturation*:(0 to 100), level:(0 to 100)]",
+              "name": "colormap",
+              "required": true,
+              "type": "color_map"
+            }
+          ],
+          "name": "setColor"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Color Hue (0 to 100)",
+              "name": "hue",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setHue"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Color Saturation (0 to 100)",
+              "name": "saturation",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setSaturation"
+        }
+      ],
+      "id": "ColorControl"
+    },
+    {
+      "attributes": [
+        {
+          "name": "colorMode",
+          "type": "enum",
+          "values": [
+            "CT",
+            "RGB"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "ColorMode"
+    },
+    {
+      "attributes": [
+        {
+          "name": "colorName",
+          "type": "string"
+        },
+        {
+          "name": "colorTemperature",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Color temperature in degrees Kelvin",
+              "name": "colortemperature",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setColorTemperature"
+        }
+      ],
+      "id": "ColorTemperature"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "configure"
+        }
+      ],
+      "id": "Configuration"
+    },
+    {
+      "attributes": [
+        {
+          "name": "consumableStatus",
+          "type": "enum",
+          "values": [
+            "missing",
+            "order",
+            "maintenance_required",
+            "good",
+            "replace"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "STRING",
+              "name": "STRING",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "setConsumableStatus"
+        }
+      ],
+      "id": "Consumable"
+    },
+    {
+      "attributes": [
+        {
+          "name": "contact",
+          "type": "enum",
+          "values": [
+            "closed",
+            "open"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "ContactSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "door",
+          "type": "enum",
+          "values": [
+            "unknown",
+            "closed",
+            "open",
+            "closing",
+            "opening"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "close"
+        },
+        {
+          "arguments": [],
+          "name": "open"
+        }
+      ],
+      "id": "DoorControl"
+    },
+    {
+      "attributes": [
+        {
+          "name": "doubleTapped",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "DoubleTapableButton"
+    },
+    {
+      "attributes": [
+        {
+          "name": "energy",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "EnergyMeter"
+    },
+    {
+      "attributes": [
+        {
+          "name": "eta",
+          "type": "date"
+        }
+      ],
+      "commands": [],
+      "id": "EstimatedTimeOfArrival"
+    },
+    {
+      "attributes": [
+        {
+          "name": "speed",
+          "type": "enum",
+          "values": [
+            "low",
+            "medium-low",
+            "medium",
+            "medium-high",
+            "high",
+            "on",
+            "off",
+            "auto"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Fan speed to set",
+              "name": "fanspeed",
+              "required": true,
+              "type": "enum"
+            }
+          ],
+          "name": "setSpeed"
+        }
+      ],
+      "id": "FanControl"
+    },
+    {
+      "attributes": [
+        {
+          "name": "filterStatus",
+          "type": "enum",
+          "values": [
+            "normal",
+            "replace"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "FilterStatus"
+    },
+    {
+      "attributes": [
+        {
+          "name": "door",
+          "type": "enum",
+          "values": [
+            "unknown",
+            "open",
+            "closing",
+            "closed",
+            "opening"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "close"
+        },
+        {
+          "arguments": [],
+          "name": "open"
+        }
+      ],
+      "id": "GarageDoorControl"
+    },
+    {
+      "attributes": [
+        {
+          "name": "checkInterval",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "ping"
+        }
+      ],
+      "id": "HealthCheck"
+    },
+    {
+      "attributes": [
+        {
+          "name": "held",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "HoldableButton"
+    },
+    {
+      "attributes": [
+        {
+          "name": "illuminance",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "IlluminanceMeasurement"
+    },
+    {
+      "attributes": [
+        {
+          "name": "image",
+          "type": "string"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "take"
+        }
+      ],
+      "id": "ImageCapture"
+    },
+    {
+      "attributes": [
+        {
+          "name": "indicatorStatus",
+          "type": "enum",
+          "values": [
+            "never",
+            "when on",
+            "when off"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "indicatorNever"
+        },
+        {
+          "arguments": [],
+          "name": "indicatorWhenOff"
+        },
+        {
+          "arguments": [],
+          "name": "indicatorWhenOn"
+        }
+      ],
+      "id": "Indicator"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "initialize"
+        }
+      ],
+      "id": "Initialize"
+    },
+    {
+      "attributes": [
+        {
+          "name": "switch",
+          "type": "enum",
+          "values": [
+            "on",
+            "off"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "on"
+        }
+      ],
+      "id": "Light"
+    },
+    {
+      "attributes": [
+        {
+          "name": "effectName",
+          "type": "string"
+        },
+        {
+          "name": "lightEffects",
+          "type": "json_object"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Effect number to enable",
+              "name": "effectnumber",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setEffect"
+        },
+        {
+          "arguments": [],
+          "name": "setNextEffect"
+        },
+        {
+          "arguments": [],
+          "name": "setPreviousEffect"
+        }
+      ],
+      "id": "LightEffects"
+    },
+    {
+      "attributes": [
+        {
+          "name": "mode",
+          "type": "dynamic_enum"
+        }
+      ],
+      "commands": [],
+      "id": "LocationMode"
+    },
+    {
+      "attributes": [
+        {
+          "name": "lock",
+          "type": "enum",
+          "values": [
+            "locked",
+            "unlocked with timeout",
+            "unlocked",
+            "unknown"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "lock"
+        },
+        {
+          "arguments": [],
+          "name": "unlock"
+        }
+      ],
+      "id": "Lock"
+    },
+    {
+      "attributes": [
+        {
+          "name": "codeChanged",
+          "type": "enum",
+          "values": [
+            "added",
+            "changed",
+            "deleted",
+            "failed"
+          ]
+        },
+        {
+          "name": "codeLength",
+          "type": "number"
+        },
+        {
+          "name": "lockCodes",
+          "type": "json_object"
+        },
+        {
+          "name": "maxCodes",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Code position number to delete",
+              "name": "codeposition",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "deleteCode"
+        },
+        {
+          "arguments": [],
+          "name": "getCodes"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Code position number",
+              "name": "codeposition",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setCode"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Maximum pin code lentgh for this lock",
+              "name": "pincodelength",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setCodeLength"
+        }
+      ],
+      "id": "LockCodes"
+    },
+    {
+      "attributes": [
+        {
+          "name": "activities",
+          "type": "json_object"
+        },
+        {
+          "name": "currentActivity",
+          "type": "string"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "getAllActivities"
+        },
+        {
+          "arguments": [],
+          "name": "getCurrentActivity"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Name of media activity to start",
+              "name": "activityname",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "startActivity"
+        }
+      ],
+      "id": "MediaController"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "push"
+        }
+      ],
+      "id": "Momentary"
+    },
+    {
+      "attributes": [
+        {
+          "name": "motion",
+          "type": "enum",
+          "values": [
+            "inactive",
+            "active"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "MotionSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "level",
+          "type": "number"
+        },
+        {
+          "name": "mute",
+          "type": "enum",
+          "values": [
+            "unmuted",
+            "muted"
+          ]
+        },
+        {
+          "name": "status",
+          "type": "string"
+        },
+        {
+          "name": "trackData",
+          "type": "json_object"
+        },
+        {
+          "name": "trackDescription",
+          "type": "string"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "mute"
+        },
+        {
+          "arguments": [],
+          "name": "nextTrack"
+        },
+        {
+          "arguments": [],
+          "name": "pause"
+        },
+        {
+          "arguments": [],
+          "name": "play"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Text to play",
+              "name": "text",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playText"
+        },
+        {
+          "arguments": [
+            {
+              "description": "URI/URL of track to play",
+              "name": "trackuri",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "playTrack"
+        },
+        {
+          "arguments": [],
+          "name": "previousTrack"
+        },
+        {
+          "arguments": [
+            {
+              "description": "URI/URL of track to restore",
+              "name": "trackuri",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "restoreTrack"
+        },
+        {
+          "arguments": [
+            {
+              "description": "URI/URL of track to play",
+              "name": "trackuri",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "resumeTrack"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Volume level (0 to 100)",
+              "name": "volumelevel",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setLevel"
+        },
+        {
+          "arguments": [
+            {
+              "description": "URI/URL of track to set",
+              "name": "trackuri",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "setTrack"
+        },
+        {
+          "arguments": [],
+          "name": "stop"
+        },
+        {
+          "arguments": [],
+          "name": "unmute"
+        }
+      ],
+      "id": "MusicPlayer"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Notification text",
+              "name": "text",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "deviceNotification"
+        }
+      ],
+      "id": "Notification"
+    },
+    {
+      "attributes": [
+        {
+          "name": "switch",
+          "type": "enum",
+          "values": [
+            "on",
+            "off"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "on"
+        }
+      ],
+      "id": "Outlet"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "poll"
+        }
+      ],
+      "id": "Polling"
+    },
+    {
+      "attributes": [
+        {
+          "name": "power",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "PowerMeter"
+    },
+    {
+      "attributes": [
+        {
+          "name": "powerSource",
+          "type": "enum",
+          "values": [
+            "battery",
+            "dc",
+            "mains",
+            "unknown"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "PowerSource"
+    },
+    {
+      "attributes": [
+        {
+          "name": "presence",
+          "type": "enum",
+          "values": [
+            "present",
+            "not present"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "PresenceSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "pressure",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "PressureMeasurement"
+    },
+    {
+      "attributes": [
+        {
+          "name": "numberOfButtons",
+          "type": "number"
+        },
+        {
+          "name": "pushed",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "PushableButton"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "refresh"
+        }
+      ],
+      "id": "Refresh"
+    },
+    {
+      "attributes": [
+        {
+          "name": "humidity",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "RelativeHumidityMeasurement"
+    },
+    {
+      "attributes": [
+        {
+          "name": "switch",
+          "type": "enum",
+          "values": [
+            "on",
+            "off"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "on"
+        }
+      ],
+      "id": "RelaySwitch"
+    },
+    {
+      "attributes": [
+        {
+          "name": "released",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "ReleasableButton"
+    },
+    {
+      "attributes": [
+        {
+          "name": "messageButton",
+          "type": "json_object"
+        },
+        {
+          "name": "mute",
+          "type": "enum",
+          "values": [
+            "muted",
+            "unknown",
+            "unmuted"
+          ]
+        },
+        {
+          "name": "pictureMode",
+          "type": "enum",
+          "values": [
+            "unknown",
+            "standard",
+            "movie",
+            "dynamic"
+          ]
+        },
+        {
+          "name": "soundMode",
+          "type": "enum",
+          "values": [
+            "speech",
+            "movie",
+            "unknown",
+            "standard",
+            "music"
+          ]
+        },
+        {
+          "name": "switch",
+          "type": "enum",
+          "values": [
+            "on",
+            "off"
+          ]
+        },
+        {
+          "name": "volume",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "mute"
+        },
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "on"
+        },
+        {
+          "arguments": [
+            {
+              "description": "ENUM",
+              "name": "ENUM",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "setPictureMode"
+        },
+        {
+          "arguments": [
+            {
+              "description": "ENUM",
+              "name": "ENUM",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "setSoundMode"
+        },
+        {
+          "arguments": [
+            {
+              "description": "NUMBER",
+              "name": "NUMBER",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "setVolume"
+        },
+        {
+          "arguments": [
+            {
+              "description": "STRING",
+              "name": "STRING",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "showMessage"
+        },
+        {
+          "arguments": [],
+          "name": "unmute"
+        },
+        {
+          "arguments": [],
+          "name": "volumeDown"
+        },
+        {
+          "arguments": [],
+          "name": "volumeUp"
+        }
+      ],
+      "id": "SamsungTV"
+    },
+    {
+      "attributes": [
+        {
+          "name": "codeChanged",
+          "type": "enum",
+          "values": [
+            "added",
+            "changed",
+            "deleted",
+            "failed"
+          ]
+        },
+        {
+          "name": "codeLength",
+          "type": "number"
+        },
+        {
+          "name": "lockCodes",
+          "type": "json_object"
+        },
+        {
+          "name": "maxCodes",
+          "type": "number"
+        },
+        {
+          "name": "securityKeypad",
+          "type": "enum",
+          "values": [
+            "disarmed",
+            "armed home",
+            "armed away",
+            "unknown"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "armAway"
+        },
+        {
+          "arguments": [],
+          "name": "armHome"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Code position number to delete",
+              "name": "codeposition",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "deleteCode"
+        },
+        {
+          "arguments": [],
+          "name": "disarm"
+        },
+        {
+          "arguments": [],
+          "name": "getCodes"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Code position number",
+              "name": "codeposition",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setCode"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Maximum pin code lentgh for this keypad",
+              "name": "pincodelength",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setCodeLength"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Entrance delay in seconds",
+              "name": "entrancedelay",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setEntryDelay"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Exit delay in seconds",
+              "name": "exitdelay",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setExitDelay"
+        }
+      ],
+      "id": "SecurityKeypad"
+    },
+    {
+      "attributes": [],
+      "commands": [],
+      "id": "Sensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "shock",
+          "type": "enum",
+          "values": [
+            "clear",
+            "detected"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "ShockSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "lqi",
+          "type": "number"
+        },
+        {
+          "name": "rssi",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "SignalStrength"
+    },
+    {
+      "attributes": [
+        {
+          "name": "sleeping",
+          "type": "enum",
+          "values": [
+            "not sleeping",
+            "sleeping"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "SleepSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "smoke",
+          "type": "enum",
+          "values": [
+            "clear",
+            "tested",
+            "detected"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "SmokeDetector"
+    },
+    {
+      "attributes": [
+        {
+          "name": "soundPressureLevel",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "SoundPressureLevel"
+    },
+    {
+      "attributes": [
+        {
+          "name": "sound",
+          "type": "enum",
+          "values": [
+            "detected",
+            "not detected"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "SoundSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "phraseSpoken",
+          "type": "string"
+        }
+      ],
+      "commands": [],
+      "id": "SpeechRecognition"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Text to speak",
+              "name": "text",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "name": "speak"
+        }
+      ],
+      "id": "SpeechSynthesis"
+    },
+    {
+      "attributes": [
+        {
+          "name": "goal",
+          "type": "number"
+        },
+        {
+          "name": "steps",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "StepSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "switch",
+          "type": "enum",
+          "values": [
+            "on",
+            "off"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "on"
+        }
+      ],
+      "id": "Switch"
+    },
+    {
+      "attributes": [
+        {
+          "name": "level",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Level to set (0 to 100)",
+              "name": "level",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setLevel"
+        }
+      ],
+      "id": "SwitchLevel"
+    },
+    {
+      "attributes": [
+        {
+          "name": "channel",
+          "type": "number"
+        },
+        {
+          "name": "movieMode",
+          "type": "string"
+        },
+        {
+          "name": "picture",
+          "type": "string"
+        },
+        {
+          "name": "power",
+          "type": "string"
+        },
+        {
+          "name": "sound",
+          "type": "string"
+        },
+        {
+          "name": "volume",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "channelDown"
+        },
+        {
+          "arguments": [],
+          "name": "channelUp"
+        },
+        {
+          "arguments": [],
+          "name": "volumeDown"
+        },
+        {
+          "arguments": [],
+          "name": "volumeUp"
+        }
+      ],
+      "id": "TV"
+    },
+    {
+      "attributes": [
+        {
+          "name": "tamper",
+          "type": "enum",
+          "values": [
+            "clear",
+            "detected"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "TamperAlert"
+    },
+    {
+      "attributes": [],
+      "commands": [],
+      "id": "Telnet"
+    },
+    {
+      "attributes": [
+        {
+          "name": "temperature",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "TemperatureMeasurement"
+    },
+    {
+      "attributes": [],
+      "commands": [],
+      "id": "TestCapability"
+    },
+    {
+      "attributes": [
+        {
+          "name": "coolingSetpoint",
+          "type": "number"
+        },
+        {
+          "name": "heatingSetpoint",
+          "type": "number"
+        },
+        {
+          "name": "schedule",
+          "type": "json_object"
+        },
+        {
+          "name": "supportedThermostatFanModes",
+          "type": "enum",
+          "values": [
+            "on",
+            "circulate",
+            "auto"
+          ]
+        },
+        {
+          "name": "supportedThermostatModes",
+          "type": "enum",
+          "values": [
+            "auto",
+            "off",
+            "heat",
+            "emergency heat",
+            "cool"
+          ]
+        },
+        {
+          "name": "temperature",
+          "type": "number"
+        },
+        {
+          "name": "thermostatFanMode",
+          "type": "enum",
+          "values": [
+            "on",
+            "circulate",
+            "auto"
+          ]
+        },
+        {
+          "name": "thermostatMode",
+          "type": "enum",
+          "values": [
+            "auto",
+            "off",
+            "heat",
+            "emergency heat",
+            "cool"
+          ]
+        },
+        {
+          "name": "thermostatOperatingState",
+          "type": "enum",
+          "values": [
+            "heating",
+            "pending cool",
+            "pending heat",
+            "vent economizer",
+            "idle",
+            "cooling",
+            "fan only"
+          ]
+        },
+        {
+          "name": "thermostatSetpoint",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "auto"
+        },
+        {
+          "arguments": [],
+          "name": "cool"
+        },
+        {
+          "arguments": [],
+          "name": "emergencyHeat"
+        },
+        {
+          "arguments": [],
+          "name": "fanAuto"
+        },
+        {
+          "arguments": [],
+          "name": "fanCirculate"
+        },
+        {
+          "arguments": [],
+          "name": "fanOn"
+        },
+        {
+          "arguments": [],
+          "name": "heat"
+        },
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Cooling setpoint in degrees",
+              "name": "temperature",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setCoolingSetpoint"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Heating setpoint in degrees",
+              "name": "temperature",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setHeatingSetpoint"
+        },
+        {
+          "arguments": [
+            {
+              "description": "JSON_OBJECT",
+              "name": "JSON_OBJECT",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "setSchedule"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Fan mode to set",
+              "name": "fanmode",
+              "required": true,
+              "type": "enum"
+            }
+          ],
+          "name": "setThermostatFanMode"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Thermostat mode to set",
+              "name": "thermostatmode",
+              "required": true,
+              "type": "enum"
+            }
+          ],
+          "name": "setThermostatMode"
+        }
+      ],
+      "id": "Thermostat"
+    },
+    {
+      "attributes": [
+        {
+          "name": "coolingSetpoint",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Cooling setpoint in degrees",
+              "name": "temperature",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setCoolingSetpoint"
+        }
+      ],
+      "id": "ThermostatCoolingSetpoint"
+    },
+    {
+      "attributes": [
+        {
+          "name": "thermostatFanMode",
+          "type": "enum",
+          "values": [
+            "auto",
+            "circulate",
+            "on"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "fanAuto"
+        },
+        {
+          "arguments": [],
+          "name": "fanCirculate"
+        },
+        {
+          "arguments": [],
+          "name": "fanOn"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Fan mode to set",
+              "name": "fanmode",
+              "required": true,
+              "type": "enum"
+            }
+          ],
+          "name": "setThermostatFanMode"
+        }
+      ],
+      "id": "ThermostatFanMode"
+    },
+    {
+      "attributes": [
+        {
+          "name": "heatingSetpoint",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "Heating setpoint in degrees",
+              "name": "temperature",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setHeatingSetpoint"
+        }
+      ],
+      "id": "ThermostatHeatingSetpoint"
+    },
+    {
+      "attributes": [
+        {
+          "name": "thermostatMode",
+          "type": "enum",
+          "values": [
+            "heat",
+            "cool",
+            "emergency heat",
+            "auto",
+            "off"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "auto"
+        },
+        {
+          "arguments": [],
+          "name": "cool"
+        },
+        {
+          "arguments": [],
+          "name": "emergencyHeat"
+        },
+        {
+          "arguments": [],
+          "name": "heat"
+        },
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Thermostat mode to set",
+              "name": "thermostatmode",
+              "required": true,
+              "type": "enum"
+            }
+          ],
+          "name": "setThermostatMode"
+        }
+      ],
+      "id": "ThermostatMode"
+    },
+    {
+      "attributes": [
+        {
+          "name": "thermostatOperatingState",
+          "type": "enum",
+          "values": [
+            "vent economizer",
+            "pending cool",
+            "cooling",
+            "heating",
+            "pending heat",
+            "fan only",
+            "idle"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "ThermostatOperatingState"
+    },
+    {
+      "attributes": [
+        {
+          "name": "schedule",
+          "type": "json_object"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "JSON_OBJECT",
+              "name": "JSON_OBJECT",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "setSchedule"
+        }
+      ],
+      "id": "ThermostatSchedule"
+    },
+    {
+      "attributes": [
+        {
+          "name": "thermostatSetpoint",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "ThermostatSetpoint"
+    },
+    {
+      "attributes": [
+        {
+          "name": "threeAxis",
+          "type": "vector3"
+        }
+      ],
+      "commands": [],
+      "id": "ThreeAxis"
+    },
+    {
+      "attributes": [
+        {
+          "name": "sessionStatus",
+          "type": "enum",
+          "values": [
+            "stopped",
+            "canceled",
+            "running",
+            "paused"
+          ]
+        },
+        {
+          "name": "timeRemaining",
+          "type": "number"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "cancel"
+        },
+        {
+          "arguments": [],
+          "name": "pause"
+        },
+        {
+          "arguments": [
+            {
+              "description": "NUMBER",
+              "name": "NUMBER",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "setTimeRemaining"
+        },
+        {
+          "arguments": [],
+          "name": "start"
+        },
+        {
+          "arguments": [],
+          "name": "stop"
+        }
+      ],
+      "id": "TimedSession"
+    },
+    {
+      "attributes": [],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "beep"
+        }
+      ],
+      "id": "Tone"
+    },
+    {
+      "attributes": [
+        {
+          "name": "touch",
+          "type": "enum",
+          "values": [
+            "touched"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "TouchSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "ultravioletIndex",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "UltravioletIndex"
+    },
+    {
+      "attributes": [
+        {
+          "name": "valve",
+          "type": "enum",
+          "values": [
+            "open",
+            "closed"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "close"
+        },
+        {
+          "arguments": [],
+          "name": "open"
+        }
+      ],
+      "id": "Valve"
+    },
+    {
+      "attributes": [
+        {
+          "name": "camera",
+          "type": "enum",
+          "values": [
+            "on",
+            "off",
+            "restarting",
+            "unavailable"
+          ]
+        },
+        {
+          "name": "mute",
+          "type": "enum",
+          "values": [
+            "unmuted",
+            "muted"
+          ]
+        },
+        {
+          "name": "settings",
+          "type": "json_object"
+        },
+        {
+          "name": "statusMessage",
+          "type": "string"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "flip"
+        },
+        {
+          "arguments": [],
+          "name": "mute"
+        },
+        {
+          "arguments": [],
+          "name": "off"
+        },
+        {
+          "arguments": [],
+          "name": "on"
+        },
+        {
+          "arguments": [],
+          "name": "unmute"
+        }
+      ],
+      "id": "VideoCamera"
+    },
+    {
+      "attributes": [
+        {
+          "name": "clip",
+          "type": "json_object"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "DATE",
+              "name": "DATE",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "capture"
+        }
+      ],
+      "id": "VideoCapture"
+    },
+    {
+      "attributes": [
+        {
+          "name": "voltage",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "VoltageMeasurement"
+    },
+    {
+      "attributes": [
+        {
+          "name": "water",
+          "type": "enum",
+          "values": [
+            "wet",
+            "dry"
+          ]
+        }
+      ],
+      "commands": [],
+      "id": "WaterSensor"
+    },
+    {
+      "attributes": [
+        {
+          "name": "position",
+          "type": "number"
+        },
+        {
+          "name": "position",
+          "type": "number"
+        },
+        {
+          "name": "windowShade",
+          "type": "enum",
+          "values": [
+            "opening",
+            "partially open",
+            "closed",
+            "open",
+            "closing",
+            "unknown"
+          ]
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "close"
+        },
+        {
+          "arguments": [],
+          "name": "open"
+        },
+        {
+          "arguments": [
+            {
+              "description": "Shade position (0 to 100)",
+              "name": "position",
+              "required": true,
+              "type": "number"
+            }
+          ],
+          "name": "setPosition"
+        }
+      ],
+      "id": "WindowShade"
+    },
+    {
+      "attributes": [
+        {
+          "name": "epEvent",
+          "type": "string"
+        },
+        {
+          "name": "epInfo",
+          "type": "string"
+        }
+      ],
+      "commands": [
+        {
+          "arguments": [
+            {
+              "description": "STRING",
+              "name": "STRING",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "enableEpEvents"
+        },
+        {
+          "arguments": [
+            {
+              "description": "NUMBER",
+              "name": "NUMBER",
+              "required": false,
+              "type": ""
+            }
+          ],
+          "name": "epCmd"
+        }
+      ],
+      "id": "ZwMultichannel"
+    },
+    {
+      "attributes": [
+        {
+          "name": "pH",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "pHMeasurement"
+    }
+  ],
+  "driver": {
+    "author": "Daniel Winks",
+    "description": "A universal driver for various components.",
+    "importUrl": "",
+    "license": "MIT",
+    "name": "Universal Driver",
+    "namespace": "ShellyUSA",
+    "singleThreaded": false,
+    "version": "1.0.0"
+  },
+  "metadata": {}
+}
