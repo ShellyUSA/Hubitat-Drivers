@@ -425,6 +425,9 @@
     },
     {
       "attributes": [],
+      "commandFiles": [
+        "ConfigureCommands.groovy"
+      ],
       "commands": [
         {
           "arguments": [],
@@ -684,6 +687,9 @@
     },
     {
       "attributes": [],
+      "commandFiles": [
+        "InitializeCommands.groovy"
+      ],
       "commands": [
         {
           "arguments": [],
@@ -1149,6 +1155,9 @@
     },
     {
       "attributes": [],
+      "commandFiles": [
+        "RefreshCommands.groovy"
+      ],
       "commands": [
         {
           "arguments": [],
@@ -1568,6 +1577,9 @@
             "off"
           ]
         }
+      ],
+      "commandFiles": [
+        "SwitchCommands.groovy"
       ],
       "commands": [
         {
@@ -2342,6 +2354,29 @@
       "id": "pHMeasurement"
     }
   ],
+  "deviceSpecificPreferences": {
+    "switch": [
+      {
+        "defaultValue": "0",
+        "name": "autoOffTimer",
+        "required": false,
+        "title": "Auto Off Timer (seconds, 0=disabled)",
+        "type": "number"
+      },
+      {
+        "defaultValue": "last",
+        "name": "powerOnState",
+        "options": {
+          "last": "Last State",
+          "off": "Off",
+          "on": "On"
+        },
+        "required": false,
+        "title": "Power On State",
+        "type": "enum"
+      }
+    ]
+  },
   "driver": {
     "author": "Daniel Winks",
     "description": "A universal driver for various components.",
@@ -2352,43 +2387,20 @@
     "singleThreaded": false,
     "version": "1.0.0"
   },
+  "metadata": {},
   "preferences": [
     {
+      "defaultValue": "debug",
       "name": "logLevel",
-      "type": "enum",
-      "title": "Logging Level",
       "options": {
-        "trace": "Trace",
         "debug": "Debug",
         "info": "Info",
+        "trace": "Trace",
         "warn": "Warning"
       },
-      "defaultValue": "debug",
-      "required": true
+      "required": true,
+      "title": "Logging Level",
+      "type": "enum"
     }
-  ],
-  "deviceSpecificPreferences": {
-    "switch": [
-      {
-        "name": "autoOffTimer",
-        "type": "number",
-        "title": "Auto Off Timer (seconds, 0=disabled)",
-        "defaultValue": "0",
-        "required": false
-      },
-      {
-        "name": "powerOnState",
-        "type": "enum",
-        "title": "Power On State",
-        "options": {
-          "off": "Off",
-          "on": "On",
-          "last": "Last State"
-        },
-        "defaultValue": "last",
-        "required": false
-      }
-    ]
-  },
-  "metadata": {}
+  ]
 }
