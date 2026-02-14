@@ -571,8 +571,9 @@ List<Map> listDeviceScripts(String ipAddress) {
 
 /**
  * Determines which scripts are required for a device by querying its actual
- * Shelly.GetStatus response. Matches component types against COMPONENT_REQUIRED_SCRIPTS
- * and detects power monitoring fields to include POWER_MONITORING_SCRIPTS.
+ * Shelly.GetStatus response and cross-referencing with component_driver.json
+ * from GitHub. Matches component types via the shellyComponent field and detects
+ * power monitoring fields to include PM-related capability scripts.
  *
  * @param device The child device to check
  * @return Set of required script filenames (e.g., ["switchstatus.js", "powermonitoring.js"])
@@ -593,15 +594,19 @@ Set<String> getRequiredScriptsForDevice(def device) {
         return requiredScripts
     }
 
+    // Fetch and parse component_driver.json from GitHub
+    List<Map> capabilities = fetchCapabilityDefinitions()
+    if (!capabilities) { return requiredScripts }
+
     // Walk status keys to find components and detect power monitoring
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
         String baseType = key.contains(':') ? key.split(':')[0] : key
 
-        // Check if this component type has required scripts
-        List<String> scripts = COMPONENT_REQUIRED_SCRIPTS[baseType]
-        if (scripts) {
-            requiredScripts.addAll(scripts)
+        // Find matching capability by shellyComponent field
+        Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
+        if (capability?.requiredScripts) {
+            requiredScripts.addAll(capability.requiredScripts as List<String>)
         }
 
         // Check for power monitoring fields on this component
@@ -609,7 +614,12 @@ Set<String> getRequiredScriptsForDevice(def device) {
             Map statusMap = v as Map
             if (statusMap.voltage != null || statusMap.current != null ||
                     statusMap.apower != null || statusMap.aenergy != null) {
-                requiredScripts.addAll(POWER_MONITORING_SCRIPTS)
+                ['PowerMeter', 'EnergyMeter', 'CurrentMeter', 'VoltageMeasurement'].each { String capId ->
+                    Map pmCap = capabilities.find { cap -> cap.id == capId }
+                    if (pmCap?.requiredScripts) {
+                        requiredScripts.addAll(pmCap.requiredScripts as List<String>)
+                    }
+                }
             }
         }
     }
@@ -633,6 +643,31 @@ private Map queryDeviceStatus(String ipAddress) {
         return json?.result as Map
     } catch (Exception ex) {
         logError("Failed to query device status for ${ipAddress}: ${ex.message}")
+        return null
+    }
+}
+
+/**
+ * Fetches and parses the component_driver.json capability definitions from GitHub.
+ *
+ * @return List of capability maps, or null on failure
+ */
+private List<Map> fetchCapabilityDefinitions() {
+    String branch = 'AutoConfScript'
+    String baseUrl = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/UniversalDrivers"
+    String componentJsonUrl = "${baseUrl}/component_driver.json"
+
+    String jsonContent = downloadFile(componentJsonUrl)
+    if (!jsonContent) {
+        logError("Failed to fetch component_driver.json from GitHub")
+        return null
+    }
+
+    try {
+        Map componentData = slurper.parseText(jsonContent) as Map
+        return componentData?.capabilities as List<Map>
+    } catch (Exception e) {
+        logError("Failed to parse component_driver.json: ${e.message}")
         return null
     }
 }
