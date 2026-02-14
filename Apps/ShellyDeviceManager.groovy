@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.19"
+@Field static final String APP_VERSION = "1.0.20"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.19"
+    version: "1.0.20"
 )
 
 preferences {
@@ -2446,6 +2446,14 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     if (hasPowerMonitoring) {
         filesToFetch.add("PowerMonitoring.groovy")
         logDebug("Including PowerMonitoring.groovy for power monitoring capabilities")
+    }
+
+    // Include SensorMonitoring.groovy if device has temperature, humidity, or battery components
+    Set<String> sensorComponentTypes = ['temperature', 'humidity', 'devicepower'] as Set
+    Boolean hasSensorComponents = componentBaseTypes.any { sensorComponentTypes.contains(it) }
+    if (hasSensorComponents) {
+        filesToFetch.add("SensorMonitoring.groovy")
+        logDebug("Including SensorMonitoring.groovy for sensor capabilities")
     }
 
     logDebug("Files to fetch asynchronously: ${filesToFetch}")

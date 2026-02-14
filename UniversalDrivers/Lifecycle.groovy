@@ -73,6 +73,12 @@ void parse(String description) {
             parseSwitchmon(json)
           } else if (json?.dst == "powermon") {
             parsePowermon(json)
+          } else if (json?.dst == "temperature") {
+            parseTemperature(json)
+          } else if (json?.dst == "humidity") {
+            parseHumidity(json)
+          } else if (json?.dst == "battery") {
+            parseBattery(json)
           }
         } catch (Exception jsonEx) {
           // Body might be empty or not JSON
