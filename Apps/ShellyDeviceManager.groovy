@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.24"
+@Field static final String APP_VERSION = "1.0.25"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.24"
+    version: "1.0.25"
 )
 
 preferences {
@@ -825,6 +825,7 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName) {
         hasSwitch: componentTypes.any { it.startsWith('switch') },
         hasTemperature: componentTypes.contains('temperature'),
         hasHumidity: componentTypes.contains('humidity'),
+        supportedWebhookEvents: (deviceInfo.supportedWebhookEvents ?: []) as List<String>,
         storedAt: now()
     ]
 
@@ -910,10 +911,40 @@ List<Map> listDeviceWebhooks(String ipAddress) {
 }
 
 /**
+ * Queries a Shelly device for its supported webhook event types via
+ * the Webhook.ListSupported RPC method. Returns a list of event type
+ * strings (e.g., "temperature.change", "switch.on").
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @return List of supported event type strings, or null on failure
+ */
+List<String> listSupportedWebhookEvents(String ipAddress) {
+    try {
+        String uri = "http://${ipAddress}/rpc"
+        LinkedHashMap command = webhookListSupportedCommand()
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        LinkedHashMap json = postCommandSync(command, uri)
+        if (json?.result?.types) {
+            List<String> events = (json.result.types as Map).keySet().collect { it.toString() }
+            logDebug("Supported webhook events for ${ipAddress}: ${events}")
+            return events
+        }
+        return []
+    } catch (Exception ex) {
+        if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
+            logDebug("Device at ${ipAddress} is unreachable (may be asleep): ${ex.message}")
+        } else {
+            logError("Failed to list supported webhook events for ${ipAddress}: ${ex.message}")
+        }
+        return null
+    }
+}
+
+/**
  * Determines which webhook actions are required for a device by querying its
  * Shelly.GetStatus response and cross-referencing with component_driver.json.
- * Returns a list of action maps (event, name, dst, cid) for capabilities that
- * define requiredActions.
+ * Filters results against the device's Webhook.ListSupported response to only
+ * include actions the device actually supports.
  *
  * @param device The child device to check
  * @return List of required action maps, each with keys: event, name, dst, cid
@@ -927,10 +958,33 @@ List<Map> getRequiredActionsForDevice(def device) {
         return requiredActions
     }
 
+    // Get supported webhook events — try live query first, fall back to stored config
+    List<String> supportedEvents = null
+    String dni = device.deviceNetworkId
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Map config = deviceConfigs[dni] as Map
+
+    if (!isSleepyBatteryDevice(device)) {
+        supportedEvents = listSupportedWebhookEvents(ip)
+    }
+    if (supportedEvents == null && config?.supportedWebhookEvents) {
+        supportedEvents = config.supportedWebhookEvents as List<String>
+        logDebug("Using stored supported webhook events for ${device.displayName}: ${supportedEvents}")
+    }
+
     Map deviceStatus = queryDeviceStatus(ip)
     if (!deviceStatus) {
-        logDebug("getRequiredActionsForDevice: could not query status for ${device.displayName}")
-        return requiredActions
+        // Fall back to stored component types for sleepy devices
+        if (config?.componentTypes) {
+            logDebug("Using stored component types for ${device.displayName}")
+            deviceStatus = [:]
+            (config.componentTypes as List<String>).each { String ct ->
+                deviceStatus[ct + ':0'] = [id: 0]
+            }
+        } else {
+            logDebug("getRequiredActionsForDevice: could not query status for ${device.displayName}")
+            return requiredActions
+        }
     }
 
     List<Map> capabilities = fetchCapabilityDefinitions()
@@ -947,12 +1001,18 @@ List<Map> getRequiredActionsForDevice(def device) {
         Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
         if (capability?.requiredActions) {
             (capability.requiredActions as List<Map>).each { Map action ->
-                requiredActions.add([
-                    event: action.event,
-                    name : action.name,
-                    dst  : action.dst,
-                    cid  : cid
-                ])
+                String eventName = action.event as String
+                // Only include actions the device actually supports
+                if (supportedEvents == null || supportedEvents.contains(eventName)) {
+                    requiredActions.add([
+                        event: eventName,
+                        name : action.name,
+                        dst  : action.dst,
+                        cid  : cid
+                    ])
+                } else {
+                    logDebug("Skipping unsupported webhook event '${eventName}' for ${device.displayName}")
+                }
             }
         }
     }
@@ -2032,6 +2092,16 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         LinkedHashMap statusCmd = shellyGetStatusCommand('discovery')
         LinkedHashMap deviceStatusResp = postCommandSyncWithRetry(statusCmd, rpcUri, "Shelly.GetStatus")
         Map deviceStatus = (deviceStatusResp instanceof Map && deviceStatusResp.containsKey('result')) ? deviceStatusResp.result : deviceStatusResp
+
+        // Query supported webhook events for filtering required actions
+        LinkedHashMap webhookSupportedCmd = webhookListSupportedCommand('discovery')
+        LinkedHashMap webhookSupportedResp = postCommandSyncWithRetry(webhookSupportedCmd, rpcUri, "Webhook.ListSupported")
+        List<String> supportedWebhookEvents = []
+        if (webhookSupportedResp?.result?.types) {
+            supportedWebhookEvents = (webhookSupportedResp.result.types as Map).keySet().collect { it.toString() }
+            logDebug("fetchAndStoreDeviceInfo: supported webhook events: ${supportedWebhookEvents}")
+        }
+        device.supportedWebhookEvents = supportedWebhookEvents
 
         // Build a comprehensive merged record
         device.name = (deviceInfo.id ?: device.name ?: "Shelly ${ip}")
