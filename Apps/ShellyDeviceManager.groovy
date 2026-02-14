@@ -78,6 +78,9 @@ Map mainPage() {
             input name: 'enableAutoUpdate', type: 'bool', title: 'Enable auto-update',
                 description: 'Automatically checks for and installs app updates from GitHub daily at 3AM.',
                 defaultValue: true, submitOnChange: true
+            input name: 'enableAggressiveUpdate', type: 'bool', title: 'Aggressive auto-update (dev)',
+                description: 'Checks GitHub every minute for code changes on the current branch and auto-updates. For development use.',
+                defaultValue: false, submitOnChange: true
             input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
                 description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
                 defaultValue: true, submitOnChange: true
@@ -1074,6 +1077,14 @@ void initialize() {
         logDebug("App auto-update scheduled for 3AM daily")
     } else {
         unschedule('checkForAppUpdate')
+    }
+
+    // Aggressive auto-update: check every minute for branch changes
+    if (settings?.enableAggressiveUpdate == true) {
+        schedule('0 * * ? * *', 'aggressiveUpdateCheck')
+        logInfo("Aggressive auto-update enabled (every 60s from branch)")
+    } else {
+        unschedule('aggressiveUpdateCheck')
     }
 }
 
@@ -6860,6 +6871,37 @@ private String getAppVersion() { return APP_VERSION }
 // ═══════════════════════════════════════════════════════════════
 // ║  App Auto-Update                                            ║
 // ╚═══════════════════════════════════════════════════════════════╝
+
+/**
+ * Aggressive dev-mode auto-update. Downloads the app source from the current
+ * branch every minute, compares a SHA-256 hash to the last applied update,
+ * and installs the new code if it changed.
+ */
+void aggressiveUpdateCheck() {
+    String branch = 'AutoConfScript'
+    String url = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/Apps/ShellyDeviceManager.groovy"
+
+    String source = downloadFile(url)
+    if (!source) {
+        logDebug("Aggressive update: failed to download source from ${branch}")
+        return
+    }
+
+    String hash = source.digest('SHA-256')
+    if (hash == state.lastAggressiveHash) {
+        return // no change
+    }
+
+    logInfo("Aggressive update: source changed on ${branch}, updating app code...")
+    Boolean success = updateAppCode(source)
+    if (success) {
+        state.lastAggressiveHash = hash
+        logInfo("Aggressive update: app code updated from ${branch}")
+        appendLog('info', "Dev auto-update applied from ${branch}")
+    } else {
+        logError("Aggressive update: failed to apply update")
+    }
+}
 
 /**
  * Checks for a newer version of this app on GitHub Releases and updates
