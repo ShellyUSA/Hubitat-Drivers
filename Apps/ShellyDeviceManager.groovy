@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.0"
+@Field static final String APP_VERSION = "1.0.1"
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
 // Only these scripts will be considered for automatic removal.
