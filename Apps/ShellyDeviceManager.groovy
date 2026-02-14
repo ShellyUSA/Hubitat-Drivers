@@ -1977,7 +1977,7 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     }
 
     // Always include standard command files
-    filesToFetch.add("InitialIzeCommands.groovy")
+    filesToFetch.add("InitializeCommands.groovy")
     filesToFetch.add("ConfigureCommands.groovy")
     filesToFetch.add("RefreshCommand.groovy")
     filesToFetch.add("Helpers.groovy")
@@ -2205,7 +2205,7 @@ private void completeDriverGeneration() {
     }
 
     // 2. Standard command files
-    ['InitialIzeCommands.groovy', 'ConfigureCommands.groovy', 'RefreshCommand.groovy'].each { String fileName ->
+    ['InitializeCommands.groovy', 'ConfigureCommands.groovy', 'RefreshCommand.groovy'].each { String fileName ->
         if (results.files[fileName]) {
             driver.append(results.files[fileName])
             driver.append("\n")
@@ -2216,7 +2216,7 @@ private void completeDriverGeneration() {
     // 3. Component-specific command files
     filesToFetch.each { String fileName ->
         if (fileName != 'Lifecycle.groovy' &&
-            fileName != 'InitialIzeCommands.groovy' &&
+            fileName != 'InitializeCommands.groovy' &&
             fileName != 'ConfigureCommands.groovy' &&
             fileName != 'RefreshCommand.groovy' &&
             fileName != 'Helpers.groovy') {
