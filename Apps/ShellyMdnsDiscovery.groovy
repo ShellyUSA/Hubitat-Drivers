@@ -757,8 +757,12 @@ private void determineDeviceDriver(Map deviceStatus ) {
 private String generateHubitatDriver(List<String> components) {
     logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components}")
 
+    // Branch to fetch files from (change to 'master' for production)
+    String branch = 'AutoConfScript'
+    String baseUrl = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/UniversalDrivers"
+
     // Fetch component_driver.json from GitHub
-    String componentJsonUrl = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/AutoConfScript/UniversalDrivers/component_driver.json'
+    String componentJsonUrl = "${baseUrl}/component_driver.json"
     logDebug("Fetching capability definitions from: ${componentJsonUrl}")
 
     String jsonContent = downloadFile(componentJsonUrl)
@@ -963,9 +967,21 @@ private String generateHubitatDriver(List<String> components) {
         }
 
         logDebug("Closing preferences section")
-        driver.append("}\n")
+        driver.append("}\n\n")
     } else {
         logDebug("No preferences found in JSON, skipping preferences section")
+    }
+
+    // Fetch and include Lifecycle.groovy
+    String lifecycleUrl = "${baseUrl}/Lifecycle.groovy"
+    logDebug("Fetching Lifecycle.groovy from: ${lifecycleUrl}")
+    String lifecycleContent = downloadFile(lifecycleUrl)
+    if (lifecycleContent) {
+        driver.append(lifecycleContent)
+        driver.append("\n")
+        logDebug("Added Lifecycle.groovy content (${lifecycleContent.length()} chars)")
+    } else {
+        logWarn("Failed to fetch Lifecycle.groovy, driver may be incomplete")
     }
 
     String driverCode = driver.toString()
