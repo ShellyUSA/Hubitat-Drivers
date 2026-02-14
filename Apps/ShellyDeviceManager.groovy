@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.5"
+@Field static final String APP_VERSION = "1.0.6"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.5"
+    version: "1.0.6"
 )
 
 preferences {
@@ -2290,19 +2290,13 @@ private void completeDriverGeneration() {
 }
 
 /**
- * Lists all installed drivers that start with "Shelly Autoconf".
- * Queries all devices on the hub and checks their driver names.
- */
-/**
- * Cleans up duplicate Shelly Autoconf drivers.
- * Keeps the driver that's in use or has the highest ID (newest).
- * Deletes all other duplicates.
+ * Cleans up unused Shelly Autoconf drivers created by this app.
+ * Deletes any auto-generated driver that has no devices currently using it.
  */
 private void cleanupDuplicateDrivers() {
-    logInfo("Checking for duplicate Shelly Autoconf drivers...")
+    logInfo("Checking for unused Shelly Autoconf drivers...")
 
     try {
-        // Get all drivers
         Map driverParams = [
             uri: "http://127.0.0.1:8080",
             path: '/device/drivers',
@@ -2311,69 +2305,42 @@ private void cleanupDuplicateDrivers() {
         ]
 
         httpGet(driverParams) { driverResp ->
-            if (driverResp?.status == 200) {
-                // Get all Shelly Autoconf drivers
-                def autoconfDrivers = driverResp.data?.drivers?.findAll { driver ->
-                    driver.type == 'usr' &&
-                    driver?.namespace == 'ShellyUSA' &&
-                    driver?.name?.startsWith("Shelly Autoconf")
-                }
+            if (driverResp?.status != 200) { return }
 
-                if (autoconfDrivers.size() <= 1) {
-                    logInfo("No duplicate drivers found")
-                    return
-                }
+            def autoconfDrivers = driverResp.data?.drivers?.findAll { driver ->
+                driver.type == 'usr' &&
+                driver?.namespace == 'ShellyUSA' &&
+                driver?.name?.toString()?.startsWith("Shelly Autoconf")
+            }
 
-                // Count actual child devices per driver name
-                def childDevices = getChildDevices() ?: []
-                def devicesByDriverName = [:]
-                childDevices.each { device ->
-                    String driverName = device.typeName
-                    if (driverName) {
-                        devicesByDriverName[driverName] = (devicesByDriverName[driverName] ?: 0) + 1
+            if (!autoconfDrivers) {
+                logDebug("No Shelly Autoconf drivers found")
+                return
+            }
+
+            // Build set of driver names actually in use by child devices
+            def childDevices = getChildDevices() ?: []
+            Set<String> inUseDriverNames = childDevices.collect { it.typeName }.toSet()
+
+            int removed = 0
+            autoconfDrivers.each { driver ->
+                String name = driver.name?.toString()
+                if (!inUseDriverNames.contains(name)) {
+                    logInfo("Removing unused driver: ${name} (ID: ${driver.id})")
+                    if (deleteDriver(driver.id as Integer)) {
+                        removed++
                     }
                 }
+            }
 
-                // Group drivers by name to find duplicates
-                def driversByName = autoconfDrivers.groupBy { it.name }
-
-                int duplicatesRemoved = 0
-                driversByName.each { driverName, drivers ->
-                    if (drivers.size() > 1) {
-                        logInfo("Found ${drivers.size()} copies of '${driverName}'")
-
-                        // Sort: in-use drivers first, then by ID (highest/newest first)
-                        def sortedDrivers = drivers.sort { a, b ->
-                            def aInUse = devicesByDriverName[a.name] ?: 0
-                            def bInUse = devicesByDriverName[b.name] ?: 0
-                            if (aInUse != bInUse) return bInUse <=> aInUse  // In-use first
-                            return b.id <=> a.id  // Higher ID (newer) first
-                        }
-
-                        // Keep the first one, delete the rest
-                        def keepDriver = sortedDrivers[0]
-                        def deleteDrivers = sortedDrivers.drop(1)
-
-                        logInfo("  Keeping: ID ${keepDriver.id} (${devicesByDriverName[keepDriver.name] ? 'IN USE' : 'not in use'})")
-
-                        deleteDrivers.each { driver ->
-                            logInfo("  Deleting duplicate: ID ${driver.id}")
-                            if (deleteDriver(driver.id)) {
-                                duplicatesRemoved++
-                            }
-                        }
-                    }
-                }
-
-                if (duplicatesRemoved > 0) {
-                    logInfo("✓ Removed ${duplicatesRemoved} duplicate driver(s)")
-                } else {
-                    logInfo("No duplicates to remove")
-                }
+            if (removed > 0) {
+                logInfo("Removed ${removed} unused Shelly Autoconf driver(s)")
+            } else {
+                logDebug("No unused Shelly Autoconf drivers to remove")
             }
         }
     } catch (Exception e) {
-        logError("Error cleaning up duplicates: ${e.message}")
+        logError("Error cleaning up drivers: ${e.message}")
     }
 }
 
@@ -2470,9 +2437,12 @@ private void installDriver(String sourceCode) {
         String driverName = nameMatch.group(1)
         String namespace = "ShellyUSA"
 
-        logDebug("Looking for existing driver: ${driverName} (${namespace})")
+        // Strip version suffix (e.g. "Shelly Autoconf Single Switch PM v1.0.5" -> "Shelly Autoconf Single Switch PM")
+        // so we can match against any previously installed version of the same driver
+        String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        logDebug("Looking for existing driver: ${driverName} (${namespace}), base name: ${baseName}")
 
-        // Check if driver already exists
+        // Check if driver already exists (match by base name to find older versions)
         Map driverParams = [
             uri: "http://127.0.0.1:8080",
             path: '/device/drivers',
@@ -2486,7 +2456,7 @@ private void installDriver(String sourceCode) {
                 existingDriver = resp.data?.drivers?.find { driver ->
                     driver.type == 'usr' &&
                     driver?.namespace == namespace &&
-                    driver?.name == driverName
+                    (driver?.name == driverName || driver?.name?.toString()?.replaceAll(/\s+v\d+(\.\d+)*$/, '') == baseName)
                 }
             }
         }
