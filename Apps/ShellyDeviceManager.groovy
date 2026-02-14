@@ -7583,21 +7583,42 @@ private Integer getAppCodeId(String cookie) {
         Integer codeId = null
         httpGet(params) { resp ->
             if (resp?.status == 200 && resp.data) {
-                // /app/list returns HTML; parse with regex to find our app's code ID
-                // Links are formatted as: /app/edit/sources?id=123
-                // followed by the app name in the same row
                 String html = resp.data.text
-                // Match rows containing our app name and extract the ID from the link
-                def matcher = (html =~ /app\/edit\/sources\?id=(\d+)["'][^>]*>[^<]*(?:Shelly Device Manager|Shelly mDNS Discovery)/)
-                if (!matcher.find()) {
-                    // Try a broader pattern: find the ID near our app name
-                    matcher = (html =~ /id=(\d+)[\s\S]{0,300}?(?:Shelly Device Manager|Shelly mDNS Discovery)/)
-                }
+                logDebug("getAppCodeId: HTML response length=${html?.length() ?: 0}")
+
+                // Strategy 1: /app/editor/{id} link with app name as link text
+                def matcher = (html =~ /app\/editor\/(\d+)[^>]*>\s*(?:Shelly Device Manager|Shelly mDNS Discovery)/)
                 if (matcher.find()) {
                     codeId = matcher.group(1) as Integer
-                    logDebug("Found app code ID: ${codeId}")
+                    logDebug("Found app code ID via /app/editor link: ${codeId}")
+                    return
+                }
+
+                // Strategy 2: id= parameter appearing before app name (within 500 chars)
+                matcher = (html =~ /id[=:](\d+)[\s\S]{0,500}?(?:Shelly Device Manager|Shelly mDNS Discovery)/)
+                if (matcher.find()) {
+                    codeId = matcher.group(1) as Integer
+                    logDebug("Found app code ID via forward search: ${codeId}")
+                    return
+                }
+
+                // Strategy 3: App name appearing before id= parameter
+                matcher = (html =~ /(?:Shelly Device Manager|Shelly mDNS Discovery)[\s\S]{0,500}?(?:app\/editor\/|id[=:])(\d+)/)
+                if (matcher.find()) {
+                    codeId = matcher.group(1) as Integer
+                    logDebug("Found app code ID via reverse search: ${codeId}")
+                    return
+                }
+
+                // Diagnostic: log context around app name to help debug HTML structure
+                int idx = html.indexOf('Shelly Device Manager')
+                if (idx < 0) { idx = html.indexOf('Shelly mDNS Discovery') }
+                if (idx >= 0) {
+                    int start = Math.max(0, idx - 300)
+                    int end = Math.min(html.length(), idx + 300)
+                    logError("getAppCodeId: app name found but ID extraction failed. HTML context: ${html.substring(start, end)}")
                 } else {
-                    logError("Could not find app code entry in /app/list HTML response")
+                    logError("getAppCodeId: 'Shelly Device Manager' not found in /app/list HTML (length=${html.length()})")
                 }
             }
         }
