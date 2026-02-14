@@ -8,12 +8,19 @@
 // into generated drivers and to detect app updates for automatic driver regeneration.
 @Field static final String APP_VERSION = "1.0.0"
 
+// Script names (as they appear on the Shelly device) that are managed by this app.
+// Only these scripts will be considered for automatic removal.
+@Field static final List<String> MANAGED_SCRIPT_NAMES = [
+    'switchstatus',
+    'powermonitoring',
+    'HubitatBLEHelper'
+]
 
 definition(
-    name: "Shelly mDNS Discovery",
+    name: "Shelly Device Manager",
     namespace: "ShellyUSA",
     author: "Daniel Winks",
-    description: "Discover Shelly WiFi devices using Hubitat mDNS discovery",
+    description: "Discover, configure, and manage Shelly WiFi devices on Hubitat",
     category: "Convenience",
     iconUrl: "",
     iconX2Url: "",
@@ -29,7 +36,7 @@ preferences {
 }
 
 /**
- * Renders the main discovery page for the Shelly mDNS Discovery app.
+ * Renders the main discovery page for the Shelly Device Manager app.
  * Initializes state variables, starts discovery if not running, and displays
  * the discovery timer, discovered devices list, and logging controls.
  *
@@ -68,6 +75,9 @@ Map mainPage() {
         }
 
         section("Options", hideable: true) {
+            input name: 'enableAutoUpdate', type: 'bool', title: 'Enable auto-update',
+                description: 'Automatically checks for and installs app updates from GitHub daily at 3AM.',
+                defaultValue: true, submitOnChange: true
             input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
                 description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
                 defaultValue: true, submitOnChange: true
@@ -237,6 +247,44 @@ void appButtonHandler(String buttonName) {
         }
         installRequiredScripts(ip)
     }
+
+    if (buttonName == 'btnRemoveNonRequiredScripts') {
+        String selectedDni = settings?.selectedConfigDevice as String
+        if (!selectedDni) {
+            appendLog('warn', 'Remove Scripts: no device selected')
+            return
+        }
+        def device = getChildDevice(selectedDni)
+        if (!device) {
+            appendLog('warn', "Remove Scripts: device not found for DNI ${selectedDni}")
+            return
+        }
+        String ip = device.getDataValue('ipAddress')
+        if (!ip) {
+            appendLog('warn', "Remove Scripts: no IP address for device ${device.displayName}")
+            return
+        }
+        removeNonRequiredScripts(ip)
+    }
+
+    if (buttonName == 'btnEnableStartScripts') {
+        String selectedDni = settings?.selectedConfigDevice as String
+        if (!selectedDni) {
+            appendLog('warn', 'Enable Scripts: no device selected')
+            return
+        }
+        def device = getChildDevice(selectedDni)
+        if (!device) {
+            appendLog('warn', "Enable Scripts: device not found for DNI ${selectedDni}")
+            return
+        }
+        String ip = device.getDataValue('ipAddress')
+        if (!ip) {
+            appendLog('warn', "Enable Scripts: no IP address for device ${device.displayName}")
+            return
+        }
+        enableAndStartRequiredScripts(ip)
+    }
 }
 
 /**
@@ -367,12 +415,17 @@ void updated() {
  */
 void uninstalled() {
     stopDiscovery()
-    // Only unregister listeners when app is uninstalled
+    // Unregister mDNS listeners — try no-arg form first (some firmware versions),
+    // then per-service-type form as fallback
     try {
-        unregisterMDNSListener('_shelly._tcp')
-        unregisterMDNSListener('_http._tcp')
-    } catch (Exception e) {
-        logTrace("Could not unregister mDNS listeners: ${e.message}")
+        unregisterMDNSListener()
+    } catch (Exception ignored) {
+        try {
+            unregisterMDNSListener('_shelly._tcp')
+            unregisterMDNSListener('_http._tcp')
+        } catch (Exception e2) {
+            logTrace("Could not unregister mDNS listeners: ${e2.message}")
+        }
     }
     unsubscribe()
     unschedule()
@@ -489,9 +542,15 @@ Map deviceConfigPage() {
                     // Determine required scripts from component_driver.json
                     Set<String> requiredScriptNames = getRequiredScriptsForDevice(selectedDevice)
 
-                    // Compute missing scripts
+                    // Compute missing scripts (required but not installed)
+                    Set<String> requiredNames = requiredScriptNames.collect { stripJsExtension(it) } as Set<String>
                     List<String> missingScripts = requiredScriptNames.findAll { String req ->
                         !installedScriptNames.any { it == stripJsExtension(req) }
+                    } as List<String>
+
+                    // Compute removable scripts (installed, managed by us, but not required)
+                    List<String> removableScripts = installedScriptNames.findAll { String name ->
+                        MANAGED_SCRIPT_NAMES.contains(name) && !requiredNames.contains(name)
                     } as List<String>
 
                     section("Installed Scripts") {
@@ -505,11 +564,29 @@ Map deviceConfigPage() {
                                 String name = script.name ?: 'unnamed'
                                 Boolean enabled = script.enable as Boolean
                                 Boolean running = script.running as Boolean
-                                Boolean isRequired = requiredScriptNames.any { stripJsExtension(it) == name }
+                                Boolean isRequired = requiredNames.contains(name)
+                                Boolean isManaged = MANAGED_SCRIPT_NAMES.contains(name)
                                 String status = "${enabled ? 'enabled' : 'disabled'}, ${running ? 'running' : 'stopped'}"
-                                sb.append("${name} — ${status}${isRequired ? '' : ' (not required)'}\n")
+                                String tag = isRequired ? '' : (isManaged ? ' (not required)' : '')
+                                sb.append("${name} — ${status}${tag}\n")
                             }
                             paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+
+                            if (removableScripts.size() > 0) {
+                                paragraph "<b>${removableScripts.size()} removable script(s):</b> ${removableScripts.join(', ')}"
+                                input 'btnRemoveNonRequiredScripts', 'button', title: 'Remove Non-Required Script(s)', submitOnChange: true
+                            }
+                        }
+                    }
+
+                    // Compute required scripts that are installed but not fully active
+                    List<String> inactiveScripts = []
+                    if (installedScripts != null) {
+                        requiredNames.each { String reqName ->
+                            Map script = installedScripts.find { (it.name ?: '') == reqName }
+                            if (script && (!(script.enable as Boolean) || !(script.running as Boolean))) {
+                                inactiveScripts.add(reqName)
+                            }
                         }
                     }
 
@@ -520,16 +597,34 @@ Map deviceConfigPage() {
                             StringBuilder sb = new StringBuilder()
                             requiredScriptNames.each { String scriptFile ->
                                 String scriptName = stripJsExtension(scriptFile)
-                                Boolean isInstalled = installedScriptNames.any { it == scriptName }
-                                sb.append("${scriptFile} — ${isInstalled ? 'installed' : 'MISSING'}\n")
+                                Map script = installedScripts?.find { (it.name ?: '') == scriptName }
+                                if (!script) {
+                                    sb.append("${scriptFile} — MISSING\n")
+                                } else {
+                                    Boolean enabled = script.enable as Boolean
+                                    Boolean running = script.running as Boolean
+                                    if (enabled && running) {
+                                        sb.append("${scriptFile} — installed, enabled, running\n")
+                                    } else {
+                                        List<String> issues = []
+                                        if (!enabled) { issues.add('not enabled') }
+                                        if (!running) { issues.add('not running') }
+                                        sb.append("${scriptFile} — installed, ${issues.join(', ')}\n")
+                                    }
+                                }
                             }
                             paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
 
                             if (missingScripts.size() > 0) {
                                 paragraph "<b>${missingScripts.size()} missing script(s):</b> ${missingScripts.join(', ')}"
                                 input 'btnInstallScripts', 'button', title: 'Install Missing Script(s)', submitOnChange: true
-                            } else {
-                                paragraph "<b>All required scripts are installed.</b>"
+                            }
+                            if (inactiveScripts.size() > 0) {
+                                paragraph "<b>${inactiveScripts.size()} inactive script(s):</b> ${inactiveScripts.join(', ')}"
+                                input 'btnEnableStartScripts', 'button', title: 'Enable & Start Script(s)', submitOnChange: true
+                            }
+                            if (missingScripts.size() == 0 && inactiveScripts.size() == 0) {
+                                paragraph "<b>All required scripts are installed and running.</b>"
                             }
                         }
                     }
@@ -783,6 +878,136 @@ void installRequiredScripts(String ipAddress) {
 }
 
 /**
+ * Removes managed scripts that are not required for a device's capabilities.
+ * Only removes scripts whose names appear in MANAGED_SCRIPT_NAMES to avoid
+ * deleting user-created or third-party scripts. Stops each script before deletion.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+void removeNonRequiredScripts(String ipAddress) {
+    String selectedDni = settings?.selectedConfigDevice as String
+    if (!selectedDni) { return }
+    def device = getChildDevice(selectedDni)
+    if (!device) { return }
+
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it) } as Set<String>
+
+    // Get currently installed scripts (need full details including id)
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logError("Cannot read scripts from device at ${ipAddress}")
+        appendLog('error', "Cannot read scripts from ${device.displayName}")
+        return
+    }
+
+    String uri = "http://${ipAddress}/rpc"
+    Integer removed = 0
+
+    installedScripts.each { Map script ->
+        String name = script.name as String
+        Integer scriptId = script.id as Integer
+
+        // Only remove scripts we manage, and only if not required
+        if (!MANAGED_SCRIPT_NAMES.contains(name)) { return }
+        if (requiredNames.contains(name)) { return }
+        if (scriptId == null) { return }
+
+        logInfo("Removing non-required script '${name}' (id: ${scriptId}) from ${ipAddress}...")
+        appendLog('info', "Removing ${name} from ${device.displayName}...")
+
+        try {
+            // Stop the script first if running
+            if (script.running) {
+                LinkedHashMap stopCmd = scriptStopCommand(scriptId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { stopCmd.auth = getAuth() }
+                postCommandSync(stopCmd, uri)
+            }
+
+            // Delete the script
+            LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
+            if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
+            postCommandSync(deleteCmd, uri)
+
+            logInfo("Removed script '${name}' (id: ${scriptId})")
+            appendLog('info', "Removed ${name} from ${device.displayName}")
+            removed++
+        } catch (Exception ex) {
+            logError("Failed to remove script '${name}': ${ex.message}")
+            appendLog('error', "Failed to remove ${name}: ${ex.message}")
+        }
+    }
+
+    logInfo("Script removal complete: ${removed} script(s) removed from ${ipAddress}")
+    appendLog('info', "Script removal complete: ${removed} removed from ${device.displayName}")
+}
+
+/**
+ * Enables and starts all required scripts on a Shelly device that are installed
+ * but not currently enabled or running. Uses Script.SetConfig to enable (which
+ * also sets the script to start on boot) and Script.Start to run it.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+void enableAndStartRequiredScripts(String ipAddress) {
+    String selectedDni = settings?.selectedConfigDevice as String
+    if (!selectedDni) { return }
+    def device = getChildDevice(selectedDni)
+    if (!device) { return }
+
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it) } as Set<String>
+
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logError("Cannot read scripts from device at ${ipAddress}")
+        appendLog('error', "Cannot read scripts from ${device.displayName}")
+        return
+    }
+
+    String uri = "http://${ipAddress}/rpc"
+    Integer fixed = 0
+
+    installedScripts.each { Map script ->
+        String name = script.name as String
+        Integer scriptId = script.id as Integer
+        Boolean enabled = script.enable as Boolean
+        Boolean running = script.running as Boolean
+
+        if (!requiredNames.contains(name)) { return }
+        if (scriptId == null) { return }
+        if (enabled && running) { return }
+
+        logInfo("Enabling and starting script '${name}' (id: ${scriptId}) on ${ipAddress}...")
+        appendLog('info', "Enabling ${name} on ${device.displayName}...")
+
+        try {
+            if (!enabled) {
+                LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
+                postCommandSync(enableCmd, uri)
+            }
+
+            if (!running) {
+                LinkedHashMap startCmd = scriptStartCommand(scriptId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
+                postCommandSync(startCmd, uri)
+            }
+
+            logInfo("Script '${name}' is now enabled and running")
+            appendLog('info', "Enabled and started ${name} on ${device.displayName}")
+            fixed++
+        } catch (Exception ex) {
+            logError("Failed to enable/start script '${name}': ${ex.message}")
+            appendLog('error', "Failed to enable ${name}: ${ex.message}")
+        }
+    }
+
+    logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
+    appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
+}
+
+/**
  * Initializes the app state and sets up mDNS discovery.
  * Initializes state variables for discovered devices and logs,
  * mirrors logging settings to state, subscribes to system start events,
@@ -841,6 +1066,14 @@ void initialize() {
     // Schedule periodic watchdog to detect IP address changes via mDNS
     if (settings?.enableWatchdog != false) {
         schedule('0 */15 * ? * *', 'watchdogScan')
+    }
+
+    // Schedule daily auto-update check at 3AM
+    if (settings?.enableAutoUpdate != false) {
+        schedule('0 0 3 ? * *', 'checkForAppUpdate')
+        logDebug("App auto-update scheduled for 3AM daily")
+    } else {
+        unschedule('checkForAppUpdate')
     }
 }
 
@@ -6623,6 +6856,236 @@ private void finishDriverRebuild() {
  * drivers, their versions, and which devices are using them.
  */
 private String getAppVersion() { return APP_VERSION }
+
+// ═══════════════════════════════════════════════════════════════
+// ║  App Auto-Update                                            ║
+// ╚═══════════════════════════════════════════════════════════════╝
+
+/**
+ * Checks for a newer version of this app on GitHub Releases and updates
+ * the installed app code if a newer version is available. Scheduled daily
+ * at 3AM when auto-update is enabled.
+ */
+void checkForAppUpdate() {
+    logInfo("Checking for app updates...")
+
+    String latestVersion = getLatestGitHubReleaseVersion()
+    if (!latestVersion) {
+        logDebug("Could not determine latest release version from GitHub")
+        return
+    }
+
+    String currentVersion = getAppVersion()
+    if (!isNewerVersion(latestVersion, currentVersion)) {
+        logDebug("App is up to date (current: ${currentVersion}, latest: ${latestVersion})")
+        return
+    }
+
+    logInfo("App update available: ${currentVersion} → ${latestVersion}")
+    appendLog('info', "App update available: ${currentVersion} → ${latestVersion}")
+
+    // Download the latest app source from the release tag
+    String tag = "app-v${latestVersion}"
+    String newSource = downloadFile(
+        "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${tag}/Apps/ShellyDeviceManager.groovy"
+    )
+    if (!newSource) {
+        logError("Failed to download app source for version ${latestVersion}")
+        appendLog('error', "Auto-update failed: could not download source")
+        return
+    }
+
+    Boolean success = updateAppCode(newSource)
+    if (success) {
+        logInfo("App updated to version ${latestVersion}")
+        appendLog('info', "App updated to ${latestVersion}")
+    } else {
+        logError("Failed to update app code to ${latestVersion}")
+        appendLog('error', "Auto-update failed: could not apply update")
+    }
+}
+
+/**
+ * Queries the GitHub Releases API for the latest app-specific release.
+ * Filters for releases tagged with the {@code app-v} prefix to avoid
+ * collisions with driver releases (which use plain {@code v} prefix).
+ *
+ * @return The version string (e.g., "1.1.0") from the latest app release, or null on failure
+ */
+private String getLatestGitHubReleaseVersion() {
+    try {
+        Map params = [
+            uri: "https://api.github.com",
+            path: "/repos/ShellyUSA/Hubitat-Drivers/releases",
+            query: [per_page: 20],
+            contentType: 'application/json',
+            timeout: 15
+        ]
+
+        String version = null
+        httpGet(params) { resp ->
+            if (resp?.status == 200 && resp.data) {
+                for (release in resp.data) {
+                    String tag = release.tag_name as String
+                    if (tag?.startsWith('app-v')) {
+                        version = tag.substring(5) // strip 'app-v' prefix
+                        break
+                    }
+                }
+            }
+        }
+        return version
+    } catch (Exception e) {
+        logError("Failed to check GitHub releases: ${e.message}")
+        return null
+    }
+}
+
+/**
+ * Compares two semantic version strings to determine if the candidate
+ * is newer than the current version. Strips a leading 'v' if present.
+ *
+ * @param candidate The candidate version (e.g., "v1.1.0" or "1.1.0")
+ * @param current The current version (e.g., "1.0.0")
+ * @return true if candidate is newer than current
+ */
+@CompileStatic
+private Boolean isNewerVersion(String candidate, String current) {
+    String c = candidate.startsWith('v') ? candidate.substring(1) : candidate
+    String r = current.startsWith('v') ? current.substring(1) : current
+
+    List<Integer> candidateParts = c.tokenize('.').collect { it as Integer }
+    List<Integer> currentParts = r.tokenize('.').collect { it as Integer }
+
+    // Pad to equal length
+    while (candidateParts.size() < currentParts.size()) { candidateParts.add(0) }
+    while (currentParts.size() < candidateParts.size()) { currentParts.add(0) }
+
+    for (int i = 0; i < candidateParts.size(); i++) {
+        if (candidateParts[i] > currentParts[i]) { return true }
+        if (candidateParts[i] < currentParts[i]) { return false }
+    }
+    return false
+}
+
+/**
+ * Updates this app's source code on the Hubitat hub via the local API.
+ * Lists installed apps to find this app's code ID, then posts the new source.
+ *
+ * @param sourceCode The new app source code to install
+ * @return true if the update succeeded
+ */
+private Boolean updateAppCode(String sourceCode) {
+    try {
+        String cookie = login()
+        if (!cookie) {
+            logError("Auto-update: failed to authenticate with hub")
+            return false
+        }
+
+        // Find this app's code ID by listing installed apps
+        Integer appCodeId = getAppCodeId(cookie)
+        if (!appCodeId) {
+            logError("Auto-update: could not find app code ID")
+            return false
+        }
+
+        // Get the current app code version for the update request
+        String currentHubVersion = getInstalledAppVersion(cookie, appCodeId)
+
+        Map updateParams = [
+            uri: "http://127.0.0.1:8080",
+            path: '/app/ajax/update',
+            requestContentType: 'application/x-www-form-urlencoded',
+            headers: ['Cookie': cookie],
+            body: [
+                id: appCodeId,
+                version: currentHubVersion ?: '',
+                source: sourceCode
+            ],
+            timeout: 300,
+            ignoreSSLIssues: true
+        ]
+
+        Boolean result = false
+        httpPost(updateParams) { resp ->
+            if (resp.data?.status == 'success') {
+                logInfo("Auto-update: app code updated successfully")
+                result = true
+            } else {
+                logError("Auto-update: update failed - response: ${resp.data}")
+            }
+        }
+        return result
+    } catch (Exception e) {
+        logError("Auto-update error: ${e.message}")
+        return false
+    }
+}
+
+/**
+ * Finds this app's code ID by listing installed apps from the Hubitat local API.
+ *
+ * @param cookie The authentication cookie
+ * @return The app code ID, or null if not found
+ */
+private Integer getAppCodeId(String cookie) {
+    try {
+        Map params = [
+            uri: "http://127.0.0.1:8080",
+            path: '/app/list',
+            headers: ['Cookie': cookie],
+            timeout: 15
+        ]
+
+        Integer codeId = null
+        httpGet(params) { resp ->
+            if (resp?.status == 200 && resp.data) {
+                def appEntry = resp.data.find { it.name == 'Shelly Device Manager' && it.namespace == 'ShellyUSA' }
+                if (appEntry) {
+                    codeId = appEntry.id as Integer
+                }
+            }
+        }
+        return codeId
+    } catch (Exception e) {
+        logError("Failed to list apps: ${e.message}")
+        return null
+    }
+}
+
+/**
+ * Gets the installed version string of this app's code from the hub.
+ *
+ * @param cookie The authentication cookie
+ * @param appCodeId The app code ID
+ * @return The version string, or null if not found
+ */
+private String getInstalledAppVersion(String cookie, Integer appCodeId) {
+    try {
+        Map params = [
+            uri: "http://127.0.0.1:8080",
+            path: "/app/ajax/code",
+            query: [id: appCodeId],
+            headers: ['Cookie': cookie],
+            timeout: 15
+        ]
+
+        String foundVersion = null
+        httpGet(params) { resp ->
+            if (resp?.status == 200 && resp.data?.source) {
+                def matcher = (resp.data.source =~ /version:\s*['"]([^'"]+)['"]/)
+                if (matcher.find()) {
+                    foundVersion = matcher.group(1)
+                }
+            }
+        }
+        return foundVersion
+    } catch (Exception e) {
+        logError("Failed to get installed app version: ${e.message}")
+        return null
+    }
+}
 
 private void initializeDriverTracking() {
   if(!state.autoDrivers) {
