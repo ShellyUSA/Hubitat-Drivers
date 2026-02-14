@@ -474,6 +474,9 @@ void initialize() {
     } else {
         logDebug("App version unchanged (${currentVersion}), no driver regeneration needed")
     }
+
+    // Schedule periodic watchdog to detect IP address changes via mDNS
+    schedule('0 */15 * ? * *', 'watchdogScan')
 }
 
 /**
@@ -765,6 +768,116 @@ void sendFoundShellyEvents() {
     logDebug("sendFoundShellyEvents: count='${countValue}', devices='${devicesValue}'")
     app.sendEvent(name: 'shellyDiscoveredCount', value: countValue)
     app.sendEvent(name: 'shellyDiscovered', value: devicesValue)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// IP Address Watchdog (mDNS-based IP change detection)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Extracts the MAC address from an mDNS server name.
+ * Shelly mDNS server names follow the pattern {@code ShellyModel-AABBCCDDEEFF}
+ * where the last segment after the final hyphen is a 12-character hex MAC address.
+ *
+ * @param serverName The mDNS server name (e.g. {@code ShellyPlugUS-C049EF8B3A44})
+ * @return The uppercase MAC address string, or null if the name does not contain a valid MAC
+ */
+@CompileStatic
+static String extractMacFromMdnsName(String serverName) {
+    if (!serverName) { return null }
+    // Remove trailing .local. or trailing dot
+    String cleaned = serverName.replaceAll(/\.local\.$/, '').replaceAll(/\.$/, '')
+    Integer lastDash = cleaned.lastIndexOf('-')
+    if (lastDash < 0 || lastDash >= cleaned.length() - 1) { return null }
+    String candidate = cleaned.substring(lastDash + 1).toUpperCase()
+    if (candidate.length() == 12 && candidate.matches(/^[0-9A-F]{12}$/)) {
+        return candidate
+    }
+    return null
+}
+
+/**
+ * Performs an mDNS-based watchdog scan to detect IP address changes for child devices.
+ * Respects a 5-minute cooldown between scans to avoid excessive network traffic.
+ * Re-registers mDNS listeners and schedules result processing after a 10-second delay.
+ * <p>
+ * Called periodically (every 15 minutes) and on command failure in
+ * {@link #sendSwitchCommand(Object, Boolean)}.
+ */
+void watchdogScan() {
+    Long lastScan = state.lastWatchdogScan ?: 0L
+    if (now() - lastScan < 300000) {
+        logDebug("watchdogScan: skipping, last scan was ${(now() - lastScan) / 1000} seconds ago (cooldown 300s)")
+        return
+    }
+    state.lastWatchdogScan = now()
+    logDebug('watchdogScan: starting mDNS scan for IP changes')
+
+    // Re-register listeners to trigger fresh mDNS queries on the network
+    startMdnsDiscovery()
+
+    // Wait 10 seconds for mDNS responses to accumulate before processing
+    runIn(10, 'watchdogProcessResults')
+}
+
+/**
+ * Processes mDNS results collected after a watchdog scan.
+ * Compares discovered IP addresses against stored child device IPs and updates
+ * any that have changed. Also updates {@code state.discoveredShellys} entries.
+ */
+void watchdogProcessResults() {
+    logDebug('watchdogProcessResults: checking for IP changes')
+
+    try {
+        List<Map<String, Object>> shellyEntries = getMDNSEntries('_shelly._tcp')
+        List<Map<String, Object>> httpEntries = getMDNSEntries('_http._tcp')
+
+        List allEntries = []
+        if (shellyEntries) { allEntries.addAll(shellyEntries) }
+        if (httpEntries) { allEntries.addAll(httpEntries) }
+
+        if (!allEntries) {
+            logDebug('watchdogProcessResults: no mDNS entries found')
+            return
+        }
+
+        Integer updatedCount = 0
+        allEntries.each { entry ->
+            String server = (entry?.server ?: '') as String
+            String ip4 = (entry?.ip4Addresses ?: '') as String
+            if (!server || !ip4) { return }
+
+            String mac = extractMacFromMdnsName(server)
+            if (!mac) { return }
+
+            // Check if we have a child device with this MAC as DNI
+            def child = getChildDevice(mac)
+            if (!child) { return }
+
+            String currentIp = child.getDataValue('ipAddress')
+            if (currentIp && currentIp != ip4) {
+                logInfo("watchdogProcessResults: IP changed for ${child.displayName} (${mac}): ${currentIp} -> ${ip4}")
+                child.updateDataValue('ipAddress', ip4)
+                updatedCount++
+
+                // Also update discoveredShellys if the old IP is a key
+                if (state.discoveredShellys?.containsKey(currentIp)) {
+                    Map deviceEntry = state.discoveredShellys.remove(currentIp) as Map
+                    deviceEntry.ipAddress = ip4
+                    deviceEntry.ts = now()
+                    state.discoveredShellys[ip4] = deviceEntry
+                }
+            }
+        }
+
+        if (updatedCount > 0) {
+            logInfo("watchdogProcessResults: updated ${updatedCount} device IP(s)")
+        } else {
+            logDebug('watchdogProcessResults: all device IPs are current')
+        }
+    } catch (Exception e) {
+        logWarn("watchdogProcessResults: error processing mDNS entries: ${e.message}")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -6152,6 +6265,8 @@ private void sendSwitchCommand(def childDevice, Boolean onState) {
 
   } catch (Exception e) {
     logError("sendSwitchCommand(${action}) exception for ${childDevice.displayName}: ${e.message}")
+    // Trigger watchdog scan to detect possible IP change (respects 5-min cooldown)
+    watchdogScan()
   }
 }
 
