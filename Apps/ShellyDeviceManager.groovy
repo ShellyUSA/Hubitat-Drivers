@@ -50,12 +50,12 @@ Map mainPage() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
 
-    // Requirement: scanning should start when app page is opened.
-    if (!state.discoveryRunning) {
-        startDiscovery(true)
-    }
-
+    // Requirement: scanning should start (or restart) when app page is opened.
     Integer remainingSecs = getRemainingDiscoverySeconds()
+    if (!state.discoveryRunning || remainingSecs <= 0) {
+        startDiscovery(true)
+        remainingSecs = getRemainingDiscoverySeconds()
+    }
 
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
         section() {
