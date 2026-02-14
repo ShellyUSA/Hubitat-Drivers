@@ -178,7 +178,15 @@
         }
       ],
       "commands": [],
-      "id": "Battery"
+      "id": "Battery",
+      "requiredActions": [
+        {
+          "event": "devicepower.change",
+          "name": "hubitat_battery",
+          "dst": "battery"
+        }
+      ],
+      "shellyComponent": "devicepower"
     },
     {
       "attributes": [

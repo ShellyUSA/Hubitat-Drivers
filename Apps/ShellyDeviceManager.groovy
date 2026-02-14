@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.11"
+@Field static final String APP_VERSION = "1.0.12"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.11"
+    version: "1.0.12"
 )
 
 preferences {
@@ -1924,25 +1924,27 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
 /**
  * Analyzes device status to determine the appropriate Hubitat driver.
- * Inspects the device status map for switches and inputs, logs the discovered
- * component counts, builds a list of Shelly components, and invokes driver
- * generation. Provides heuristic determination of device type based on the
- * combination of switches and inputs found.
+ * Inspects the device status map for all supported component types, builds a
+ * component list, and invokes driver generation (with caching and tracking).
  * <p>
- * Component detection:
+ * Supported component types:
  * <ul>
  *   <li>Switches: status keys starting with "switch"</li>
  *   <li>Inputs: status keys containing "input"</li>
+ *   <li>Temperature: status keys starting with "temperature"</li>
+ *   <li>Humidity: status keys starting with "humidity"</li>
+ *   <li>DevicePower: status keys starting with "devicepower" (battery)</li>
  * </ul>
  * <p>
- * Device type heuristics:
- * <ul>
- *   <li>1 switch, 0 inputs: plug or basic relay</li>
- *   <li>1 switch, 1+ inputs: roller shutter or similar</li>
- *   <li>Multiple switches: multi-relay model</li>
- * </ul>
+ * Uses a three-tier resolution strategy:
+ * <ol>
+ *   <li>Check {@code state.autoDrivers} for an existing driver with matching version</li>
+ *   <li>Check Hubitat File Manager cache for previously generated source</li>
+ *   <li>Fall through to GitHub-based generation via {@link #generateHubitatDriver}</li>
+ * </ol>
  *
  * @param deviceStatus Map containing the device status with component keys
+ * @param ipKey Optional IP key for the discovered device entry
  */
 private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Placeholder for future device-type determination logic
@@ -1981,6 +1983,22 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         if (key.contains('input')) {
             components.add(k.toString())
             componentPowerMonitoring[k.toString()] = false
+        }
+        // Sensor components: temperature, humidity, devicepower (battery)
+        if (key.startsWith('temperature')) {
+            components.add(k.toString())
+            componentPowerMonitoring[k.toString()] = false
+            logInfo("Found temperature sensor: ${k}")
+        }
+        if (key.startsWith('humidity')) {
+            components.add(k.toString())
+            componentPowerMonitoring[k.toString()] = false
+            logInfo("Found humidity sensor: ${k}")
+        }
+        if (key.startsWith('devicepower')) {
+            components.add(k.toString())
+            componentPowerMonitoring[k.toString()] = false
+            logInfo("Found battery/power component: ${k}")
         }
     }
 
@@ -2038,16 +2056,17 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         logDebug("Generated driver code (${driverCode?.length() ?: 0} chars)")
     }
 
-    if (switchesFound == 0 && inputsFound == 0) {
-        logDebug("determineDeviceDriver: no switches or inputs found in status, cannot determine device type")
-        return
-    }
+    // Log device type heuristics
     if (switchesFound == 1 && inputsFound == 0) {
         logDebug("Device is likely a plug or basic relay device (1 switch, no inputs)")
     } else if (switchesFound == 1 && inputsFound >= 1) {
         logDebug("Device is likely a roller shutter or similar (1 switch, 1+ inputs)")
     } else if (switchesFound > 1) {
         logDebug("Device is likely a multi-relay model (multiple switches)")
+    } else if (switchesFound == 0 && inputsFound == 0 && components.size() > 0) {
+        logDebug("Device is a sensor-only device (no switches/inputs, ${components.size()} sensor components)")
+    } else if (switchesFound == 0 && inputsFound == 0) {
+        logDebug("determineDeviceDriver: no recognized components found in device status")
     } else {
         logDebug("Device has an unexpected combination of switches and inputs, manual review may be needed")
     }
@@ -2379,42 +2398,94 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
 
 /**
  * Generates a dynamic driver name based on the Shelly components.
+ * <p>
+ * Categorizes components into switches/inputs (actuators) and sensors
+ * (temperature, humidity). The {@code devicepower} component adds Battery
+ * capability but does not affect the driver name.
+ * <p>
+ * Naming rules:
+ * <ul>
+ *   <li>Switch-only: "Shelly Autoconf Single Switch [PM]" or "Shelly Autoconf 2x Switch [PM]"</li>
+ *   <li>Sensor-only: "Shelly Autoconf TH Sensor" (temp+humidity), "Shelly Autoconf Temperature Sensor", etc.</li>
+ *   <li>Mixed: "Shelly Autoconf Multi-Component Device [PM]"</li>
+ * </ul>
  *
- * @param components List of Shelly components (e.g., ["switch:0", "switch:1"])
- * @return Generated driver name (e.g., "Shelly Single Switch", "Shelly 2x Switch")
+ * @param components List of Shelly components (e.g., ["switch:0", "temperature:0"])
+ * @param componentPowerMonitoring Map of component names to power monitoring flags
+ * @return Generated driver name
  */
 private String generateDriverName(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:]) {
-    // Count component types
     Map<String, Integer> componentCounts = [:]
     Boolean hasPowerMonitoring = false
+
+    // Sensor and actuator type sets
+    Set<String> sensorTypes = ['temperature', 'humidity'] as Set
+    Set<String> supportTypes = ['devicepower'] as Set
+    Set<String> actuatorTypes = ['switch', 'input'] as Set
 
     components.each { component ->
         String baseType = component.contains(':') ? component.split(':')[0] : component
         componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
 
-        // Check if any component has power monitoring
         if (componentPowerMonitoring[component]) {
             hasPowerMonitoring = true
         }
     }
 
-    // Generate name based on components
+    // Separate component types
+    Set<String> foundActuators = componentCounts.keySet().findAll { actuatorTypes.contains(it) } as Set
+    Set<String> foundSensors = componentCounts.keySet().findAll { sensorTypes.contains(it) } as Set
+    Boolean hasBattery = componentCounts.containsKey('devicepower')
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
 
-    if (componentCounts.size() == 1) {
-        String type = componentCounts.keySet().first()
-        Integer count = componentCounts[type]
-
-        String typeName = type.capitalize()
-        if (count == 1) {
-            return "Shelly Autoconf Single ${typeName}${pmSuffix}"
-        } else {
-            return "Shelly Autoconf ${count}x ${typeName}${pmSuffix}"
-        }
-    } else {
-        // Multiple component types
+    // Mixed actuator + sensor device
+    if (foundActuators.size() > 0 && foundSensors.size() > 0) {
         return "Shelly Autoconf Multi-Component Device${pmSuffix}"
     }
+
+    // Actuator-only device (existing behavior)
+    if (foundActuators.size() > 0) {
+        // Filter to only actuator counts for naming
+        Map<String, Integer> actuatorCounts = componentCounts.findAll { k, v -> actuatorTypes.contains(k) }
+
+        if (actuatorCounts.size() == 1) {
+            String type = actuatorCounts.keySet().first()
+            Integer count = actuatorCounts[type]
+            String typeName = type.capitalize()
+            if (count == 1) {
+                return "Shelly Autoconf Single ${typeName}${pmSuffix}"
+            } else {
+                return "Shelly Autoconf ${count}x ${typeName}${pmSuffix}"
+            }
+        } else {
+            return "Shelly Autoconf Multi-Component Device${pmSuffix}"
+        }
+    }
+
+    // Sensor-only device
+    if (foundSensors.size() > 0) {
+        Boolean hasTemp = foundSensors.contains('temperature')
+        Boolean hasHumidity = foundSensors.contains('humidity')
+
+        if (hasTemp && hasHumidity) {
+            return "Shelly Autoconf TH Sensor"
+        } else if (hasTemp) {
+            return "Shelly Autoconf Temperature Sensor"
+        } else if (hasHumidity) {
+            return "Shelly Autoconf Humidity Sensor"
+        } else {
+            // Other sensor types
+            String sensorName = foundSensors.first().capitalize()
+            return "Shelly Autoconf ${sensorName} Sensor"
+        }
+    }
+
+    // Only support components (devicepower only, no sensors or actuators)
+    if (hasBattery) {
+        return "Shelly Autoconf Battery Device"
+    }
+
+    return "Shelly Autoconf Unknown Device"
 }
 
 /**
@@ -7530,21 +7601,33 @@ private Boolean updateAppCode(String sourceCode) {
             return false
         }
 
-        // HPM-style update: post id + source to /app/ajax/update
+        // Get the current version of the app code (required for update)
+        String appVersion = getAppCodeVersion(cookie, appCodeId)
+        if (!appVersion) {
+            logWarn("Auto-update: could not retrieve app code version, proceeding without it")
+            appVersion = ""
+        }
+
+        // HPM-style update: post id + version + source to /app/ajax/update
         Map updateParams = [
             uri: "http://127.0.0.1:8080",
             path: '/app/ajax/update',
             requestContentType: 'application/x-www-form-urlencoded',
-            contentType: 'application/json',
-            headers: ['Cookie': cookie],
-            body: [id: appCodeId, source: sourceCode],
-            timeout: 300
+            headers: [
+                'Cookie': cookie,
+                'Connection': 'keep-alive'
+            ],
+            body: [id: appCodeId, version: appVersion, source: sourceCode],
+            timeout: 420
         ]
 
         Boolean result = false
         httpPost(updateParams) { resp ->
-            if (resp?.status == 200) {
+            if (resp?.data?.status == 'success') {
                 logInfo("Auto-update: app code updated successfully")
+                result = true
+            } else if (resp?.status == 200) {
+                logInfo("Auto-update: app code update returned HTTP 200")
                 result = true
             } else {
                 logError("Auto-update: update failed - HTTP ${resp?.status}")
@@ -7565,10 +7648,10 @@ private Boolean updateAppCode(String sourceCode) {
  */
 private Integer getAppCodeId(String cookie) {
     try {
-        // HPM-style: /app/list returns JSON when no contentType/textParser is set
+        // HPM-style: /hub2/userAppTypes returns JSON with id, name, namespace
         Map params = [
             uri: "http://127.0.0.1:8080",
-            path: '/app/list',
+            path: '/hub2/userAppTypes',
             headers: ['Cookie': cookie],
             timeout: 30
         ]
@@ -7581,7 +7664,7 @@ private Integer getAppCodeId(String cookie) {
                     codeId = appEntry.id as Integer
                     logDebug("Found app code ID: ${codeId}")
                 } else {
-                    logError("getAppCodeId: could not find ShellyUSA app in /app/list (${resp.data.size()} entries)")
+                    logError("getAppCodeId: could not find ShellyUSA app in /hub2/userAppTypes (${resp.data.size()} entries)")
                 }
             }
         }
@@ -7593,11 +7676,45 @@ private Integer getAppCodeId(String cookie) {
 }
 
 /**
- * Gets the installed version string of this app's code from the hub.
+ * Gets the internal version counter of this app's code from the hub.
+ * This is the hub's internal revision counter (not the semantic version),
+ * required by {@code /app/ajax/update} to apply updates.
  *
  * @param cookie The authentication cookie
  * @param appCodeId The app code ID
- * @return The version string, or null if not found
+ * @return The internal version counter string, or null if not found
+ */
+private String getAppCodeVersion(String cookie, Integer appCodeId) {
+    try {
+        Map params = [
+            uri: "http://127.0.0.1:8080",
+            path: "/app/ajax/code",
+            query: [id: appCodeId],
+            headers: ['Cookie': cookie],
+            timeout: 30
+        ]
+
+        String codeVersion = null
+        httpGet(params) { resp ->
+            if (resp?.status == 200 && resp.data?.version != null) {
+                codeVersion = resp.data.version.toString()
+                logDebug("App code internal version: ${codeVersion}")
+            }
+        }
+        return codeVersion
+    } catch (Exception e) {
+        logError("Failed to get app code version: ${e.message}")
+        return null
+    }
+}
+
+/**
+ * Gets the installed semantic version string of this app's code from the hub
+ * by parsing the source code.
+ *
+ * @param cookie The authentication cookie
+ * @param appCodeId The app code ID
+ * @return The semantic version string, or null if not found
  */
 private String getInstalledAppVersion(String cookie, Integer appCodeId) {
     try {
@@ -7605,7 +7722,6 @@ private String getInstalledAppVersion(String cookie, Integer appCodeId) {
             uri: "http://127.0.0.1:8080",
             path: "/app/ajax/code",
             query: [id: appCodeId],
-            contentType: 'application/json',
             headers: ['Cookie': cookie],
             timeout: 15
         ]
