@@ -992,16 +992,19 @@ private String generateHubitatDriver(List<String> components) {
     filesToFetch.add("InitialIzeCommands.groovy")
     filesToFetch.add("ConfigureCommands.groovy")
     filesToFetch.add("RefreshCommand.groovy")
+    filesToFetch.add("Helpers.groovy")
 
     logDebug("Files to fetch asynchronously: ${filesToFetch}")
 
     // Store partial driver and files list in atomicState for completion callback
+    // IMPORTANT: Set inFlight to total count BEFORE launching any requests to avoid race condition
     Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
     current.partialDriver = driver.toString()
     current.filesToFetch = filesToFetch as List<String>
+    current.inFlight = filesToFetch.size()
     atomicState.driverGeneration = current
 
-    // Launch all async fetch operations
+    // Launch all async fetch operations (inFlight already set, don't increment in fetchFileAsync)
     filesToFetch.each { String fileName ->
         String fileUrl = "${baseUrl}/${fileName}"
         fetchFileAsync(fileUrl, fileName)
@@ -1065,10 +1068,6 @@ private void initializeAsyncDriverGeneration() {
  * @param key The key to store the file content under in atomicState
  */
 private void fetchFileAsync(String url, String key) {
-    Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
-    current.inFlight = (current.inFlight ?: 0) + 1
-    atomicState.driverGeneration = current
-
     logDebug("Async fetch started: ${key} from ${url}")
 
     Map params = [
@@ -1199,13 +1198,21 @@ private void completeDriverGeneration() {
         if (fileName != 'Lifecycle.groovy' &&
             fileName != 'InitialIzeCommands.groovy' &&
             fileName != 'ConfigureCommands.groovy' &&
-            fileName != 'RefreshCommand.groovy') {
+            fileName != 'RefreshCommand.groovy' &&
+            fileName != 'Helpers.groovy') {
             if (results.files[fileName]) {
                 driver.append(results.files[fileName])
                 driver.append("\n")
                 logDebug("Added ${fileName}")
             }
         }
+    }
+
+    // 4. Helpers.groovy last
+    if (results.files['Helpers.groovy']) {
+        driver.append(results.files['Helpers.groovy'])
+        driver.append("\n")
+        logDebug("Added Helpers.groovy")
     }
 
     String driverCode = driver.toString()
