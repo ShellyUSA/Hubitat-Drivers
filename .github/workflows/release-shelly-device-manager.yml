@@ -1,0 +1,115 @@
+name: Release Shelly Device Manager
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'Apps/ShellyDeviceManager.groovy'
+
+jobs:
+  release:
+    name: Release Shelly Device Manager
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract APP_VERSION from source
+        id: version
+        run: |
+          VERSION=$(grep -m 1 "APP_VERSION" Apps/ShellyDeviceManager.groovy \
+            | sed -n 's/.*APP_VERSION *= *"\([0-9.]*\)".*/\1/p')
+
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Could not extract APP_VERSION from source"
+            exit 1
+          fi
+
+          TAG="app-v${VERSION}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Detected APP_VERSION=${VERSION}, tag=${TAG}"
+
+      - name: Check if release already exists
+        id: check
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${TAG} already exists, skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Release ${TAG} does not exist, will create"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate release notes
+        if: steps.check.outputs.exists == 'false'
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          # Find the previous app release tag
+          PREV_TAG=$(git tag -l "app-v*" --sort=-v:refname | head -n 1)
+
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges -- \
+              Apps/ShellyDeviceManager.groovy Scripts/ UniversalDrivers/component_driver.json \
+              || echo "- Release ${VERSION}")
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s" --no-merges -20 -- \
+              Apps/ShellyDeviceManager.groovy Scripts/ UniversalDrivers/component_driver.json \
+              || echo "- Release ${VERSION}")
+          fi
+
+          {
+            echo "## Shelly Device Manager ${VERSION}"
+            echo ""
+            echo "### Changes"
+            echo "${CHANGELOG}"
+            echo ""
+            echo "### Installation"
+            echo "- Import the app code into Hubitat Apps Code"
+            echo "- Or update automatically if auto-update is enabled in the app"
+          } > changelog.md
+
+          echo "Release notes generated"
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          gh release create "$TAG" \
+            --title "Shelly Device Manager ${VERSION}" \
+            --notes-file changelog.md \
+            --target "${{ github.sha }}" \
+            Apps/ShellyDeviceManager.groovy
+
+          echo "Release ${TAG} created"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          EXISTS="${{ steps.check.outputs.exists }}"
+
+          if [ "$EXISTS" == "true" ]; then
+            echo "# Release ${TAG} already exists — no action taken" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "# Shelly Device Manager ${VERSION}"
+              echo ""
+              echo "**Tag:** ${TAG}"
+              echo ""
+              echo "[View Release](https://github.com/${{ github.repository }}/releases/tag/${TAG})"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
