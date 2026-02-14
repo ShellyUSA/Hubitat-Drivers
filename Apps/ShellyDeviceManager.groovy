@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.22"
+@Field static final String APP_VERSION = "1.0.23"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.22"
+    version: "1.0.23"
 )
 
 preferences {
@@ -1330,6 +1330,9 @@ void initialize() {
         runIn(30, 'rebuildAllTrackedDrivers')
         return
     }
+
+    // Clean up stale driver tracking entries from old app versions
+    pruneStaleDriverTracking()
 
     // Check for app version change and trigger driver regeneration
     String currentVersion = getAppVersion()
@@ -7848,6 +7851,58 @@ private void initializeDriverTracking() {
     state.autoDrivers = [:]
   }
   logDebug("Driver tracking initialized, currently tracking ${state.autoDrivers.size()} drivers")
+}
+
+/**
+ * Removes stale driver tracking entries from {@code state.autoDrivers}.
+ * For each base driver name (e.g., "Shelly Autoconf Single Switch PM"),
+ * keeps only the entry with the highest version and removes older ones.
+ * This prevents accumulation of old-version entries across app updates.
+ */
+private void pruneStaleDriverTracking() {
+    Map autoDrivers = state.autoDrivers
+    if (!autoDrivers || autoDrivers.size() <= 1) { return }
+
+    // Group entries by base driver name (without version suffix)
+    Map<String, List<String>> baseNameGroups = [:]
+    autoDrivers.each { key, value ->
+        String baseName = key.toString().replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        if (!baseNameGroups[baseName]) { baseNameGroups[baseName] = [] }
+        baseNameGroups[baseName].add(key.toString())
+    }
+
+    // For each group with multiple entries, keep only the latest version
+    int removed = 0
+    baseNameGroups.each { baseName, keys ->
+        if (keys.size() <= 1) { return }
+
+        // Sort by version descending — extract version from key
+        keys.sort { a, b ->
+            String vA = (a =~ /v(\d+(\.\d+)*)$/)[0]?[1] ?: '0'
+            String vB = (b =~ /v(\d+(\.\d+)*)$/)[0]?[1] ?: '0'
+            List<Integer> partsA = vA.tokenize('.').collect { it as Integer }
+            List<Integer> partsB = vB.tokenize('.').collect { it as Integer }
+            // Compare version parts descending
+            for (int i = 0; i < Math.max(partsA.size(), partsB.size()); i++) {
+                int pA = i < partsA.size() ? partsA[i] : 0
+                int pB = i < partsB.size() ? partsB[i] : 0
+                if (pA != pB) { return pB <=> pA }
+            }
+            return 0
+        }
+
+        // Keep the first (highest version), remove the rest
+        keys.drop(1).each { String oldKey ->
+            logInfo("Pruning stale driver tracking entry: ${oldKey}")
+            autoDrivers.remove(oldKey)
+            removed++
+        }
+    }
+
+    if (removed > 0) {
+        state.autoDrivers = autoDrivers
+        logInfo("Pruned ${removed} stale driver tracking entry(s)")
+    }
 }
 
 /**
