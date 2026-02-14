@@ -2351,5 +2351,43 @@
     "singleThreaded": false,
     "version": "1.0.0"
   },
+  "preferences": [
+    {
+      "name": "logLevel",
+      "type": "enum",
+      "title": "Logging Level",
+      "options": {
+        "trace": "Trace",
+        "debug": "Debug",
+        "info": "Info",
+        "warn": "Warning"
+      },
+      "defaultValue": "debug",
+      "required": true
+    }
+  ],
+  "deviceSpecificPreferences": {
+    "switch": [
+      {
+        "name": "autoOffTimer",
+        "type": "number",
+        "title": "Auto Off Timer (seconds, 0=disabled)",
+        "defaultValue": "0",
+        "required": false
+      },
+      {
+        "name": "powerOnState",
+        "type": "enum",
+        "title": "Power On State",
+        "options": {
+          "off": "Off",
+          "on": "On",
+          "last": "Last State"
+        },
+        "defaultValue": "last",
+        "required": false
+      }
+    ]
+  },
   "metadata": {}
 }
