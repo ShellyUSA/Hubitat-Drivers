@@ -425,6 +425,9 @@
     },
     {
       "attributes": [],
+      "commandFiles": [
+        "ConfigureCommands.groovy"
+      ],
       "commands": [
         {
           "arguments": [],
@@ -479,6 +482,19 @@
     {
       "attributes": [
         {
+          "name": "amperage",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "CurrentMeter",
+      "requiredScripts": [
+        "powermonitoring.js"
+      ]
+    },
+    {
+      "attributes": [
+        {
           "name": "door",
           "type": "enum",
           "values": [
@@ -519,8 +535,16 @@
           "type": "number"
         }
       ],
-      "commands": [],
-      "id": "EnergyMeter"
+      "commands": [
+        {
+          "arguments": [],
+          "name": "resetEnergyMonitors"
+        }
+      ],
+      "id": "EnergyMeter",
+      "requiredScripts": [
+        "powermonitoring.js"
+      ]
     },
     {
       "attributes": [
@@ -684,6 +708,9 @@
     },
     {
       "attributes": [],
+      "commandFiles": [
+        "InitializeCommands.groovy"
+      ],
       "commands": [
         {
           "arguments": [],
@@ -1091,7 +1118,10 @@
         }
       ],
       "commands": [],
-      "id": "PowerMeter"
+      "id": "PowerMeter",
+      "requiredScripts": [
+        "powermonitoring.js"
+      ]
     },
     {
       "attributes": [
@@ -1149,6 +1179,9 @@
     },
     {
       "attributes": [],
+      "commandFiles": [
+        "RefreshCommands.groovy"
+      ],
       "commands": [
         {
           "arguments": [],
@@ -1569,6 +1602,9 @@
           ]
         }
       ],
+      "commandFiles": [
+        "SwitchCommands.groovy"
+      ],
       "commands": [
         {
           "arguments": [],
@@ -1580,6 +1616,9 @@
         }
       ],
       "id": "Switch",
+      "requiredScripts": [
+        "switchstatus.js"
+      ],
       "shellyComponent": "switch"
     },
     {
@@ -2232,7 +2271,10 @@
         }
       ],
       "commands": [],
-      "id": "VoltageMeasurement"
+      "id": "VoltageMeasurement",
+      "requiredScripts": [
+        "powermonitoring.js"
+      ]
     },
     {
       "attributes": [
@@ -2342,7 +2384,30 @@
       "id": "pHMeasurement"
     }
   ],
-  "definition": {
+  "deviceSpecificPreferences": {
+    "switch": [
+      {
+        "defaultValue": "0",
+        "name": "autoOffTimer",
+        "required": false,
+        "title": "Auto Off Timer (seconds, 0=disabled)",
+        "type": "number"
+      },
+      {
+        "defaultValue": "last",
+        "name": "powerOnState",
+        "options": {
+          "last": "Last State",
+          "off": "Off",
+          "on": "On"
+        },
+        "required": false,
+        "title": "Power On State",
+        "type": "enum"
+      }
+    ]
+  },
+  "driver": {
     "author": "Daniel Winks",
     "description": "A universal driver for various components.",
     "importUrl": "",
@@ -2352,28 +2417,17 @@
     "singleThreaded": false,
     "version": "1.0.0"
   },
+  "metadata": {},
   "preferences": [
     {
       "defaultValue": "debug",
       "name": "logLevel",
-      "options": [
-        {
-          "label": "Trace",
-          "value": "trace"
-        },
-        {
-          "label": "Debug",
-          "value": "debug"
-        },
-        {
-          "label": "Info",
-          "value": "info"
-        },
-        {
-          "label": "Warning",
-          "value": "warn"
-        }
-      ],
+      "options": {
+        "debug": "Debug",
+        "info": "Info",
+        "trace": "Trace",
+        "warn": "Warning"
+      },
       "required": true,
       "title": "Logging Level",
       "type": "enum"
