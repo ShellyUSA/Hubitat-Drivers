@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.27"
+@Field static final String APP_VERSION = "1.0.28"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.27"
+    version: "1.0.28"
 )
 
 preferences {
@@ -1158,6 +1158,18 @@ List<Map> getRequiredActionsForDevice(def device) {
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Map config = deviceConfigs[dni] as Map
 
+    // If stored config is missing, try to populate it from discovery data
+    if (!config) {
+        Map discoveredShellys = state.discoveredShellys ?: [:]
+        Map discoveryData = discoveredShellys[ip]
+        if (discoveryData?.deviceStatus) {
+            storeDeviceConfig(dni, discoveryData, device.typeName ?: '')
+            deviceConfigs = state.deviceConfigs ?: [:]
+            config = deviceConfigs[dni] as Map
+            logDebug("Populated missing device config for ${device.displayName} from discovery data")
+        }
+    }
+
     if (supportedEvents == null && config?.supportedWebhookEvents) {
         supportedEvents = config.supportedWebhookEvents as List<String>
         logDebug("Using stored supported webhook events for ${device.displayName}: ${supportedEvents}")
@@ -1173,8 +1185,16 @@ List<Map> getRequiredActionsForDevice(def device) {
                 deviceStatus[ct + ':0'] = [id: 0]
             }
         } else {
-            logDebug("getRequiredActionsForDevice: could not query status for ${device.displayName}")
-            return requiredActions
+            // Last resort: check discovery data directly
+            Map discoveredShellys = state.discoveredShellys ?: [:]
+            Map discoveryData = discoveredShellys[ip]
+            if (discoveryData?.deviceStatus) {
+                deviceStatus = discoveryData.deviceStatus as Map
+                logDebug("Using discovery data status for ${device.displayName}")
+            } else {
+                logDebug("getRequiredActionsForDevice: no status available for ${device.displayName}")
+                return requiredActions
+            }
         }
     }
 
