@@ -7537,7 +7537,7 @@ private Integer getAppCodeId(String cookie) {
         Map params = [
             uri: "http://127.0.0.1:8080",
             path: '/app/list',
-            contentType: 'application/json',
+            textParser: true,
             headers: ['Cookie': cookie],
             timeout: 15
         ]
@@ -7545,9 +7545,21 @@ private Integer getAppCodeId(String cookie) {
         Integer codeId = null
         httpGet(params) { resp ->
             if (resp?.status == 200 && resp.data) {
-                def appEntry = resp.data.find { it.namespace == 'ShellyUSA' && (it.name == 'Shelly Device Manager' || it.name == 'Shelly mDNS Discovery') }
-                if (appEntry) {
-                    codeId = appEntry.id as Integer
+                // /app/list returns HTML; parse with regex to find our app's code ID
+                // Links are formatted as: /app/edit/sources?id=123
+                // followed by the app name in the same row
+                String html = resp.data.text
+                // Match rows containing our app name and extract the ID from the link
+                def matcher = (html =~ /app\/edit\/sources\?id=(\d+)["'][^>]*>[^<]*(?:Shelly Device Manager|Shelly mDNS Discovery)/)
+                if (!matcher.find()) {
+                    // Try a broader pattern: find the ID near our app name
+                    matcher = (html =~ /id=(\d+)[\s\S]{0,300}?(?:Shelly Device Manager|Shelly mDNS Discovery)/)
+                }
+                if (matcher.find()) {
+                    codeId = matcher.group(1) as Integer
+                    logDebug("Found app code ID: ${codeId}")
+                } else {
+                    logError("Could not find app code entry in /app/list HTML response")
                 }
             }
         }
