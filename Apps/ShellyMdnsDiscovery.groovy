@@ -8,14 +8,6 @@
 // into generated drivers and to detect app updates for automatic driver regeneration.
 @Field static final String APP_VERSION = "1.0.0"
 
-// Maps Shelly status component base types to their required script filenames.
-// Keyed by the component prefix as it appears in Shelly.GetStatus keys (e.g., "switch" from "switch:0").
-@Field static final Map<String, List<String>> COMPONENT_REQUIRED_SCRIPTS = [
-    'switch': ['switchstatus.js']
-]
-// Scripts required when power monitoring fields (voltage, current, apower, aenergy)
-// are detected on any component.
-@Field static final List<String> POWER_MONITORING_SCRIPTS = ['powermonitoring.js']
 
 definition(
     name: "Shelly mDNS Discovery",
