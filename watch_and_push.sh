@@ -3,8 +3,12 @@
 
 cd /Users/danielwinks/Code/Hubitat-Drivers
 
+echo "Pushing initial version to Hubitat..."
+python3 push_to_hubitat.py Apps/ShellyMdnsDiscovery.groovy
+echo ""
 echo "Watching Apps/ShellyMdnsDiscovery.groovy for changes..."
 echo "Press Ctrl+C to stop"
+echo ""
 
 fswatch -o Apps/ShellyMdnsDiscovery.groovy | while read f; do
   echo ""

@@ -972,54 +972,44 @@ private String generateHubitatDriver(List<String> components) {
         logDebug("No preferences found in JSON, skipping preferences section")
     }
 
-    // Fetch and include Lifecycle.groovy
-    String lifecycleUrl = "${baseUrl}/Lifecycle.groovy"
-    logDebug("Fetching Lifecycle.groovy from: ${lifecycleUrl}")
-    String lifecycleContent = downloadFile(lifecycleUrl)
-    if (lifecycleContent) {
-        driver.append(lifecycleContent)
-        driver.append("\n")
-        logDebug("Added Lifecycle.groovy content (${lifecycleContent.length()} chars)")
-    } else {
-        logWarn("Failed to fetch Lifecycle.groovy, driver may be incomplete")
-    }
+    // Initialize async operation tracking
+    initializeAsyncDriverGeneration()
 
-    // Collect command files from capabilities
-    Set<String> commandFiles = new HashSet<>()
+    // Collect all files to fetch
+    Set<String> filesToFetch = new HashSet<>()
+    filesToFetch.add("Lifecycle.groovy")
 
     // Add command files from matched capabilities
     components.each { component ->
         String baseType = component.contains(':') ? component.split(':')[0] : component
         Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
         if (capability && capability.commandFiles) {
-            commandFiles.addAll(capability.commandFiles as List<String>)
+            filesToFetch.addAll(capability.commandFiles as List<String>)
         }
     }
 
     // Always include standard command files
-    commandFiles.add("InitialIzeCommands.groovy")
-    commandFiles.add("ConfigureCommands.groovy")
-    commandFiles.add("RefreshCommand.groovy")
+    filesToFetch.add("InitialIzeCommands.groovy")
+    filesToFetch.add("ConfigureCommands.groovy")
+    filesToFetch.add("RefreshCommand.groovy")
 
-    logDebug("Command files to fetch: ${commandFiles}")
+    logDebug("Files to fetch asynchronously: ${filesToFetch}")
 
-    // Fetch and append each command file
-    commandFiles.each { String commandFile ->
-        String commandUrl = "${baseUrl}/${commandFile}"
-        logDebug("Fetching ${commandFile} from: ${commandUrl}")
-        String commandContent = downloadFile(commandUrl)
-        if (commandContent) {
-            driver.append(commandContent)
-            driver.append("\n")
-            logDebug("Added ${commandFile} content (${commandContent.length()} chars)")
-        } else {
-            logWarn("Failed to fetch ${commandFile}")
-        }
+    // Store partial driver and files list in atomicState for completion callback
+    Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
+    current.partialDriver = driver.toString()
+    current.filesToFetch = filesToFetch as List<String>
+    atomicState.driverGeneration = current
+
+    // Launch all async fetch operations
+    filesToFetch.each { String fileName ->
+        String fileUrl = "${baseUrl}/${fileName}"
+        fetchFileAsync(fileUrl, fileName)
     }
 
-    String driverCode = driver.toString()
-    logInfo("Generated driver code:\n${driverCode}", true)
-    return driverCode
+    // Return immediately - completeDriverGeneration() will be called when all fetches finish
+    logDebug("Async fetches launched, waiting for callbacks to complete")
+    return null
 }
 
 /**
@@ -1051,6 +1041,175 @@ private String generateDriverName(List<String> components) {
         // Multiple component types
         return "Shelly Multi-Component Device"
     }
+}
+
+/**
+ * Initializes atomicState for async driver generation operations.
+ * Sets up tracking for in-flight requests, errors, and fetched file contents.
+ */
+private void initializeAsyncDriverGeneration() {
+    atomicState.driverGeneration = [
+        inFlight: 0,
+        errors: 0,
+        files: [:],
+        partialDriver: '',
+        filesToFetch: []
+    ]
+}
+
+/**
+ * Fetches a file asynchronously from a URL and stores it in atomicState.
+ * Increments in-flight counter and uses asynchttpGet with callback.
+ *
+ * @param url The URL to fetch from
+ * @param key The key to store the file content under in atomicState
+ */
+private void fetchFileAsync(String url, String key) {
+    Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
+    current.inFlight = (current.inFlight ?: 0) + 1
+    atomicState.driverGeneration = current
+
+    logDebug("Async fetch started: ${key} from ${url}")
+
+    Map params = [
+        uri: url,
+        contentType: 'text/plain',
+        timeout: 15000  // 15 seconds in milliseconds
+    ]
+
+    asynchttpGet('fetchFileCallback', params, [key: key])
+}
+
+/**
+ * Callback for async file fetch operations.
+ * Stores fetched content in atomicState, decrements in-flight counter,
+ * and increments error counter if the fetch failed.
+ *
+ * @param response The HTTP response object
+ * @param data Map containing the key for storing the result
+ */
+void fetchFileCallback(response, data) {
+    String key = data.key
+    Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
+
+    try {
+        if (response?.status == 200) {
+            // response.data is already a String when contentType is 'text/plain'
+            String content = response.data
+            if (content) {
+                current.files[key] = content
+                logDebug("Async fetch completed: ${key} (${content.length()} chars)")
+            } else {
+                current.errors = (current.errors ?: 0) + 1
+                logWarn("Async fetch failed: ${key} - empty content")
+            }
+        } else {
+            current.errors = (current.errors ?: 0) + 1
+            logWarn("Async fetch failed: ${key} - status ${response?.status}")
+        }
+    } catch (Exception e) {
+        current.errors = (current.errors ?: 0) + 1
+        logError("Async fetch error: ${key} - ${e.message}")
+    } finally {
+        current.inFlight = (current.inFlight ?: 1) - 1
+        atomicState.driverGeneration = current
+        logDebug("In-flight requests: ${current.inFlight}, Errors: ${current.errors}")
+
+        // If all fetches complete, assemble the driver
+        if (current.inFlight == 0) {
+            completeDriverGeneration()
+        }
+    }
+}
+
+/**
+ * Waits for all async file fetch operations to complete.
+ * Polls atomicState every 500ms checking if in-flight count is 0.
+ *
+ * @param timeoutSeconds Maximum time to wait before timing out
+ * @return true if all requests completed, false if timeout occurred
+ */
+private Boolean waitForAsyncCompletion(Integer timeoutSeconds = 30) {
+    Integer maxIterations = timeoutSeconds * 2  // Check every 500ms
+    Integer iteration = 0
+
+    logDebug("Waiting for async operations to complete (timeout: ${timeoutSeconds}s)")
+
+    while (iteration < maxIterations) {
+        Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
+        Integer inFlight = current.inFlight ?: 0
+
+        if (inFlight == 0) {
+            logDebug("All async operations completed after ${iteration * 500}ms")
+            return true
+        }
+
+        pauseExecution(500)
+        iteration++
+
+        // Log progress every 5 seconds
+        if (iteration % 10 == 0) {
+            logDebug("Still waiting... In-flight: ${inFlight}, Iteration: ${iteration}/${maxIterations}")
+        }
+    }
+
+    logError("Async operations timed out after ${timeoutSeconds} seconds")
+    return false
+}
+
+/**
+ * Completes driver generation after all async file fetches finish.
+ * Called by fetchFileCallback when inFlight reaches 0.
+ * Assembles the complete driver from partial driver + fetched files.
+ */
+private void completeDriverGeneration() {
+    Map results = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
+
+    // Check for errors
+    if (results.errors > 0) {
+        logError("Driver generation failed: ${results.errors} file(s) failed to fetch")
+        return
+    }
+
+    logDebug("All async fetches completed, assembling driver")
+
+    // Start with partial driver (metadata + preferences)
+    StringBuilder driver = new StringBuilder(results.partialDriver ?: '')
+    List<String> filesToFetch = results.filesToFetch ?: []
+
+    // Append fetched files in correct order
+    // 1. Lifecycle first
+    if (results.files['Lifecycle.groovy']) {
+        driver.append(results.files['Lifecycle.groovy'])
+        driver.append("\n")
+        logDebug("Added Lifecycle.groovy")
+    }
+
+    // 2. Standard command files
+    ['InitialIzeCommands.groovy', 'ConfigureCommands.groovy', 'RefreshCommand.groovy'].each { String fileName ->
+        if (results.files[fileName]) {
+            driver.append(results.files[fileName])
+            driver.append("\n")
+            logDebug("Added ${fileName}")
+        }
+    }
+
+    // 3. Component-specific command files
+    filesToFetch.each { String fileName ->
+        if (fileName != 'Lifecycle.groovy' &&
+            fileName != 'InitialIzeCommands.groovy' &&
+            fileName != 'ConfigureCommands.groovy' &&
+            fileName != 'RefreshCommand.groovy') {
+            if (results.files[fileName]) {
+                driver.append(results.files[fileName])
+                driver.append("\n")
+                logDebug("Added ${fileName}")
+            }
+        }
+    }
+
+    String driverCode = driver.toString()
+    logInfo("Generated driver code:\n${driverCode}", true)
 }
 
 /**

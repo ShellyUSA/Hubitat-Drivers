@@ -91,59 +91,74 @@ def push_code(file_path):
     code_type = code_info["type"]
     code_id = code_info["id"]
 
-    # Always fetch current version from Hubitat
-    version = get_current_version(code_type, code_id)
-
     # Prepare request
     url = f"{BASE_URL}/{code_type}/ajax/update"
-
-    # URL-encode the body
-    body = {
-        "id": code_id,
-        "version": version,
-        "source": source_code
-    }
-
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/x-www-form-urlencoded"
     }
 
-    # Send request
+    # Send request (with retry on version mismatch)
     print(f"Pushing {code_type} to Hubitat hub at {HUBITAT_IP}...")
     print(f"  Type: {code_type}")
     print(f"  ID: {code_id}")
     print(f"  File: {file_path}")
     print(f"  Size: {len(source_code)} bytes")
 
-    try:
-        response = requests.post(
-            url,
-            data=urlencode(body),
-            headers=headers,
-            timeout=TIMEOUT_MS / 1000  # Convert to seconds
-        )
+    max_retries = 3
+    for attempt in range(max_retries):
+        # Always fetch current version from Hubitat (handles race conditions)
+        version = get_current_version(code_type, code_id)
+        if attempt > 0:
+            print(f"  Retry {attempt}/{max_retries} with version {version}...")
 
-        # Check response
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("status") == "success":
-                print(f"✓ Successfully pushed to Hubitat!")
-                print(f"  New version: {result.get('version', 'unknown')}")
-                return True
+        # URL-encode the body
+        body = {
+            "id": code_id,
+            "version": version,
+            "source": source_code
+        }
+
+        try:
+            response = requests.post(
+                url,
+                data=urlencode(body),
+                headers=headers,
+                timeout=TIMEOUT_MS / 1000  # Convert to seconds
+            )
+
+            # Check response
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("status") == "success":
+                    print(f"✓ Successfully pushed to Hubitat!")
+                    print(f"  New version: {result.get('version', 'unknown')}")
+                    return True
+                else:
+                    error_msg = result.get('errorMessage', 'Unknown error')
+                    # Retry on version mismatch
+                    if "Version does not match" in error_msg and attempt < max_retries - 1:
+                        print(f"⚠ Version mismatch, retrying...")
+                        continue
+                    print(f"✗ Push failed: {error_msg}")
+                    return False
             else:
-                print(f"✗ Push failed: {result.get('errorMessage', 'Unknown error')}")
+                print(f"✗ HTTP error {response.status_code}: {response.text}")
                 return False
-        else:
-            print(f"✗ HTTP error {response.status_code}: {response.text}")
+
+        except requests.exceptions.Timeout:
+            print(f"✗ Request timed out after {TIMEOUT_MS}ms")
+            if attempt < max_retries - 1:
+                continue
+            return False
+        except requests.exceptions.RequestException as e:
+            print(f"✗ Request error: {e}")
+            if attempt < max_retries - 1:
+                continue
             return False
 
-    except requests.exceptions.Timeout:
-        print(f"✗ Request timed out after {TIMEOUT_MS}ms")
-        return False
-    except requests.exceptions.RequestException as e:
-        print(f"✗ Request error: {e}")
-        return False
+    # If we get here, all retries failed
+    return False
 
 
 def main():
