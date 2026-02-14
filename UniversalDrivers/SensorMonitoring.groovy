@@ -5,12 +5,16 @@
 /**
  * Parses temperature notifications from Shelly device.
  * Processes JSON with dst:"temperature" and updates the temperature attribute.
+ * Also requests battery level from the parent app while the device is awake.
  * JSON format: [dst:temperature, result:[temperature:0:[id:0, tC:24.4, tF:75.9]]]
  *
  * @param json The parsed JSON notification from the Shelly device
  */
 void parseTemperature(Map json) {
   logDebug("parseTemperature() called with: ${json}")
+
+  // Device is awake — request battery level from parent app
+  parent?.componentRequestBatteryLevel(device)
 
   try {
     Map result = json?.result
@@ -31,9 +35,14 @@ void parseTemperature(Map json) {
           String unit = "\u00B0${scale}"
 
           if (temp != null) {
-            sendEvent(name: "temperature", value: temp, unit: unit,
-              descriptionText: "Temperature is ${temp}${unit}")
-            logInfo("Temperature: ${temp}${unit}")
+            def currentTemp = device.currentValue('temperature')
+            if (currentTemp == null || (currentTemp as BigDecimal) != temp) {
+              sendEvent(name: "temperature", value: temp, unit: unit,
+                descriptionText: "Temperature is ${temp}${unit}")
+              logInfo("Temperature: ${temp}${unit}")
+            } else {
+              logDebug("Temperature unchanged: ${temp}${unit}")
+            }
           }
         }
       }
@@ -46,12 +55,16 @@ void parseTemperature(Map json) {
 /**
  * Parses humidity notifications from Shelly device.
  * Processes JSON with dst:"humidity" and updates the humidity attribute.
+ * Also requests battery level from the parent app while the device is awake.
  * JSON format: [dst:humidity, result:[humidity:0:[id:0, rh:73.7]]]
  *
  * @param json The parsed JSON notification from the Shelly device
  */
 void parseHumidity(Map json) {
   logDebug("parseHumidity() called with: ${json}")
+
+  // Device is awake — request battery level from parent app
+  parent?.componentRequestBatteryLevel(device)
 
   try {
     Map result = json?.result
@@ -63,9 +76,14 @@ void parseHumidity(Map json) {
     result.each { key, value ->
       if (value instanceof Map && value.rh != null) {
         BigDecimal humidity = value.rh as BigDecimal
-        sendEvent(name: "humidity", value: humidity, unit: "%",
-          descriptionText: "Humidity is ${humidity}%")
-        logInfo("Humidity: ${humidity}%")
+        def currentHumidity = device.currentValue('humidity')
+        if (currentHumidity == null || (currentHumidity as BigDecimal) != humidity) {
+          sendEvent(name: "humidity", value: humidity, unit: "%",
+            descriptionText: "Humidity is ${humidity}%")
+          logInfo("Humidity: ${humidity}%")
+        } else {
+          logDebug("Humidity unchanged: ${humidity}%")
+        }
       }
     }
   } catch (Exception e) {
@@ -76,6 +94,7 @@ void parseHumidity(Map json) {
 /**
  * Parses battery/device power notifications from Shelly device.
  * Processes JSON with dst:"battery" and updates the battery attribute.
+ * Only sends an event if the battery percentage has actually changed.
  * JSON format: [dst:battery, result:[devicepower:0:[id:0, battery:[V:4.87, percent:50], external:[present:false]]]]
  *
  * @param json The parsed JSON notification from the Shelly device
@@ -95,9 +114,14 @@ void parseBattery(Map json) {
         Map battery = value.battery
         if (battery?.percent != null) {
           Integer batteryPct = battery.percent as Integer
-          sendEvent(name: "battery", value: batteryPct, unit: "%",
-            descriptionText: "Battery is ${batteryPct}%")
-          logInfo("Battery: ${batteryPct}%")
+          def currentBattery = device.currentValue('battery')
+          if (currentBattery == null || (currentBattery as Integer) != batteryPct) {
+            sendEvent(name: "battery", value: batteryPct, unit: "%",
+              descriptionText: "Battery is ${batteryPct}%")
+            logInfo("Battery: ${batteryPct}%")
+          } else {
+            logDebug("Battery unchanged: ${batteryPct}%")
+          }
         }
         if (battery?.V != null) {
           BigDecimal voltage = battery.V as BigDecimal

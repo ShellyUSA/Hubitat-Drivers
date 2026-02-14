@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.20"
+@Field static final String APP_VERSION = "1.0.21"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.20"
+    version: "1.0.21"
 )
 
 preferences {
@@ -7866,6 +7866,20 @@ private void registerAutoDriver(String driverName, String namespace, String vers
 
   String key = "${namespace}.${driverName}"
 
+  // Remove old version entries for the same base driver name
+  // The base name is the driver name without the version suffix (e.g., "Shelly Autoconf Single Switch PM")
+  String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+  List<String> keysToRemove = []
+  state.autoDrivers.each { k, v ->
+    if (k != key && k.toString().contains(baseName)) {
+      keysToRemove.add(k.toString())
+    }
+  }
+  keysToRemove.each { String oldKey ->
+    logDebug("Removing old driver tracking entry: ${oldKey}")
+    state.autoDrivers.remove(oldKey)
+  }
+
   // Preserve existing devicesUsing list if updating an existing entry
   List<String> existingDevices = state.autoDrivers[key]?.devicesUsing ?: []
 
@@ -8075,6 +8089,81 @@ private void sendSwitchCommand(def childDevice, Boolean onState) {
     // Trigger watchdog scan to detect possible IP change (respects 5-min cooldown)
     if (settings?.enableWatchdog != false) { watchdogScan() }
   }
+}
+
+/**
+ * Requests battery level from a sleepy battery device while it is awake.
+ * Called by child device drivers when a temperature or humidity webhook arrives,
+ * indicating the device is momentarily awake. Queries the device via
+ * {@code DevicePower.GetStatus} RPC and sends the battery event to the child.
+ * <p>
+ * Limits requests to once per day (midnight to midnight) to avoid excessive
+ * queries during the device's brief wake window. Stores the last fetch date
+ * and battery value in {@code state.batteryLevels} keyed by device DNI.
+ *
+ * @param childDevice The child device requesting battery level
+ */
+void componentRequestBatteryLevel(def childDevice) {
+    if (!childDevice) { return }
+
+    String dni = childDevice.deviceNetworkId
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logDebug("componentRequestBatteryLevel: no IP for ${childDevice.displayName}")
+        return
+    }
+
+    // Check if battery was already fetched today (midnight to midnight)
+    Map batteryLevels = state.batteryLevels ?: [:]
+    Map deviceBattery = batteryLevels[dni] as Map
+    String today = new Date().format('yyyy-MM-dd')
+
+    if (deviceBattery?.date == today && deviceBattery?.percent != null) {
+        logDebug("Battery already fetched today for ${childDevice.displayName}: ${deviceBattery.percent}%")
+        // Send the cached value to the child device (only if different from current)
+        Integer cachedPct = deviceBattery.percent as Integer
+        def currentBattery = childDevice.currentValue('battery')
+        if (currentBattery == null || (currentBattery as Integer) != cachedPct) {
+            childDevice.sendEvent(name: 'battery', value: cachedPct, unit: '%',
+                descriptionText: "Battery is ${cachedPct}%")
+        }
+        return
+    }
+
+    // Query the device for battery status while it's awake
+    logInfo("Requesting battery level from ${childDevice.displayName} (${ipAddress})")
+    try {
+        String rpcUri = "http://${ipAddress}/rpc"
+        LinkedHashMap cmd = devicePowerGetStatusCommand(0)
+        LinkedHashMap resp = postCommandSyncWithRetry(cmd, rpcUri, "DevicePower.GetStatus")
+
+        Map result = (resp instanceof Map && resp.containsKey('result')) ? resp.result : resp
+        if (result?.battery?.percent != null) {
+            Integer batteryPct = result.battery.percent as Integer
+
+            // Store in app state with today's date
+            batteryLevels[dni] = [percent: batteryPct, date: today]
+            state.batteryLevels = batteryLevels
+
+            // Send event to child device (only if changed)
+            def currentBattery = childDevice.currentValue('battery')
+            if (currentBattery == null || (currentBattery as Integer) != batteryPct) {
+                childDevice.sendEvent(name: 'battery', value: batteryPct, unit: '%',
+                    descriptionText: "Battery is ${batteryPct}%")
+                logInfo("Battery level for ${childDevice.displayName}: ${batteryPct}%")
+            } else {
+                logDebug("Battery unchanged for ${childDevice.displayName}: ${batteryPct}%")
+            }
+
+            if (result.battery.V != null) {
+                logDebug("Battery voltage for ${childDevice.displayName}: ${result.battery.V}V")
+            }
+        } else {
+            logDebug("No battery data in DevicePower.GetStatus response for ${childDevice.displayName}")
+        }
+    } catch (Exception e) {
+        logDebug("Could not fetch battery level for ${childDevice.displayName}: ${e.message}")
+    }
 }
 
 /* #endregion Component Device Command Handlers */
