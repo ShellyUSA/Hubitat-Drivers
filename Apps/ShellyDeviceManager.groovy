@@ -6,7 +6,11 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.1"
+@Field static final String APP_VERSION = "1.0.2"
+
+// GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
+@Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
+@Field static final String GITHUB_BRANCH = 'master'
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
 // Only these scripts will be considered for automatic removal.
@@ -26,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.0"
+    version: "1.0.2"
 )
 
 preferences {
@@ -751,8 +755,8 @@ private Map queryDeviceStatus(String ipAddress) {
  * @return List of capability maps, or null on failure
  */
 private List<Map> fetchCapabilityDefinitions() {
-    String branch = 'AutoConfScript'
-    String baseUrl = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/UniversalDrivers"
+    String branch = GITHUB_BRANCH
+    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/UniversalDrivers"
     String componentJsonUrl = "${baseUrl}/component_driver.json"
 
     String jsonContent = downloadFile(componentJsonUrl)
@@ -814,8 +818,8 @@ void installRequiredScripts(String ipAddress) {
     }
     List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
 
-    String branch = 'AutoConfScript'
-    String baseUrl = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/Scripts"
+    String branch = GITHUB_BRANCH
+    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts"
     String uri = "http://${ipAddress}/rpc"
 
     Integer installed = 0
@@ -1704,8 +1708,8 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     logDebug("Power monitoring components: ${componentPowerMonitoring.findAll { k, v -> v }}")
 
     // Branch to fetch files from (change to 'master' for production)
-    String branch = 'AutoConfScript'
-    String baseUrl = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/UniversalDrivers"
+    String branch = GITHUB_BRANCH
+    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/UniversalDrivers"
 
     // Fetch component_driver.json from GitHub
     String componentJsonUrl = "${baseUrl}/component_driver.json"
@@ -6878,8 +6882,8 @@ private String getAppVersion() { return APP_VERSION }
  * and installs the new code if it changed.
  */
 void aggressiveUpdateCheck() {
-    String branch = 'AutoConfScript'
-    String url = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/Apps/ShellyDeviceManager.groovy"
+    String branch = GITHUB_BRANCH
+    String url = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Apps/ShellyDeviceManager.groovy"
 
     String source = downloadFile(url)
     if (!source) {
@@ -6929,7 +6933,7 @@ void checkForAppUpdate() {
     // Download the latest app source from the release tag
     String tag = "app-v${latestVersion}"
     String newSource = downloadFile(
-        "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${tag}/Apps/ShellyDeviceManager.groovy"
+        "https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/Apps/ShellyDeviceManager.groovy"
     )
     if (!newSource) {
         logError("Failed to download app source for version ${latestVersion}")
@@ -6958,7 +6962,7 @@ private String getLatestGitHubReleaseVersion() {
     try {
         Map params = [
             uri: "https://api.github.com",
-            path: "/repos/ShellyUSA/Hubitat-Drivers/releases",
+            path: "/repos/${GITHUB_REPO}/releases",
             query: [per_page: 20],
             contentType: 'application/json',
             timeout: 15
