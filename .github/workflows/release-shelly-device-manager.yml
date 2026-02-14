@@ -20,7 +20,7 @@ jobs:
       - name: Extract APP_VERSION from source
         id: version
         run: |
-          VERSION=$(grep -m 1 "APP_VERSION" Apps/ShellyDeviceManager.groovy \
+          VERSION=$(grep -m 1 '@Field.*APP_VERSION' Apps/ShellyDeviceManager.groovy \
             | sed -n 's/.*APP_VERSION *= *"\([0-9.]*\)".*/\1/p')
 
           if [ -z "$VERSION" ]; then
