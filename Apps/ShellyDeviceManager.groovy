@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.28"
+@Field static final String APP_VERSION = "1.0.29"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.28"
+    version: "1.0.29"
 )
 
 preferences {
@@ -638,6 +638,11 @@ Map deviceConfigPage() {
                     // Use fast 2s timeout check for battery devices to avoid blocking page render
                     Boolean deviceIsReachable = isBatteryDevice ? isDeviceReachable(ip) : (queryDeviceStatus(ip) != null)
 
+                    // When a battery device is awake, query its current state and cache it
+                    if (isBatteryDevice && deviceIsReachable) {
+                        probeBatteryDeviceState(selectedDevice, ip)
+                    }
+
                     if (isBatteryDevice) {
                         section() {
                             String statusHtml = renderBatteryDeviceStatus(deviceIsReachable, selectedDevice)
@@ -870,6 +875,70 @@ private Boolean isSleepyBatteryDevice(def childDevice) {
 }
 
 /**
+ * Probes a battery device for its current sensor state while it is awake.
+ * Queries Shelly.GetStatus for temperature, humidity, and battery values,
+ * then sends events to the child device and caches the state in deviceConfigs
+ * for display when the device goes back to sleep.
+ *
+ * @param childDevice The child device to update
+ * @param ip The device IP address
+ */
+private void probeBatteryDeviceState(def childDevice, String ip) {
+    try {
+        Map deviceStatus = queryDeviceStatus(ip)
+        if (!deviceStatus) { return }
+
+        String dni = childDevice.deviceNetworkId
+        String scale = location.temperatureScale ?: 'F'
+        Map cachedState = [:]
+
+        // Extract temperature
+        deviceStatus.each { k, v ->
+            String key = k.toString().toLowerCase()
+            if (key.startsWith('temperature:') && v instanceof Map) {
+                BigDecimal tempC = v.tC != null ? v.tC as BigDecimal : null
+                BigDecimal tempF = v.tF != null ? v.tF as BigDecimal : null
+                BigDecimal temp = (scale == 'C') ? tempC : (tempF ?: tempC)
+                if (temp != null) {
+                    String unit = "\u00B0${scale}"
+                    childDevice.sendEvent(name: 'temperature', value: temp, unit: unit,
+                        descriptionText: "Temperature is ${temp}${unit}")
+                    cachedState.temperature = "${temp}${unit}"
+                }
+            }
+            if (key.startsWith('humidity:') && v instanceof Map && v.rh != null) {
+                BigDecimal humidity = v.rh as BigDecimal
+                childDevice.sendEvent(name: 'humidity', value: humidity, unit: '%',
+                    descriptionText: "Humidity is ${humidity}%")
+                cachedState.humidity = "${humidity}%"
+            }
+            if (key.startsWith('devicepower:') && v instanceof Map && v.battery?.percent != null) {
+                Integer batteryPct = v.battery.percent as Integer
+                childDevice.sendEvent(name: 'battery', value: batteryPct, unit: '%',
+                    descriptionText: "Battery is ${batteryPct}%")
+                cachedState.battery = "${batteryPct}%"
+            }
+        }
+
+        // Cache the probed state for display when asleep
+        if (cachedState) {
+            Map deviceConfigs = state.deviceConfigs ?: [:]
+            Map config = deviceConfigs[dni] as Map
+            if (config) {
+                config.lastProbedState = cachedState
+                config.lastProbedAt = now()
+                deviceConfigs[dni] = config
+                state.deviceConfigs = deviceConfigs
+            }
+        }
+
+        logDebug("Probed battery device state for ${childDevice.displayName}: ${cachedState}")
+    } catch (Exception e) {
+        logDebug("Failed to probe battery device state: ${e.message}")
+    }
+}
+
+/**
  * Retrieves the list of scripts installed on a Shelly device.
  *
  * @param ipAddress The IP address of the Shelly device
@@ -918,32 +987,55 @@ private String renderRebuildStatusHtml() {
  * @return HTML string for the battery device status
  */
 private String renderBatteryDeviceStatus(Boolean isReachable, def childDevice = null) {
-    if (isReachable) {
-        return "<b>This is a battery-powered device and it is currently awake.</b>"
-    }
-
     StringBuilder sb = new StringBuilder()
-    sb.append("<b>This is a battery-powered device and it is currently asleep.</b><br>")
-    sb.append("It can only be reached when it is awake (briefly, when sending sensor updates).<br>")
-    sb.append("Webhooks can be configured while the device is awake, or via the Shelly app/web UI.")
 
-    // Show last known sensor values if available
-    if (childDevice) {
-        List<String> lastKnown = []
-        def temp = childDevice.currentValue('temperature')
-        if (temp != null) { lastKnown.add("Temperature: ${temp}") }
-        def humidity = childDevice.currentValue('humidity')
-        if (humidity != null) { lastKnown.add("Humidity: ${humidity}%") }
-        def battery = childDevice.currentValue('battery')
-        if (battery != null) { lastKnown.add("Battery: ${battery}%") }
+    if (isReachable) {
+        sb.append("<b>This is a battery-powered device and it is currently awake.</b>")
 
-        if (lastKnown.size() > 0) {
-            sb.append("<br><br><b>Last known state:</b><br>")
-            sb.append(lastKnown.join('<br>'))
+        // Show current state from device attributes (just updated by probeBatteryDeviceState)
+        if (childDevice) {
+            List<String> current = buildSensorStateList(childDevice)
+            if (current.size() > 0) {
+                sb.append("<br><br><b>Current state:</b><br>")
+                sb.append(current.join('<br>'))
+            }
+        }
+    } else {
+        sb.append("<b>This is a battery-powered device and it is currently asleep.</b><br>")
+        sb.append("It can only be reached when it is awake (briefly, when sending sensor updates).<br>")
+        sb.append("Webhooks can be configured while the device is awake, or via the Shelly app/web UI.")
+
+        // Show last known sensor values if available
+        if (childDevice) {
+            List<String> lastKnown = buildSensorStateList(childDevice)
+            if (lastKnown.size() > 0) {
+                sb.append("<br><br><b>Last known state:</b><br>")
+                sb.append(lastKnown.join('<br>'))
+            }
         }
     }
 
     return sb.toString()
+}
+
+/**
+ * Builds a list of formatted sensor state strings from a device's current attributes.
+ *
+ * @param childDevice The child device to read attributes from
+ * @return List of formatted strings like "Temperature: 24.4°F"
+ */
+private List<String> buildSensorStateList(def childDevice) {
+    List<String> values = []
+    def temp = childDevice.currentValue('temperature')
+    if (temp != null) {
+        String scale = location.temperatureScale ?: 'F'
+        values.add("Temperature: ${temp}\u00B0${scale}")
+    }
+    def humidity = childDevice.currentValue('humidity')
+    if (humidity != null) { values.add("Humidity: ${humidity}%") }
+    def battery = childDevice.currentValue('battery')
+    if (battery != null) { values.add("Battery: ${battery}%") }
+    return values
 }
 
 /**
