@@ -8042,10 +8042,12 @@ private void pruneStaleDriverTracking() {
 
         // Sort by version descending — extract version from key
         keys.sort { a, b ->
-            String vA = (a =~ /v(\d+(\.\d+)*)$/)[0]?[1] ?: '0'
-            String vB = (b =~ /v(\d+(\.\d+)*)$/)[0]?[1] ?: '0'
-            List<Integer> partsA = vA.tokenize('.').collect { it as Integer }
-            List<Integer> partsB = vB.tokenize('.').collect { it as Integer }
+            def matchA = (a =~ /v(\d+(\.\d+)*)$/)
+            def matchB = (b =~ /v(\d+(\.\d+)*)$/)
+            String vA = matchA.find() ? matchA[0][1] : '0'
+            String vB = matchB.find() ? matchB[0][1] : '0'
+            List<Integer> partsA = vA.tokenize('.').collect { String s -> s as Integer }
+            List<Integer> partsB = vB.tokenize('.').collect { String s -> s as Integer }
             // Compare version parts descending
             for (int i = 0; i < Math.max(partsA.size(), partsB.size()); i++) {
                 int pA = i < partsA.size() ? partsA[i] : 0
