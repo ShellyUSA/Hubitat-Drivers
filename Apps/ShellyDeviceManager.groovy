@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.30"
+@Field static final String APP_VERSION = "1.0.31"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.30"
+    version: "1.0.31"
 )
 
 preferences {
@@ -95,21 +95,8 @@ Map mainPage() {
                 description: 'Automatically rebuilds in-use drivers and removes unused ones whenever the app version changes.',
                 defaultValue: true, submitOnChange: true
 
-            Map allDrivers = state.autoDrivers ?: [:]
-            if (allDrivers.isEmpty()) {
-                paragraph "No auto-generated drivers are currently tracked."
-            } else {
-                // Count actual child devices per driver
-                def childDevices = getChildDevices() ?: []
-                paragraph "<b>${allDrivers.size()}</b> auto-generated driver(s) tracked (app v${getAppVersion()}):"
-                allDrivers.each { key, info ->
-                    Integer deviceCount = childDevices.count { it.typeName == info.name }
-                    paragraph "  - ${info.name} (${deviceCount} device(s))"
-                }
-            }
-
-            String rebuildStatusHtml = renderRebuildStatusHtml()
-            paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${rebuildStatusHtml}</span>"
+            String driverMgmtHtml = renderDriverManagementHtml()
+            paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${driverMgmtHtml}</span>"
             if (!state.driverRebuildInProgress) {
                 input 'btnForceRebuildDrivers', 'button', title: 'Force Rebuild All Drivers', submitOnChange: true
             }
@@ -970,27 +957,52 @@ List<Map> listDeviceScripts(String ipAddress) {
  *
  * @return HTML string for the rebuild status
  */
-private String renderRebuildStatusHtml() {
-    if (state.driverRebuildInProgress) {
-        Integer remaining = (state.driverRebuildQueue?.size() ?: 0) as Integer
-        return "<b>Rebuild in progress...</b> (${remaining} remaining)"
-    }
-
-    // Check if any tracked drivers are at an older version than the current app
+/**
+ * Renders the full driver management section HTML, including tracked
+ * driver list with device counts and rebuild status. Used both for
+ * initial page render and SSR updates when rebuilds complete.
+ *
+ * @return HTML string for the driver management section
+ */
+private String renderDriverManagementHtml() {
+    StringBuilder sb = new StringBuilder()
     String currentVersion = getAppVersion()
     Map allDrivers = state.autoDrivers ?: [:]
-    List<String> outdated = []
-    allDrivers.each { key, info ->
-        String driverVersion = info.version ?: ''
-        if (driverVersion && driverVersion != currentVersion) {
-            outdated.add("${info.name} (v${driverVersion})")
+
+    // Driver list
+    if (allDrivers.isEmpty()) {
+        sb.append("No auto-generated drivers are currently tracked.<br>")
+    } else {
+        def childDevices = getChildDevices() ?: []
+        sb.append("<b>${allDrivers.size()}</b> auto-generated driver(s) tracked (app v${currentVersion}):<br>")
+        allDrivers.each { key, info ->
+            Integer deviceCount = childDevices.count { it.typeName == info.name }
+            String versionTag = (info.version && info.version != currentVersion) ? " <i>(outdated: v${info.version})</i>" : ''
+            sb.append("&nbsp;&nbsp;- ${info.name} (${deviceCount} device(s))${versionTag}<br>")
         }
     }
 
-    if (outdated.size() > 0) {
-        return "<b>${outdated.size()} driver(s) need rebuilding:</b><br>${outdated.join('<br>')}"
+    // Rebuild status
+    sb.append('<br>')
+    if (state.driverRebuildInProgress) {
+        Integer remaining = (state.driverRebuildQueue?.size() ?: 0) as Integer
+        sb.append("<b>Rebuild in progress...</b> (${remaining} remaining)")
+    } else {
+        List<String> outdated = []
+        allDrivers.each { key, info ->
+            String driverVersion = info.version ?: ''
+            if (driverVersion && driverVersion != currentVersion) {
+                outdated.add(info.name as String)
+            }
+        }
+        if (outdated.size() > 0) {
+            sb.append("<b>${outdated.size()} driver(s) need rebuilding.</b>")
+        } else if (!allDrivers.isEmpty()) {
+            sb.append("<b>All drivers are up to date (v${currentVersion}).</b>")
+        }
     }
-    return "<b>All drivers are up to date (v${currentVersion}).</b>"
+
+    return sb.toString()
 }
 
 /**
@@ -1156,7 +1168,7 @@ String processServerSideRender(Map event) {
 
     // App-level events (e.g., driverRebuildStatus)
     if (eventName == 'driverRebuildStatus') {
-        return renderRebuildStatusHtml()
+        return renderDriverManagementHtml()
     }
 
     // Device-level events
@@ -7986,6 +7998,9 @@ void processNextDriverRebuild() {
 
     logInfo("Rebuilding driver: ${key} (${queue.size()} remaining)")
     appendLog('info', "Rebuilding: ${driverInfo.name}")
+
+    // Fire SSR update so the UI shows progress
+    app.sendEvent(name: 'driverRebuildStatus', value: "rebuilding_${queue.size()}")
 
     try {
         List<String> components = driverInfo.components as List<String>
