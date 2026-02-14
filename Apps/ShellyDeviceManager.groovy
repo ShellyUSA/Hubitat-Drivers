@@ -335,20 +335,35 @@ private void createShellyDevice(String ipKey) {
         return
     }
 
-    // Get device status (should have been fetched via Get Device Info button)
+    // Get device status — auto-fetch if not already available
     Map deviceStatus = deviceInfo.deviceStatus
-    if (!deviceStatus) {
-        logError("No device status found for ${ipKey}. Use 'Get Device Info' button first.")
-        appendLog('error', "Failed to create device for ${ipKey}: no device status. Use 'Get Device Info' first.")
-        return
+    if (!deviceStatus || !deviceInfo.generatedDriverName) {
+        logInfo("Device info/driver not yet available for ${ipKey} — fetching now...")
+        appendLog('info', "Fetching device info for ${ipKey}...")
+        fetchAndStoreDeviceInfo(ipKey)
+
+        // Re-read state after fetch
+        deviceInfo = state.discoveredShellys[ipKey]
+        deviceStatus = deviceInfo?.deviceStatus
+        if (!deviceStatus) {
+            logError("Could not retrieve device status for ${ipKey}. Device may be offline.")
+            appendLog('error', "Failed to create device for ${ipKey}: device may be offline or not Gen2+")
+            return
+        }
     }
 
     // Get the generated driver name
-    // The driver name should have been determined during device info fetch
     String driverName = deviceInfo.generatedDriverName
     if (!driverName) {
-        logError("No driver name found for ${ipKey}. Driver generation may have failed.")
-        appendLog('error', "Failed to create device for ${ipKey}: no driver name")
+        // Check if async driver generation is in progress (GitHub fetch)
+        Map genContext = atomicState.currentDriverGeneration
+        if (genContext?.ipKey == ipKey) {
+            logWarn("Driver generation in progress for ${ipKey} — please wait and try again.")
+            appendLog('warn', "Driver for ${ipKey} is being generated. Please wait a moment and try again.")
+        } else {
+            logError("No driver could be generated for ${ipKey}. Device may not have supported components.")
+            appendLog('error', "Failed to create device for ${ipKey}: no driver generated")
+        }
         return
     }
 
@@ -472,12 +487,20 @@ Map createDevicesPage() {
     // Build options from discoveredShellys, excluding already-created devices
     LinkedHashMap<String,String> options = [:] as LinkedHashMap
     List<String> alreadyCreatedLabels = []
+
+    // Pre-build a set of IPs that already have child devices (for robust matching)
+    def childDevices = getChildDevices() ?: []
+    Set<String> childDeviceIps = childDevices.collect { it.getDataValue('ipAddress') }.findAll { it }.toSet()
+    Set<String> childDeviceDnis = childDevices.collect { it.deviceNetworkId }.toSet()
+
     state.discoveredShellys.each { ip, info ->
         String mac = info.mac ? " [${info.mac}]" : ""
         String label = "${info?.name ?: 'Shelly'} (${info?.ipAddress ?: ip})${mac}"
-        // Check if device already exists using same DNI logic as createShellyDevice()
+        // Check if device already exists by DNI (MAC or IP-based) or by IP data value
         String dni = info.mac ?: "shelly-${ip.toString().replaceAll('\\.', '-')}"
-        if (getChildDevice(dni)) {
+        String ipStr = ip.toString()
+        Boolean alreadyCreated = childDeviceDnis.contains(dni) || childDeviceIps.contains(ipStr)
+        if (alreadyCreated) {
             alreadyCreatedLabels.add(label)
         } else {
             options["${ip}"] = label
@@ -492,9 +515,8 @@ Map createDevicesPage() {
 
     logDebug("createDevicesPage: options.size=${options.size()}, selected=${selected}, alreadyCreated=${alreadyCreatedLabels.size()}")
 
-    // Build remove options from existing child devices
+    // Build remove options from existing child devices (reuse childDevices from above)
     LinkedHashMap<String,String> removeOptions = [:] as LinkedHashMap
-    def childDevices = getChildDevices() ?: []
     childDevices.sort { it.displayName }.each { device ->
         String mac = device.getDataValue('shellyMac') ? " [${device.getDataValue('shellyMac')}]" : ""
         removeOptions[device.deviceNetworkId] = "${device.displayName} (${device.getDataValue('ipAddress') ?: 'n/a'})${mac}"
@@ -509,7 +531,7 @@ Map createDevicesPage() {
                     paragraph "No devices available to create. Run discovery first."
                 }
             } else {
-                input name: 'selectedToCreate', type: 'enum', title: 'Select devices to create', options: options, multiple: true, required: false, defaultValue: settings?.selectedToCreate, submitOnChange: true
+                input name: 'selectedToCreate', type: 'enum', title: 'Select devices to create', options: options, multiple: true, required: false, submitOnChange: true
                 input 'btnCreateDevices', 'button', title: 'Create Devices', submitOnChange: true
                 input 'btnGetDeviceInfo', 'button', title: 'Get Device Info', submitOnChange: true
             }
@@ -1599,13 +1621,36 @@ void processNextDiscoveryDriver() {
 
     // fetchAndStoreDeviceInfo queries the device and triggers determineDeviceDriver,
     // which will either skip (driver exists), install from cache, or generate (new driver needed)
-    fetchAndStoreDeviceInfo(ipKey)
+    try {
+        fetchAndStoreDeviceInfo(ipKey)
+    } catch (Exception e) {
+        logWarn("Discovery queue: error processing ${ipKey}: ${e.message}")
+    }
 
-    // Schedule next item with delay to avoid hammering devices
-    if (!queue.isEmpty()) {
-        runIn(10, 'processNextDiscoveryDriver')
+    // Check if async driver generation was started for this device.
+    // If so, completeDriverGeneration will schedule the next queue item when done.
+    // If not (driver already existed, installed from cache, or error), schedule next here.
+    Map genContext = atomicState.currentDriverGeneration
+    Boolean asyncGenStarted = (genContext != null && genContext.ipKey == ipKey)
+
+    if (asyncGenStarted) {
+        logDebug("Discovery queue: async driver generation in progress for ${ipKey}, waiting for completion callback")
+    } else {
+        scheduleNextDiscoveryDriver()
+    }
+}
+
+/**
+ * Schedules the next device in the discovery driver queue for processing.
+ * If the queue is empty, clears the in-progress flag.
+ */
+private void scheduleNextDiscoveryDriver() {
+    List<String> remaining = state.discoveryDriverQueue ?: []
+    if (!remaining.isEmpty()) {
+        runIn(5, 'processNextDiscoveryDriver')
     } else {
         state.discoveryDriverInProgress = false
+        logDebug("Discovery driver queue complete")
     }
 }
 
@@ -1955,10 +2000,6 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             if (ipKey && state.discoveredShellys[ipKey]) {
                 state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
             }
-            // If part of discovery queue, schedule next device
-            if (state.discoveryDriverInProgress) {
-                runIn(2, 'processNextDiscoveryDriver')
-            }
             return
         }
 
@@ -1976,10 +2017,6 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
                 registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, components, componentPowerMonitoring)
                 if (ipKey && state.discoveredShellys[ipKey]) {
                     state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
-                }
-                // If part of discovery queue, schedule next device
-                if (state.discoveryDriverInProgress) {
-                    runIn(2, 'processNextDiscoveryDriver')
                 }
                 return
             } else {
@@ -2590,6 +2627,11 @@ private void completeDriverGeneration() {
             state.driverRebuildErrors = errors
             runIn(5, 'processNextDriverRebuild')
         }
+        // If part of discovery queue, continue to next device despite error
+        if (state.discoveryDriverInProgress && !state.driverRebuildInProgress) {
+            atomicState.remove('currentDriverGeneration')
+            scheduleNextDiscoveryDriver()
+        }
         return
     }
 
@@ -2702,7 +2744,7 @@ private void completeDriverGeneration() {
 
     // If part of discovery queue, schedule next device
     if (state.discoveryDriverInProgress && !state.driverRebuildInProgress) {
-        runIn(5, 'processNextDiscoveryDriver')
+        scheduleNextDiscoveryDriver()
     }
 }
 
