@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.18"
+@Field static final String APP_VERSION = "1.0.19"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.18"
+    version: "1.0.19"
 )
 
 preferences {
@@ -2303,17 +2303,28 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
         }
     }
 
-    // Always add standard capabilities
-    driver.append("    capability 'Initialize'\n")
-    driver.append("    //Commands: initialize()\n")
-    driver.append("\n")
+    // Determine if this is a sleepy battery device (has Battery but no BTHome or Script)
+    // Such devices are not always awake, so Initialize/Configure/Refresh are not useful
+    Set<String> componentBaseTypes = components.collect { String c ->
+        (c.contains(':') ? c.split(':')[0] : c).toLowerCase()
+    }.toSet()
+    Boolean isSleepyBattery = addedCapabilities.contains('Battery') &&
+        !componentBaseTypes.contains('bthome') && !componentBaseTypes.contains('script')
 
-    driver.append("    capability 'Configuration'\n")
-    driver.append("    //Commands: configure()\n")
-    driver.append("\n")
+    if (isSleepyBattery) {
+        logInfo("Sleepy battery device detected — skipping Initialize/Configure/Refresh capabilities")
+    } else {
+        driver.append("    capability 'Initialize'\n")
+        driver.append("    //Commands: initialize()\n")
+        driver.append("\n")
 
-    driver.append("    capability 'Refresh'\n")
-    driver.append("    //Commands: refresh()\n")
+        driver.append("    capability 'Configuration'\n")
+        driver.append("    //Commands: configure()\n")
+        driver.append("\n")
+
+        driver.append("    capability 'Refresh'\n")
+        driver.append("    //Commands: refresh()\n")
+    }
 
     driver.append("  }\n")
     driver.append("}\n\n")
@@ -2422,10 +2433,12 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
         }
     }
 
-    // Always include standard command files
-    filesToFetch.add("InitializeCommands.groovy")
-    filesToFetch.add("ConfigureCommands.groovy")
-    filesToFetch.add("RefreshCommand.groovy")
+    // Include standard command files (skip for sleepy battery devices)
+    if (!isSleepyBattery) {
+        filesToFetch.add("InitializeCommands.groovy")
+        filesToFetch.add("ConfigureCommands.groovy")
+        filesToFetch.add("RefreshCommand.groovy")
+    }
     filesToFetch.add("Helpers.groovy")
 
     // Include PowerMonitoring.groovy if any component has power monitoring
