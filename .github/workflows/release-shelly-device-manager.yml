@@ -2,9 +2,14 @@ name: Release Shelly Device Manager
 
 on:
   push:
-    branches: [master]
+    branches:
+      - master
     paths:
       - 'Apps/ShellyDeviceManager.groovy'
+      - 'Scripts/**'
+      - 'UniversalDrivers/**'
+      - '.github/workflows/release-shelly-device-manager.yml'
+  workflow_dispatch:
 
 jobs:
   release:
