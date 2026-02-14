@@ -95,9 +95,9 @@ Map mainPage() {
 
             input name: 'displayLogLevel', type: 'enum', title: 'App page display log level (X and above)', options: displayOptions, defaultValue: validatedDisplay, submitOnChange: true
 
-            paragraph "Recent log lines (most recent first):"
             String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap;'>${logs ?: 'No logs yet.'}</pre>"
+            String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
         }
     }
 }
@@ -214,9 +214,9 @@ Map createDevicesPage() {
         }
 
         section("Logging", hideable: true) {
-            paragraph "Recent log lines (most recent first):"
             String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap;'>${logs ?: 'No logs yet.'}</pre>"
+            String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
         }
     }
 }
@@ -334,7 +334,8 @@ void updateDiscoveryTimer() {
 void updateRecentLogs() {
     // Send the most recent 10 log lines to the browser for the app-state binding
     String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-    app.sendEvent(name: 'recentLogs', value: (logs ?: 'No logs yet.'))
+    String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+    app.sendEvent(name: 'recentLogs', value: recentPayload)
 
     // Continue updating once per second while discovery is running
     if (state.discoveryRunning) {
@@ -608,7 +609,9 @@ private void pruneDisplayedLogs(String displayLevel) {
     int removed = state.recentLogs.size() - kept.size()
     state.recentLogs = kept
     if (removed > 0) { logDebug("pruneDisplayedLogs: removed ${removed} entries below ${displayLevel}") }
-    app.sendEvent(name: 'recentLogs', value: (state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : 'No logs yet.'))
+    String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
+    String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+    app.sendEvent(name: 'recentLogs', value: recentPayload)
 }
 
 
@@ -625,7 +628,8 @@ private void appendLog(String level, String msg) {
 
         // Push the most recent 10 lines to the app UI for live updates
         String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-        app.sendEvent(name: 'recentLogs', value: (logs ?: 'No logs yet.'))
+        String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+        app.sendEvent(name: 'recentLogs', value: recentPayload)
     }
 }
 
@@ -2278,6 +2282,24 @@ void enableBluetooth() {
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region Child Devices */
 // MARK: Child Devices
+ChildDeviceWrapper createParentSwitch(String dni, Boolean isPm = false, String labelText = '', Boolean hasChildren = false) {
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String driverName = isPm == false ? 'Shelly Single Switch' : 'Shelly Single Switch PM'
+    String labelText = labelText != '' ? labelText : isPm == false ? 'Shelly Switch' : 'Shelly Switch PM'
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${labelText}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${labelText}"])
+      child.updateDataValue('macAddress',"${dni}")
+      child.updateDataValue('hasChildren',"${hasChildren}")
+      return child
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  } else { return child }
+}
+
+
+
 ChildDeviceWrapper createChildSwitch(Integer id, String additionalId = null) {
   String dni = additionalId == null ? "${getThisDeviceDNI()}-switch${id}" : "${getThisDeviceDNI()}-${additionalId}-switch${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
@@ -3555,6 +3577,9 @@ import java.io.StringWriter
 /* #endregion */
 
 
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Logging Helpers                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
 void logException(message) {log.error "${loggingLabel()}: ${message}"}
 // void logError(message) {log.error "${loggingLabel()}: ${message}"}
 // void logWarn(message) {log.warn "${loggingLabel()}: ${message}"}
