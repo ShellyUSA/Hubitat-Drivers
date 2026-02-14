@@ -984,6 +984,39 @@ private String generateHubitatDriver(List<String> components) {
         logWarn("Failed to fetch Lifecycle.groovy, driver may be incomplete")
     }
 
+    // Collect command files from capabilities
+    Set<String> commandFiles = new HashSet<>()
+
+    // Add command files from matched capabilities
+    components.each { component ->
+        String baseType = component.contains(':') ? component.split(':')[0] : component
+        Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
+        if (capability && capability.commandFiles) {
+            commandFiles.addAll(capability.commandFiles as List<String>)
+        }
+    }
+
+    // Always include standard command files
+    commandFiles.add("InitialIzeCommands.groovy")
+    commandFiles.add("ConfigureCommands.groovy")
+    commandFiles.add("RefreshCommand.groovy")
+
+    logDebug("Command files to fetch: ${commandFiles}")
+
+    // Fetch and append each command file
+    commandFiles.each { String commandFile ->
+        String commandUrl = "${baseUrl}/${commandFile}"
+        logDebug("Fetching ${commandFile} from: ${commandUrl}")
+        String commandContent = downloadFile(commandUrl)
+        if (commandContent) {
+            driver.append(commandContent)
+            driver.append("\n")
+            logDebug("Added ${commandFile} content (${commandContent.length()} chars)")
+        } else {
+            logWarn("Failed to fetch ${commandFile}")
+        }
+    }
+
     String driverCode = driver.toString()
     logInfo("Generated driver code:\n${driverCode}", true)
     return driverCode
