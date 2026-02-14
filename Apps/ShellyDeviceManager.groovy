@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.7"
+@Field static final String APP_VERSION = "1.0.8"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.7"
+    version: "1.0.8"
 )
 
 preferences {
@@ -295,6 +295,25 @@ void appButtonHandler(String buttonName) {
             return
         }
         enableAndStartRequiredScripts(ip)
+    }
+
+    if (buttonName == 'btnInstallActions') {
+        String selectedDni = settings?.selectedConfigDevice as String
+        if (!selectedDni) {
+            appendLog('warn', 'Install Actions: no device selected')
+            return
+        }
+        def device = getChildDevice(selectedDni)
+        if (!device) {
+            appendLog('warn', "Install Actions: device not found for DNI ${selectedDni}")
+            return
+        }
+        String ip = device.getDataValue('ipAddress')
+        if (!ip) {
+            appendLog('warn', "Install Actions: no IP address for device ${device.displayName}")
+            return
+        }
+        installRequiredActions(ip)
     }
 }
 
@@ -639,6 +658,50 @@ Map deviceConfigPage() {
                             }
                         }
                     }
+
+                    // Actions (webhooks) section
+                    List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice)
+                    List<Map> installedHooks = listDeviceWebhooks(ip)
+                    String hubIp = location.hub.localIP
+
+                    if (requiredActions.size() > 0) {
+                        // Determine which actions are missing or misconfigured
+                        List<Map> missingActions = []
+                        List<Map> okActions = []
+                        requiredActions.each { Map action ->
+                            Map hook = installedHooks?.find { Map h ->
+                                h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
+                            }
+                            if (hook) {
+                                List<String> urls = hook.urls as List<String>
+                                Boolean enabled = hook.enable as Boolean
+                                if (urls?.any { it?.contains(hubIp) } && enabled) {
+                                    okActions.add(action)
+                                } else {
+                                    missingActions.add(action)
+                                }
+                            } else {
+                                missingActions.add(action)
+                            }
+                        }
+
+                        section("Required Actions (Webhooks)") {
+                            StringBuilder sb = new StringBuilder()
+                            requiredActions.each { Map action ->
+                                Boolean isOk = okActions.contains(action)
+                                String status = isOk ? 'configured' : 'MISSING'
+                                sb.append("${action.name} (${action.event} cid:${action.cid}) — ${status}\n")
+                            }
+                            paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+
+                            if (missingActions.size() > 0) {
+                                paragraph "<b>${missingActions.size()} action(s) need to be configured.</b>"
+                                input 'btnInstallActions', 'button', title: 'Install Missing Action(s)', submitOnChange: true
+                            } else {
+                                paragraph "<b>All required actions are configured.</b>"
+                            }
+                        }
+                    }
                 } else {
                     section() {
                         paragraph "Selected device has no IP address configured."
@@ -673,6 +736,158 @@ List<Map> listDeviceScripts(String ipAddress) {
         logError("Failed to list scripts for ${ipAddress}: ${ex.message}")
         return null
     }
+}
+
+/**
+ * Retrieves the list of webhooks installed on a Shelly device.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @return List of webhook maps containing id, cid, event, name, enable, urls, or null on failure
+ */
+List<Map> listDeviceWebhooks(String ipAddress) {
+    try {
+        String uri = "http://${ipAddress}/rpc"
+        LinkedHashMap command = webhookListCommand()
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        LinkedHashMap json = postCommandSync(command, uri)
+        if (json?.result?.hooks) {
+            return json.result.hooks as List<Map>
+        }
+        return []
+    } catch (Exception ex) {
+        logError("Failed to list webhooks for ${ipAddress}: ${ex.message}")
+        return null
+    }
+}
+
+/**
+ * Determines which webhook actions are required for a device by querying its
+ * Shelly.GetStatus response and cross-referencing with component_driver.json.
+ * Returns a list of action maps (event, name, dst, cid) for capabilities that
+ * define requiredActions.
+ *
+ * @param device The child device to check
+ * @return List of required action maps, each with keys: event, name, dst, cid
+ */
+List<Map> getRequiredActionsForDevice(def device) {
+    List<Map> requiredActions = []
+
+    String ip = device.getDataValue('ipAddress')
+    if (!ip) {
+        logDebug("getRequiredActionsForDevice: no IP for ${device.displayName}")
+        return requiredActions
+    }
+
+    Map deviceStatus = queryDeviceStatus(ip)
+    if (!deviceStatus) {
+        logDebug("getRequiredActionsForDevice: could not query status for ${device.displayName}")
+        return requiredActions
+    }
+
+    List<Map> capabilities = fetchCapabilityDefinitions()
+    if (!capabilities) { return requiredActions }
+
+    deviceStatus.each { k, v ->
+        String key = k.toString().toLowerCase()
+        String baseType = key.contains(':') ? key.split(':')[0] : key
+        Integer cid = 0
+        if (key.contains(':')) {
+            try { cid = key.split(':')[1] as Integer } catch (Exception ignored) {}
+        }
+
+        Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
+        if (capability?.requiredActions) {
+            (capability.requiredActions as List<Map>).each { Map action ->
+                requiredActions.add([
+                    event: action.event,
+                    name : action.name,
+                    dst  : action.dst,
+                    cid  : cid
+                ])
+            }
+        }
+    }
+
+    logDebug("Required actions for ${device.displayName}: ${requiredActions}")
+    return requiredActions
+}
+
+/**
+ * Installs required webhook actions on a Shelly device. Creates webhooks
+ * for each required action that isn't already configured, pointing to
+ * the Hubitat hub on port 39501.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+void installRequiredActions(String ipAddress) {
+    String selectedDni = settings?.selectedConfigDevice as String
+    def device = selectedDni ? getChildDevice(selectedDni) : null
+    if (!device) {
+        logError("installRequiredActions: no device found")
+        return
+    }
+
+    List<Map> requiredActions = getRequiredActionsForDevice(device)
+    if (!requiredActions) {
+        logInfo("No actions required for this device")
+        return
+    }
+
+    List<Map> existingHooks = listDeviceWebhooks(ipAddress)
+    if (existingHooks == null) {
+        logError("Could not retrieve existing webhooks from ${ipAddress}")
+        return
+    }
+
+    String hubIp = location.hub.localIP
+    String hookUrl = "http://${hubIp}:39501"
+    String uri = "http://${ipAddress}/rpc"
+    Integer installed = 0
+
+    requiredActions.each { Map action ->
+        String event = action.event as String
+        String name = action.name as String
+        Integer cid = action.cid as Integer
+
+        // Check if a webhook for this event+cid already exists
+        Map existing = existingHooks.find { Map h ->
+            h.event == event && (h.cid as Integer) == cid
+        }
+
+        if (existing) {
+            // Verify it points to the right URL and is enabled
+            List<String> urls = existing.urls as List<String>
+            Boolean enabled = existing.enable as Boolean
+            if (urls?.any { it?.contains(hubIp) } && enabled) {
+                logDebug("Webhook '${name}' already configured for ${event} cid=${cid}")
+                return
+            }
+            // Update existing webhook with correct URL
+            logInfo("Updating webhook '${name}' for ${event} cid=${cid}")
+            LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, [hookUrl])
+            if (authIsEnabled() == true && getAuth().size() > 0) { updateCmd.auth = getAuth() }
+            postCommandSync(updateCmd, uri)
+            installed++
+            return
+        }
+
+        // Create new webhook
+        logInfo("Creating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
+        appendLog('info', "Creating webhook ${name} on ${device.displayName}")
+        LinkedHashMap createCmd = webhookCreateCommand(cid, event, name, [hookUrl])
+        if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
+        LinkedHashMap result = postCommandSync(createCmd, uri)
+
+        if (result?.result?.id != null) {
+            logInfo("Webhook '${name}' created (id: ${result.result.id})")
+            installed++
+        } else {
+            logError("Failed to create webhook '${name}': ${result}")
+        }
+    }
+
+    logInfo("Action provisioning complete: ${installed} webhook(s) installed/updated on ${ipAddress}")
+    appendLog('info', "Action provisioning: ${installed} webhook(s) on ${device.displayName}")
 }
 
 /**
@@ -3199,6 +3414,57 @@ LinkedHashMap webhookDeleteCommand(Integer id, String src = 'webhookDelete') {
     "src" : src,
     "method" : "Webhook.Delete",
     "params" : ["id": id]
+  ]
+  return command
+}
+
+/**
+ * Builds a Webhook.Create RPC command to register a webhook on a Shelly device.
+ *
+ * @param cid Component ID (e.g., 0)
+ * @param event Event name (e.g., "temperature.change")
+ * @param name Webhook name (e.g., "hubitat_temperature")
+ * @param urls List of URLs to call when the event fires
+ * @param src Source identifier for the RPC call
+ * @return LinkedHashMap containing the Webhook.Create RPC command
+ */
+@CompileStatic
+LinkedHashMap webhookCreateCommand(Integer cid, String event, String name, List<String> urls, String src = 'webhookCreate') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Webhook.Create",
+    "params" : [
+      "cid"    : cid,
+      "enable" : true,
+      "event"  : event,
+      "name"   : name,
+      "urls"   : urls
+    ]
+  ]
+  return command
+}
+
+/**
+ * Builds a Webhook.Update RPC command to update an existing webhook on a Shelly device.
+ *
+ * @param id Webhook ID to update
+ * @param urls Updated list of URLs
+ * @param enable Whether the webhook should be enabled
+ * @param src Source identifier for the RPC call
+ * @return LinkedHashMap containing the Webhook.Update RPC command
+ */
+@CompileStatic
+LinkedHashMap webhookUpdateCommand(Integer id, List<String> urls, Boolean enable = true, String src = 'webhookUpdate') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Webhook.Update",
+    "params" : [
+      "id"     : id,
+      "enable" : enable,
+      "urls"   : urls
+    ]
   ]
   return command
 }

@@ -1198,7 +1198,15 @@
         }
       ],
       "commands": [],
-      "id": "RelativeHumidityMeasurement"
+      "id": "RelativeHumidityMeasurement",
+      "requiredActions": [
+        {
+          "event": "humidity.change",
+          "name": "hubitat_humidity",
+          "dst": "humidity"
+        }
+      ],
+      "shellyComponent": "humidity"
     },
     {
       "attributes": [
@@ -1717,7 +1725,15 @@
         }
       ],
       "commands": [],
-      "id": "TemperatureMeasurement"
+      "id": "TemperatureMeasurement",
+      "requiredActions": [
+        {
+          "event": "temperature.change",
+          "name": "hubitat_temperature",
+          "dst": "temperature"
+        }
+      ],
+      "shellyComponent": "temperature"
     },
     {
       "attributes": [],
