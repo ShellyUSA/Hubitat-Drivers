@@ -108,9 +108,9 @@ Map mainPage() {
                 }
             }
 
-            if (state.driverRebuildInProgress) {
-                paragraph "<b>Rebuild in progress...</b> (${(state.driverRebuildQueue?.size() ?: 0)} remaining)"
-            } else {
+            String rebuildStatusHtml = renderRebuildStatusHtml()
+            paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${rebuildStatusHtml}</span>"
+            if (!state.driverRebuildInProgress) {
                 input 'btnForceRebuildDrivers', 'button', title: 'Force Rebuild All Drivers', submitOnChange: true
             }
         }
@@ -622,6 +622,7 @@ Map deviceConfigPage() {
                 if (ip) {
                     // Check if this is a battery-powered device
                     Boolean isBatteryDevice = isSleepyBatteryDevice(selectedDevice)
+                    Integer deviceId = selectedDevice.id as Integer
 
                     // Probe the device to determine if it's currently reachable
                     Boolean deviceIsReachable = false
@@ -632,13 +633,9 @@ Map deviceConfigPage() {
 
                     if (isBatteryDevice) {
                         section() {
-                            if (deviceIsReachable) {
-                                paragraph "<b>This is a battery-powered device and it is currently awake.</b>"
-                            } else {
-                                paragraph "<b>This is a battery-powered device that sleeps to conserve power.</b><br>" +
-                                    "It can only be reached when it is awake (briefly, when sending sensor updates).<br>" +
-                                    "Scripts and webhooks must be configured while the device is awake, or via the Shelly app/web UI."
-                            }
+                            // SSR-enabled status that updates when the device sends a temperature event
+                            String statusHtml = renderBatteryDeviceStatus(deviceIsReachable)
+                            paragraph "<span class='ssr-device-current-state-${deviceId}-temperature'>${statusHtml}</span>"
                         }
                     }
 
@@ -739,18 +736,14 @@ Map deviceConfigPage() {
                     List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice)
 
                     if (requiredActions.size() > 0) {
-                        if (!deviceIsReachable) {
-                            // Device is unreachable — show stored info with unknown status
+                        if (isBatteryDevice) {
+                            // SSR-enabled webhook section — updates dynamically when device wakes
+                            String webhookHtml = renderWebhookStatusHtml(selectedDevice, ip, requiredActions, deviceIsReachable)
                             section("Required Actions (Webhooks)") {
-                                paragraph "<b>Device is currently unreachable.</b><br>" +
-                                    "Webhook status cannot be checked while the device is offline or asleep."
-                                StringBuilder sb = new StringBuilder()
-                                requiredActions.each { Map action ->
-                                    sb.append("${action.name} (${action.event} cid:${action.cid}) — status unknown (device unreachable)\n")
-                                }
-                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+                                paragraph "<span class='ssr-device-current-state-${deviceId}-temperature' id='webhook-status-${deviceId}'>${webhookHtml}</span>"
                             }
                         } else {
+                            // Standard webhook section with install button
                             List<Map> installedHooks = listDeviceWebhooks(ip)
                             String hubIp = location.hub.localIP
                             List<Map> missingActions = []
@@ -894,6 +887,143 @@ List<Map> listDeviceScripts(String ipAddress) {
         }
         return null
     }
+}
+
+/**
+ * Renders the driver rebuild status HTML for the main page.
+ * Shows progress when rebuilding, or a completion message otherwise.
+ *
+ * @return HTML string for the rebuild status
+ */
+private String renderRebuildStatusHtml() {
+    if (state.driverRebuildInProgress) {
+        Integer remaining = (state.driverRebuildQueue?.size() ?: 0) as Integer
+        return "<b>Rebuild in progress...</b> (${remaining} remaining)"
+    }
+    return "<b>Drivers are up to date.</b>"
+}
+
+/**
+ * Renders the battery device status message HTML.
+ *
+ * @param isReachable Whether the device is currently reachable
+ * @return HTML string for the battery device status
+ */
+private String renderBatteryDeviceStatus(Boolean isReachable) {
+    if (isReachable) {
+        return "<b>This is a battery-powered device and it is currently awake.</b>"
+    }
+    return "<b>This is a battery-powered device that sleeps to conserve power.</b><br>" +
+        "It can only be reached when it is awake (briefly, when sending sensor updates).<br>" +
+        "Scripts and webhooks must be configured while the device is awake, or via the Shelly app/web UI."
+}
+
+/**
+ * Renders webhook status HTML for the device config page.
+ * Probes the device for installed webhooks and compares against required actions.
+ *
+ * @param device The child device
+ * @param ip The device IP address
+ * @param requiredActions List of required webhook action maps
+ * @param deviceIsReachable Whether the device is currently reachable
+ * @return HTML string showing webhook status
+ */
+private String renderWebhookStatusHtml(def device, String ip, List<Map> requiredActions, Boolean deviceIsReachable) {
+    if (!deviceIsReachable) {
+        StringBuilder sb = new StringBuilder()
+        sb.append("<b>Device is currently unreachable.</b><br>")
+        sb.append("Webhook status cannot be checked while the device is offline or asleep.<br>")
+        sb.append("<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>")
+        requiredActions.each { Map action ->
+            sb.append("${action.name} (${action.event} cid:${action.cid}) — status unknown (device unreachable)\n")
+        }
+        sb.append("</pre>")
+        return sb.toString().trim()
+    }
+
+    List<Map> installedHooks = listDeviceWebhooks(ip)
+    String hubIp = location.hub.localIP
+    List<Map> missingActions = []
+    List<Map> okActions = []
+    requiredActions.each { Map action ->
+        Map hook = installedHooks?.find { Map h ->
+            h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
+        }
+        if (hook) {
+            List<String> urls = hook.urls as List<String>
+            Boolean enabled = hook.enable as Boolean
+            if (urls?.any { it?.contains(hubIp) } && enabled) {
+                okActions.add(action)
+            } else {
+                missingActions.add(action)
+            }
+        } else {
+            missingActions.add(action)
+        }
+    }
+
+    StringBuilder sb = new StringBuilder()
+    sb.append("<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>")
+    requiredActions.each { Map action ->
+        Boolean isOk = okActions.contains(action)
+        String status = isOk ? 'configured' : 'MISSING'
+        sb.append("${action.name} (${action.event} cid:${action.cid}) — ${status}\n")
+    }
+    sb.append("</pre>")
+
+    if (missingActions.size() > 0) {
+        sb.append("<b>${missingActions.size()} action(s) need to be configured.</b>")
+    } else {
+        sb.append("<b>All required actions are configured.</b>")
+    }
+
+    return sb.toString().trim()
+}
+
+/**
+ * Handles SSR (Server-Side Render) callbacks from Hubitat.
+ * Called when a device event occurs and an SSR-tagged HTML element on the
+ * currently displayed app page matches the event. Returns updated HTML
+ * to replace the element's content.
+ *
+ * @param event Map containing event fields plus elementId
+ * @return HTML string to replace the element content
+ */
+String processServerSideRender(Map event) {
+    logDebug("processServerSideRender called: ${event}")
+
+    String elementId = event.elementId ?: ''
+    String eventName = event.name ?: ''
+
+    // App-level events (e.g., driverRebuildStatus)
+    if (eventName == 'driverRebuildStatus') {
+        return renderRebuildStatusHtml()
+    }
+
+    // Device-level events
+    Integer deviceId = event.deviceId as Integer
+    def childDevice = getChildDevices()?.find { (it.id as Integer) == deviceId }
+    if (!childDevice) {
+        logDebug("SSR: no child device found for deviceId ${deviceId}")
+        return ''
+    }
+
+    String ip = childDevice.getDataValue('ipAddress')
+    if (!ip) { return '' }
+
+    // Re-probe the device — it's awake if we got an event
+    Boolean deviceIsReachable = false
+    Map deviceStatus = queryDeviceStatus(ip)
+    if (deviceStatus) { deviceIsReachable = true }
+
+    // Determine what to render based on the element
+    if (elementId?.contains('webhook-status')) {
+        List<Map> requiredActions = getRequiredActionsForDevice(childDevice)
+        return renderWebhookStatusHtml(childDevice, ip, requiredActions, deviceIsReachable)
+    }
+
+    // Default: render battery device status
+    return renderBatteryDeviceStatus(deviceIsReachable)
 }
 
 /**
@@ -7599,6 +7729,9 @@ private void rebuildAllTrackedDrivers() {
     state.driverRebuildCurrentKey = null
     state.driverRebuildErrors = []
 
+    // Fire app event to trigger SSR update on main page
+    app.sendEvent(name: 'driverRebuildStatus', value: 'in_progress')
+
     logInfo("Starting serial rebuild of ${queue.size()} tracked driver(s): ${queue}")
     appendLog('info', "Rebuilding ${queue.size()} auto-generated driver(s)...")
 
@@ -7697,6 +7830,9 @@ private void finishDriverRebuild() {
     state.remove('driverRebuildQueue')
     state.remove('driverRebuildErrors')
     state.remove('driverRebuildCurrentKey')
+
+    // Fire app event to trigger SSR update on main page
+    app.sendEvent(name: 'driverRebuildStatus', value: 'complete')
 }
 
 /* #endregion Driver Auto-Update */

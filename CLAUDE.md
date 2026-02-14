@@ -156,6 +156,66 @@ void scheduleTask(String sched, String taskName) {
 - Improved runtime performance
 - Clearer code contracts with explicit types
 
+## Dynamic Page Updates (SSR)
+
+Hubitat firmware 2.3.7.114+ supports dynamic HTML updates on app pages without full re-renders. There are two methods:
+
+### Method 1: Client-Side Updates (Simple Value Display)
+
+Add a CSS class to an HTML element to automatically update its text content when an event fires:
+
+```groovy
+// Device attribute: updates when device attribute changes
+paragraph "<span class='device-current-state-${deviceId}-temperature'>Loading...</span>"
+
+// App event: updates when app.sendEvent fires
+paragraph "<span class='app-state-${app.id}-discoveryTimer'>Waiting...</span>"
+
+// Hub event:
+paragraph "<span class='hub-state-${eventName}'>...</span>"
+
+// Location event:
+paragraph "<span class='location-state-${eventName}'>...</span>"
+```
+
+The browser replaces the element's text content with the event value. Good for simple text like timers and sensor readings.
+
+### Method 2: Server-Side Rendering (SSR) (Complex HTML)
+
+Use the `ssr-` prefix to trigger a server-side callback that returns replacement HTML:
+
+```groovy
+// In the dynamicPage section:
+paragraph "<span class='ssr-device-current-state-${deviceId}-temperature' id='my-element'>${initialHtml}</span>"
+
+// SSR handler function (must be named exactly this):
+String processServerSideRender(Map event) {
+    String elementId = event.elementId ?: ''
+    String eventName = event.name ?: ''
+    Integer deviceId = event.deviceId as Integer
+
+    // Return HTML to replace the element's content
+    if (elementId?.contains('my-element')) {
+        return renderMySection()
+    }
+    return ''
+}
+```
+
+**Key points:**
+- The `processServerSideRender(Map event)` function must exist in the app
+- `event` contains standard event fields plus `elementId`
+- Return HTML string to replace element content
+- Initial content is NOT auto-populated — set it explicitly in the page
+- Use sparingly — each tagged element triggers a server call on events
+- Use `id` attribute to distinguish multiple SSR elements
+- Works with both device events and app events (`ssr-app-state-${app.id}-eventName`)
+
+**To trigger SSR updates from app code:**
+```groovy
+app.sendEvent(name: 'myEventName', value: 'someValue')
+```
+
 ## Clean As You Code - CRITICAL
 
 **ALWAYS improve code quality while making changes.** Never leave code worse than you found it.
