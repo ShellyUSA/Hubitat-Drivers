@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.16"
+@Field static final String APP_VERSION = "1.0.17"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.16"
+    version: "1.0.17"
 )
 
 preferences {
@@ -318,9 +318,35 @@ void appButtonHandler(String buttonName) {
 }
 
 /**
+ * Handles the {@code driverGenerationComplete} event fired by
+ * {@link #completeDriverGeneration}. Checks for any devices that were
+ * deferred in {@link #createShellyDevice} because their driver was still
+ * being generated, and retries device creation for them.
+ *
+ * @param evt The event containing the IP key of the completed driver
+ */
+void handleDriverGenerationComplete(evt) {
+    String completedIpKey = evt.value
+    logDebug("Driver generation complete event received for ${completedIpKey}")
+
+    List<String> pending = state.pendingDeviceCreations ?: []
+    if (pending.contains(completedIpKey)) {
+        pending.remove(completedIpKey)
+        state.pendingDeviceCreations = pending
+        logInfo("Resuming deferred device creation for ${completedIpKey}")
+        createShellyDevice(completedIpKey)
+    }
+}
+
+/**
  * Creates a Hubitat device for a discovered Shelly device.
  * Retrieves device information, determines the appropriate driver,
  * and creates a child device with the generated driver code.
+ * <p>
+ * If async driver generation is in progress, defers creation by adding the
+ * IP to {@code state.pendingDeviceCreations}. The
+ * {@link #handleDriverGenerationComplete} event handler will retry when
+ * the driver is ready.
  *
  * @param ipKey The IP address key of the device to create
  */
@@ -352,46 +378,21 @@ private void createShellyDevice(String ipKey) {
         }
     }
 
-    // Get the generated driver name, waiting for async generation if in progress
+    // Get the generated driver name
     String driverName = deviceInfo.generatedDriverName
     if (!driverName) {
         // Check if async driver generation is in progress (GitHub fetch)
         Map genContext = atomicState.currentDriverGeneration
         if (genContext?.ipKey == ipKey) {
-            logInfo("Driver generation in progress for ${ipKey} — waiting for completion...")
-            appendLog('info', "Driver for ${ipKey} is being generated, waiting...")
-
-            // Poll for completion (up to 60 seconds)
-            int maxWaitMs = 60000
-            int pollIntervalMs = 2000
-            int waited = 0
-            while (waited < maxWaitMs) {
-                pauseExecution(pollIntervalMs)
-                waited += pollIntervalMs
-
-                // Re-check if generation completed
-                deviceInfo = state.discoveredShellys[ipKey]
-                driverName = deviceInfo?.generatedDriverName
-                if (driverName) {
-                    logInfo("Driver generation completed for ${ipKey}: ${driverName}")
-                    break
-                }
-
-                // Check if generation context cleared (completed or errored)
-                genContext = atomicState.currentDriverGeneration
-                if (!genContext || genContext.ipKey != ipKey) {
-                    // Generation finished but no driver name set — check one more time
-                    deviceInfo = state.discoveredShellys[ipKey]
-                    driverName = deviceInfo?.generatedDriverName
-                    break
-                }
+            // Defer device creation until driver generation completes
+            logInfo("Driver generation in progress for ${ipKey} — deferring device creation until complete")
+            appendLog('info', "Driver for ${ipKey} is being generated, will create device when ready...")
+            List<String> pending = state.pendingDeviceCreations ?: []
+            if (!pending.contains(ipKey)) {
+                pending.add(ipKey)
+                state.pendingDeviceCreations = pending
             }
-
-            if (!driverName) {
-                logError("Driver generation timed out for ${ipKey} after ${maxWaitMs / 1000}s")
-                appendLog('error', "Driver generation timed out for ${ipKey}")
-                return
-            }
+            return
         } else {
             logError("No driver could be generated for ${ipKey}. Device may not have supported components.")
             appendLog('error', "Failed to create device for ${ipKey}: no driver generated")
@@ -1304,6 +1305,9 @@ void initialize() {
 
     // mDNS listeners must be registered on system startup per Hubitat docs
     subscribe(location, 'systemStart', 'systemStartHandler')
+
+    // Subscribe to driver generation completion events for deferred device creation
+    subscribe(app, 'driverGenerationComplete', 'handleDriverGenerationComplete')
 
     // Also register now in case hub has been up for a while
     startMdnsDiscovery()
@@ -2817,8 +2821,14 @@ private void completeDriverGeneration() {
         // Register/update in tracking system with full metadata
         registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, comps, pmMap)
 
-        // Clear the generation context
+        // Clear the generation context and notify listeners
+        String completedIpKey = genContext.ipKey
         atomicState.remove('currentDriverGeneration')
+
+        // Fire event to trigger deferred device creation
+        if (completedIpKey && !genContext.isRebuild) {
+            sendAppEventHelper([name: 'driverGenerationComplete', value: completedIpKey])
+        }
     }
 
     // Clean up any duplicate drivers
