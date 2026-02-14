@@ -757,15 +757,163 @@ private void determineDeviceDriver(Map deviceStatus ) {
 private String generateHubitatDriver(List<String> components) {
     logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components}")
 
-    // TODO: Implement driver generation logic
-    // This will use StringBuilder to construct the driver file piece by piece
+    // Fetch component_driver.json from GitHub
+    String componentJsonUrl = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/UniversalDrivers/component_driver.json'
+    logDebug("Fetching capability definitions from: ${componentJsonUrl}")
+
+    String jsonContent = downloadFile(componentJsonUrl)
+    if (!jsonContent) {
+        logError("Failed to fetch component_driver.json from GitHub")
+        return null
+    }
+
+    // Parse the JSON to extract capability definitions
+    Map componentData = null
+    try {
+        componentData = slurper.parseText(jsonContent) as Map
+        logDebug("Successfully parsed component_driver.json with ${componentData?.capabilities?.size() ?: 0} capabilities")
+    } catch (Exception e) {
+        logError("Failed to parse component_driver.json: ${e.message}")
+        return null
+    }
+
+    List<Map> capabilities = componentData?.capabilities as List<Map>
+    if (!capabilities) {
+        logError("No capabilities found in component_driver.json")
+        return null
+    }
+
+    // Build the driver code using StringBuilder
     StringBuilder driver = new StringBuilder()
 
-    // Placeholder for future implementation
-    driver.append("// Generated Hubitat Driver\n")
-    driver.append("// Components: ${components.join(', ')}\n")
+    // Build metadata section
+    driver.append("metadata {\n")
+    driver.append("  definition (")
 
-    return driver.toString()
+    // Get definition metadata from JSON
+    Map driverDef = componentData?.definition as Map
+    String driverName = generateDriverName(components)
+
+    if (driverDef) {
+        driver.append("name: '${driverName}', ")
+        driver.append("namespace: '${driverDef.namespace}', ")
+        driver.append("author: '${driverDef.author}', ")
+        driver.append("singleThreaded: ${driverDef.singleThreaded}, ")
+        driver.append("importUrl: '${driverDef.importUrl ?: ''}'")
+    } else {
+        // Fallback if definition not found
+        driver.append("name: '${driverName}', ")
+        driver.append("namespace: 'ShellyUSA', ")
+        driver.append("author: 'Daniel Winks', ")
+        driver.append("singleThreaded: false, ")
+        driver.append("importUrl: ''")
+    }
+
+    driver.append(") {\n")
+
+    // Track which capabilities we've already added (to avoid duplicates)
+    Set<String> addedCapabilities = new HashSet<>()
+
+    // Add component-specific capabilities
+    components.each { component ->
+        // Extract base type from "switch:0" format
+        String baseType = component.contains(':') ? component.split(':')[0] : component
+
+        // Find matching capability by shellyComponent field
+        Map capability = capabilities.find { cap ->
+            cap.shellyComponent == baseType
+        }
+
+        if (capability) {
+            String capId = capability.id
+
+            // Only add if not already added
+            if (!addedCapabilities.contains(capId)) {
+                addedCapabilities.add(capId)
+
+                // Add capability declaration
+                driver.append("    capability '${capId}'\n")
+
+                // Add attributes comments
+                if (capability.attributes) {
+                    capability.attributes.each { attr ->
+                        String attrComment = "    //Attributes: ${attr.name} - ${attr.type.toUpperCase()}"
+                        if (attr.values) {
+                            attrComment += " ${attr.values}"
+                        }
+                        driver.append("${attrComment}\n")
+                    }
+                }
+
+                // Add commands comments
+                if (capability.commands) {
+                    List<String> cmdSignatures = capability.commands.collect { cmd ->
+                        if (cmd.arguments && cmd.arguments.size() > 0) {
+                            String args = cmd.arguments.collect { arg -> arg.name }.join(', ')
+                            return "${cmd.name}(${args})"
+                        } else {
+                            return "${cmd.name}()"
+                        }
+                    }
+                    driver.append("    //Commands: ${cmdSignatures.join(', ')}\n")
+                }
+
+                driver.append("\n")
+            }
+        } else {
+            logDebug("No capability mapping found for Shelly component: ${component} (base type: ${baseType})")
+        }
+    }
+
+    // Always add standard capabilities
+    driver.append("    capability 'Initialize'\n")
+    driver.append("    //Commands: initialize()\n")
+    driver.append("\n")
+
+    driver.append("    capability 'Configuration'\n")
+    driver.append("    //Commands: configure()\n")
+    driver.append("\n")
+
+    driver.append("    capability 'Refresh'\n")
+    driver.append("    //Commands: refresh()\n")
+
+    driver.append("  }\n")
+    driver.append("}\n")
+
+    String driverCode = driver.toString()
+    logInfo("Generated driver code:\n${driverCode}", true)
+    return driverCode
+}
+
+/**
+ * Generates a dynamic driver name based on the Shelly components.
+ *
+ * @param components List of Shelly components (e.g., ["switch:0", "switch:1"])
+ * @return Generated driver name (e.g., "Shelly Single Switch", "Shelly 2x Switch")
+ */
+private String generateDriverName(List<String> components) {
+    // Count component types
+    Map<String, Integer> componentCounts = [:]
+    components.each { component ->
+        String baseType = component.contains(':') ? component.split(':')[0] : component
+        componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
+    }
+
+    // Generate name based on components
+    if (componentCounts.size() == 1) {
+        String type = componentCounts.keySet().first()
+        Integer count = componentCounts[type]
+
+        String typeName = type.capitalize()
+        if (count == 1) {
+            return "Shelly Single ${typeName}"
+        } else {
+            return "Shelly ${count}x ${typeName}"
+        }
+    } else {
+        // Multiple component types
+        return "Shelly Multi-Component Device"
+    }
 }
 
 /**
@@ -949,10 +1097,17 @@ private void logTrace(String msg) {
  *
  * @param msg The message to log
  */
-private void logDebug(String msg) {
+private void logDebug(String msg, Boolean prettyPrint = false) {
     if (!shouldLogOverall('debug')) { return }
-    log.debug msg
-    if (shouldDisplay('debug')) { appendLog('debug', msg) }
+
+    String formattedMsg = msg
+    if (prettyPrint) {
+        // Wrap in <pre> tags to preserve formatting in HTML display
+        formattedMsg = "<pre>${msg}</pre>"
+    }
+
+    log.debug formattedMsg
+    if (shouldDisplay('debug')) { appendLog('debug', formattedMsg) }
 }
 
 /**
@@ -962,10 +1117,17 @@ private void logDebug(String msg) {
  *
  * @param msg The message to log
  */
-private void logInfo(String msg) {
+private void logInfo(String msg, Boolean prettyPrint = false) {
     if (!shouldLogOverall('info')) { return }
-    log.info msg
-    if (shouldDisplay('info')) { appendLog('info', msg) }
+
+    String formattedMsg = msg
+    if (prettyPrint) {
+        // Wrap in <pre> tags to preserve formatting in HTML display
+        formattedMsg = "<pre>${msg}</pre>"
+    }
+
+    log.info formattedMsg
+    if (shouldDisplay('info')) { appendLog('info', formattedMsg) }
 }
 
 /**
