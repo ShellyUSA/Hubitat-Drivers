@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.21"
+@Field static final String APP_VERSION = "1.0.22"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.21"
+    version: "1.0.22"
 )
 
 preferences {
@@ -8113,9 +8113,22 @@ void componentRequestBatteryLevel(def childDevice) {
         return
     }
 
-    // Check if battery was already fetched today (midnight to midnight)
+    // Prevent duplicate calls in rapid succession (temp + humidity webhooks arrive ~simultaneously)
     Map batteryLevels = state.batteryLevels ?: [:]
     Map deviceBattery = batteryLevels[dni] as Map
+    Long lastRequestMs = deviceBattery?.lastRequestMs as Long ?: 0
+    if (now() - lastRequestMs < 30000) {
+        logDebug("componentRequestBatteryLevel: skipping duplicate call for ${dni} (last request ${(now() - lastRequestMs) / 1000}s ago)")
+        return
+    }
+
+    // Mark the request timestamp immediately to block concurrent calls
+    if (!deviceBattery) { deviceBattery = [:] }
+    deviceBattery.lastRequestMs = now()
+    batteryLevels[dni] = deviceBattery
+    state.batteryLevels = batteryLevels
+
+    // Check if battery was already fetched today (midnight to midnight)
     String today = new Date().format('yyyy-MM-dd')
 
     if (deviceBattery?.date == today && deviceBattery?.percent != null) {
