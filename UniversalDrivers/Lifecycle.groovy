@@ -67,7 +67,13 @@ void parse(String description) {
         try {
           def json = new groovy.json.JsonSlurper().parseText(msg.body)
           logDebug("Request body JSON: ${json}")
-          // TODO: Process event data
+
+          // Process event data based on destination type
+          if (json?.dst == "switchmon") {
+            parseSwitchmon(json)
+          } else if (json?.dst == "powermon") {
+            parsePowermon(json)
+          }
         } catch (Exception jsonEx) {
           // Body might be empty or not JSON
         }

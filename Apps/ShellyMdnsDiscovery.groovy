@@ -1160,6 +1160,13 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     filesToFetch.add("RefreshCommand.groovy")
     filesToFetch.add("Helpers.groovy")
 
+    // Include PowerMonitoring.groovy if any component has power monitoring
+    Boolean hasPowerMonitoring = componentPowerMonitoring.any { k, v -> v }
+    if (hasPowerMonitoring) {
+        filesToFetch.add("PowerMonitoring.groovy")
+        logDebug("Including PowerMonitoring.groovy for power monitoring capabilities")
+    }
+
     logDebug("Files to fetch asynchronously: ${filesToFetch}")
 
     // Store partial driver and files list in atomicState for completion callback
@@ -5863,7 +5870,7 @@ private Boolean driverNeedsUpdate(String driverName, String namespace) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentOn(device childDevice) {
+void componentOn(def childDevice) {
   sendSwitchCommand(childDevice, true)
 }
 
@@ -5872,7 +5879,7 @@ void componentOn(device childDevice) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentOff(device childDevice) {
+void componentOff(def childDevice) {
   sendSwitchCommand(childDevice, false)
 }
 
@@ -5883,7 +5890,7 @@ void componentOff(device childDevice) {
  * @param childDevice The child device to control
  * @param onState true to turn on, false to turn off
  */
-private void sendSwitchCommand(device childDevice, Boolean onState) {
+private void sendSwitchCommand(def childDevice, Boolean onState) {
   String action = onState ? 'on' : 'off'
   logDebug("sendSwitchCommand(${action}) called from device: ${childDevice.displayName}")
 
