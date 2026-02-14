@@ -7530,31 +7530,24 @@ private Boolean updateAppCode(String sourceCode) {
             return false
         }
 
-        // Get the current app code version for the update request
-        String currentHubVersion = getInstalledAppVersion(cookie, appCodeId)
-
+        // HPM-style update: post id + source to /app/ajax/update
         Map updateParams = [
             uri: "http://127.0.0.1:8080",
             path: '/app/ajax/update',
-            contentType: 'application/json',
             requestContentType: 'application/x-www-form-urlencoded',
+            contentType: 'application/json',
             headers: ['Cookie': cookie],
-            body: [
-                id: appCodeId,
-                version: currentHubVersion ?: '',
-                source: sourceCode
-            ],
-            timeout: 300,
-            ignoreSSLIssues: true
+            body: [id: appCodeId, source: sourceCode],
+            timeout: 300
         ]
 
         Boolean result = false
         httpPost(updateParams) { resp ->
-            if (resp.data?.status == 'success') {
+            if (resp?.status == 200) {
                 logInfo("Auto-update: app code updated successfully")
                 result = true
             } else {
-                logError("Auto-update: update failed - response: ${resp.data}")
+                logError("Auto-update: update failed - HTTP ${resp?.status}")
             }
         }
         return result
@@ -7572,53 +7565,23 @@ private Boolean updateAppCode(String sourceCode) {
  */
 private Integer getAppCodeId(String cookie) {
     try {
+        // HPM-style: /app/list returns JSON when no contentType/textParser is set
         Map params = [
             uri: "http://127.0.0.1:8080",
             path: '/app/list',
-            textParser: true,
             headers: ['Cookie': cookie],
-            timeout: 15
+            timeout: 30
         ]
 
         Integer codeId = null
         httpGet(params) { resp ->
             if (resp?.status == 200 && resp.data) {
-                String html = resp.data.text
-                logDebug("getAppCodeId: HTML response length=${html?.length() ?: 0}")
-
-                // Strategy 1: /app/editor/{id} link with app name as link text
-                def matcher = (html =~ /app\/editor\/(\d+)[^>]*>\s*(?:Shelly Device Manager|Shelly mDNS Discovery)/)
-                if (matcher.find()) {
-                    codeId = matcher.group(1) as Integer
-                    logDebug("Found app code ID via /app/editor link: ${codeId}")
-                    return
-                }
-
-                // Strategy 2: id= parameter appearing before app name (within 500 chars)
-                matcher = (html =~ /id[=:](\d+)[\s\S]{0,500}?(?:Shelly Device Manager|Shelly mDNS Discovery)/)
-                if (matcher.find()) {
-                    codeId = matcher.group(1) as Integer
-                    logDebug("Found app code ID via forward search: ${codeId}")
-                    return
-                }
-
-                // Strategy 3: App name appearing before id= parameter
-                matcher = (html =~ /(?:Shelly Device Manager|Shelly mDNS Discovery)[\s\S]{0,500}?(?:app\/editor\/|id[=:])(\d+)/)
-                if (matcher.find()) {
-                    codeId = matcher.group(1) as Integer
-                    logDebug("Found app code ID via reverse search: ${codeId}")
-                    return
-                }
-
-                // Diagnostic: log context around app name to help debug HTML structure
-                int idx = html.indexOf('Shelly Device Manager')
-                if (idx < 0) { idx = html.indexOf('Shelly mDNS Discovery') }
-                if (idx >= 0) {
-                    int start = Math.max(0, idx - 300)
-                    int end = Math.min(html.length(), idx + 300)
-                    logError("getAppCodeId: app name found but ID extraction failed. HTML context: ${html.substring(start, end)}")
+                def appEntry = resp.data.find { it.namespace == 'ShellyUSA' && (it.name == 'Shelly Device Manager' || it.name == 'Shelly mDNS Discovery') }
+                if (appEntry) {
+                    codeId = appEntry.id as Integer
+                    logDebug("Found app code ID: ${codeId}")
                 } else {
-                    logError("getAppCodeId: 'Shelly Device Manager' not found in /app/list HTML (length=${html.length()})")
+                    logError("getAppCodeId: could not find ShellyUSA app in /app/list (${resp.data.size()} entries)")
                 }
             }
         }
