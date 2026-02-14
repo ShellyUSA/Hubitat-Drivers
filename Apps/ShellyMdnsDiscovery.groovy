@@ -1354,9 +1354,14 @@ private void completeDriverGeneration() {
     // Append fetched files in correct order
     // 1. Lifecycle first
     if (results.files['Lifecycle.groovy']) {
-        driver.append(results.files['Lifecycle.groovy'])
+        String lifecycleContent = results.files['Lifecycle.groovy']
+        logInfo("Adding Lifecycle.groovy (${lifecycleContent?.length() ?: 0} chars)")
+        logDebug("Lifecycle.groovy contains parse(): ${lifecycleContent?.contains('void parse(') ?: false}")
+        driver.append(lifecycleContent)
         driver.append("\n")
         logDebug("Added Lifecycle.groovy")
+    } else {
+        logError("Lifecycle.groovy was not fetched!")
     }
 
     // 2. Standard command files
