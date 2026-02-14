@@ -2688,19 +2688,11 @@ private void completeDriverGeneration() {
     String driverCode = driver.toString()
     logInfo("Generated driver code:\n${driverCode}", true)
 
-    // Cache the assembled driver source to file manager before installing
-    Map genContext = atomicState.currentDriverGeneration
-    if (genContext) {
-        List<String> comps = genContext.components as List<String>
-        Map<String, Boolean> pmMap = (genContext.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-        String driverName = generateDriverName(comps, pmMap)
-        saveDriverToCache(driverName, driverCode)
-    }
-
-    // Install the generated driver
+    // Install the generated driver (also caches to file manager)
     installDriver(driverCode)
 
     // Post-install: register driver and handle context
+    Map genContext = atomicState.currentDriverGeneration
     if (genContext) {
         List<String> comps = genContext.components as List<String>
         Map<String, Boolean> pmMap = (genContext.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
@@ -2982,6 +2974,10 @@ private void installDriver(String sourceCode) {
                 }
             }
         }
+
+        // Cache the driver source to file manager for fast future installs
+        saveDriverToCache(baseName, sourceCode)
+
     } catch (Exception e) {
         logError("Error installing driver: ${e.message}")
     }
