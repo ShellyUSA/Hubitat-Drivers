@@ -620,18 +620,30 @@ Map deviceConfigPage() {
             if (selectedDevice) {
                 String ip = selectedDevice.getDataValue('ipAddress')
                 if (ip) {
-                    // Check if this is a sleepy battery device
-                    Boolean isSleepyBattery = isSleepyBatteryDevice(selectedDevice)
-                    if (isSleepyBattery) {
+                    // Check if this is a battery-powered device
+                    Boolean isBatteryDevice = isSleepyBatteryDevice(selectedDevice)
+
+                    // Probe the device to determine if it's currently reachable
+                    Boolean deviceIsReachable = false
+                    Map deviceStatus = queryDeviceStatus(ip)
+                    if (deviceStatus) {
+                        deviceIsReachable = true
+                    }
+
+                    if (isBatteryDevice) {
                         section() {
-                            paragraph "<b>This is a battery-powered device that sleeps to conserve power.</b><br>" +
-                                "It can only be reached when it is awake (briefly, when sending sensor updates).<br>" +
-                                "Scripts and webhooks must be configured while the device is awake, or via the Shelly app/web UI."
+                            if (deviceIsReachable) {
+                                paragraph "<b>This is a battery-powered device and it is currently awake.</b>"
+                            } else {
+                                paragraph "<b>This is a battery-powered device that sleeps to conserve power.</b><br>" +
+                                    "It can only be reached when it is awake (briefly, when sending sensor updates).<br>" +
+                                    "Scripts and webhooks must be configured while the device is awake, or via the Shelly app/web UI."
+                            }
                         }
                     }
 
-                    // Scripts section — only for always-on devices
-                    if (!isSleepyBattery) {
+                    // Scripts section — skip for battery devices (they don't have scripts)
+                    if (!isBatteryDevice) {
                         List<Map> installedScripts = listDeviceScripts(ip)
                         List<String> installedScriptNames = []
                         if (installedScripts != null) {
@@ -727,14 +739,14 @@ Map deviceConfigPage() {
                     List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice)
 
                     if (requiredActions.size() > 0) {
-                        if (isSleepyBattery) {
-                            // Battery devices: show required webhooks but note they must be configured via Shelly UI
+                        if (!deviceIsReachable) {
+                            // Device is unreachable — show stored info with unknown status
                             section("Required Actions (Webhooks)") {
-                                paragraph "<b>This device is battery-powered and currently asleep.</b><br>" +
-                                    "Webhook status cannot be checked while the device is sleeping."
+                                paragraph "<b>Device is currently unreachable.</b><br>" +
+                                    "Webhook status cannot be checked while the device is offline or asleep."
                                 StringBuilder sb = new StringBuilder()
                                 requiredActions.each { Map action ->
-                                    sb.append("${action.name} (${action.event} cid:${action.cid}) — status unknown (device asleep)\n")
+                                    sb.append("${action.name} (${action.event} cid:${action.cid}) — status unknown (device unreachable)\n")
                                 }
                                 paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
                             }
@@ -959,14 +971,11 @@ List<Map> getRequiredActionsForDevice(def device) {
     }
 
     // Get supported webhook events — try live query first, fall back to stored config
-    List<String> supportedEvents = null
+    List<String> supportedEvents = listSupportedWebhookEvents(ip)
     String dni = device.deviceNetworkId
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Map config = deviceConfigs[dni] as Map
 
-    if (!isSleepyBatteryDevice(device)) {
-        supportedEvents = listSupportedWebhookEvents(ip)
-    }
     if (supportedEvents == null && config?.supportedWebhookEvents) {
         supportedEvents = config.supportedWebhookEvents as List<String>
         logDebug("Using stored supported webhook events for ${device.displayName}: ${supportedEvents}")
