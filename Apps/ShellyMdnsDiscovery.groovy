@@ -716,8 +716,8 @@ private void determineDeviceDriver(Map deviceStatus ) {
     List<String> components = []
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
-        if (key.startsWith('switch')) { components.add("switch:${k}") }
-        if (key.contains('input')) { components.add("input:${k}") }
+        if (key.startsWith('switch')) { components.add(k.toString()) }
+        if (key.contains('input')) { components.add(k.toString()) }
     }
 
     // Generate driver for discovered components
@@ -790,8 +790,8 @@ private String generateHubitatDriver(List<String> components) {
     driver.append("metadata {\n")
     driver.append("  definition (")
 
-    // Get definition metadata from JSON
-    Map driverDef = componentData?.definition as Map
+    // Get driver metadata from JSON
+    Map driverDef = componentData?.driver as Map
     String driverName = generateDriverName(components)
 
     if (driverDef) {
@@ -882,7 +882,11 @@ private String generateHubitatDriver(List<String> components) {
 
     // Add preferences section
     List<Map> preferences = componentData?.preferences as List<Map>
+    logDebug("Preferences found in JSON: ${preferences?.size() ?: 0}")
+    logDebug("Device specific preferences found: ${componentData?.deviceSpecificPreferences ? 'yes' : 'no'}")
+
     if (preferences) {
+        logDebug("Adding preferences section to driver")
         driver.append("preferences {\n")
 
         // Add standard preferences (always included)
@@ -958,7 +962,10 @@ private String generateHubitatDriver(List<String> components) {
             }
         }
 
+        logDebug("Closing preferences section")
         driver.append("}\n")
+    } else {
+        logDebug("No preferences found in JSON, skipping preferences section")
     }
 
     String driverCode = driver.toString()

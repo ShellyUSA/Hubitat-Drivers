@@ -1579,7 +1579,8 @@
           "name": "on"
         }
       ],
-      "id": "Switch"
+      "id": "Switch",
+      "shellyComponent": "switch"
     },
     {
       "attributes": [
