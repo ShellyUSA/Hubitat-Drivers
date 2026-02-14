@@ -1579,7 +1579,8 @@
           "name": "on"
         }
       ],
-      "id": "Switch"
+      "id": "Switch",
+      "shellyComponent": "switch"
     },
     {
       "attributes": [
@@ -2341,7 +2342,7 @@
       "id": "pHMeasurement"
     }
   ],
-  "driver": {
+  "definition": {
     "author": "Daniel Winks",
     "description": "A universal driver for various components.",
     "importUrl": "",
@@ -2351,5 +2352,31 @@
     "singleThreaded": false,
     "version": "1.0.0"
   },
-  "metadata": {}
+  "preferences": [
+    {
+      "defaultValue": "debug",
+      "name": "logLevel",
+      "options": [
+        {
+          "label": "Trace",
+          "value": "trace"
+        },
+        {
+          "label": "Debug",
+          "value": "debug"
+        },
+        {
+          "label": "Info",
+          "value": "info"
+        },
+        {
+          "label": "Warning",
+          "value": "warn"
+        }
+      ],
+      "required": true,
+      "title": "Logging Level",
+      "type": "enum"
+    }
+  ]
 }
