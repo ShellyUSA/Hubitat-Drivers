@@ -9,6 +9,12 @@ Purpose: a concise set of rules for Claude-style agents working on this repo.
 
 If you can't validate automatically, create a draft PR and request a human with access to a Hubitat test hub.
 
+## Hubitat App UI Pages
+
+- Use `section()` without a title string for most sections. The `input` `title:` already labels the control — adding a section title like `section("Select Device")` creates redundant, cluttered text.
+- Only use `section("Title")` when grouping multiple related controls that genuinely benefit from a heading (e.g., `section("Options", hideable: true)` or `section("Logging", hideable: true)`).
+- The page-level `title:` in `dynamicPage(...)` is sufficient for identifying the page. Don't repeat it in section headers.
+
 ## Code Quality and Type Safety
 
 ### @CompileStatic Usage - CRITICAL

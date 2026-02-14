@@ -8,6 +8,15 @@
 // into generated drivers and to detect app updates for automatic driver regeneration.
 @Field static final String APP_VERSION = "1.0.0"
 
+// Maps Shelly status component base types to their required script filenames.
+// Keyed by the component prefix as it appears in Shelly.GetStatus keys (e.g., "switch" from "switch:0").
+@Field static final Map<String, List<String>> COMPONENT_REQUIRED_SCRIPTS = [
+    'switch': ['switchstatus.js']
+]
+// Scripts required when power monitoring fields (voltage, current, apower, aenergy)
+// are detected on any component.
+@Field static final List<String> POWER_MONITORING_SCRIPTS = ['powermonitoring.js']
+
 definition(
     name: "Shelly mDNS Discovery",
     namespace: "ShellyUSA",
@@ -24,6 +33,7 @@ definition(
 preferences {
     page(name: "mainPage", install: true, uninstall: true)
     page(name: "createDevicesPage")
+    page(name: "deviceConfigPage")
 }
 
 /**
@@ -62,6 +72,34 @@ Map mainPage() {
             paragraph "<pre class='app-state-${app.id}-shellyDiscovered' style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${getFoundShellys() ?: 'No Shelly devices discovered yet.'}</pre>"
 
             href "createDevicesPage", title: "Create Devices", description: "Select discovered Shelly devices to create"
+            href "deviceConfigPage", title: "Device Configuration", description: "Configure installed Shelly devices"
+        }
+
+        section("Options", hideable: true) {
+            input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
+                description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
+                defaultValue: true, submitOnChange: true
+        }
+
+        section("Driver Management", hideable: true, hidden: true) {
+            Map allDrivers = state.autoDrivers ?: [:]
+            if (allDrivers.isEmpty()) {
+                paragraph "No auto-generated drivers are currently tracked."
+            } else {
+                // Count actual child devices per driver
+                def childDevices = getChildDevices() ?: []
+                paragraph "<b>${allDrivers.size()}</b> auto-generated driver(s) tracked (app v${getAppVersion()}):"
+                allDrivers.each { key, info ->
+                    Integer deviceCount = childDevices.count { it.typeName == info.name }
+                    paragraph "  - ${info.name} (${deviceCount} device(s))"
+                }
+            }
+
+            if (state.driverRebuildInProgress) {
+                paragraph "<b>Rebuild in progress...</b> (${(state.driverRebuildQueue?.size() ?: 0)} remaining)"
+            } else {
+                input 'btnForceRebuildDrivers', 'button', title: 'Force Rebuild All Drivers', submitOnChange: true
+            }
         }
 
         section("Logging", hideable: true) {
@@ -92,7 +130,7 @@ Map mainPage() {
             // Check both settings and state — settings may be null briefly after removeSetting().
             String rawDisplay = settings?.displayLogLevel?.toString()
             if (!rawDisplay || rawDisplay == 'null') { rawDisplay = state.displayLogLevel?.toString() }
-            String storedDisplay = rawDisplay ? (levelOrder.contains(rawDisplay.toLowerCase()) ? rawDisplay.toLowerCase() : (levelLabels.find { k, v -> v.equalsIgnoreCase(rawDisplay) }?.key)) : null
+            String storedDisplay = rawDisplay ? (levelOrder.contains(rawDisplay.toLowerCase()) ? rawDisplay.toLowerCase() : (levelLabels.find { k, v -> v.equalsIgnoreCase(rawOverall) }?.key)) : null
 
             String validatedDisplay = (storedDisplay && storedDisplay in allowedDisplay) ? storedDisplay : overallLevel
 
@@ -112,27 +150,6 @@ Map mainPage() {
             String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
             String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
             paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
-        }
-
-        section("Driver Management", hideable: true, hidden: true) {
-            Map allDrivers = state.autoDrivers ?: [:]
-            if (allDrivers.isEmpty()) {
-                paragraph "No auto-generated drivers are currently tracked."
-            } else {
-                // Count actual child devices per driver
-                def childDevices = getChildDevices() ?: []
-                paragraph "<b>${allDrivers.size()}</b> auto-generated driver(s) tracked (app v${getAppVersion()}):"
-                allDrivers.each { key, info ->
-                    Integer deviceCount = childDevices.count { it.typeName == info.name }
-                    paragraph "  - ${info.name} (${deviceCount} device(s))"
-                }
-            }
-
-            if (state.driverRebuildInProgress) {
-                paragraph "<b>Rebuild in progress...</b> (${(state.driverRebuildQueue?.size() ?: 0)} remaining)"
-            } else {
-                input 'btnForceRebuildDrivers', 'button', title: 'Force Rebuild All Drivers', submitOnChange: true
-            }
         }
     }
 }
@@ -208,6 +225,25 @@ void appButtonHandler(String buttonName) {
         // Update the stored version to current before rebuilding
         state.lastAutoconfVersion = getAppVersion()
         rebuildAllTrackedDrivers()
+    }
+
+    if (buttonName == 'btnInstallScripts') {
+        String selectedDni = settings?.selectedConfigDevice as String
+        if (!selectedDni) {
+            appendLog('warn', 'Install Scripts: no device selected')
+            return
+        }
+        def device = getChildDevice(selectedDni)
+        if (!device) {
+            appendLog('warn', "Install Scripts: device not found for DNI ${selectedDni}")
+            return
+        }
+        String ip = device.getDataValue('ipAddress')
+        if (!ip) {
+            appendLog('warn', "Install Scripts: no IP address for device ${device.displayName}")
+            return
+        }
+        installRequiredScripts(ip)
     }
 }
 
@@ -420,6 +456,306 @@ Map createDevicesPage() {
 }
 
 /**
+ * Renders the device configuration page for managing scripts on installed Shelly devices.
+ * Shows installed scripts, required scripts based on the device's capabilities, and
+ * highlights any missing scripts that need to be installed.
+ *
+ * @return Map containing the dynamic page definition
+ */
+Map deviceConfigPage() {
+    // Build single-select options from installed child devices
+    LinkedHashMap<String,String> deviceOptions = [:] as LinkedHashMap
+    def childDevices = getChildDevices() ?: []
+    childDevices.sort { it.displayName }.each { device ->
+        String ip = device.getDataValue('ipAddress') ?: 'n/a'
+        deviceOptions[device.deviceNetworkId] = "${device.displayName} (${ip})"
+    }
+
+    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false) {
+        section() {
+            if (!deviceOptions || deviceOptions.size() == 0) {
+                paragraph "No installed devices found. Create devices first."
+            } else {
+                input name: 'selectedConfigDevice', type: 'enum', title: 'Select a device to configure',
+                    options: deviceOptions, multiple: false, required: false, submitOnChange: true
+            }
+        }
+
+        String selectedDni = settings?.selectedConfigDevice as String
+        if (selectedDni) {
+            def selectedDevice = getChildDevice(selectedDni)
+            if (selectedDevice) {
+                String ip = selectedDevice.getDataValue('ipAddress')
+                if (ip) {
+                    // Fetch installed scripts from device
+                    List<Map> installedScripts = listDeviceScripts(ip)
+                    List<String> installedScriptNames = []
+                    if (installedScripts != null) {
+                        installedScriptNames = installedScripts.collect { (it.name ?: '') as String }
+                    }
+
+                    // Determine required scripts from component_driver.json
+                    Set<String> requiredScriptNames = getRequiredScriptsForDevice(selectedDevice)
+
+                    // Compute missing scripts
+                    List<String> missingScripts = requiredScriptNames.findAll { String req ->
+                        !installedScriptNames.any { it == stripJsExtension(req) }
+                    } as List<String>
+
+                    section("Installed Scripts") {
+                        if (installedScripts == null) {
+                            paragraph "Unable to retrieve scripts from device."
+                        } else if (installedScripts.size() == 0) {
+                            paragraph "No scripts installed on this device."
+                        } else {
+                            StringBuilder sb = new StringBuilder()
+                            installedScripts.each { Map script ->
+                                String name = script.name ?: 'unnamed'
+                                Boolean enabled = script.enable as Boolean
+                                Boolean running = script.running as Boolean
+                                Boolean isRequired = requiredScriptNames.any { stripJsExtension(it) == name }
+                                String status = "${enabled ? 'enabled' : 'disabled'}, ${running ? 'running' : 'stopped'}"
+                                sb.append("${name} — ${status}${isRequired ? '' : ' (not required)'}\n")
+                            }
+                            paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+                        }
+                    }
+
+                    section("Required Scripts") {
+                        if (requiredScriptNames.size() == 0) {
+                            paragraph "No scripts required for this device's capabilities."
+                        } else {
+                            StringBuilder sb = new StringBuilder()
+                            requiredScriptNames.each { String scriptFile ->
+                                String scriptName = stripJsExtension(scriptFile)
+                                Boolean isInstalled = installedScriptNames.any { it == scriptName }
+                                sb.append("${scriptFile} — ${isInstalled ? 'installed' : 'MISSING'}\n")
+                            }
+                            paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
+
+                            if (missingScripts.size() > 0) {
+                                paragraph "<b>${missingScripts.size()} missing script(s):</b> ${missingScripts.join(', ')}"
+                                input 'btnInstallScripts', 'button', title: 'Install Missing Script(s)', submitOnChange: true
+                            } else {
+                                paragraph "<b>All required scripts are installed.</b>"
+                            }
+                        }
+                    }
+                } else {
+                    section() {
+                        paragraph "Selected device has no IP address configured."
+                    }
+                }
+            }
+        }
+
+        section {
+            href "mainPage", title: "Back to discovery", description: ""
+        }
+    }
+}
+
+/**
+ * Retrieves the list of scripts installed on a Shelly device.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @return List of script maps containing name, enable, running status, or null on failure
+ */
+List<Map> listDeviceScripts(String ipAddress) {
+    try {
+        String uri = "http://${ipAddress}/rpc"
+        LinkedHashMap command = scriptListCommand()
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        LinkedHashMap json = postCommandSync(command, uri)
+        if (json?.result?.scripts) {
+            return json.result.scripts as List<Map>
+        }
+        return []
+    } catch (Exception ex) {
+        logError("Failed to list scripts for ${ipAddress}: ${ex.message}")
+        return null
+    }
+}
+
+/**
+ * Determines which scripts are required for a device by querying its actual
+ * Shelly.GetStatus response. Matches component types against COMPONENT_REQUIRED_SCRIPTS
+ * and detects power monitoring fields to include POWER_MONITORING_SCRIPTS.
+ *
+ * @param device The child device to check
+ * @return Set of required script filenames (e.g., ["switchstatus.js", "powermonitoring.js"])
+ */
+Set<String> getRequiredScriptsForDevice(def device) {
+    Set<String> requiredScripts = [] as Set
+
+    String ip = device.getDataValue('ipAddress')
+    if (!ip) {
+        logDebug("getRequiredScriptsForDevice: no IP for ${device.displayName}")
+        return requiredScripts
+    }
+
+    // Query the device's actual status to discover its components
+    Map deviceStatus = queryDeviceStatus(ip)
+    if (!deviceStatus) {
+        logDebug("getRequiredScriptsForDevice: could not query status for ${device.displayName}")
+        return requiredScripts
+    }
+
+    // Walk status keys to find components and detect power monitoring
+    deviceStatus.each { k, v ->
+        String key = k.toString().toLowerCase()
+        String baseType = key.contains(':') ? key.split(':')[0] : key
+
+        // Check if this component type has required scripts
+        List<String> scripts = COMPONENT_REQUIRED_SCRIPTS[baseType]
+        if (scripts) {
+            requiredScripts.addAll(scripts)
+        }
+
+        // Check for power monitoring fields on this component
+        if (v instanceof Map) {
+            Map statusMap = v as Map
+            if (statusMap.voltage != null || statusMap.current != null ||
+                    statusMap.apower != null || statusMap.aenergy != null) {
+                requiredScripts.addAll(POWER_MONITORING_SCRIPTS)
+            }
+        }
+    }
+
+    logDebug("Required scripts for ${device.displayName}: ${requiredScripts}")
+    return requiredScripts
+}
+
+/**
+ * Queries a Shelly device's full status via Shelly.GetStatus RPC.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @return Map of status keys and values, or null on failure
+ */
+private Map queryDeviceStatus(String ipAddress) {
+    try {
+        String uri = "http://${ipAddress}/rpc"
+        LinkedHashMap command = shellyGetStatusCommand('deviceConfig')
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        LinkedHashMap json = postCommandSync(command, uri)
+        return json?.result as Map
+    } catch (Exception ex) {
+        logError("Failed to query device status for ${ipAddress}: ${ex.message}")
+        return null
+    }
+}
+
+/**
+ * Strips the .js extension from a script filename to get the script name
+ * as it appears on the Shelly device.
+ *
+ * @param filename The script filename (e.g., "switchstatus.js")
+ * @return The script name without extension (e.g., "switchstatus")
+ */
+@CompileStatic
+private String stripJsExtension(String filename) {
+    if (filename?.endsWith('.js')) {
+        return filename.substring(0, filename.length() - 3)
+    }
+    return filename
+}
+
+/**
+ * Installs missing required scripts on a Shelly device.
+ * Downloads each missing script from GitHub, creates it on the device,
+ * uploads the code, enables it, and starts it.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+void installRequiredScripts(String ipAddress) {
+    String selectedDni = settings?.selectedConfigDevice as String
+    if (!selectedDni) { return }
+    def device = getChildDevice(selectedDni)
+    if (!device) { return }
+
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    if (requiredScripts.size() == 0) {
+        logInfo("No required scripts for device at ${ipAddress}")
+        appendLog('info', "No required scripts for ${device.displayName}")
+        return
+    }
+
+    // Get currently installed scripts
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logError("Cannot read scripts from device at ${ipAddress}")
+        appendLog('error', "Cannot read scripts from ${device.displayName}")
+        return
+    }
+    List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
+
+    String branch = 'AutoConfScript'
+    String baseUrl = "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/${branch}/Scripts"
+    String uri = "http://${ipAddress}/rpc"
+
+    Integer installed = 0
+    requiredScripts.each { String scriptFile ->
+        String scriptName = stripJsExtension(scriptFile)
+
+        // Skip if already installed
+        if (installedNames.any { it == scriptName }) {
+            logDebug("Script '${scriptName}' already installed on ${ipAddress}")
+            return
+        }
+
+        logInfo("Installing script '${scriptName}' on ${ipAddress}...")
+        appendLog('info', "Installing ${scriptName} on ${device.displayName}...")
+
+        // Download script source from GitHub
+        String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
+        if (!scriptCode) {
+            logError("Failed to download ${scriptFile} from GitHub")
+            appendLog('error', "Failed to download ${scriptFile}")
+            return
+        }
+
+        try {
+            // Create script on device
+            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
+            if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
+            LinkedHashMap createResult = postCommandSync(createCmd, uri)
+            Integer scriptId = createResult?.result?.id as Integer
+
+            if (scriptId == null) {
+                logError("Failed to create script '${scriptName}' on device")
+                appendLog('error', "Failed to create ${scriptName}")
+                return
+            }
+
+            // Upload code
+            LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, scriptCode, false)
+            if (authIsEnabled() == true && getAuth().size() > 0) { putCmd.auth = getAuth() }
+            postCommandSync(putCmd, uri)
+
+            // Enable script
+            LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+            if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
+            postCommandSync(enableCmd, uri)
+
+            // Start script
+            LinkedHashMap startCmd = scriptStartCommand(scriptId)
+            if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
+            postCommandSync(startCmd, uri)
+
+            logInfo("Successfully installed and started '${scriptName}' (id: ${scriptId})")
+            appendLog('info', "Installed ${scriptName} on ${device.displayName}")
+            installed++
+        } catch (Exception ex) {
+            logError("Failed to install script '${scriptName}': ${ex.message}")
+            appendLog('error', "Failed to install ${scriptName}: ${ex.message}")
+        }
+    }
+
+    logInfo("Script installation complete: ${installed} script(s) installed on ${ipAddress}")
+    appendLog('info', "Script installation complete: ${installed} installed on ${device.displayName}")
+}
+
+/**
  * Initializes the app state and sets up mDNS discovery.
  * Initializes state variables for discovered devices and logs,
  * mirrors logging settings to state, subscribes to system start events,
@@ -476,7 +812,9 @@ void initialize() {
     }
 
     // Schedule periodic watchdog to detect IP address changes via mDNS
-    schedule('0 */15 * ? * *', 'watchdogScan')
+    if (settings?.enableWatchdog != false) {
+        schedule('0 */15 * ? * *', 'watchdogScan')
+    }
 }
 
 /**
@@ -2231,14 +2569,59 @@ LinkedHashMap sysGetStatusCommand(String src = 'sysGetStatus') {
   return command
 }
 
+/**
+ * Builds a DevicePower.GetStatus RPC command map.
+ *
+ * @param id The device power component ID (default 0)
+ * @return LinkedHashMap containing the RPC command
+ */
 @CompileStatic
-LinkedHashMap devicePowerGetStatusCommand() {
+LinkedHashMap devicePowerGetStatusCommand(Integer id = 0) {
   LinkedHashMap command = [
     "id" : 0,
     "src" : "devicePowerGetStatus",
     "method" : "DevicePower.GetStatus",
     "params" : [
-      "id" : 0
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+/**
+ * Builds a DevicePower.GetConfig RPC command map.
+ *
+ * @param id The device power component ID (default 0)
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap devicePowerGetConfigCommand(Integer id = 0) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "devicePowerGetConfig",
+    "method" : "DevicePower.GetConfig",
+    "params" : [
+      "id" : id
+    ]
+  ]
+  return command
+}
+
+/**
+ * Builds a DevicePower.SetConfig RPC command map.
+ *
+ * @param id The device power component ID (default 0)
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap devicePowerSetConfigCommand(Integer id = 0) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "devicePowerSetConfig",
+    "method" : "DevicePower.SetConfig",
+    "params" : [
+      "id" : id,
+      "config" : [:]
     ]
   ]
   return command
@@ -2625,13 +3008,19 @@ LinkedHashMap scriptDeleteCommand(Integer id) {
   return command
 }
 
+/**
+ * Builds a Script.Create RPC command map.
+ *
+ * @param name The name for the new script
+ * @return LinkedHashMap containing the RPC command
+ */
 @CompileStatic
-LinkedHashMap scriptCreateCommand() {
+LinkedHashMap scriptCreateCommand(String name) {
   LinkedHashMap command = [
     "id" : 0,
     "src" : "scriptCreate",
     "method" : "Script.Create",
-    "params" : ["name": "HubitatBLEHelper"]
+    "params" : ["name": name]
   ]
   return command
 }
@@ -2647,6 +3036,178 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
       "code": code,
       "append": append
     ]
+  ]
+  return command
+}
+
+/**
+ * Builds a Script.GetCode RPC command map.
+ *
+ * @param id The script ID
+ * @param offset Byte offset to start reading from (0 = beginning)
+ * @param len Number of bytes to read (0 = read all)
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap scriptGetCodeCommand(Integer id, Integer offset = 0, Integer len = 0) {
+  LinkedHashMap params = ["id": id, "offset": offset] as LinkedHashMap
+  if (len > 0) { params.put("len", len) }
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptGetCode",
+    "method" : "Script.GetCode",
+    "params" : params
+  ]
+  return command
+}
+
+/**
+ * Builds a Script.Eval RPC command map to evaluate code in a running script's context.
+ *
+ * @param id The script ID (script must be running)
+ * @param code The code to evaluate
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap scriptEvalCommand(Integer id, String code) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptEval",
+    "method" : "Script.Eval",
+    "params" : ["id": id, "code": code]
+  ]
+  return command
+}
+
+/**
+ * Builds a Script.GetConfig RPC command map.
+ *
+ * @param id The script ID
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap scriptGetConfigCommand(Integer id) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptGetConfig",
+    "method" : "Script.GetConfig",
+    "params" : ["id": id]
+  ]
+  return command
+}
+
+/**
+ * Builds a Script.GetStatus RPC command map.
+ *
+ * @param id The script ID
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap scriptGetStatusCommand(Integer id) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "scriptGetStatus",
+    "method" : "Script.GetStatus",
+    "params" : ["id": id]
+  ]
+  return command
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ║  KVS (Key-Value Store) Command Maps                         ║
+// ╚═══════════════════════════════════════════════════════════════╝
+
+/**
+ * Builds a KVS.Set RPC command map to store a key-value pair.
+ *
+ * @param key The key to set
+ * @param value The value to store
+ * @param etag Optional ETag for conditional update
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap kvsSetCommand(String key, Object value, String etag = null) {
+  LinkedHashMap params = ["key": key, "value": value] as LinkedHashMap
+  if (etag != null) { params.put("etag", etag) }
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "kvsSet",
+    "method" : "KVS.Set",
+    "params" : params
+  ]
+  return command
+}
+
+/**
+ * Builds a KVS.Get RPC command map to retrieve a value by key.
+ *
+ * @param key The key to retrieve
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap kvsGetCommand(String key) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "kvsGet",
+    "method" : "KVS.Get",
+    "params" : ["key": key]
+  ]
+  return command
+}
+
+/**
+ * Builds a KVS.GetMany RPC command map to retrieve multiple key-value pairs.
+ *
+ * @param match Glob pattern to match keys (default '*' for all)
+ * @param offset Optional offset for pagination
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap kvsGetManyCommand(String match = '*', Integer offset = null) {
+  LinkedHashMap params = ["match": match] as LinkedHashMap
+  if (offset != null) { params.put("offset", offset) }
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "kvsGetMany",
+    "method" : "KVS.GetMany",
+    "params" : params
+  ]
+  return command
+}
+
+/**
+ * Builds a KVS.List RPC command map to list keys in the store.
+ *
+ * @param match Glob pattern to match keys (default '*' for all)
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap kvsListCommand(String match = '*') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "kvsList",
+    "method" : "KVS.List",
+    "params" : ["match": match]
+  ]
+  return command
+}
+
+/**
+ * Builds a KVS.Delete RPC command map to remove a key-value pair.
+ *
+ * @param key The key to delete
+ * @param etag Optional ETag for conditional delete
+ * @return LinkedHashMap containing the RPC command
+ */
+@CompileStatic
+LinkedHashMap kvsDeleteCommand(String key, String etag = null) {
+  LinkedHashMap params = ["key": key] as LinkedHashMap
+  if (etag != null) { params.put("etag", etag) }
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "kvsDelete",
+    "method" : "KVS.Delete",
+    "params" : params
   ]
   return command
 }
@@ -3725,7 +4286,7 @@ void enableBluReportingToHE() {
   LinkedHashMap s = getBleShellyBluId()
   if(s == null) {
     logDebug('HubitatBLEHelper script not found on device, creating script...')
-    postCommandSync(scriptCreateCommand())
+    postCommandSync(scriptCreateCommand('HubitatBLEHelper'))
     s = getBleShellyBluId()
   }
   Integer id = s?.id as Integer
@@ -6266,7 +6827,7 @@ private void sendSwitchCommand(def childDevice, Boolean onState) {
   } catch (Exception e) {
     logError("sendSwitchCommand(${action}) exception for ${childDevice.displayName}: ${e.message}")
     // Trigger watchdog scan to detect possible IP change (respects 5-min cooldown)
-    watchdogScan()
+    if (settings?.enableWatchdog != false) { watchdogScan() }
   }
 }
 
