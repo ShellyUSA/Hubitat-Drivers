@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.26"
+@Field static final String APP_VERSION = "1.0.27"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.26"
+    version: "1.0.27"
 )
 
 preferences {
@@ -604,7 +604,17 @@ Map deviceConfigPage() {
         deviceOptions[device.deviceNetworkId] = "${device.displayName} (${ip})"
     }
 
-    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false) {
+    // Use periodic refresh when a battery device is selected so wake/sleep transitions update
+    Integer refreshSecs = 0
+    String selectedDniCheck = settings?.selectedConfigDevice as String
+    if (selectedDniCheck) {
+        def dev = getChildDevice(selectedDniCheck)
+        if (dev && isSleepyBatteryDevice(dev)) {
+            refreshSecs = 3
+        }
+    }
+
+    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false, refreshInterval: refreshSecs) {
         section() {
             if (!deviceOptions || deviceOptions.size() == 0) {
                 paragraph "No installed devices found. Create devices first."
@@ -625,17 +635,13 @@ Map deviceConfigPage() {
                     Integer deviceId = selectedDevice.id as Integer
 
                     // Probe the device to determine if it's currently reachable
-                    Boolean deviceIsReachable = false
-                    Map deviceStatus = queryDeviceStatus(ip)
-                    if (deviceStatus) {
-                        deviceIsReachable = true
-                    }
+                    // Use fast 2s timeout check for battery devices to avoid blocking page render
+                    Boolean deviceIsReachable = isBatteryDevice ? isDeviceReachable(ip) : (queryDeviceStatus(ip) != null)
 
                     if (isBatteryDevice) {
                         section() {
-                            // SSR-enabled status that updates when the device sends a temperature event
-                            String statusHtml = renderBatteryDeviceStatus(deviceIsReachable)
-                            paragraph "<span class='ssr-device-current-state-${deviceId}-temperature'>${statusHtml}</span>"
+                            String statusHtml = renderBatteryDeviceStatus(deviceIsReachable, selectedDevice)
+                            paragraph statusHtml
                         }
                     }
 
@@ -904,18 +910,40 @@ private String renderRebuildStatusHtml() {
 }
 
 /**
- * Renders the battery device status message HTML.
+ * Renders the battery device status message HTML, including last known
+ * sensor values when the device is asleep.
  *
  * @param isReachable Whether the device is currently reachable
+ * @param childDevice The child device (optional, for reading last known values)
  * @return HTML string for the battery device status
  */
-private String renderBatteryDeviceStatus(Boolean isReachable) {
+private String renderBatteryDeviceStatus(Boolean isReachable, def childDevice = null) {
     if (isReachable) {
         return "<b>This is a battery-powered device and it is currently awake.</b>"
     }
-    return "<b>This is a battery-powered device that sleeps to conserve power.</b><br>" +
-        "It can only be reached when it is awake (briefly, when sending sensor updates).<br>" +
-        "Scripts and webhooks must be configured while the device is awake, or via the Shelly app/web UI."
+
+    StringBuilder sb = new StringBuilder()
+    sb.append("<b>This is a battery-powered device and it is currently asleep.</b><br>")
+    sb.append("It can only be reached when it is awake (briefly, when sending sensor updates).<br>")
+    sb.append("Webhooks can be configured while the device is awake, or via the Shelly app/web UI.")
+
+    // Show last known sensor values if available
+    if (childDevice) {
+        List<String> lastKnown = []
+        def temp = childDevice.currentValue('temperature')
+        if (temp != null) { lastKnown.add("Temperature: ${temp}") }
+        def humidity = childDevice.currentValue('humidity')
+        if (humidity != null) { lastKnown.add("Humidity: ${humidity}%") }
+        def battery = childDevice.currentValue('battery')
+        if (battery != null) { lastKnown.add("Battery: ${battery}%") }
+
+        if (lastKnown.size() > 0) {
+            sb.append("<br><br><b>Last known state:</b><br>")
+            sb.append(lastKnown.join('<br>'))
+        }
+    }
+
+    return sb.toString()
 }
 
 /**
@@ -929,15 +957,26 @@ private String renderBatteryDeviceStatus(Boolean isReachable) {
  * @return HTML string showing webhook status
  */
 private String renderWebhookStatusHtml(def device, String ip, List<Map> requiredActions, Boolean deviceIsReachable) {
+    String dni = device.deviceNetworkId
+
     if (!deviceIsReachable) {
+        // Show last known webhook status from stored config
+        Map deviceConfigs = state.deviceConfigs ?: [:]
+        Map config = deviceConfigs[dni] as Map
+        List<Map> cachedStatus = config?.lastWebhookStatus as List<Map>
+
         StringBuilder sb = new StringBuilder()
-        sb.append("<b>Device is currently unreachable.</b><br>")
-        sb.append("Webhook status cannot be checked while the device is offline or asleep.<br>")
-        sb.append("<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>")
-        requiredActions.each { Map action ->
-            sb.append("${action.name} (${action.event} cid:${action.cid}) — status unknown (device unreachable)\n")
+        if (cachedStatus) {
+            sb.append("<b>Last known webhook status</b> (device is asleep):<br>")
+            sb.append("<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>")
+            cachedStatus.each { Map entry ->
+                sb.append("${entry.name} (${entry.event} cid:${entry.cid}) — ${entry.status}\n")
+            }
+            sb.append("</pre>")
+        } else {
+            sb.append("<b>Device is currently asleep.</b><br>")
+            sb.append("Webhook status has not been checked yet. Wake the device to check.")
         }
-        sb.append("</pre>")
         return sb.toString().trim()
     }
 
@@ -960,6 +999,19 @@ private String renderWebhookStatusHtml(def device, String ip, List<Map> required
         } else {
             missingActions.add(action)
         }
+    }
+
+    // Cache the webhook status for display when device is asleep
+    List<Map> webhookStatusCache = requiredActions.collect { Map action ->
+        Boolean isOk = okActions.contains(action)
+        [name: action.name, event: action.event, cid: action.cid, status: isOk ? 'configured' : 'MISSING']
+    }
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Map config = deviceConfigs[dni] as Map
+    if (config) {
+        config.lastWebhookStatus = webhookStatusCache
+        deviceConfigs[dni] = config
+        state.deviceConfigs = deviceConfigs
     }
 
     StringBuilder sb = new StringBuilder()
@@ -1023,7 +1075,7 @@ String processServerSideRender(Map event) {
     }
 
     // Default: render battery device status
-    return renderBatteryDeviceStatus(deviceIsReachable)
+    return renderBatteryDeviceStatus(deviceIsReachable, childDevice)
 }
 
 /**
@@ -1311,8 +1363,39 @@ private Map queryDeviceStatus(String ipAddress) {
         LinkedHashMap json = postCommandSync(command, uri)
         return json?.result as Map
     } catch (Exception ex) {
-        logError("Failed to query device status for ${ipAddress}: ${ex.message}")
+        if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
+            logDebug("Device at ${ipAddress} is unreachable: ${ex.message}")
+        } else {
+            logError("Failed to query device status for ${ipAddress}: ${ex.message}")
+        }
         return null
+    }
+}
+
+/**
+ * Fast reachability check for a Shelly device using Shelly.GetDeviceInfo with
+ * a short timeout. Used on the config page to quickly determine if a battery
+ * device is awake without blocking the page for the full 10s default timeout.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @return true if the device responds, false otherwise
+ */
+private Boolean isDeviceReachable(String ipAddress) {
+    try {
+        Map params = [
+            uri: "http://${ipAddress}/rpc",
+            contentType: 'application/json',
+            requestContentType: 'application/json',
+            body: [id: 0, src: 'reachabilityCheck', method: 'Shelly.GetDeviceInfo'],
+            timeout: 2
+        ]
+        Boolean reachable = false
+        httpPost(params) { resp ->
+            if (resp.getStatus() == 200) { reachable = true }
+        }
+        return reachable
+    } catch (Exception ex) {
+        return false
     }
 }
 
