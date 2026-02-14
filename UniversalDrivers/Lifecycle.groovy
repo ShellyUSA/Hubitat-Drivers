@@ -17,6 +17,16 @@ void parse(String description) {
   try {
     Map msg = parseLanMessage(description)
 
+    // Decode headers if they're base64 encoded
+    if (msg?.header && !msg?.headers) {
+      try {
+        String decodedHeaders = new String(msg.header.decodeBase64())
+        logDebug("Decoded headers:\n${decodedHeaders}")
+      } catch (Exception e) {
+        logDebug("Could not decode headers: ${e.message}")
+      }
+    }
+
     // Check if this is an incoming request (status is null) or a response (status has value)
     if (msg?.status != null) {
       // This is an HTTP response

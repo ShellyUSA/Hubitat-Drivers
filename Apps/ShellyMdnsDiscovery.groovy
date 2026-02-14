@@ -1171,8 +1171,10 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     atomicState.driverGeneration = current
 
     // Launch all async fetch operations (inFlight already set, don't increment in fetchFileAsync)
+    // Add timestamp to bust GitHub CDN cache
+    Long cacheBuster = now()
     filesToFetch.each { String fileName ->
-        String fileUrl = "${baseUrl}/${fileName}"
+        String fileUrl = "${baseUrl}/${fileName}?v=${cacheBuster}"
         fetchFileAsync(fileUrl, fileName)
     }
 
@@ -5850,3 +5852,59 @@ private Boolean driverNeedsUpdate(String driverName, String namespace) {
 }
 
 /* #endregion Driver Version Tracking */
+
+// ═══════════════════════════════════════════════════════════════
+// Component Device Command Handlers
+// ═══════════════════════════════════════════════════════════════
+/* #region Component Device Command Handlers */
+
+/**
+ * Handles on() command from child switch component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentOn(device childDevice) {
+  sendSwitchCommand(childDevice, true)
+}
+
+/**
+ * Handles off() command from child switch component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentOff(device childDevice) {
+  sendSwitchCommand(childDevice, false)
+}
+
+/**
+ * Sends a Switch.Set command to a Shelly device.
+ * Extracts the device IP address and sends the command via JSON-RPC.
+ *
+ * @param childDevice The child device to control
+ * @param onState true to turn on, false to turn off
+ */
+private void sendSwitchCommand(device childDevice, Boolean onState) {
+  String action = onState ? 'on' : 'off'
+  logDebug("sendSwitchCommand(${action}) called from device: ${childDevice.displayName}")
+
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("sendSwitchCommand: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+
+    String rpcUri = "http://${ipAddress}/rpc"
+    logDebug("sendSwitchCommand: sending ${action} command to ${rpcUri}")
+
+    // Assuming switch ID 0 for now - may need to handle multiple switches per device later
+    LinkedHashMap command = switchSetCommand(onState, 0)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("sendSwitchCommand: response from ${ipAddress}: ${response}")
+
+  } catch (Exception e) {
+    logError("sendSwitchCommand(${action}) exception for ${childDevice.displayName}: ${e.message}")
+  }
+}
+
+/* #endregion Component Device Command Handlers */
