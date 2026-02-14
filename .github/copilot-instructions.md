@@ -55,6 +55,14 @@ These repository-level instructions are intended to help coding agents (Copilot 
 - Add `@CompileStatic` only when safe; test on Hubitat as it can change semantics.
 - Keep changes backward-compatible for devices/users where possible. If not possible, document breaking changes clearly in the PR and `UpdateInfo`.
 
+## Dynamic Page Updates - CRITICAL
+
+- **NEVER use `refreshInterval` or any form of automatic page refresh/reload.** This causes poor UX (flickering, scroll position loss, input focus loss). Always use Hubitat's dynamic update mechanisms instead.
+- For simple text updates: use `app-state-${app.id}-eventName` CSS class + `app.sendEvent(name: 'eventName', value: 'text')`.
+- For complex HTML updates: use `ssr-app-state-${app.id}-eventName` CSS class + bare `sendEvent(name: 'eventName', value: '...')` + `processServerSideRender(Map event)` handler.
+- **Important**: bare `sendEvent()` is required for SSR callbacks; `app.sendEvent()` only triggers client-side updates.
+- See `CLAUDE.md` for full SSR documentation.
+
 ---
 
 ## Versioning & releases (short rules)

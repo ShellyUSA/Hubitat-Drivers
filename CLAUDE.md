@@ -41,7 +41,7 @@ If you can't validate automatically, create a draft PR and request a human with 
 - `schedule()`, `unschedule()` - Scheduling methods
 - `getLocation()` - Location access
 - `getChildDevices()`, `getChildDevice()` - May work but wrap if errors occur
-- `sendEvent()` - For devices (apps use `app.sendEvent()` in helper)
+- `sendEvent()` - For devices and SSR-triggering app events (client-side-only app events use `app.sendEvent()` in helper)
 
 **Device/Child Wrapper Methods (require helpers):**
 - `dev.hasCapability()`, `dev.hasAttribute()`
@@ -156,9 +156,13 @@ void scheduleTask(String sched, String taskName) {
 - Improved runtime performance
 - Clearer code contracts with explicit types
 
-## Dynamic Page Updates (SSR)
+## Dynamic Page Updates (SSR) - CRITICAL
 
-Hubitat firmware 2.3.7.114+ supports dynamic HTML updates on app pages without full re-renders. There are two methods:
+Hubitat firmware 2.3.7.114+ supports dynamic HTML updates on app pages without full re-renders.
+
+**NEVER use `refreshInterval` or any form of page refresh/reload.** Always use dynamic updates (client-side or SSR) to update page content. Page refreshes cause poor UX (flickering, scroll position loss, input focus loss) and unnecessary server load.
+
+There are two methods:
 
 ### Method 1: Client-Side Updates (Simple Value Display)
 
@@ -178,7 +182,12 @@ paragraph "<span class='hub-state-${eventName}'>...</span>"
 paragraph "<span class='location-state-${eventName}'>...</span>"
 ```
 
-The browser replaces the element's text content with the event value. Good for simple text like timers and sensor readings.
+The browser replaces the element's text content with the event value. Good for simple text like timers, counters, and sensor readings.
+
+**To fire client-side app events:**
+```groovy
+app.sendEvent(name: 'myEventName', value: 'someTextValue')
+```
 
 ### Method 2: Server-Side Rendering (SSR) (Complex HTML)
 
@@ -186,35 +195,39 @@ Use the `ssr-` prefix to trigger a server-side callback that returns replacement
 
 ```groovy
 // In the dynamicPage section:
-paragraph "<span class='ssr-device-current-state-${deviceId}-temperature' id='my-element'>${initialHtml}</span>"
+paragraph "<span class='ssr-app-state-${app.id}-myEvent'>${initialHtml}</span>"
 
 // SSR handler function (must be named exactly this):
 String processServerSideRender(Map event) {
     String elementId = event.elementId ?: ''
     String eventName = event.name ?: ''
-    Integer deviceId = event.deviceId as Integer
 
-    // Return HTML to replace the element's content
-    if (elementId?.contains('my-element')) {
+    if (eventName == 'myEvent') {
         return renderMySection()
     }
     return ''
 }
 ```
 
+**CRITICAL: `sendEvent()` vs `app.sendEvent()` for SSR:**
+- `sendEvent()` (bare) — triggers **both** `ssr-app-state-` (SSR callback) **and** `app-state-` (client-side)
+- `app.sendEvent()` — triggers **only** `app-state-` (client-side), does **NOT** trigger SSR callbacks
+
+```groovy
+// ✓ CORRECT — triggers SSR callback via processServerSideRender
+sendEvent(name: 'myEvent', value: 'someValue')
+
+// ✗ WRONG for SSR — only triggers client-side app-state- updates
+app.sendEvent(name: 'myEvent', value: 'someValue')
+```
+
 **Key points:**
 - The `processServerSideRender(Map event)` function must exist in the app
 - `event` contains standard event fields plus `elementId`
-- Return HTML string to replace element content
+- Return HTML string to replace element content (uses innerHTML)
 - Initial content is NOT auto-populated — set it explicitly in the page
-- Use sparingly — each tagged element triggers a server call on events
-- Use `id` attribute to distinguish multiple SSR elements
-- Works with both device events and app events (`ssr-app-state-${app.id}-eventName`)
-
-**To trigger SSR updates from app code:**
-```groovy
-app.sendEvent(name: 'myEventName', value: 'someValue')
-```
+- Use `id` attribute to distinguish multiple SSR elements on the same page
+- Works with device events (`ssr-device-current-state-`) and app events (`ssr-app-state-`)
 
 ## Clean As You Code - CRITICAL
 

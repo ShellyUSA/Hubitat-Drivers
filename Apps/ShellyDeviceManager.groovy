@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.31"
+@Field static final String APP_VERSION = "1.0.32"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.31"
+    version: "1.0.32"
 )
 
 preferences {
@@ -7961,7 +7961,9 @@ private void rebuildAllTrackedDrivers() {
     state.driverRebuildErrors = []
 
     // Fire app event to trigger SSR update on main page
-    app.sendEvent(name: 'driverRebuildStatus', value: 'in_progress')
+    // NOTE: bare sendEvent() is required for ssr-app-state- elements;
+    // app.sendEvent() only triggers client-side app-state- bindings.
+    sendEvent(name: 'driverRebuildStatus', value: 'in_progress')
 
     logInfo("Starting serial rebuild of ${queue.size()} tracked driver(s): ${queue}")
     appendLog('info', "Rebuilding ${queue.size()} auto-generated driver(s)...")
@@ -8000,7 +8002,7 @@ void processNextDriverRebuild() {
     appendLog('info', "Rebuilding: ${driverInfo.name}")
 
     // Fire SSR update so the UI shows progress
-    app.sendEvent(name: 'driverRebuildStatus', value: "rebuilding_${queue.size()}")
+    sendEvent(name: 'driverRebuildStatus', value: "rebuilding_${queue.size()}")
 
     try {
         List<String> components = driverInfo.components as List<String>
@@ -8066,7 +8068,7 @@ private void finishDriverRebuild() {
     state.remove('driverRebuildCurrentKey')
 
     // Fire app event to trigger SSR update on main page
-    app.sendEvent(name: 'driverRebuildStatus', value: 'complete')
+    sendEvent(name: 'driverRebuildStatus', value: 'complete')
 }
 
 /* #endregion Driver Auto-Update */
