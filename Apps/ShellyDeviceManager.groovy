@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.6"
+@Field static final String APP_VERSION = "1.0.7"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.6"
+    version: "1.0.7"
 )
 
 preferences {
@@ -91,6 +91,10 @@ Map mainPage() {
         }
 
         section("Driver Management", hideable: true, hidden: true) {
+            input name: 'rebuildOnUpdate', type: 'bool', title: 'Rebuild drivers when app is updated',
+                description: 'Automatically rebuilds in-use drivers and removes unused ones whenever the app version changes.',
+                defaultValue: true, submitOnChange: true
+
             Map allDrivers = state.autoDrivers ?: [:]
             if (allDrivers.isEmpty()) {
                 paragraph "No auto-generated drivers are currently tracked."
@@ -1063,9 +1067,13 @@ void initialize() {
         state.lastAutoconfVersion = currentVersion
         logInfo("First install detected, storing app version: ${currentVersion}")
     } else if (lastVersion != currentVersion) {
-        logInfo("App version changed from ${lastVersion} to ${currentVersion}, triggering driver regeneration")
         state.lastAutoconfVersion = currentVersion
-        rebuildAllTrackedDrivers()
+        if (settings?.rebuildOnUpdate != false) {
+            logInfo("App version changed from ${lastVersion} to ${currentVersion}, rebuilding drivers and cleaning up unused")
+            rebuildAllTrackedDrivers()
+        } else {
+            logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver rebuild disabled)")
+        }
     } else {
         logDebug("App version unchanged (${currentVersion}), no driver regeneration needed")
     }
