@@ -124,9 +124,18 @@ void appButtonHandler(String buttonName) {
         List<String> selected = settings?.selectedToCreate ?: []
         if (!(selected instanceof List) && selected) { selected = [selected] }
         int count = (selected instanceof List) ? selected.size() : 0
-        List<String> labels = selected.collect { ip -> state.discoveredShellys[ip]?.name ?: ip }
-        logDebug("Would create ${count} device(s): ${labels.join(', ')}")
-        appendLog('info', "Would create ${count} device(s): ${labels.join(', ')}")
+
+        if (count == 0) {
+            appendLog('warn', 'Create Devices: no devices selected')
+            return
+        }
+
+        logDebug("Creating ${count} device(s)")
+        appendLog('info', "Creating ${count} device(s)...")
+
+        selected.each { String ipKey ->
+            createShellyDevice(ipKey)
+        }
     }
 
     if (buttonName == 'btnGetDeviceInfo') {
@@ -139,6 +148,94 @@ void appButtonHandler(String buttonName) {
         selected.each { String ipKey ->
             fetchAndStoreDeviceInfo(ipKey)
         }
+    }
+}
+
+/**
+ * Creates a Hubitat device for a discovered Shelly device.
+ * Retrieves device information, determines the appropriate driver,
+ * and creates a child device with the generated driver code.
+ *
+ * @param ipKey The IP address key of the device to create
+ */
+private void createShellyDevice(String ipKey) {
+    logInfo("Creating device for ${ipKey}")
+
+    // Get device info from state
+    Map deviceInfo = state.discoveredShellys[ipKey]
+    if (!deviceInfo) {
+        logError("No device info found for ${ipKey}")
+        appendLog('error', "Failed to create device: no info for ${ipKey}")
+        return
+    }
+
+    // Get device status (should have been fetched via Get Device Info button)
+    Map deviceStatus = deviceInfo.deviceStatus
+    if (!deviceStatus) {
+        logError("No device status found for ${ipKey}. Use 'Get Device Info' button first.")
+        appendLog('error', "Failed to create device for ${ipKey}: no device status. Use 'Get Device Info' first.")
+        return
+    }
+
+    // Get the generated driver name
+    // The driver name should have been determined during device info fetch
+    String driverName = deviceInfo.generatedDriverName
+    if (!driverName) {
+        logError("No driver name found for ${ipKey}. Driver generation may have failed.")
+        appendLog('error', "Failed to create device for ${ipKey}: no driver name")
+        return
+    }
+
+    // Create device network ID (DNI) - use MAC address if available, otherwise IP
+    String dni = deviceInfo.mac ?: "shelly-${ipKey.replaceAll('\\.', '-')}"
+
+    // Create device label (user-friendly name)
+    String deviceLabel = deviceInfo.name ?: "Shelly ${ipKey}"
+
+    // Check if device already exists
+    def existingDevice = getChildDevice(dni)
+    if (existingDevice) {
+        logWarn("Device already exists: ${existingDevice.displayName} (${dni})")
+        appendLog('warn', "Device already exists: ${existingDevice.displayName}")
+        return
+    }
+
+    // Prepare device properties
+    Map deviceProps = [
+        name: deviceLabel,
+        label: deviceLabel,
+        data: [
+            ipAddress: ipKey,
+            shellyModel: deviceInfo.model ?: 'Unknown',
+            shellyId: deviceInfo.id ?: dni,
+            shellyMac: deviceInfo.mac ?: ''
+        ]
+    ]
+
+    logInfo("=== Device Creation Details ===")
+    logInfo("  DNI: ${dni}")
+    logInfo("  Driver: ${driverName}")
+    logInfo("  Label: ${deviceLabel}")
+    logInfo("  IP: ${ipKey}")
+    logInfo("  Model: ${deviceInfo.model}")
+    logInfo("  MAC: ${deviceInfo.mac}")
+    logInfo("  Properties: ${deviceProps}")
+
+    try {
+        def childDevice = addChildDevice('ShellyUSA', driverName, dni, deviceProps)
+
+        logInfo("✓ Created device: ${deviceLabel} using driver ${driverName}")
+        appendLog('info', "✓ Created: ${deviceLabel} (${driverName})")
+
+        // Set device attributes
+        childDevice.updateSetting('ipAddress', ipKey)
+        childDevice.initialize()
+
+        logInfo("✓ Device initialized successfully")
+
+    } catch (Exception e) {
+        logError("Failed to create device: ${e.message}")
+        appendLog('error', "Failed to create ${deviceLabel}: ${e.message}")
     }
 }
 
@@ -666,7 +763,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
 
         sendFoundShellyEvents()
-        determineDeviceDriver(deviceStatus)
+        determineDeviceDriver(deviceStatus, ipKey)
     } catch (Exception e) {
         String errorMsg = e.message ?: e.toString() ?: e.class.simpleName
         appendLog('error', "Failed to get device info from ${ip}: ${errorMsg}")
@@ -699,7 +796,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
  *
  * @param deviceStatus Map containing the device status with component keys
  */
-private void determineDeviceDriver(Map deviceStatus ) {
+private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Placeholder for future device-type determination logic
     if (!deviceStatus) {
         logDebug("determineDeviceDriver: no deviceStatus provided, cannot determine capabilities")
@@ -715,15 +812,40 @@ private void determineDeviceDriver(Map deviceStatus ) {
 
     // Build list of Shelly components found
     List<String> components = []
+    Map<String, Boolean> componentPowerMonitoring = [:]
+
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
-        if (key.startsWith('switch')) { components.add(k.toString()) }
-        if (key.contains('input')) { components.add(k.toString()) }
+        if (key.startsWith('switch')) {
+            components.add(k.toString())
+            // Check if this switch has power monitoring
+            Boolean hasPM = false
+            if (v instanceof Map) {
+                // Check for power monitoring fields: voltage, current, power, apower, energy
+                hasPM = v.voltage != null || v.current != null || v.power != null ||
+                        v.apower != null || v.aenergy != null
+            }
+            componentPowerMonitoring[k.toString()] = hasPM
+            if (hasPM) {
+                logInfo("Switch ${k} has power monitoring capabilities")
+            }
+        }
+        if (key.contains('input')) {
+            components.add(k.toString())
+            componentPowerMonitoring[k.toString()] = false
+        }
     }
 
     // Generate driver for discovered components
     if (components.size() > 0) {
-        String driverCode = generateHubitatDriver(components)
+        // Store context for async callback to use
+        atomicState.currentDriverGeneration = [
+            ipKey: ipKey,
+            components: components,
+            componentPowerMonitoring: componentPowerMonitoring
+        ]
+
+        String driverCode = generateHubitatDriver(components, componentPowerMonitoring)
         logDebug("Generated driver code (${driverCode?.length() ?: 0} chars)")
     }
 
@@ -755,8 +877,9 @@ private void determineDeviceDriver(Map deviceStatus ) {
  *                   (e.g., ["switch:switch:0", "input:input:0"])
  * @return String containing the generated driver code, currently a placeholder
  */
-private String generateHubitatDriver(List<String> components) {
+private String generateHubitatDriver(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:]) {
     logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components}")
+    logDebug("Power monitoring components: ${componentPowerMonitoring.findAll { k, v -> v }}")
 
     // Branch to fetch files from (change to 'master' for production)
     String branch = 'AutoConfScript'
@@ -797,7 +920,7 @@ private String generateHubitatDriver(List<String> components) {
 
     // Get driver metadata from JSON
     Map driverDef = componentData?.driver as Map
-    String driverName = generateDriverName(components)
+    String driverName = generateDriverName(components, componentPowerMonitoring)
     String version = driverDef?.version ?: '1.0.0'
     String driverNameWithVersion = "${driverName} v${version}"
 
@@ -866,6 +989,46 @@ private String generateHubitatDriver(List<String> components) {
                 }
 
                 driver.append("\n")
+
+                // If this is a switch with power monitoring, add PM capabilities
+                if (baseType == 'switch' && componentPowerMonitoring[component]) {
+                    logDebug("Adding power monitoring capabilities for ${component}")
+
+                    // Add power monitoring capabilities
+                    ['CurrentMeter', 'PowerMeter', 'VoltageMeasurement', 'EnergyMeter'].each { pmCapId ->
+                        if (!addedCapabilities.contains(pmCapId)) {
+                            addedCapabilities.add(pmCapId)
+
+                            Map pmCap = capabilities.find { cap -> cap.id == pmCapId }
+                            if (pmCap) {
+                                driver.append("    capability '${pmCapId}'\n")
+
+                                // Add attributes comments
+                                if (pmCap.attributes) {
+                                    pmCap.attributes.each { attr ->
+                                        String attrComment = "    //Attributes: ${attr.name} - ${attr.type.toUpperCase()}"
+                                        driver.append("${attrComment}\n")
+                                    }
+                                }
+
+                                // Add commands comments
+                                if (pmCap.commands) {
+                                    List<String> cmdSignatures = pmCap.commands.collect { cmd ->
+                                        if (cmd.arguments && cmd.arguments.size() > 0) {
+                                            String args = cmd.arguments.collect { arg -> arg.name }.join(', ')
+                                            return "${cmd.name}(${args})"
+                                        } else {
+                                            return "${cmd.name}()"
+                                        }
+                                    }
+                                    driver.append("    //Commands: ${cmdSignatures.join(', ')}\n")
+                                }
+
+                                driver.append("\n")
+                            }
+                        }
+                    }
+                }
             }
         } else {
             logDebug("No capability mapping found for Shelly component: ${component} (base type: ${baseType})")
@@ -1024,28 +1187,37 @@ private String generateHubitatDriver(List<String> components) {
  * @param components List of Shelly components (e.g., ["switch:0", "switch:1"])
  * @return Generated driver name (e.g., "Shelly Single Switch", "Shelly 2x Switch")
  */
-private String generateDriverName(List<String> components) {
+private String generateDriverName(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:]) {
     // Count component types
     Map<String, Integer> componentCounts = [:]
+    Boolean hasPowerMonitoring = false
+
     components.each { component ->
         String baseType = component.contains(':') ? component.split(':')[0] : component
         componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
+
+        // Check if any component has power monitoring
+        if (componentPowerMonitoring[component]) {
+            hasPowerMonitoring = true
+        }
     }
 
     // Generate name based on components
+    String pmSuffix = hasPowerMonitoring ? " PM" : ""
+
     if (componentCounts.size() == 1) {
         String type = componentCounts.keySet().first()
         Integer count = componentCounts[type]
 
         String typeName = type.capitalize()
         if (count == 1) {
-            return "Shelly Autoconf Single ${typeName}"
+            return "Shelly Autoconf Single ${typeName}${pmSuffix}"
         } else {
-            return "Shelly Autoconf ${count}x ${typeName}"
+            return "Shelly Autoconf ${count}x ${typeName}${pmSuffix}"
         }
     } else {
         // Multiple component types
-        return "Shelly Autoconf Multi-Component Device"
+        return "Shelly Autoconf Multi-Component Device${pmSuffix}"
     }
 }
 
@@ -1223,6 +1395,22 @@ private void completeDriverGeneration() {
 
     // Install the generated driver
     installDriver(driverCode)
+
+    // Store the driver name for device creation
+    Map genContext = atomicState.currentDriverGeneration
+    if (genContext && genContext.ipKey) {
+        String driverName = generateDriverName(genContext.components as List<String>, genContext.componentPowerMonitoring as Map)
+        String version = "1.0.0" // TODO: Get from component_driver.json
+        String driverNameWithVersion = "${driverName} v${version}"
+
+        if (state.discoveredShellys[genContext.ipKey]) {
+            state.discoveredShellys[genContext.ipKey].generatedDriverName = driverNameWithVersion
+            logInfo("✓ Stored driver name for ${genContext.ipKey}: ${driverNameWithVersion}")
+        }
+
+        // Clear the context
+        atomicState.remove('currentDriverGeneration')
+    }
 
     // Clean up any duplicate drivers
     logInfo("Cleaning up duplicate drivers...")

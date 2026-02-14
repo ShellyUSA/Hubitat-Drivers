@@ -482,6 +482,16 @@
     {
       "attributes": [
         {
+          "name": "amperage",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "CurrentMeter"
+    },
+    {
+      "attributes": [
+        {
           "name": "door",
           "type": "enum",
           "values": [
@@ -522,7 +532,12 @@
           "type": "number"
         }
       ],
-      "commands": [],
+      "commands": [
+        {
+          "arguments": [],
+          "name": "resetEnergyMonitors"
+        }
+      ],
       "id": "EnergyMeter"
     },
     {

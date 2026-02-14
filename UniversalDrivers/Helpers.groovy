@@ -1,6 +1,10 @@
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  Logging Helpers                                             ║
 // ╚══════════════════════════════════════════════════════════════╝
+String loggingLabel() {
+  return "${device.displayName}"
+}
+
 private Boolean shouldLogLevel(String messageLevel) {
   if(messageLevel == 'error') {
     return true
