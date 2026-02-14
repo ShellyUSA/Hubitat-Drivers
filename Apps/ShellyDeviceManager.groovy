@@ -53,7 +53,7 @@ Map mainPage() {
 
     Integer remainingSecs = getRemainingDiscoverySeconds()
 
-    dynamicPage(name: "mainPage", title: "", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
         section() {
             if (state.discoveryRunning) {
                 paragraph "<b><span class='app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>"
