@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.15"
+@Field static final String APP_VERSION = "1.0.16"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.15"
+    version: "1.0.16"
 )
 
 preferences {
@@ -352,19 +352,51 @@ private void createShellyDevice(String ipKey) {
         }
     }
 
-    // Get the generated driver name
+    // Get the generated driver name, waiting for async generation if in progress
     String driverName = deviceInfo.generatedDriverName
     if (!driverName) {
         // Check if async driver generation is in progress (GitHub fetch)
         Map genContext = atomicState.currentDriverGeneration
         if (genContext?.ipKey == ipKey) {
-            logWarn("Driver generation in progress for ${ipKey} — please wait and try again.")
-            appendLog('warn', "Driver for ${ipKey} is being generated. Please wait a moment and try again.")
+            logInfo("Driver generation in progress for ${ipKey} — waiting for completion...")
+            appendLog('info', "Driver for ${ipKey} is being generated, waiting...")
+
+            // Poll for completion (up to 60 seconds)
+            int maxWaitMs = 60000
+            int pollIntervalMs = 2000
+            int waited = 0
+            while (waited < maxWaitMs) {
+                pauseExecution(pollIntervalMs)
+                waited += pollIntervalMs
+
+                // Re-check if generation completed
+                deviceInfo = state.discoveredShellys[ipKey]
+                driverName = deviceInfo?.generatedDriverName
+                if (driverName) {
+                    logInfo("Driver generation completed for ${ipKey}: ${driverName}")
+                    break
+                }
+
+                // Check if generation context cleared (completed or errored)
+                genContext = atomicState.currentDriverGeneration
+                if (!genContext || genContext.ipKey != ipKey) {
+                    // Generation finished but no driver name set — check one more time
+                    deviceInfo = state.discoveredShellys[ipKey]
+                    driverName = deviceInfo?.generatedDriverName
+                    break
+                }
+            }
+
+            if (!driverName) {
+                logError("Driver generation timed out for ${ipKey} after ${maxWaitMs / 1000}s")
+                appendLog('error', "Driver generation timed out for ${ipKey}")
+                return
+            }
         } else {
             logError("No driver could be generated for ${ipKey}. Device may not have supported components.")
             appendLog('error', "Failed to create device for ${ipKey}: no driver generated")
+            return
         }
-        return
     }
 
     // Create device network ID (DNI) - use MAC address if available, otherwise IP
