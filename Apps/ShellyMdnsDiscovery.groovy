@@ -12,7 +12,8 @@ definition(
     iconUrl: "",
     iconX2Url: "",
     singleInstance: true,
-    singleThreaded: true
+    singleThreaded: true,
+    version: "1.0.0"
 )
 
 preferences {
@@ -797,16 +798,18 @@ private String generateHubitatDriver(List<String> components) {
     // Get driver metadata from JSON
     Map driverDef = componentData?.driver as Map
     String driverName = generateDriverName(components)
+    String version = driverDef?.version ?: '1.0.0'
+    String driverNameWithVersion = "${driverName} v${version}"
 
     if (driverDef) {
-        driver.append("name: '${driverName}', ")
+        driver.append("name: '${driverNameWithVersion}', ")
         driver.append("namespace: '${driverDef.namespace}', ")
         driver.append("author: '${driverDef.author}', ")
         driver.append("singleThreaded: ${driverDef.singleThreaded}, ")
         driver.append("importUrl: '${driverDef.importUrl ?: ''}'")
     } else {
         // Fallback if definition not found
-        driver.append("name: '${driverName}', ")
+        driver.append("name: '${driverNameWithVersion}', ")
         driver.append("namespace: 'ShellyUSA', ")
         driver.append("author: 'Daniel Winks', ")
         driver.append("singleThreaded: false, ")
@@ -1036,13 +1039,13 @@ private String generateDriverName(List<String> components) {
 
         String typeName = type.capitalize()
         if (count == 1) {
-            return "Shelly Single ${typeName}"
+            return "Shelly Autoconf Single ${typeName}"
         } else {
-            return "Shelly ${count}x ${typeName}"
+            return "Shelly Autoconf ${count}x ${typeName}"
         }
     } else {
         // Multiple component types
-        return "Shelly Multi-Component Device"
+        return "Shelly Autoconf Multi-Component Device"
     }
 }
 
@@ -1217,6 +1220,313 @@ private void completeDriverGeneration() {
 
     String driverCode = driver.toString()
     logInfo("Generated driver code:\n${driverCode}", true)
+
+    // Install the generated driver
+    installDriver(driverCode)
+
+    // Clean up any duplicate drivers
+    logInfo("Cleaning up duplicate drivers...")
+    pauseExecution(1000)  // Give hub time to process
+    cleanupDuplicateDrivers()
+
+    // List all installed Shelly Autoconf drivers after installation
+    logInfo("Checking installed drivers after cleanup...")
+    pauseExecution(500)
+    listAutoconfDrivers()
+}
+
+/**
+ * Lists all installed drivers that start with "Shelly Autoconf".
+ * Queries all devices on the hub and checks their driver names.
+ */
+/**
+ * Cleans up duplicate Shelly Autoconf drivers.
+ * Keeps the driver that's in use or has the highest ID (newest).
+ * Deletes all other duplicates.
+ */
+private void cleanupDuplicateDrivers() {
+    logInfo("Checking for duplicate Shelly Autoconf drivers...")
+
+    try {
+        // Get all drivers
+        Map driverParams = [
+            uri: "http://127.0.0.1:8080",
+            path: '/device/drivers',
+            contentType: 'application/json',
+            timeout: 5000
+        ]
+
+        httpGet(driverParams) { driverResp ->
+            if (driverResp?.status == 200) {
+                // Get all Shelly Autoconf drivers
+                def autoconfDrivers = driverResp.data?.drivers?.findAll { driver ->
+                    driver.type == 'usr' &&
+                    driver?.namespace == 'ShellyUSA' &&
+                    driver?.name?.startsWith("Shelly Autoconf")
+                }
+
+                if (autoconfDrivers.size() <= 1) {
+                    logInfo("No duplicate drivers found")
+                    return
+                }
+
+                // Get device usage info
+                Map deviceParams = [
+                    uri: "http://127.0.0.1:8080",
+                    path: '/device/list/data',
+                    contentType: 'application/json',
+                    timeout: 5000
+                ]
+
+                def devicesByDriverName = [:]
+                httpGet(deviceParams) { deviceResp ->
+                    if (deviceResp?.status == 200) {
+                        deviceResp.data?.each { device ->
+                            def driverName = device.type
+                            if (driverName) {
+                                devicesByDriverName[driverName] = (devicesByDriverName[driverName] ?: 0) + 1
+                            }
+                        }
+                    }
+                }
+
+                // Group drivers by name to find duplicates
+                def driversByName = autoconfDrivers.groupBy { it.name }
+
+                int duplicatesRemoved = 0
+                driversByName.each { driverName, drivers ->
+                    if (drivers.size() > 1) {
+                        logInfo("Found ${drivers.size()} copies of '${driverName}'")
+
+                        // Sort: in-use drivers first, then by ID (highest/newest first)
+                        def sortedDrivers = drivers.sort { a, b ->
+                            def aInUse = devicesByDriverName[a.name] ?: 0
+                            def bInUse = devicesByDriverName[b.name] ?: 0
+                            if (aInUse != bInUse) return bInUse <=> aInUse  // In-use first
+                            return b.id <=> a.id  // Higher ID (newer) first
+                        }
+
+                        // Keep the first one, delete the rest
+                        def keepDriver = sortedDrivers[0]
+                        def deleteDrivers = sortedDrivers.drop(1)
+
+                        logInfo("  Keeping: ID ${keepDriver.id} (${devicesByDriverName[keepDriver.name] ? 'IN USE' : 'not in use'})")
+
+                        deleteDrivers.each { driver ->
+                            logInfo("  Deleting duplicate: ID ${driver.id}")
+                            if (deleteDriver(driver.id)) {
+                                duplicatesRemoved++
+                            }
+                        }
+                    }
+                }
+
+                if (duplicatesRemoved > 0) {
+                    logInfo("✓ Removed ${duplicatesRemoved} duplicate driver(s)")
+                } else {
+                    logInfo("No duplicates to remove")
+                }
+            }
+        }
+    } catch (Exception e) {
+        logError("Error cleaning up duplicates: ${e.message}")
+    }
+}
+
+/**
+ * Deletes a driver by ID from the hub.
+ *
+ * @param driverId The driver ID to delete
+ * @return true if successful, false otherwise
+ */
+private Boolean deleteDriver(Integer driverId) {
+    try {
+        // Use same endpoint as Sonos app
+        Map params = [
+            uri: "http://127.0.0.1:8080",
+            path: "/driver/editor/deleteJson/${driverId}",
+            timeout: 10,
+            ignoreSSLIssues: true
+        ]
+
+        Boolean result = false
+        httpGet(params) { resp ->
+            if (resp?.data?.status == true) {
+                result = true
+            } else {
+                logWarn("Failed to delete driver ${driverId}: ${resp?.data}")
+            }
+        }
+        return result
+    } catch (Exception e) {
+        logError("Error deleting driver ${driverId}: ${e.message}")
+        return false
+    }
+}
+
+private void listAutoconfDrivers() {
+    logInfo("Checking for installed Shelly Autoconf drivers...")
+
+    try {
+        // Get all drivers
+        Map driverParams = [
+            uri: "http://127.0.0.1:8080",
+            path: '/device/drivers',
+            contentType: 'application/json',
+            timeout: 5000
+        ]
+
+        httpGet(driverParams) { driverResp ->
+            if (driverResp?.status == 200) {
+                // Filter for user-installed Shelly Autoconf drivers
+                def autoconfDrivers = driverResp.data?.drivers?.findAll { driver ->
+                    driver.type == 'usr' &&
+                    driver?.namespace == 'ShellyUSA' &&
+                    driver?.name?.startsWith("Shelly Autoconf")
+                }
+
+                if (autoconfDrivers.size() > 0) {
+                    // Get all devices to check usage
+                    Map deviceParams = [
+                        uri: "http://127.0.0.1:8080",
+                        path: '/device/list/data',
+                        contentType: 'application/json',
+                        timeout: 5000
+                    ]
+
+                    def devicesByDriverName = [:]
+                    httpGet(deviceParams) { deviceResp ->
+                        if (deviceResp?.status == 200) {
+                            // Count devices per driver name
+                            deviceResp.data?.each { device ->
+                                def driverName = device.type
+                                if (driverName) {
+                                    devicesByDriverName[driverName] = (devicesByDriverName[driverName] ?: 0) + 1
+                                }
+                            }
+                        }
+                    }
+
+                    logInfo("Found ${autoconfDrivers.size()} installed Shelly Autoconf driver(s):")
+                    autoconfDrivers.each { driver ->
+                        def deviceCount = devicesByDriverName[driver.name] ?: 0
+                        def inUseStatus = deviceCount > 0 ? "IN USE by ${deviceCount} device(s)" : "NOT IN USE"
+                        logInfo("  - ${driver.name} (ID: ${driver.id}) - ${inUseStatus}")
+                    }
+                } else {
+                    logInfo("No Shelly Autoconf drivers installed")
+                }
+            } else {
+                logWarn("Failed to get driver list: HTTP ${driverResp?.status}")
+            }
+        }
+    } catch (Exception e) {
+        logError("Error querying installed drivers: ${e.message}")
+    }
+}
+
+/**
+ * Installs a driver on the hub by posting the source code.
+ * Creates a new driver entry if it doesn't exist.
+ *
+ * @param sourceCode The complete driver source code to install
+ */
+private void installDriver(String sourceCode) {
+    logInfo("Installing/updating generated driver...")
+
+    try {
+        // Extract driver name from source code
+        def nameMatch = (sourceCode =~ /name:\s*['"]([^'"]+)['"]/)
+        if (!nameMatch.find()) {
+            logError("Could not extract driver name from source code")
+            return
+        }
+        String driverName = nameMatch.group(1)
+        String namespace = "ShellyUSA"
+
+        logDebug("Looking for existing driver: ${driverName} (${namespace})")
+
+        // Check if driver already exists
+        Map driverParams = [
+            uri: "http://127.0.0.1:8080",
+            path: '/device/drivers',
+            contentType: 'application/json',
+            timeout: 5000
+        ]
+
+        def existingDriver = null
+        httpGet(driverParams) { resp ->
+            if (resp?.status == 200) {
+                existingDriver = resp.data?.drivers?.find { driver ->
+                    driver.type == 'usr' &&
+                    driver?.namespace == namespace &&
+                    driver?.name == driverName
+                }
+            }
+        }
+
+        // URL-encode the source code
+        String encodedSource = java.net.URLEncoder.encode(sourceCode, 'UTF-8')
+
+        if (existingDriver) {
+            // Update existing driver
+            logInfo("Driver already exists (ID: ${existingDriver.id}), updating...")
+
+            String body = "id=${existingDriver.id}&version=${existingDriver.version ?: 1}&source=${encodedSource}"
+
+            Map params = [
+                uri: "http://127.0.0.1:8080",
+                path: '/driver/ajax/update',
+                headers: [
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                ],
+                body: body,
+                timeout: 30,
+                requestContentType: 'application/x-www-form-urlencoded'
+            ]
+
+            httpPost(params) { resp ->
+                if (resp?.status == 200 && resp?.data) {
+                    def result = resp.data
+                    if (result?.status == 'success') {
+                        logInfo("✓ Driver updated successfully!")
+                        logInfo("  Driver ID: ${existingDriver.id}")
+                        logInfo("  New version: ${result.version}")
+                    } else {
+                        logError("✗ Driver update failed: ${result?.errorMessage ?: 'Unknown error'}")
+                    }
+                } else {
+                    logError("✗ HTTP error ${resp?.status}")
+                }
+            }
+        } else {
+            // Create new driver
+            logInfo("Driver does not exist, creating new...")
+
+            String body = "id=&version=1&source=${encodedSource}&create=Create"
+
+            Map params = [
+                uri: "http://127.0.0.1:8080",
+                path: '/driver/save',
+                headers: [
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                ],
+                body: body,
+                timeout: 30,
+                requestContentType: 'application/x-www-form-urlencoded'
+            ]
+
+            httpPost(params) { resp ->
+                if (resp?.status == 200 || resp?.status == 302) {
+                    logInfo("✓ Driver created successfully!")
+                } else {
+                    logError("✗ HTTP error ${resp?.status}")
+                }
+            }
+        }
+    } catch (Exception e) {
+        logError("Error installing driver: ${e.message}")
+    }
 }
 
 /**
