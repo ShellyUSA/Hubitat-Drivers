@@ -44,9 +44,10 @@ void parsePowermon(Map json) {
         }
 
         if (value.aenergy?.total != null) {
-          BigDecimal energy = value.aenergy.total as BigDecimal
-          sendEvent(name: "energy", value: energy, unit: "Wh", descriptionText: "Energy is ${energy}Wh")
-          logDebug("Energy: ${energy}Wh")
+          BigDecimal energyWh = value.aenergy.total as BigDecimal
+          BigDecimal energyKwh = energyWh / 1000
+          sendEvent(name: "energy", value: energyKwh, unit: "kWh", descriptionText: "Energy is ${energyKwh}kWh")
+          logDebug("Energy: ${energyKwh}kWh (${energyWh}Wh from device)")
         }
 
         logInfo("Component ${key} power monitoring updated: ${value.apower}W, ${value.voltage}V, ${value.current}A")
