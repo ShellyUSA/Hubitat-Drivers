@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.13"
+@Field static final String APP_VERSION = "1.0.14"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.13"
+    version: "1.0.14"
 )
 
 preferences {
@@ -2844,10 +2844,22 @@ private void cleanupDuplicateDrivers() {
             def childDevices = getChildDevices() ?: []
             Set<String> inUseDriverNames = childDevices.collect { it.typeName }.toSet()
 
+            // Also protect drivers tracked in state.autoDrivers with current version
+            // (they may have been just generated and not yet assigned to a device)
+            String currentVersion = getAppVersion()
+            Map trackedDrivers = state.autoDrivers ?: [:]
+            Set<String> trackedDriverNames = trackedDrivers.findAll { k, v ->
+                v instanceof Map && v.version == currentVersion
+            }.collect { k, v -> k.replaceAll(/^ShellyUSA\./, '') }.toSet()
+
             int removed = 0
             autoconfDrivers.each { driver ->
                 String name = driver.name?.toString()
-                if (!inUseDriverNames.contains(name)) {
+                if (inUseDriverNames.contains(name)) {
+                    // In use by a child device — keep it
+                } else if (trackedDriverNames.contains(name)) {
+                    logDebug("Keeping tracked driver (not yet assigned to device): ${name}")
+                } else {
                     logInfo("Removing unused driver: ${name} (ID: ${driver.id})")
                     if (deleteDriver(driver.id as Integer)) {
                         // Also remove the cached source file from file manager
