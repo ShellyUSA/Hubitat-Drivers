@@ -7498,6 +7498,7 @@ private Boolean updateAppCode(String sourceCode) {
         Map updateParams = [
             uri: "http://127.0.0.1:8080",
             path: '/app/ajax/update',
+            contentType: 'application/json',
             requestContentType: 'application/x-www-form-urlencoded',
             headers: ['Cookie': cookie],
             body: [
@@ -7536,6 +7537,7 @@ private Integer getAppCodeId(String cookie) {
         Map params = [
             uri: "http://127.0.0.1:8080",
             path: '/app/list',
+            contentType: 'application/json',
             headers: ['Cookie': cookie],
             timeout: 15
         ]
@@ -7569,6 +7571,7 @@ private String getInstalledAppVersion(String cookie, Integer appCodeId) {
             uri: "http://127.0.0.1:8080",
             path: "/app/ajax/code",
             query: [id: appCodeId],
+            contentType: 'application/json',
             headers: ['Cookie': cookie],
             timeout: 15
         ]
