@@ -758,7 +758,7 @@ private String generateHubitatDriver(List<String> components) {
     logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components}")
 
     // Fetch component_driver.json from GitHub
-    String componentJsonUrl = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/master/UniversalDrivers/component_driver.json'
+    String componentJsonUrl = 'https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/AutoConfScript/UniversalDrivers/component_driver.json'
     logDebug("Fetching capability definitions from: ${componentJsonUrl}")
 
     String jsonContent = downloadFile(componentJsonUrl)
@@ -878,7 +878,88 @@ private String generateHubitatDriver(List<String> components) {
     driver.append("    //Commands: refresh()\n")
 
     driver.append("  }\n")
-    driver.append("}\n")
+    driver.append("}\n\n")
+
+    // Add preferences section
+    List<Map> preferences = componentData?.preferences as List<Map>
+    if (preferences) {
+        driver.append("preferences {\n")
+
+        // Add standard preferences (always included)
+        preferences.each { pref ->
+            driver.append("  input ")
+            driver.append("name: '${pref.name}', ")
+            driver.append("type: '${pref.type}', ")
+            driver.append("title: '${pref.title}'")
+
+            // Add options if present (for enum types)
+            if (pref.options) {
+                driver.append(", options: [")
+                List<String> optionPairs = pref.options.collect { k, v -> "'${k}':'${v}'" }
+                driver.append(optionPairs.join(','))
+                driver.append("]")
+            }
+
+            // Add defaultValue if present
+            if (pref.defaultValue != null) {
+                driver.append(", defaultValue: '${pref.defaultValue}'")
+            }
+
+            // Add required if present
+            if (pref.required != null) {
+                driver.append(", required: ${pref.required}")
+            }
+
+            driver.append("\n")
+        }
+
+        // Add device-specific preferences
+        Map deviceSpecificPreferences = componentData?.deviceSpecificPreferences as Map
+        if (deviceSpecificPreferences) {
+            // Track which component types we've already added preferences for
+            Set<String> addedDevicePrefs = new HashSet<>()
+
+            components.each { component ->
+                // Extract base type from "switch:0" format
+                String baseType = component.contains(':') ? component.split(':')[0] : component
+
+                // Check if we have device-specific preferences for this type and haven't added them yet
+                if (deviceSpecificPreferences[baseType] && !addedDevicePrefs.contains(baseType)) {
+                    addedDevicePrefs.add(baseType)
+
+                    List<Map> devicePrefs = deviceSpecificPreferences[baseType] as List<Map>
+                    devicePrefs.each { pref ->
+                        driver.append("  input ")
+                        driver.append("name: '${pref.name}', ")
+                        driver.append("type: '${pref.type}', ")
+                        driver.append("title: '${pref.title}'")
+
+                        // Add options if present (for enum types)
+                        if (pref.options) {
+                            driver.append(", options: [")
+                            List<String> optionPairs = pref.options.collect { k, v -> "'${k}':'${v}'" }
+                            driver.append(optionPairs.join(','))
+                            driver.append("]")
+                        }
+
+                        // Add defaultValue if present
+                        if (pref.defaultValue != null) {
+                            driver.append(", defaultValue: '${pref.defaultValue}'")
+                        }
+
+                        // Add required if present
+                        if (pref.required != null) {
+                            driver.append(", required: ${pref.required}")
+                        }
+
+                        driver.append("\n")
+                    }
+                }
+            }
+        }
+
+        driver.append("}\n")
+    }
 
     String driverCode = driver.toString()
     logInfo("Generated driver code:\n${driverCode}", true)
