@@ -3,6 +3,11 @@
 @Field static ConcurrentHashMap<String, Boolean> foundDevices = new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
 
+// IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
+// These two values MUST match. APP_VERSION is used at runtime to embed the version
+// into generated drivers and to detect app updates for automatic driver regeneration.
+@Field static final String APP_VERSION = "1.0.0"
+
 definition(
     name: "Shelly mDNS Discovery",
     namespace: "ShellyUSA",
@@ -54,7 +59,7 @@ Map mainPage() {
             paragraph "<b>Discovered Shelly Devices</b> <span class='app-state-${app.id}-shellyDiscoveredCount'>Found Devices (${state.discoveredShellys.size()}):</span>"
 
             // Device list remains below (updated via app-state binding)
-            paragraph "<span class='app-state-${app.id}-shellyDiscovered'>${getFoundShellys() ?: 'No Shelly devices discovered yet.'}</span>"
+            paragraph "<pre class='app-state-${app.id}-shellyDiscovered' style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${getFoundShellys() ?: 'No Shelly devices discovered yet.'}</pre>"
 
             href "createDevicesPage", title: "Create Devices", description: "Select discovered Shelly devices to create"
         }
@@ -108,6 +113,27 @@ Map mainPage() {
             String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
             paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
         }
+
+        section("Driver Management", hideable: true, hidden: true) {
+            Map allDrivers = state.autoDrivers ?: [:]
+            if (allDrivers.isEmpty()) {
+                paragraph "No auto-generated drivers are currently tracked."
+            } else {
+                // Count actual child devices per driver
+                def childDevices = getChildDevices() ?: []
+                paragraph "<b>${allDrivers.size()}</b> auto-generated driver(s) tracked (app v${getAppVersion()}):"
+                allDrivers.each { key, info ->
+                    Integer deviceCount = childDevices.count { it.typeName == info.name }
+                    paragraph "  - ${info.name} (${deviceCount} device(s))"
+                }
+            }
+
+            if (state.driverRebuildInProgress) {
+                paragraph "<b>Rebuild in progress...</b> (${(state.driverRebuildQueue?.size() ?: 0)} remaining)"
+            } else {
+                input 'btnForceRebuildDrivers', 'button', title: 'Force Rebuild All Drivers', submitOnChange: true
+            }
+        }
     }
 }
 
@@ -148,6 +174,40 @@ void appButtonHandler(String buttonName) {
         selected.each { String ipKey ->
             fetchAndStoreDeviceInfo(ipKey)
         }
+    }
+
+    if (buttonName == 'btnRemoveDevices') {
+        List<String> selected = settings?.selectedToRemove ?: []
+        if (!(selected instanceof List) && selected) { selected = [selected] }
+        if (!selected || selected.size() == 0) {
+            appendLog('warn', 'Remove Devices: no devices selected')
+            return
+        }
+
+        selected.each { String dni ->
+            def device = getChildDevice(dni)
+            if (device) {
+                String name = device.displayName
+                deleteChildDevice(dni)
+                logInfo("Removed device: ${name} (${dni})")
+                appendLog('info', "Removed: ${name}")
+            }
+        }
+        app.removeSetting('selectedToRemove')
+    }
+
+    if (buttonName == 'btnForceRebuildDrivers') {
+        Map allDrivers = state.autoDrivers ?: [:]
+        if (allDrivers.isEmpty()) {
+            appendLog('warn', 'No auto-generated drivers to rebuild')
+            return
+        }
+        logInfo("Manual force rebuild of all drivers requested")
+        appendLog('info', "Force rebuilding ${allDrivers.size()} driver(s)...")
+
+        // Update the stored version to current before rebuilding
+        state.lastAutoconfVersion = getAppVersion()
+        rebuildAllTrackedDrivers()
     }
 }
 
@@ -224,8 +284,11 @@ private void createShellyDevice(String ipKey) {
     try {
         def childDevice = addChildDevice('ShellyUSA', driverName, dni, deviceProps)
 
-        logInfo("✓ Created device: ${deviceLabel} using driver ${driverName}")
-        appendLog('info', "✓ Created: ${deviceLabel} (${driverName})")
+        logInfo("Created device: ${deviceLabel} using driver ${driverName}")
+        appendLog('info', "Created: ${deviceLabel} (${driverName})")
+
+        // Track this device against its driver
+        associateDeviceWithDriver(driverName, 'ShellyUSA', dni)
 
         // Set device attributes
         childDevice.updateSetting('ipAddress', ipKey)
@@ -295,60 +358,63 @@ void uninstalled() {
  * @return Map containing the dynamic page definition
  */
 Map createDevicesPage() {
-    // Build options from discoveredShellys (keyed by IP) — use LinkedHashMap to preserve order
+    // Build options from discoveredShellys, excluding already-created devices
     LinkedHashMap<String,String> options = [:] as LinkedHashMap
+    List<String> alreadyCreatedLabels = []
     state.discoveredShellys.each { ip, info ->
-        String label = "${info?.name ?: 'Shelly'} (${info?.ipAddress ?: ip})"
-        options["${ip}"] = label
+        String mac = info.mac ? " [${info.mac}]" : ""
+        String label = "${info?.name ?: 'Shelly'} (${info?.ipAddress ?: ip})${mac}"
+        // Check if device already exists using same DNI logic as createShellyDevice()
+        String dni = info.mac ?: "shelly-${ip.toString().replaceAll('\\.', '-')}"
+        if (getChildDevice(dni)) {
+            alreadyCreatedLabels.add(label)
+        } else {
+            options["${ip}"] = label
+        }
     }
 
-    // Normalize selection so we can count safely
+    // Normalize selection and filter out already-created devices
     List<String> selected = settings?.selectedToCreate ?: []
     if (!(selected instanceof List) && selected) { selected = [selected] }
-    Integer selectedCount = (selected instanceof List) ? selected.size() : 0
+    selected = selected.findAll { options.containsKey(it) }
+    Integer selectedCount = selected.size()
 
-    // Build human-readable labels for the selected devices
-    List<String> selectedLabels = []
-    if (selected instanceof List && selected.size() > 0) {
-        selectedLabels = selected.collect { ip -> options[ip] ?: (state.discoveredShellys[ip]?.name ?: ip) }
+    logDebug("createDevicesPage: options.size=${options.size()}, selected=${selected}, alreadyCreated=${alreadyCreatedLabels.size()}")
+
+    // Build remove options from existing child devices
+    LinkedHashMap<String,String> removeOptions = [:] as LinkedHashMap
+    def childDevices = getChildDevices() ?: []
+    childDevices.sort { it.displayName }.each { device ->
+        String mac = device.getDataValue('shellyMac') ? " [${device.getDataValue('shellyMac')}]" : ""
+        removeOptions[device.deviceNetworkId] = "${device.displayName} (${device.getDataValue('ipAddress') ?: 'n/a'})${mac}"
     }
 
-    String willCreateText
-    if (!selectedLabels || selectedLabels.size() == 0) {
-        willCreateText = "Will create 0 devices"
-    } else {
-        willCreateText = "Will create ${selectedLabels.size()} device${selectedLabels.size() == 1 ? '' : 's'}:\n" + selectedLabels.join('\n')
-    }
-
-    // Send event for live on-screen feedback (app-state-... class)
-    app.sendEvent(name: 'willCreateDevices', value: willCreateText)
-
-    logDebug("createDevicesPage: options.size=${options.size()}, selected=${selected}, labels=${selectedLabels}")
-
-    dynamicPage(name: "createDevicesPage", title: "Create Shelly Devices", install: false, uninstall: false) {
-        section("Select devices to create") {
-            // Always show the discovered list for visibility
-            paragraph "<b>Discovered devices (live):</b>"
-            paragraph getFoundShellys() ?: 'No Shelly devices discovered yet.'
-
+    dynamicPage(name: "createDevicesPage", title: "Manage Shelly Devices", install: false, uninstall: false) {
+        section() {
             if (!options || options.size() == 0) {
-                // nothing more to show
+                if (alreadyCreatedLabels.size() > 0) {
+                    paragraph "All discovered devices have already been created."
+                } else {
+                    paragraph "No devices available to create. Run discovery first."
+                }
             } else {
-                input name: 'selectedToCreate', type: 'enum', title: 'Available discovered Shelly devices', options: options, multiple: true, required: false, defaultValue: settings?.selectedToCreate, submitOnChange: true
-                paragraph "<span class='app-state-${app.id}-willCreateDevices'>${willCreateText}</span>"
+                input name: 'selectedToCreate', type: 'enum', title: 'Select devices to create', options: options, multiple: true, required: false, defaultValue: settings?.selectedToCreate, submitOnChange: true
                 input 'btnCreateDevices', 'button', title: 'Create Devices', submitOnChange: true
                 input 'btnGetDeviceInfo', 'button', title: 'Get Device Info', submitOnChange: true
             }
         }
 
-        section {
-            href "mainPage", title: "Back to discovery", description: ""
+        section() {
+            if (!removeOptions || removeOptions.size() == 0) {
+                paragraph "No devices to remove."
+            } else {
+                input name: 'selectedToRemove', type: 'enum', title: 'Select devices to remove', options: removeOptions, multiple: true, required: false, submitOnChange: true
+                input 'btnRemoveDevices', 'button', title: 'Remove Devices', submitOnChange: true
+            }
         }
 
-        section("Logging", hideable: true) {
-            String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-            String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
+        section {
+            href "mainPage", title: "Back to discovery", description: ""
         }
     }
 }
@@ -373,6 +439,41 @@ void initialize() {
 
     // Also register now in case hub has been up for a while
     startMdnsDiscovery()
+
+    // Check for interrupted rebuild (hub may have restarted mid-rebuild)
+    if (state.driverRebuildInProgress) {
+        logWarn("Detected interrupted driver rebuild (hub may have restarted)")
+        appendLog('warn', "Resuming interrupted driver rebuild...")
+
+        // Re-add the current driver to the front of the queue if it was in progress
+        String currentKey = state.driverRebuildCurrentKey
+        List<String> queue = state.driverRebuildQueue ?: []
+        if (currentKey && !queue.contains(currentKey)) {
+            queue.add(0, currentKey)
+            state.driverRebuildQueue = queue
+        }
+
+        // Reset flag and resume after hub has fully initialized
+        state.driverRebuildInProgress = false
+        runIn(30, 'rebuildAllTrackedDrivers')
+        return
+    }
+
+    // Check for app version change and trigger driver regeneration
+    String currentVersion = getAppVersion()
+    String lastVersion = state.lastAutoconfVersion
+
+    if (lastVersion == null) {
+        // First install: store version, no rebuild needed
+        state.lastAutoconfVersion = currentVersion
+        logInfo("First install detected, storing app version: ${currentVersion}")
+    } else if (lastVersion != currentVersion) {
+        logInfo("App version changed from ${lastVersion} to ${currentVersion}, triggering driver regeneration")
+        state.lastAutoconfVersion = currentVersion
+        rebuildAllTrackedDrivers()
+    } else {
+        logDebug("App version unchanged (${currentVersion}), no driver regeneration needed")
+    }
 }
 
 /**
@@ -648,8 +749,7 @@ String getFoundShellys() {
 
     names.sort()
 
-    // Return a single-line HTML string with explicit <br/> separators so there is no leading/trailing blank line
-    return names.join('<br/>')
+    return names.join('\n')
 }
 
 /**
@@ -921,7 +1021,7 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     // Get driver metadata from JSON
     Map driverDef = componentData?.driver as Map
     String driverName = generateDriverName(components, componentPowerMonitoring)
-    String version = driverDef?.version ?: '1.0.0'
+    String version = getAppVersion()
     String driverNameWithVersion = "${driverName} v${version}"
 
     if (driverDef) {
@@ -1351,6 +1451,15 @@ private void completeDriverGeneration() {
     // Check for errors
     if (results.errors > 0) {
         logError("Driver generation failed: ${results.errors} file(s) failed to fetch")
+
+        // If part of rebuild queue, record error and continue to next driver
+        if (state.driverRebuildInProgress) {
+            String rebuildKey = state.driverRebuildCurrentKey
+            List<Map> errors = state.driverRebuildErrors ?: []
+            errors.add([key: rebuildKey ?: 'unknown', error: "${results.errors} file fetch failures"])
+            state.driverRebuildErrors = errors
+            runIn(5, 'processNextDriverRebuild')
+        }
         return
     }
 
@@ -1410,19 +1519,30 @@ private void completeDriverGeneration() {
     // Install the generated driver
     installDriver(driverCode)
 
-    // Store the driver name for device creation
+    // Post-install: register driver and handle context
     Map genContext = atomicState.currentDriverGeneration
-    if (genContext && genContext.ipKey) {
-        String driverName = generateDriverName(genContext.components as List<String>, genContext.componentPowerMonitoring as Map)
-        String version = "1.0.0" // TODO: Get from component_driver.json
+    if (genContext) {
+        List<String> comps = genContext.components as List<String>
+        Map<String, Boolean> pmMap = (genContext.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+        String driverName = generateDriverName(comps, pmMap)
+        String version = getAppVersion()
         String driverNameWithVersion = "${driverName} v${version}"
 
-        if (state.discoveredShellys[genContext.ipKey]) {
-            state.discoveredShellys[genContext.ipKey].generatedDriverName = driverNameWithVersion
-            logInfo("✓ Stored driver name for ${genContext.ipKey}: ${driverNameWithVersion}")
+        if (genContext.isRebuild) {
+            // Rebuild mode: update tracking only, no device creation context needed
+            logInfo("Rebuild complete: driver installed as ${driverNameWithVersion}")
+        } else if (genContext.ipKey) {
+            // New device mode: store driver name for device creation
+            if (state.discoveredShellys[genContext.ipKey]) {
+                state.discoveredShellys[genContext.ipKey].generatedDriverName = driverNameWithVersion
+                logInfo("Stored driver name for ${genContext.ipKey}: ${driverNameWithVersion}")
+            }
         }
 
-        // Clear the context
+        // Register/update in tracking system with full metadata
+        registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, comps, pmMap)
+
+        // Clear the generation context
         atomicState.remove('currentDriverGeneration')
     }
 
@@ -1435,6 +1555,12 @@ private void completeDriverGeneration() {
     logInfo("Checking installed drivers after cleanup...")
     pauseExecution(500)
     listAutoconfDrivers()
+
+    // If part of rebuild queue, schedule the next driver
+    if (state.driverRebuildInProgress) {
+        logInfo("Rebuild: scheduling next driver in queue")
+        runIn(5, 'processNextDriverRebuild')
+    }
 }
 
 /**
@@ -1472,23 +1598,13 @@ private void cleanupDuplicateDrivers() {
                     return
                 }
 
-                // Get device usage info
-                Map deviceParams = [
-                    uri: "http://127.0.0.1:8080",
-                    path: '/device/list/data',
-                    contentType: 'application/json',
-                    timeout: 5000
-                ]
-
+                // Count actual child devices per driver name
+                def childDevices = getChildDevices() ?: []
                 def devicesByDriverName = [:]
-                httpGet(deviceParams) { deviceResp ->
-                    if (deviceResp?.status == 200) {
-                        deviceResp.data?.each { device ->
-                            def driverName = device.type
-                            if (driverName) {
-                                devicesByDriverName[driverName] = (devicesByDriverName[driverName] ?: 0) + 1
-                            }
-                        }
+                childDevices.each { device ->
+                    String driverName = device.typeName
+                    if (driverName) {
+                        devicesByDriverName[driverName] = (devicesByDriverName[driverName] ?: 0) + 1
                     }
                 }
 
@@ -1588,30 +1704,12 @@ private void listAutoconfDrivers() {
                 }
 
                 if (autoconfDrivers.size() > 0) {
-                    // Get all devices to check usage
-                    Map deviceParams = [
-                        uri: "http://127.0.0.1:8080",
-                        path: '/device/list/data',
-                        contentType: 'application/json',
-                        timeout: 5000
-                    ]
-
-                    def devicesByDriverName = [:]
-                    httpGet(deviceParams) { deviceResp ->
-                        if (deviceResp?.status == 200) {
-                            // Count devices per driver name
-                            deviceResp.data?.each { device ->
-                                def driverName = device.type
-                                if (driverName) {
-                                    devicesByDriverName[driverName] = (devicesByDriverName[driverName] ?: 0) + 1
-                                }
-                            }
-                        }
-                    }
+                    // Count actual child devices per driver using Hubitat's child device API
+                    def childDevices = getChildDevices() ?: []
 
                     logInfo("Found ${autoconfDrivers.size()} installed Shelly Autoconf driver(s):")
                     autoconfDrivers.each { driver ->
-                        def deviceCount = devicesByDriverName[driver.name] ?: 0
+                        def deviceCount = childDevices.count { it.typeName == driver.name }
                         def inUseStatus = deviceCount > 0 ? "IN USE by ${deviceCount} device(s)" : "NOT IN USE"
                         logInfo("  - ${driver.name} (ID: ${driver.id}) - ${inUseStatus}")
                     }
@@ -5678,6 +5776,141 @@ private String downloadFile(String uri) {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
+// ║  Driver Auto-Update / Rebuild Queue                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+/* #region Driver Auto-Update */
+
+/**
+ * Initiates serial rebuild of all tracked auto-generated drivers.
+ * Builds a queue from state.autoDrivers and processes one driver at a time.
+ * Each driver regeneration is async (fetches files from GitHub), so the queue
+ * uses runIn() callbacks chained from completeDriverGeneration().
+ */
+private void rebuildAllTrackedDrivers() {
+    initializeDriverTracking()
+
+    Map allDrivers = state.autoDrivers ?: [:]
+    if (allDrivers.isEmpty()) {
+        logInfo("No tracked drivers to rebuild")
+        return
+    }
+
+    // Prevent concurrent rebuilds
+    if (state.driverRebuildInProgress) {
+        logWarn("Driver rebuild already in progress, skipping")
+        return
+    }
+
+    // Build queue of driver keys
+    List<String> queue = allDrivers.keySet() as List<String>
+    state.driverRebuildQueue = queue
+    state.driverRebuildInProgress = true
+    state.driverRebuildCurrentKey = null
+    state.driverRebuildErrors = []
+
+    logInfo("Starting serial rebuild of ${queue.size()} tracked driver(s): ${queue}")
+    appendLog('info', "Rebuilding ${queue.size()} auto-generated driver(s)...")
+
+    // Start processing the first item after a short delay
+    runIn(2, 'processNextDriverRebuild')
+}
+
+/**
+ * Processes one driver from the rebuild queue.
+ * Pops the next driver key, reads its stored metadata, and triggers
+ * async driver regeneration. completeDriverGeneration() will chain
+ * back to this method when done.
+ */
+void processNextDriverRebuild() {
+    List<String> queue = state.driverRebuildQueue ?: []
+
+    if (queue.isEmpty()) {
+        finishDriverRebuild()
+        return
+    }
+
+    // Pop the first item
+    String key = queue.remove(0)
+    state.driverRebuildQueue = queue
+    state.driverRebuildCurrentKey = key
+
+    Map driverInfo = state.autoDrivers[key]
+    if (!driverInfo) {
+        logWarn("Driver ${key} not found in tracking data, skipping")
+        runIn(1, 'processNextDriverRebuild')
+        return
+    }
+
+    logInfo("Rebuilding driver: ${key} (${queue.size()} remaining)")
+    appendLog('info', "Rebuilding: ${driverInfo.name}")
+
+    try {
+        List<String> components = driverInfo.components as List<String>
+        Map<String, Boolean> pmMap = (driverInfo.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+
+        if (!components || components.isEmpty()) {
+            logWarn("Driver ${key} has no components metadata, skipping")
+            List<Map> errors = state.driverRebuildErrors ?: []
+            errors.add([key: key, error: "No components metadata stored"])
+            state.driverRebuildErrors = errors
+            runIn(1, 'processNextDriverRebuild')
+            return
+        }
+
+        // Store context for the async completion callback
+        atomicState.currentDriverGeneration = [
+            ipKey: null,
+            components: components,
+            componentPowerMonitoring: pmMap,
+            isRebuild: true,
+            rebuildKey: key
+        ]
+
+        // Async: will call completeDriverGeneration() when all fetches finish,
+        // which chains back to processNextDriverRebuild()
+        generateHubitatDriver(components, pmMap)
+
+    } catch (Exception e) {
+        logError("Failed to rebuild driver ${key}: ${e.message}")
+        List<Map> errors = state.driverRebuildErrors ?: []
+        errors.add([key: key, error: e.message])
+        state.driverRebuildErrors = errors
+
+        // Continue with next driver despite the error
+        runIn(2, 'processNextDriverRebuild')
+    }
+}
+
+/**
+ * Called when the rebuild queue is fully processed.
+ * Logs a summary of successes and failures, then cleans up queue state.
+ */
+private void finishDriverRebuild() {
+    state.driverRebuildInProgress = false
+    state.driverRebuildCurrentKey = null
+
+    List<Map> errors = state.driverRebuildErrors ?: []
+
+    if (errors.isEmpty()) {
+        logInfo("All tracked drivers rebuilt successfully")
+        appendLog('info', "All drivers rebuilt successfully")
+    } else {
+        logWarn("Driver rebuild completed with ${errors.size()} error(s):")
+        errors.each { err ->
+            logWarn("  - ${err.key}: ${err.error}")
+        }
+        appendLog('warn', "Driver rebuild finished with ${errors.size()} error(s)")
+    }
+
+    // Clean up queue state
+    state.remove('driverRebuildQueue')
+    state.remove('driverRebuildErrors')
+    state.remove('driverRebuildCurrentKey')
+}
+
+/* #endregion Driver Auto-Update */
+
+// ╔══════════════════════════════════════════════════════════════╗
 // ║  Auto-Generated Driver Version Tracking                     ║
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region Driver Version Tracking */
@@ -5688,6 +5921,8 @@ private String downloadFile(String uri) {
  * Creates the state structure if it doesn't exist to track installed
  * drivers, their versions, and which devices are using them.
  */
+private String getAppVersion() { return APP_VERSION }
+
 private void initializeDriverTracking() {
   if(!state.autoDrivers) {
     state.autoDrivers = [:]
@@ -5704,19 +5939,25 @@ private void initializeDriverTracking() {
  * @param namespace The driver namespace (e.g., 'ShellyUSA')
  * @param version The semantic version of the driver
  * @param components List of Shelly components this driver supports
+ * @param componentPowerMonitoring Map of component names to power monitoring capability
  */
-private void registerAutoDriver(String driverName, String namespace, String version, List<String> components) {
+private void registerAutoDriver(String driverName, String namespace, String version, List<String> components, Map<String, Boolean> componentPowerMonitoring = [:]) {
   initializeDriverTracking()
 
   String key = "${namespace}.${driverName}"
+
+  // Preserve existing devicesUsing list if updating an existing entry
+  List<String> existingDevices = state.autoDrivers[key]?.devicesUsing ?: []
+
   state.autoDrivers[key] = [
     name: driverName,
     namespace: namespace,
     version: version,
     components: components,
-    installedAt: now(),
+    componentPowerMonitoring: componentPowerMonitoring,
+    installedAt: state.autoDrivers[key]?.installedAt ?: now(),
     lastUpdated: now(),
-    devicesUsing: []
+    devicesUsing: existingDevices
   ]
 
   logInfo("Registered auto-generated driver: ${key} v${version} with components: ${components}")
