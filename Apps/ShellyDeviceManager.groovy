@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.8"
+@Field static final String APP_VERSION = "1.0.9"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -30,7 +30,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.8"
+    version: "1.0.9"
 )
 
 preferences {
@@ -1538,6 +1538,15 @@ void processMdnsDiscovery() {
                     ver: ver,
                     ts: now()
                 ]
+
+                // Queue newly discovered devices for automatic driver check
+                if (isNewToState) {
+                    List<String> queue = state.discoveryDriverQueue ?: []
+                    if (!queue.contains(key)) {
+                        queue.add(key)
+                        state.discoveryDriverQueue = queue
+                    }
+                }
             }
             Integer afterCount = state.discoveredShellys.size()
             if (afterCount > beforeCount) {
@@ -1545,6 +1554,12 @@ void processMdnsDiscovery() {
             }
             logDebug("Sending discovery events, total discovered: ${state.discoveredShellys.size()}")
             sendFoundShellyEvents()
+
+            // Start processing discovery driver queue if not already running
+            List<String> pendingQueue = state.discoveryDriverQueue ?: []
+            if (pendingQueue.size() > 0 && !state.discoveryDriverInProgress && !state.driverRebuildInProgress) {
+                runIn(2, 'processNextDiscoveryDriver')
+            }
         }
     } catch (Exception e) {
         logWarn("Error processing mDNS entries: ${e.message}")
@@ -1552,6 +1567,45 @@ void processMdnsDiscovery() {
 
     if (state.discoveryRunning && getRemainingDiscoverySeconds() > 0) {
         runIn(getMdnsPollSeconds(), 'processMdnsDiscovery')
+    }
+}
+
+/**
+ * Processes the next device in the discovery driver queue.
+ * Fetches device info and triggers driver determination, which will either
+ * install from cache, skip (driver already exists), or generate from GitHub.
+ * Processes devices sequentially with delays to avoid hammering the network.
+ */
+void processNextDiscoveryDriver() {
+    List<String> queue = state.discoveryDriverQueue ?: []
+    if (queue.isEmpty()) {
+        state.discoveryDriverInProgress = false
+        logDebug("Discovery driver queue is empty, processing complete")
+        return
+    }
+
+    // Don't run if a rebuild is in progress (shared driver generation pipeline)
+    if (state.driverRebuildInProgress) {
+        logDebug("Driver rebuild in progress, deferring discovery queue processing")
+        runIn(30, 'processNextDiscoveryDriver')
+        return
+    }
+
+    state.discoveryDriverInProgress = true
+    String ipKey = queue.remove(0)
+    state.discoveryDriverQueue = queue
+
+    logInfo("Processing discovery driver queue: fetching info for ${ipKey} (${queue.size()} remaining)")
+
+    // fetchAndStoreDeviceInfo queries the device and triggers determineDeviceDriver,
+    // which will either skip (driver exists), install from cache, or generate (new driver needed)
+    fetchAndStoreDeviceInfo(ipKey)
+
+    // Schedule next item with delay to avoid hammering devices
+    if (!queue.isEmpty()) {
+        runIn(10, 'processNextDiscoveryDriver')
+    } else {
+        state.discoveryDriverInProgress = false
     }
 }
 
@@ -1887,6 +1941,55 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
 
     // Generate driver for discovered components
     if (components.size() > 0) {
+        String driverName = generateDriverName(components, componentPowerMonitoring)
+        String version = getAppVersion()
+        String driverNameWithVersion = "${driverName} v${version}"
+
+        // Check if this driver is already installed and up to date
+        Map allDrivers = state.autoDrivers ?: [:]
+        String trackingKey = "ShellyUSA.${driverNameWithVersion}"
+        Map existingEntry = allDrivers[trackingKey] as Map
+        if (existingEntry && existingEntry.version == version) {
+            logInfo("Driver already exists and is up to date: ${driverNameWithVersion} — skipping generation")
+            // Store the driver name on the discovered device entry
+            if (ipKey && state.discoveredShellys[ipKey]) {
+                state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
+            }
+            // If part of discovery queue, schedule next device
+            if (state.discoveryDriverInProgress) {
+                runIn(2, 'processNextDiscoveryDriver')
+            }
+            return
+        }
+
+        // Check file manager cache for a previously generated driver
+        String cachedSource = loadDriverFromCache(driverName)
+        if (cachedSource) {
+            // Verify the cached version matches current app version
+            def versionMatch = (cachedSource =~ /version:\s*['"]([^'"]+)['"]/)
+            String cachedVersion = versionMatch.find() ? versionMatch.group(1) : null
+            if (cachedVersion == version) {
+                logInfo("Found cached driver source for ${driverName} (v${cachedVersion}) — installing from cache")
+                installDriver(cachedSource)
+
+                // Register in tracking and store on discovered device
+                registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, components, componentPowerMonitoring)
+                if (ipKey && state.discoveredShellys[ipKey]) {
+                    state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
+                }
+                // If part of discovery queue, schedule next device
+                if (state.discoveryDriverInProgress) {
+                    runIn(2, 'processNextDiscoveryDriver')
+                }
+                return
+            } else {
+                logDebug("Cached driver version (${cachedVersion}) does not match app version (${version}) — regenerating")
+            }
+        }
+
+        // No match found — fall through to full GitHub-based generation
+        logInfo("Generating driver from GitHub: ${driverNameWithVersion}")
+
         // Store context for async callback to use
         atomicState.currentDriverGeneration = [
             ipKey: ipKey,
@@ -1904,7 +2007,6 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     }
     if (switchesFound == 1 && inputsFound == 0) {
         logDebug("Device is likely a plug or basic relay device (1 switch, no inputs)")
-        // Use ShellySingleSwitch or ShellySingleSwitchPM based on presence of power metering in status
     } else if (switchesFound == 1 && inputsFound >= 1) {
         logDebug("Device is likely a roller shutter or similar (1 switch, 1+ inputs)")
     } else if (switchesFound > 1) {
@@ -1912,7 +2014,6 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     } else {
         logDebug("Device has an unexpected combination of switches and inputs, manual review may be needed")
     }
-
 }
 
 /**
@@ -2280,6 +2381,86 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
 }
 
 /**
+ * Converts a driver base name to a file manager filename for caching.
+ * Strips the "Shelly Autoconf" prefix, converts to lowercase kebab-case,
+ * and prepends the {@code shellyautoconf_} prefix with a {@code .groovy} extension.
+ *
+ * <p>Example: {@code "Shelly Autoconf Single Switch PM"} → {@code "shellyautoconf_single-switch-pm.groovy"}</p>
+ *
+ * @param driverBaseName The driver base name (without version suffix)
+ * @return The file manager filename for caching
+ */
+@CompileStatic
+static String driverNameToFileName(String driverBaseName) {
+    String slug = driverBaseName
+        .replaceAll(/^Shelly Autoconf\s*/, '')
+        .trim()
+        .toLowerCase()
+        .replaceAll(/\s+/, '-')
+        .replaceAll(/[^a-z0-9\-]/, '')
+    return "shellyautoconf_${slug}.groovy"
+}
+
+/**
+ * Saves generated driver source code to Hubitat's file manager for caching.
+ * Overwrites any existing cached version. This avoids expensive GitHub fetches
+ * on subsequent driver installations for the same device type.
+ *
+ * @param driverBaseName The driver base name (without version suffix)
+ * @param sourceCode The complete driver source code to cache
+ */
+private void saveDriverToCache(String driverBaseName, String sourceCode) {
+    String fileName = driverNameToFileName(driverBaseName)
+    try {
+        deleteHubFileHelper(fileName)
+    } catch (Exception ignored) {
+        // File may not exist yet — safe to ignore
+    }
+    try {
+        uploadHubFileHelper(fileName, sourceCode.getBytes('UTF-8'))
+        logInfo("Cached driver source to file manager: ${fileName}")
+    } catch (Exception e) {
+        logWarn("Failed to cache driver source to file manager: ${e.message}")
+    }
+}
+
+/**
+ * Loads cached driver source code from Hubitat's file manager.
+ * Returns {@code null} if the file does not exist (e.g., user deleted it).
+ *
+ * @param driverBaseName The driver base name (without version suffix)
+ * @return The cached driver source code, or {@code null} if not found
+ */
+private String loadDriverFromCache(String driverBaseName) {
+    String fileName = driverNameToFileName(driverBaseName)
+    try {
+        byte[] bytes = downloadHubFileHelper(fileName)
+        if (bytes != null && bytes.length > 0) {
+            return new String(bytes, 'UTF-8')
+        }
+    } catch (Exception e) {
+        logDebug("No cached driver found in file manager for ${fileName}: ${e.message}")
+    }
+    return null
+}
+
+/**
+ * Deletes a cached driver source file from Hubitat's file manager.
+ * Silently ignores errors if the file does not exist.
+ *
+ * @param driverBaseName The driver base name (without version suffix)
+ */
+private void deleteDriverFromCache(String driverBaseName) {
+    String fileName = driverNameToFileName(driverBaseName)
+    try {
+        deleteHubFileHelper(fileName)
+        logDebug("Deleted cached driver from file manager: ${fileName}")
+    } catch (Exception e) {
+        logDebug("Could not delete cached driver ${fileName}: ${e.message}")
+    }
+}
+
+/**
  * Initializes atomicState for async driver generation operations.
  * Sets up tracking for in-flight requests, errors, and fetched file contents.
  */
@@ -2465,11 +2646,19 @@ private void completeDriverGeneration() {
     String driverCode = driver.toString()
     logInfo("Generated driver code:\n${driverCode}", true)
 
+    // Cache the assembled driver source to file manager before installing
+    Map genContext = atomicState.currentDriverGeneration
+    if (genContext) {
+        List<String> comps = genContext.components as List<String>
+        Map<String, Boolean> pmMap = (genContext.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+        String driverName = generateDriverName(comps, pmMap)
+        saveDriverToCache(driverName, driverCode)
+    }
+
     // Install the generated driver
     installDriver(driverCode)
 
     // Post-install: register driver and handle context
-    Map genContext = atomicState.currentDriverGeneration
     if (genContext) {
         List<String> comps = genContext.components as List<String>
         Map<String, Boolean> pmMap = (genContext.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
@@ -2509,6 +2698,11 @@ private void completeDriverGeneration() {
     if (state.driverRebuildInProgress) {
         logInfo("Rebuild: scheduling next driver in queue")
         runIn(5, 'processNextDriverRebuild')
+    }
+
+    // If part of discovery queue, schedule next device
+    if (state.discoveryDriverInProgress && !state.driverRebuildInProgress) {
+        runIn(5, 'processNextDiscoveryDriver')
     }
 }
 
@@ -2551,6 +2745,9 @@ private void cleanupDuplicateDrivers() {
                 if (!inUseDriverNames.contains(name)) {
                     logInfo("Removing unused driver: ${name} (ID: ${driver.id})")
                     if (deleteDriver(driver.id as Integer)) {
+                        // Also remove the cached source file from file manager
+                        String baseName = name?.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+                        if (baseName) { deleteDriverFromCache(baseName) }
                         removed++
                     }
                 }
@@ -5925,6 +6122,21 @@ private void httpGetHelper(Map params, Closure closure) {
 /** Helper for httpPost() calls */
 private void httpPostHelper(Map params, Closure closure) {
   httpPost(params, closure)
+}
+
+/** Helper for uploadHubFile() calls (file manager upload) */
+private void uploadHubFileHelper(String fileName, byte[] bytes) {
+  uploadHubFile(fileName, bytes)
+}
+
+/** Helper for downloadHubFile() calls (file manager download) */
+private byte[] downloadHubFileHelper(String fileName) {
+  return downloadHubFile(fileName)
+}
+
+/** Helper for deleteHubFile() calls (file manager delete) */
+private void deleteHubFileHelper(String fileName) {
+  deleteHubFile(fileName)
 }
 
 // ═══════════════════════════════════════════════════════════════
