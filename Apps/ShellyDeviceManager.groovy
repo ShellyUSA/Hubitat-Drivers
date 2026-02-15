@@ -2101,10 +2101,33 @@ List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = tr
 
     // Fetch webhook definitions from component_driver.json
     Map webhookDefs = fetchWebhookDefinitions()
-    if (!webhookDefs?.events) {
-        logError("getRequiredActionsForDevice: no webhook definitions available")
-        return requiredActions
+
+    if (webhookDefs?.events) {
+        // New path: use centralized webhookDefinitions
+        requiredActions = buildActionsFromWebhookDefs(webhookDefs, deviceStatus, supportedEvents, device)
+    } else {
+        // Fallback: use per-capability requiredActions (for backward compat with older JSON)
+        logDebug("getRequiredActionsForDevice: webhookDefinitions not available, falling back to per-capability requiredActions")
+        requiredActions = buildActionsFromCapabilities(deviceStatus, supportedEvents, device)
     }
+
+    logDebug("Required actions for ${device.displayName}: ${requiredActions}")
+    return requiredActions
+}
+
+/**
+ * Builds webhook action list from centralized webhookDefinitions section.
+ * Includes supplemental token groups (e.g., battery data on sensor webhooks)
+ * and logs unknown events the device supports.
+ *
+ * @param webhookDefs The webhookDefinitions map from component_driver.json
+ * @param deviceStatus The device status map (component keys to status maps)
+ * @param supportedEvents List of supported webhook events, or null if unknown
+ * @param device The device for logging context
+ * @return List of action maps with keys: event, name, dst, cid, urlParams
+ */
+private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus, List<String> supportedEvents, def device) {
+    List<Map> requiredActions = []
 
     // Determine which component types the device has
     Set<String> deviceComponentTypes = [] as Set
@@ -2169,7 +2192,51 @@ List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = tr
         }
     }
 
-    logDebug("Required actions for ${device.displayName}: ${requiredActions}")
+    return requiredActions
+}
+
+/**
+ * Fallback: builds webhook action list from per-capability requiredActions.
+ * Used when the remote component_driver.json does not yet contain the
+ * centralized webhookDefinitions section.
+ *
+ * @param deviceStatus The device status map
+ * @param supportedEvents List of supported webhook events, or null if unknown
+ * @param device The device for logging context
+ * @return List of action maps with keys: event, name, dst, cid
+ */
+private List<Map> buildActionsFromCapabilities(Map deviceStatus, List<String> supportedEvents, def device) {
+    List<Map> requiredActions = []
+
+    List<Map> capabilities = fetchCapabilityDefinitions()
+    if (!capabilities) { return requiredActions }
+
+    deviceStatus.each { k, v ->
+        String key = k.toString().toLowerCase()
+        String baseType = key.contains(':') ? key.split(':')[0] : key
+        Integer cid = 0
+        if (key.contains(':')) {
+            try { cid = key.split(':')[1] as Integer } catch (Exception ignored) {}
+        }
+
+        Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
+        if (capability?.requiredActions) {
+            (capability.requiredActions as List<Map>).each { Map action ->
+                String eventName = action.event as String
+                if (supportedEvents == null || supportedEvents.contains(eventName)) {
+                    requiredActions.add([
+                        event: eventName,
+                        name : action.name,
+                        dst  : action.dst,
+                        cid  : cid
+                    ])
+                } else {
+                    logDebug("Skipping unsupported webhook event '${eventName}' for ${device.displayName}")
+                }
+            }
+        }
+    }
+
     return requiredActions
 }
 
