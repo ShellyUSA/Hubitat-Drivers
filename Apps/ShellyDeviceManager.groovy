@@ -18,6 +18,8 @@
     'Shelly Autoconf Single Switch': 'UniversalDrivers/ShellySingleSwitch.groovy',
     'Shelly Autoconf Single Switch PM': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
+    'Shelly Autoconf 2x Switch Parent': 'UniversalDrivers/Shelly2xSwitchParent.groovy',
+    'Shelly Autoconf 2x Switch PM Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -311,6 +313,48 @@ void appButtonHandler(String buttonName) {
             return
         }
         installRequiredActions(ip)
+    }
+
+    // === Device Configuration Table Buttons ===
+
+    if (buttonName == 'btnRefreshAllStatus') {
+        runIn(1, 'refreshAllDeviceStatusAsync')
+        appendLog('info', 'Queued status refresh for all devices')
+    }
+
+    if (buttonName.startsWith('createDev|')) {
+        String targetIp = buttonName.minus('createDev|')
+        logInfo("Creating device for ${targetIp} via config table")
+        createShellyDevice(targetIp)
+        // Refresh cache entry after creation
+        buildDeviceStatusCacheEntry(targetIp)
+    }
+
+    if (buttonName.startsWith('removeDev|')) {
+        String targetIp = buttonName.minus('removeDev|')
+        logInfo("Removing device for ${targetIp} via config table")
+        removeDeviceByIp(targetIp)
+    }
+
+    if (buttonName.startsWith('installScripts|')) {
+        String targetIp = buttonName.minus('installScripts|')
+        logInfo("Installing scripts for ${targetIp} via config table")
+        installRequiredScriptsForIp(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+    }
+
+    if (buttonName.startsWith('enableScripts|')) {
+        String targetIp = buttonName.minus('enableScripts|')
+        logInfo("Enabling scripts for ${targetIp} via config table")
+        enableAndStartRequiredScriptsForIp(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+    }
+
+    if (buttonName.startsWith('installWebhooks|')) {
+        String targetIp = buttonName.minus('installWebhooks|')
+        logInfo("Installing webhooks for ${targetIp} via config table")
+        installRequiredActionsForIp(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
     }
 }
 
@@ -725,222 +769,885 @@ Map createDevicesPage() {
 }
 
 /**
- * Renders the device configuration page for managing scripts on installed Shelly devices.
- * Shows installed scripts, required scripts based on the device's capabilities, and
- * highlights any missing scripts that need to be installed.
+ * Renders the device configuration page with an all-devices table.
+ * Shows every discovered Shelly plus any created devices not yet in discovery.
+ * Each row displays creation status, script status, webhook status, and action buttons.
  *
  * @return Map containing the dynamic page definition
  */
 Map deviceConfigPage() {
-    // Build single-select options from installed child devices
-    LinkedHashMap<String,String> deviceOptions = [:] as LinkedHashMap
-    def childDevices = getChildDevices() ?: []
-    childDevices.sort { it.displayName }.each { device ->
-        String ip = device.getDataValue('ipAddress') ?: 'n/a'
-        deviceOptions[device.deviceNetworkId] = "${device.displayName} (${ip})"
-    }
-
-    // Use periodic refresh when a battery device is selected so wake/sleep transitions update
-    Integer refreshSecs = 0
-    String selectedDniCheck = settings?.selectedConfigDevice as String
-    if (selectedDniCheck) {
-        def dev = getChildDevice(selectedDniCheck)
-        if (dev && isSleepyBatteryDevice(dev)) {
-            refreshSecs = 3
-        }
-    }
-
-    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false, refreshInterval: refreshSecs) {
+    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false) {
         section() {
-            if (!deviceOptions || deviceOptions.size() == 0) {
-                paragraph "No installed devices found. Create devices first."
-            } else {
-                input name: 'selectedConfigDevice', type: 'enum', title: 'Select a device to configure',
-                    options: deviceOptions, multiple: false, required: false, submitOnChange: true
-            }
+            input 'btnRefreshAllStatus', 'button', title: 'Refresh All Status', submitOnChange: true
+            paragraph displayDeviceConfigTable()
         }
-
-        String selectedDni = settings?.selectedConfigDevice as String
-        if (selectedDni) {
-            def selectedDevice = getChildDevice(selectedDni)
-            if (selectedDevice) {
-                String ip = selectedDevice.getDataValue('ipAddress')
-                if (ip) {
-                    // Check if this is a battery-powered device
-                    Boolean isBatteryDevice = isSleepyBatteryDevice(selectedDevice)
-                    Integer deviceId = selectedDevice.id as Integer
-
-                    // Probe the device to determine if it's currently reachable
-                    // Use fast 2s timeout check for battery devices to avoid blocking page render
-                    Boolean deviceIsReachable = isBatteryDevice ? isDeviceReachable(ip) : (queryDeviceStatus(ip) != null)
-
-                    // When a battery device is awake, query its current state and cache it
-                    if (isBatteryDevice && deviceIsReachable) {
-                        probeBatteryDeviceState(selectedDevice, ip)
-                    }
-
-                    if (isBatteryDevice) {
-                        section() {
-                            String statusHtml = renderBatteryDeviceStatus(deviceIsReachable, selectedDevice)
-                            paragraph statusHtml
-                        }
-                    }
-
-                    // Scripts section — skip for battery devices (they don't have scripts)
-                    if (!isBatteryDevice) {
-                        List<Map> installedScripts = listDeviceScripts(ip)
-                        List<String> installedScriptNames = []
-                        if (installedScripts != null) {
-                            installedScriptNames = installedScripts.collect { (it.name ?: '') as String }
-                        }
-
-                        Set<String> requiredScriptNames = getRequiredScriptsForDevice(selectedDevice)
-                        Set<String> requiredNames = requiredScriptNames.collect { stripJsExtension(it) } as Set<String>
-                        List<String> missingScripts = requiredScriptNames.findAll { String req ->
-                            !installedScriptNames.any { it == stripJsExtension(req) }
-                        } as List<String>
-                        List<String> removableScripts = installedScriptNames.findAll { String name ->
-                            MANAGED_SCRIPT_NAMES.contains(name) && !requiredNames.contains(name)
-                        } as List<String>
-
-                        section("Installed Scripts") {
-                            if (installedScripts == null) {
-                                paragraph "Unable to retrieve scripts from device."
-                            } else if (installedScripts.size() == 0) {
-                                paragraph "No scripts installed on this device."
-                            } else {
-                                StringBuilder sb = new StringBuilder()
-                                installedScripts.each { Map script ->
-                                    String name = script.name ?: 'unnamed'
-                                    Boolean enabled = script.enable as Boolean
-                                    Boolean running = script.running as Boolean
-                                    Boolean isRequired = requiredNames.contains(name)
-                                    Boolean isManaged = MANAGED_SCRIPT_NAMES.contains(name)
-                                    String status = "${enabled ? 'enabled' : 'disabled'}, ${running ? 'running' : 'stopped'}"
-                                    String tag = isRequired ? '' : (isManaged ? ' (not required)' : '')
-                                    sb.append("${name} — ${status}${tag}\n")
-                                }
-                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
-
-                                if (removableScripts.size() > 0) {
-                                    paragraph "<b>${removableScripts.size()} removable script(s):</b> ${removableScripts.join(', ')}"
-                                    input 'btnRemoveNonRequiredScripts', 'button', title: 'Remove Non-Required Script(s)', submitOnChange: true
-                                }
-                            }
-                        }
-
-                        List<String> inactiveScripts = []
-                        if (installedScripts != null) {
-                            requiredNames.each { String reqName ->
-                                Map script = installedScripts.find { (it.name ?: '') == reqName }
-                                if (script && (!(script.enable as Boolean) || !(script.running as Boolean))) {
-                                    inactiveScripts.add(reqName)
-                                }
-                            }
-                        }
-
-                        section("Required Scripts") {
-                            if (requiredScriptNames.size() == 0) {
-                                paragraph "No scripts required for this device's capabilities."
-                            } else {
-                                StringBuilder sb = new StringBuilder()
-                                requiredScriptNames.each { String scriptFile ->
-                                    String scriptName = stripJsExtension(scriptFile)
-                                    Map script = installedScripts?.find { (it.name ?: '') == scriptName }
-                                    if (!script) {
-                                        sb.append("${scriptFile} — MISSING\n")
-                                    } else {
-                                        Boolean enabled = script.enable as Boolean
-                                        Boolean running = script.running as Boolean
-                                        if (enabled && running) {
-                                            sb.append("${scriptFile} — installed, enabled, running\n")
-                                        } else {
-                                            List<String> issues = []
-                                            if (!enabled) { issues.add('not enabled') }
-                                            if (!running) { issues.add('not running') }
-                                            sb.append("${scriptFile} — installed, ${issues.join(', ')}\n")
-                                        }
-                                    }
-                                }
-                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
-
-                                if (missingScripts.size() > 0) {
-                                    paragraph "<b>${missingScripts.size()} missing script(s):</b> ${missingScripts.join(', ')}"
-                                    input 'btnInstallScripts', 'button', title: 'Install Missing Script(s)', submitOnChange: true
-                                }
-                                if (inactiveScripts.size() > 0) {
-                                    paragraph "<b>${inactiveScripts.size()} inactive script(s):</b> ${inactiveScripts.join(', ')}"
-                                    input 'btnEnableStartScripts', 'button', title: 'Enable & Start Script(s)', submitOnChange: true
-                                }
-                                if (missingScripts.size() == 0 && inactiveScripts.size() == 0) {
-                                    paragraph "<b>All required scripts are installed and running.</b>"
-                                }
-                            }
-                        }
-                    }
-
-                    // Actions (webhooks) section
-                    List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice, deviceIsReachable)
-
-                    if (requiredActions.size() > 0) {
-                        if (isBatteryDevice) {
-                            // SSR-enabled webhook section — updates dynamically when device wakes
-                            String webhookHtml = renderWebhookStatusHtml(selectedDevice, ip, requiredActions, deviceIsReachable)
-                            section("Required Actions (Webhooks)") {
-                                paragraph "<span class='ssr-device-current-state-${deviceId}-temperature' id='webhook-status-${deviceId}'>${webhookHtml}</span>"
-                            }
-                        } else {
-                            // Standard webhook section with install button
-                            List<Map> installedHooks = listDeviceWebhooks(ip)
-                            String hubIp = location.hub.localIP
-                            List<Map> missingActions = []
-                            List<Map> okActions = []
-                            requiredActions.each { Map action ->
-                                Map hook = installedHooks?.find { Map h ->
-                                    h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
-                                }
-                                if (hook) {
-                                    List<String> urls = hook.urls as List<String>
-                                    Boolean enabled = hook.enable as Boolean
-                                    if (urls?.any { it?.contains(hubIp) } && enabled) {
-                                        okActions.add(action)
-                                    } else {
-                                        missingActions.add(action)
-                                    }
-                                } else {
-                                    missingActions.add(action)
-                                }
-                            }
-
-                            section("Required Actions (Webhooks)") {
-                                StringBuilder sb = new StringBuilder()
-                                requiredActions.each { Map action ->
-                                    Boolean isOk = okActions.contains(action)
-                                    String status = isOk ? 'configured' : 'MISSING'
-                                    sb.append("${action.name} (${action.event} cid:${action.cid}) — ${status}\n")
-                                }
-                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
-
-                                if (missingActions.size() > 0) {
-                                    paragraph "<b>${missingActions.size()} action(s) need to be configured.</b>"
-                                    input 'btnInstallActions', 'button', title: 'Install Missing Action(s)', submitOnChange: true
-                                } else {
-                                    paragraph "<b>All required actions are configured.</b>"
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    section() {
-                        paragraph "Selected device has no IP address configured."
-                    }
-                }
-            }
-        }
-
         section {
             href "mainPage", title: "Back to main page", description: ""
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ║  Device Configuration Table                                 ║
+// ╚═══════════════════════════════════════════════════════════════
+
+/**
+ * Orchestrator that combines CSS, Iconify script, SSR wrapper, and table markup
+ * into a single HTML string for the device configuration table.
+ *
+ * @return Complete HTML string for the config table
+ */
+private String displayDeviceConfigTable() {
+    ensureDeviceStatusCache()
+    String tableMarkup = renderDeviceConfigTableMarkup()
+    return loadConfigTableCSS() + loadConfigTableScript() +
+        "<span class='ssr-app-state-${getAppIdHelper()}-configTable' id='config-table'>" +
+        "<div id='config-table-wrapper'>${tableMarkup}</div></span>"
+}
+
+/**
+ * Returns CSS styles for the device configuration table.
+ * Uses MDL data table as base with status color classes.
+ *
+ * @return HTML style block
+ */
+@CompileStatic
+private String loadConfigTableCSS() {
+    return """<style>
+    .mdl-data-table {
+        width: 100%;
+        border-collapse: collapse;
+        border: 1px solid #E0E0E0;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    .mdl-data-table thead { background-color: #F5F5F5; }
+    .mdl-data-table th {
+        font-size: 14px !important;
+        font-weight: 500;
+        color: #424242;
+        padding: 8px !important;
+        text-align: center;
+        border-bottom: 2px solid #E0E0E0;
+        border-right: 1px solid #E0E0E0;
+    }
+    .mdl-data-table td {
+        font-size: 14px !important;
+        padding: 6px 4px !important;
+        text-align: center;
+        border-bottom: 1px solid #EEEEEE;
+        border-right: 1px solid #EEEEEE;
+    }
+    .mdl-data-table tbody tr:hover { background-color: inherit !important; }
+    .device-link a { color: #2196F3; text-decoration: none; font-weight: 500; }
+    .device-link a:hover { text-decoration: underline; }
+    .status-ok { color: #4CAF50; font-weight: 500; }
+    .status-error { color: #F44336; font-weight: 500; }
+    .status-na { color: #9E9E9E; }
+    .status-stale { color: #FF9800; }
+    .status-pending { color: #9E9E9E; font-style: italic; }
+</style>"""
+}
+
+/**
+ * Returns the Iconify script tag for icon support in the table.
+ *
+ * @return HTML script tag
+ */
+@CompileStatic
+private String loadConfigTableScript() {
+    return "<script src='https://code.iconify.design/iconify-icon/1.0.0/iconify-icon.min.js'></script>"
+}
+
+/**
+ * Renders the device configuration table markup from the status cache.
+ * Merges discovered devices with created devices for a complete list.
+ *
+ * @return HTML table markup string
+ */
+private String renderDeviceConfigTableMarkup() {
+    List<Map> deviceList = buildDeviceList()
+    if (deviceList.size() == 0) {
+        return "<p>No devices found. Run discovery on the main page first.</p>"
+    }
+
+    // Sort: created devices first, then by name
+    deviceList.sort { Map a, Map b ->
+        if (a.isCreated != b.isCreated) { return a.isCreated ? -1 : 1 }
+        String nameA = ((a.hubDeviceName ?: a.shellyName) as String).toLowerCase()
+        String nameB = ((b.hubDeviceName ?: b.shellyName) as String).toLowerCase()
+        return nameA <=> nameB
+    }
+
+    StringBuilder str = new StringBuilder()
+    str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
+    str.append("<thead><tr>")
+    str.append("<th>Device</th>")
+    str.append("<th>IP</th>")
+    str.append("<th>Created</th>")
+    str.append("<th>Scripts Installed</th>")
+    str.append("<th>Scripts Active</th>")
+    str.append("<th>Webhooks Created</th>")
+    str.append("<th>Webhooks Enabled</th>")
+    str.append("</tr></thead><tbody>")
+
+    deviceList.each { Map entry -> str.append(buildDeviceRow(entry)) }
+
+    str.append("</tbody></table></div>")
+    return str.toString()
+}
+
+/**
+ * Builds a unified list of devices from discovered Shellys and created child devices.
+ * Reads status from the device status cache for each entry.
+ *
+ * @return List of device entry maps with status information
+ */
+private List<Map> buildDeviceList() {
+    List<Map> result = []
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+    Map cache = state.deviceStatusCache ?: [:]
+    def childDevices = getChildDevices() ?: []
+
+    // Build lookup of child devices by IP
+    Map<String, Object> childByIp = [:]
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip) { childByIp[ip] = dev }
+    }
+
+    // Build set of IPs already processed
+    Set<String> processedIps = [] as Set
+
+    // First pass: iterate discovered Shellys
+    discoveredShellys.each { ipKey, info ->
+        String ip = ipKey.toString()
+        processedIps.add(ip)
+        Map cached = cache[ip] as Map
+        Map entry = cached ?: buildMinimalCacheEntry(ip, info as Map)
+
+        // Check if a child device exists for this IP
+        def dev = childByIp[ip]
+        if (dev) {
+            entry.isCreated = true
+            entry.hubDeviceId = dev.id
+            entry.hubDeviceDni = dev.deviceNetworkId
+            entry.hubDeviceName = dev.displayName
+        }
+        result.add(entry)
+    }
+
+    // Second pass: add child devices not found in discovery
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip && !processedIps.contains(ip)) {
+            processedIps.add(ip)
+            Map cached = cache[ip] as Map
+            if (cached) {
+                cached.isCreated = true
+                cached.hubDeviceId = dev.id
+                cached.hubDeviceDni = dev.deviceNetworkId
+                cached.hubDeviceName = dev.displayName
+                result.add(cached)
+            } else {
+                result.add([
+                    shellyName: dev.displayName,
+                    ip: ip,
+                    mac: dev.getDataValue('shellyMac') ?: '',
+                    isCreated: true,
+                    hubDeviceId: dev.id,
+                    hubDeviceDni: dev.deviceNetworkId,
+                    hubDeviceName: dev.displayName,
+                    isBatteryDevice: isSleepyBatteryDevice(dev),
+                    isReachable: null,
+                    requiredScriptCount: null,
+                    installedScriptCount: null,
+                    activeScriptCount: null,
+                    requiredWebhookCount: null,
+                    createdWebhookCount: null,
+                    enabledWebhookCount: null,
+                    lastRefreshed: null
+                ])
+            }
+        }
+    }
+
+    return result
+}
+
+/**
+ * Builds a minimal cache entry from discovery data without making any RPC calls.
+ *
+ * @param ip The device IP address
+ * @param info The discovered device info map
+ * @return Map with basic device information and null status fields
+ */
+@CompileStatic
+private Map buildMinimalCacheEntry(String ip, Map info) {
+    return [
+        shellyName: (info?.name ?: "Shelly ${ip}") as String,
+        ip: ip,
+        mac: (info?.mac ?: '') as String,
+        model: (info?.model ?: 'Unknown') as String,
+        isCreated: false,
+        hubDeviceDni: null,
+        hubDeviceName: null,
+        hubDeviceId: null,
+        isBatteryDevice: false,
+        isReachable: null,
+        requiredScriptCount: null,
+        installedScriptCount: null,
+        activeScriptCount: null,
+        requiredWebhookCount: null,
+        createdWebhookCount: null,
+        enabledWebhookCount: null,
+        lastRefreshed: null
+    ]
+}
+
+/**
+ * Builds a single table row for a device entry.
+ *
+ * @param entry Map containing device status information
+ * @return HTML string for one table row
+ */
+private String buildDeviceRow(Map entry) {
+    StringBuilder str = new StringBuilder()
+    str.append("<tr>")
+
+    String ip = entry.ip as String
+    Boolean isCreated = entry.isCreated as Boolean
+    Boolean isBattery = entry.isBatteryDevice as Boolean
+    Long lastRefreshed = entry.lastRefreshed as Long
+    Boolean isStale = lastRefreshed == null
+
+    // Column 1: Device name (linked if created)
+    if (isCreated && entry.hubDeviceId) {
+        String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${entry.hubDeviceName}'>${entry.hubDeviceName}</a>"
+        str.append("<td class='device-link' style='text-align:left'>${devLink}</td>")
+    } else {
+        str.append("<td style='text-align:left'>${entry.shellyName ?: 'Unknown'}</td>")
+    }
+
+    // Column 2: IP
+    str.append("<td>${ip}</td>")
+
+    // Column 3: Created status with action button
+    if (isCreated) {
+        String removeBtn = buttonLink("removeDev|${ip}", "<iconify-icon icon='material-symbols:delete-outline' style='font-size:18px'></iconify-icon>", "#F44336", "18px")
+        str.append("<td><span class='status-ok'>&#10003;</span> ${removeBtn}</td>")
+    } else {
+        String createBtn = buttonLink("createDev|${ip}", "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:18px'></iconify-icon>", "#4CAF50", "18px")
+        str.append("<td>${createBtn}</td>")
+    }
+
+    // Columns 4-7: Script and webhook status
+    if (!isCreated) {
+        // Not created — show dashes for all status columns
+        str.append("<td class='status-na'>&ndash;</td>")
+        str.append("<td class='status-na'>&ndash;</td>")
+        str.append("<td class='status-na'>&ndash;</td>")
+        str.append("<td class='status-na'>&ndash;</td>")
+    } else if (isBattery) {
+        // Battery device — no scripts, show webhooks
+        str.append("<td class='status-na'>n/a</td>")
+        str.append("<td class='status-na'>n/a</td>")
+        str.append(buildWebhookCells(entry, isStale, ip))
+    } else {
+        str.append(buildScriptCells(entry, isStale, ip))
+        str.append(buildWebhookCells(entry, isStale, ip))
+    }
+
+    str.append("</tr>")
+    return str.toString()
+}
+
+/**
+ * Builds the script installed and active table cells for a device row.
+ *
+ * @param entry The device status cache entry
+ * @param isStale Whether the data is stale (never refreshed)
+ * @param ip The device IP address
+ * @return HTML string for two table cells (scripts installed, scripts active)
+ */
+@CompileStatic
+private String buildScriptCells(Map entry, Boolean isStale, String ip) {
+    StringBuilder str = new StringBuilder()
+    Integer required = entry.requiredScriptCount as Integer
+    Integer installed = entry.installedScriptCount as Integer
+    Integer active = entry.activeScriptCount as Integer
+
+    if (required == null || installed == null) {
+        // Not yet checked
+        String prefix = isStale ? '?' : ''
+        String cssClass = isStale ? 'status-stale' : 'status-pending'
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        return str.toString()
+    }
+
+    // Scripts installed
+    if (installed >= required) {
+        str.append("<td class='status-ok'>${installed}/${required}</td>")
+    } else {
+        String installBtn = buttonLink("installScripts|${ip}",
+            "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+        str.append("<td class='status-error'>${installed}/${required} ${installBtn}</td>")
+    }
+
+    // Scripts active
+    if (active == null) { active = 0 }
+    if (active >= required) {
+        str.append("<td class='status-ok'>${active}/${required}</td>")
+    } else {
+        String enableBtn = buttonLink("enableScripts|${ip}",
+            "<iconify-icon icon='material-symbols:play-arrow' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+        str.append("<td class='status-error'>${active}/${required} ${enableBtn}</td>")
+    }
+
+    return str.toString()
+}
+
+/**
+ * Builds the webhook created and enabled table cells for a device row.
+ *
+ * @param entry The device status cache entry
+ * @param isStale Whether the data is stale (never refreshed)
+ * @param ip The device IP address
+ * @return HTML string for two table cells (webhooks created, webhooks enabled)
+ */
+@CompileStatic
+private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
+    StringBuilder str = new StringBuilder()
+    Integer required = entry.requiredWebhookCount as Integer
+    Integer created = entry.createdWebhookCount as Integer
+    Integer enabled = entry.enabledWebhookCount as Integer
+
+    if (required == null || created == null) {
+        String prefix = isStale ? '?' : ''
+        String cssClass = isStale ? 'status-stale' : 'status-pending'
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        return str.toString()
+    }
+
+    // Webhooks created
+    if (created >= required) {
+        str.append("<td class='status-ok'>${created}/${required}</td>")
+    } else {
+        String installBtn = buttonLink("installWebhooks|${ip}",
+            "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+        str.append("<td class='status-error'>${created}/${required} ${installBtn}</td>")
+    }
+
+    // Webhooks enabled
+    if (enabled == null) { enabled = 0 }
+    if (enabled >= required) {
+        str.append("<td class='status-ok'>${enabled}/${required}</td>")
+    } else {
+        str.append("<td class='status-error'>${enabled}/${required}</td>")
+    }
+
+    return str.toString()
+}
+
+/**
+ * Creates a clickable inline button that triggers appButtonHandler on click.
+ *
+ * @param btnName The button name passed to appButtonHandler
+ * @param linkText The display text or HTML for the button
+ * @param color CSS color for the button text
+ * @param font CSS font-size for the button text
+ * @return HTML string for the inline button
+ */
+@CompileStatic
+private String buttonLink(String btnName, String linkText, String color = "#1A77C9", String font = "15px") {
+    "<div class='form-group'><input type='hidden' name='${btnName}.type' value='button'></div>" +
+    "<div style='display:inline-block'><div class='submitOnChange' onclick='buttonClick(this)' " +
+    "style='color:${color};cursor:pointer;font-size:${font}'>${linkText}</div></div>" +
+    "<input type='hidden' name='settings[${btnName}]' value=''>"
+}
+
+/**
+ * Ensures the device status cache exists. Does NOT make any RPC calls.
+ * Initializes from discovered devices and child devices with null status fields.
+ */
+private void ensureDeviceStatusCache() {
+    if (state.deviceStatusCache != null) { return }
+    Map cache = [:]
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+
+    discoveredShellys.each { ipKey, info ->
+        String ip = ipKey.toString()
+        cache[ip] = buildMinimalCacheEntry(ip, info as Map)
+    }
+
+    // Add child devices not in discovery
+    def childDevices = getChildDevices() ?: []
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip && !cache.containsKey(ip)) {
+            cache[ip] = [
+                shellyName: dev.displayName,
+                ip: ip,
+                mac: dev.getDataValue('shellyMac') ?: '',
+                isCreated: true,
+                hubDeviceDni: dev.deviceNetworkId,
+                hubDeviceName: dev.displayName,
+                hubDeviceId: dev.id,
+                isBatteryDevice: isSleepyBatteryDevice(dev),
+                isReachable: null,
+                requiredScriptCount: null,
+                installedScriptCount: null,
+                activeScriptCount: null,
+                requiredWebhookCount: null,
+                createdWebhookCount: null,
+                enabledWebhookCount: null,
+                lastRefreshed: null
+            ]
+        }
+    }
+
+    state.deviceStatusCache = cache
+}
+
+/**
+ * Returns the set of all known device IPs from discovery and child devices.
+ *
+ * @return Set of IP address strings
+ */
+private Set<String> getAllKnownDeviceIps() {
+    Set<String> ips = [] as Set
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+    discoveredShellys.each { ipKey, info -> ips.add(ipKey.toString()) }
+
+    def childDevices = getChildDevices() ?: []
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip) { ips.add(ip) }
+    }
+    return ips
+}
+
+/**
+ * Queries a single device via RPC and updates the status cache.
+ * Checks script installation/active counts and webhook created/enabled counts.
+ *
+ * @param ip The device IP address
+ * @return The updated cache entry map
+ */
+private Map buildDeviceStatusCacheEntry(String ip) {
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+    Map info = discoveredShellys[ip] as Map
+    Map cache = state.deviceStatusCache ?: [:]
+    Map entry = cache[ip] as Map ?: buildMinimalCacheEntry(ip, info ?: [:])
+
+    // Update basic info from discovery
+    if (info) {
+        entry.shellyName = (info.name ?: "Shelly ${ip}") as String
+        entry.mac = (info.mac ?: '') as String
+        entry.model = (info.model ?: 'Unknown') as String
+    }
+
+    // Find the Hubitat child device for this IP
+    def childDevice = findChildDeviceByIp(ip)
+    entry.isCreated = (childDevice != null)
+    if (childDevice) {
+        entry.hubDeviceDni = childDevice.deviceNetworkId
+        entry.hubDeviceName = childDevice.displayName
+        entry.hubDeviceId = childDevice.id
+        entry.isBatteryDevice = isSleepyBatteryDevice(childDevice)
+    }
+
+    // Check reachability
+    Boolean isBattery = entry.isBatteryDevice as Boolean
+    if (isBattery) {
+        entry.isReachable = isDeviceReachable(ip)
+    } else {
+        Map deviceStatus = queryDeviceStatus(ip)
+        entry.isReachable = (deviceStatus != null)
+    }
+
+    Boolean reachable = entry.isReachable as Boolean
+
+    // Script status (skip for battery devices and uncreated devices)
+    if (childDevice && !isBattery && reachable) {
+        Set<String> requiredScripts = getRequiredScriptsForDevice(childDevice)
+        Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it as String) } as Set<String>
+        List<Map> installedScripts = listDeviceScripts(ip)
+
+        entry.requiredScriptCount = requiredNames.size()
+        if (installedScripts != null) {
+            List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
+            Integer matchCount = 0
+            Integer activeCount = 0
+            requiredNames.each { String reqName ->
+                if (installedNames.contains(reqName)) { matchCount++ }
+                Map script = installedScripts.find { (it.name ?: '') == reqName }
+                if (script && (script.enable as Boolean) && (script.running as Boolean)) {
+                    activeCount++
+                }
+            }
+            entry.installedScriptCount = matchCount
+            entry.activeScriptCount = activeCount
+        }
+    } else if (isBattery) {
+        entry.requiredScriptCount = -1
+        entry.installedScriptCount = -1
+        entry.activeScriptCount = -1
+    }
+
+    // Webhook status (skip for uncreated devices)
+    if (childDevice && reachable) {
+        List<Map> requiredActions = getRequiredActionsForDevice(childDevice, reachable)
+        entry.requiredWebhookCount = requiredActions.size()
+
+        List<Map> installedHooks = listDeviceWebhooks(ip)
+        if (installedHooks != null) {
+            String hubIp = getLocationHelper()?.hub?.localIP ?: ''
+            Integer createdCount = 0
+            Integer enabledCount = 0
+            requiredActions.each { Map action ->
+                Map hook = installedHooks.find { Map h ->
+                    h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
+                }
+                if (hook) {
+                    createdCount++
+                    List<String> urls = hook.urls as List<String>
+                    Boolean isEnabled = hook.enable as Boolean
+                    if (urls?.any { it?.contains(hubIp) } && isEnabled) {
+                        enabledCount++
+                    }
+                }
+            }
+            entry.createdWebhookCount = createdCount
+            entry.enabledWebhookCount = enabledCount
+        }
+    }
+
+    entry.lastRefreshed = now()
+
+    // Persist to state
+    cache[ip] = entry
+    state.deviceStatusCache = cache
+    return entry
+}
+
+/**
+ * Finds a child device by its IP address data value.
+ *
+ * @param ip The IP address to search for
+ * @return The matching child device, or null if not found
+ */
+private def findChildDeviceByIp(String ip) {
+    def childDevices = getChildDevices() ?: []
+    return childDevices.find { it.getDataValue('ipAddress') == ip }
+}
+
+/**
+ * Asynchronously refreshes the status cache for all known devices.
+ * Called via runIn() after the Refresh All Status button is clicked.
+ * Fires an SSR event after each device to provide incremental table updates.
+ */
+void refreshAllDeviceStatusAsync() {
+    logInfo("Refreshing status for all devices...")
+    appendLog('info', "Refreshing all device status...")
+    Set<String> allIps = getAllKnownDeviceIps()
+    allIps.each { String ip ->
+        try {
+            buildDeviceStatusCacheEntry(ip)
+            sendEvent(name: 'configTable', value: ip)
+        } catch (Exception ex) {
+            logError("Failed to refresh status for ${ip}: ${ex.message}")
+        }
+    }
+    logInfo("Status refresh complete for ${allIps.size()} device(s)")
+    appendLog('info', "Status refresh complete for ${allIps.size()} device(s)")
+}
+
+/**
+ * Installs required scripts on a device identified by IP address.
+ * Wrapper around the script installation logic that finds the device by IP
+ * instead of relying on the selectedConfigDevice setting.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void installRequiredScriptsForIp(String ipAddress) {
+    def device = findChildDeviceByIp(ipAddress)
+    if (!device) {
+        logError("installRequiredScriptsForIp: no child device found for ${ipAddress}")
+        return
+    }
+
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    if (requiredScripts.size() == 0) {
+        logInfo("No required scripts for device at ${ipAddress}")
+        appendLog('info', "No required scripts for ${device.displayName}")
+        return
+    }
+
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logError("Cannot read scripts from device at ${ipAddress}")
+        appendLog('error', "Cannot read scripts from ${device.displayName}")
+        return
+    }
+    List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
+
+    String branch = GITHUB_BRANCH
+    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts"
+    String uri = "http://${ipAddress}/rpc"
+    Integer installed = 0
+
+    requiredScripts.each { String scriptFile ->
+        String scriptName = stripJsExtension(scriptFile)
+        if (installedNames.any { it == scriptName }) {
+            logDebug("Script '${scriptName}' already installed on ${ipAddress}")
+            return
+        }
+
+        logInfo("Installing script '${scriptName}' on ${ipAddress}...")
+        appendLog('info', "Installing ${scriptName} on ${device.displayName}...")
+
+        String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
+        if (!scriptCode) {
+            logError("Failed to download ${scriptFile} from GitHub")
+            appendLog('error', "Failed to download ${scriptFile}")
+            return
+        }
+
+        try {
+            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
+            if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
+            LinkedHashMap createResult = postCommandSync(createCmd, uri)
+            Integer scriptId = createResult?.result?.id as Integer
+
+            if (scriptId == null) {
+                logError("Failed to create script '${scriptName}' on device")
+                appendLog('error', "Failed to create ${scriptName}")
+                return
+            }
+
+            LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, scriptCode, false)
+            if (authIsEnabled() == true && getAuth().size() > 0) { putCmd.auth = getAuth() }
+            postCommandSync(putCmd, uri)
+
+            LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+            if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
+            postCommandSync(enableCmd, uri)
+
+            LinkedHashMap startCmd = scriptStartCommand(scriptId)
+            if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
+            postCommandSync(startCmd, uri)
+
+            logInfo("Successfully installed and started '${scriptName}' (id: ${scriptId})")
+            appendLog('info', "Installed ${scriptName} on ${device.displayName}")
+            installed++
+        } catch (Exception ex) {
+            logError("Failed to install script '${scriptName}': ${ex.message}")
+            appendLog('error', "Failed to install ${scriptName}: ${ex.message}")
+        }
+    }
+
+    logInfo("Script installation complete: ${installed} script(s) installed on ${ipAddress}")
+    appendLog('info', "Script installation complete: ${installed} installed on ${device.displayName}")
+}
+
+/**
+ * Enables and starts required scripts on a device identified by IP address.
+ * Wrapper that finds the device by IP instead of relying on selectedConfigDevice.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void enableAndStartRequiredScriptsForIp(String ipAddress) {
+    def device = findChildDeviceByIp(ipAddress)
+    if (!device) {
+        logError("enableAndStartRequiredScriptsForIp: no child device found for ${ipAddress}")
+        return
+    }
+
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it) } as Set<String>
+
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logError("Cannot read scripts from device at ${ipAddress}")
+        appendLog('error', "Cannot read scripts from ${device.displayName}")
+        return
+    }
+
+    String uri = "http://${ipAddress}/rpc"
+    Integer fixed = 0
+
+    installedScripts.each { Map script ->
+        String name = script.name as String
+        Integer scriptId = script.id as Integer
+        Boolean enabled = script.enable as Boolean
+        Boolean running = script.running as Boolean
+
+        if (!requiredNames.contains(name)) { return }
+        if (scriptId == null) { return }
+        if (enabled && running) { return }
+
+        logInfo("Enabling and starting script '${name}' (id: ${scriptId}) on ${ipAddress}...")
+        appendLog('info', "Enabling ${name} on ${device.displayName}...")
+
+        try {
+            if (!enabled) {
+                LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
+                postCommandSync(enableCmd, uri)
+            }
+            if (!running) {
+                LinkedHashMap startCmd = scriptStartCommand(scriptId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
+                postCommandSync(startCmd, uri)
+            }
+
+            logInfo("Script '${name}' is now enabled and running")
+            appendLog('info', "Enabled and started ${name} on ${device.displayName}")
+            fixed++
+        } catch (Exception ex) {
+            logError("Failed to enable/start script '${name}': ${ex.message}")
+            appendLog('error', "Failed to enable ${name}: ${ex.message}")
+        }
+    }
+
+    logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
+    appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
+}
+
+/**
+ * Installs required webhook actions on a device identified by IP address.
+ * Wrapper that finds the device by IP instead of relying on selectedConfigDevice.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void installRequiredActionsForIp(String ipAddress) {
+    def device = findChildDeviceByIp(ipAddress)
+    if (!device) {
+        logError("installRequiredActionsForIp: no child device found for ${ipAddress}")
+        return
+    }
+
+    List<Map> requiredActions = getRequiredActionsForDevice(device)
+    if (!requiredActions) {
+        logInfo("No actions required for this device")
+        return
+    }
+
+    List<Map> existingHooks = listDeviceWebhooks(ipAddress)
+    if (existingHooks == null) {
+        logError("Could not retrieve existing webhooks from ${ipAddress}")
+        return
+    }
+
+    String hubIp = location.hub.localIP
+    String hookUrl = "http://${hubIp}:39501"
+    String uri = "http://${ipAddress}/rpc"
+    Integer installed = 0
+
+    requiredActions.each { Map action ->
+        String event = action.event as String
+        String name = action.name as String
+        Integer cid = action.cid as Integer
+
+        Map existing = existingHooks.find { Map h ->
+            h.event == event && (h.cid as Integer) == cid
+        }
+
+        if (existing) {
+            List<String> urls = existing.urls as List<String>
+            Boolean isEnabled = existing.enable as Boolean
+            if (urls?.any { it?.contains(hubIp) } && isEnabled) {
+                logDebug("Webhook '${name}' already configured for ${event} cid=${cid}")
+                return
+            }
+            logInfo("Updating webhook '${name}' for ${event} cid=${cid}")
+            LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, [hookUrl])
+            if (authIsEnabled() == true && getAuth().size() > 0) { updateCmd.auth = getAuth() }
+            postCommandSync(updateCmd, uri)
+            installed++
+            return
+        }
+
+        logInfo("Creating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
+        appendLog('info', "Creating webhook ${name} on ${device.displayName}")
+        LinkedHashMap createCmd = webhookCreateCommand(cid, event, name, [hookUrl])
+        if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
+        LinkedHashMap result = postCommandSync(createCmd, uri)
+
+        if (result?.result?.id != null) {
+            logInfo("Webhook '${name}' created (id: ${result.result.id})")
+            installed++
+        } else {
+            logError("Failed to create webhook '${name}': ${result}")
+        }
+    }
+
+    logInfo("Action provisioning complete: ${installed} webhook(s) installed/updated on ${ipAddress}")
+    appendLog('info', "Action provisioning: ${installed} webhook(s) on ${device.displayName}")
+}
+
+/**
+ * Removes a created Shelly device and its children (if parent-child).
+ * Cleans up device configs and updates the status cache.
+ *
+ * @param ip The IP address of the device to remove
+ */
+private void removeDeviceByIp(String ip) {
+    def device = findChildDeviceByIp(ip)
+    if (!device) {
+        logWarn("removeDeviceByIp: no child device found for ${ip}")
+        return
+    }
+
+    String dni = device.deviceNetworkId
+    String name = device.displayName
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Map config = deviceConfigs[dni] as Map
+
+    // Remove children first if parent-child device
+    if (config?.isParentChild && config?.childDnis) {
+        List<String> childDnis = config.childDnis as List<String>
+        childDnis.each { String childDni ->
+            def childDev = getChildDevice(childDni)
+            if (childDev) {
+                String childName = childDev.displayName
+                deleteChildDevice(childDni)
+                logInfo("Removed child device: ${childName} (${childDni})")
+                appendLog('info', "Removed child: ${childName}")
+            }
+        }
+    }
+
+    // Remove the device itself
+    deleteChildDevice(dni)
+    logInfo("Removed device: ${name} (${dni})")
+    appendLog('info', "Removed: ${name}")
+
+    // Clean up device config
+    deviceConfigs.remove(dni)
+    state.deviceConfigs = deviceConfigs
+
+    // Update status cache
+    Map cache = state.deviceStatusCache ?: [:]
+    if (cache[ip]) {
+        Map entry = cache[ip] as Map
+        entry.isCreated = false
+        entry.hubDeviceDni = null
+        entry.hubDeviceName = null
+        entry.hubDeviceId = null
+        entry.requiredScriptCount = null
+        entry.installedScriptCount = null
+        entry.activeScriptCount = null
+        entry.requiredWebhookCount = null
+        entry.createdWebhookCount = null
+        entry.enabledWebhookCount = null
+        entry.lastRefreshed = null
+        cache[ip] = entry
+        state.deviceStatusCache = cache
     }
 }
 
@@ -1344,7 +2051,11 @@ String processServerSideRender(Map event) {
     String elementId = event.elementId ?: ''
     String eventName = event.name ?: ''
 
-    // App-level events (e.g., driverRebuildStatus)
+    // App-level events
+    if (eventName == 'configTable') {
+        return "<div id='config-table-wrapper'>${renderDeviceConfigTableMarkup()}</div>"
+    }
+
     if (eventName == 'driverRebuildStatus') {
         return renderDriverManagementHtml()
     }
