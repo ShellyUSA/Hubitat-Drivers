@@ -6,7 +6,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.32"
+@Field static final String APP_VERSION = "1.0.33"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -42,19 +42,17 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.32"
+    version: "1.0.33"
 )
 
 preferences {
     page(name: "mainPage", install: true, uninstall: true)
-    page(name: "createDevicesPage")
-    page(name: "deviceConfigPage")
 }
 
 /**
- * Renders the main discovery page for the Shelly Device Manager app.
- * Initializes state variables, starts discovery if not running, and displays
- * the discovery timer, discovered devices list, and logging controls.
+ * Renders the main page for the Shelly Device Manager app.
+ * Consolidates discovery, device configuration table, and settings onto a single page.
+ * Devices appear in the config table as they are discovered via SSR updates.
  *
  * @return Map containing the dynamic page definition
  */
@@ -62,11 +60,32 @@ Map mainPage() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
 
+    // Clean up orphan settings from removed pages
+    app.removeSetting('selectedToCreate')
+    app.removeSetting('selectedToRemove')
+    app.removeSetting('selectedConfigDevice')
+
     // Requirement: scanning should start (or restart) when app page is opened.
     Integer remainingSecs = getRemainingDiscoverySeconds()
     if (!state.discoveryRunning || remainingSecs <= 0) {
         startDiscovery(true)
         remainingSecs = getRemainingDiscoverySeconds()
+    }
+
+    // Apply pending label edit if the user has typed a new label
+    String editIp = state.pendingLabelEdit as String
+    if (editIp && settings?.editLabelValue != null) {
+        String newLabel = (settings.editLabelValue as String)?.trim()
+        if (newLabel) {
+            def device = findChildDeviceByIp(editIp)
+            if (device) {
+                device.setLabel(newLabel)
+                logInfo("Updated label for ${editIp} to '${newLabel}'")
+                appendLog('info', "Renamed ${editIp} to '${newLabel}'")
+            }
+        }
+        state.remove('pendingLabelEdit')
+        app.removeSetting('editLabelValue')
     }
 
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
@@ -79,15 +98,34 @@ Map mainPage() {
             input 'btnExtendScan', 'button', title: 'Extend Scan (120s)', submitOnChange: true
         }
 
+        // Delete confirmation (shown when user clicks delete on a device)
+        if (state.pendingDeleteIp) {
+            String deleteIp = state.pendingDeleteIp as String
+            def deleteDevice = findChildDeviceByIp(deleteIp)
+            String deleteName = deleteDevice ? deleteDevice.displayName : deleteIp
+            section() {
+                paragraph "<b style='color:#F44336'>Are you sure you want to remove '${deleteName}' (${deleteIp})?</b>"
+                input 'btnConfirmDelete', 'button', title: 'Yes, Remove Device', submitOnChange: true
+                input 'btnCancelDelete', 'button', title: 'Cancel', submitOnChange: true
+            }
+        }
+
+        // Label editing input (shown when user clicks a label in the table)
+        if (state.pendingLabelEdit) {
+            String labelIp = state.pendingLabelEdit as String
+            def labelDevice = findChildDeviceByIp(labelIp)
+            String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelIp
+            section() {
+                paragraph "<b>Editing label for device at ${labelIp}</b>"
+                input name: 'editLabelValue', type: 'text', title: "New label (current: ${currentLabel})",
+                    defaultValue: currentLabel, required: false, submitOnChange: true
+                input 'btnCancelLabelEdit', 'button', title: 'Cancel', submitOnChange: true
+            }
+        }
+
         section() {
-            // Combine section label and device-count onto a single line
-            paragraph "<b>Discovered Shelly Devices</b> <span class='app-state-${app.id}-shellyDiscoveredCount'>Found Devices (${state.discoveredShellys.size()}):</span>"
-
-            // Device list remains below (updated via app-state binding)
-            paragraph "<pre class='app-state-${app.id}-shellyDiscovered' style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${getFoundShellys() ?: 'No Shelly devices discovered yet.'}</pre>"
-
-            href "createDevicesPage", title: "Create Devices", description: "Select discovered Shelly devices to create"
-            href "deviceConfigPage", title: "Device Configuration", description: "Configure installed Shelly devices"
+            input 'btnRefreshAllStatus', 'button', title: 'Refresh All Status', submitOnChange: true
+            paragraph displayDeviceConfigTable()
         }
 
         section("Options", hideable: true) {
@@ -168,62 +206,12 @@ Map mainPage() {
 
 /**
  * Handles button click events from the app UI.
- * Processes actions for extending scan, creating devices, and getting device info.
+ * Processes actions for discovery, driver management, and device configuration table buttons.
  *
  * @param buttonName The name of the button that was clicked
  */
 void appButtonHandler(String buttonName) {
     if (buttonName == 'btnExtendScan') { extendDiscovery(120) }
-
-    if (buttonName == 'btnCreateDevices') {
-        List<String> selected = settings?.selectedToCreate ?: []
-        if (!(selected instanceof List) && selected) { selected = [selected] }
-        int count = (selected instanceof List) ? selected.size() : 0
-
-        if (count == 0) {
-            appendLog('warn', 'Create Devices: no devices selected')
-            return
-        }
-
-        logDebug("Creating ${count} device(s)")
-        appendLog('info', "Creating ${count} device(s)...")
-
-        selected.each { String ipKey ->
-            createShellyDevice(ipKey)
-        }
-    }
-
-    if (buttonName == 'btnGetDeviceInfo') {
-        List<String> selected = settings?.selectedToCreate ?: []
-        if (!(selected instanceof List) && selected) { selected = [selected] }
-        if (!selected || selected.size() == 0) {
-            appendLog('warn', 'Get Device Info: no devices selected')
-            return
-        }
-        selected.each { String ipKey ->
-            fetchAndStoreDeviceInfo(ipKey)
-        }
-    }
-
-    if (buttonName == 'btnRemoveDevices') {
-        List<String> selected = settings?.selectedToRemove ?: []
-        if (!(selected instanceof List) && selected) { selected = [selected] }
-        if (!selected || selected.size() == 0) {
-            appendLog('warn', 'Remove Devices: no devices selected')
-            return
-        }
-
-        selected.each { String dni ->
-            def device = getChildDevice(dni)
-            if (device) {
-                String name = device.displayName
-                deleteChildDevice(dni)
-                logInfo("Removed device: ${name} (${dni})")
-                appendLog('info', "Removed: ${name}")
-            }
-        }
-        app.removeSetting('selectedToRemove')
-    }
 
     if (buttonName == 'btnForceRebuildDrivers') {
         Map allDrivers = state.autoDrivers ?: [:]
@@ -237,82 +225,6 @@ void appButtonHandler(String buttonName) {
         // Update the stored version to current before rebuilding
         state.lastAutoconfVersion = getAppVersion()
         rebuildAllTrackedDrivers()
-    }
-
-    if (buttonName == 'btnInstallScripts') {
-        String selectedDni = settings?.selectedConfigDevice as String
-        if (!selectedDni) {
-            appendLog('warn', 'Install Scripts: no device selected')
-            return
-        }
-        def device = getChildDevice(selectedDni)
-        if (!device) {
-            appendLog('warn', "Install Scripts: device not found for DNI ${selectedDni}")
-            return
-        }
-        String ip = device.getDataValue('ipAddress')
-        if (!ip) {
-            appendLog('warn', "Install Scripts: no IP address for device ${device.displayName}")
-            return
-        }
-        installRequiredScripts(ip)
-    }
-
-    if (buttonName == 'btnRemoveNonRequiredScripts') {
-        String selectedDni = settings?.selectedConfigDevice as String
-        if (!selectedDni) {
-            appendLog('warn', 'Remove Scripts: no device selected')
-            return
-        }
-        def device = getChildDevice(selectedDni)
-        if (!device) {
-            appendLog('warn', "Remove Scripts: device not found for DNI ${selectedDni}")
-            return
-        }
-        String ip = device.getDataValue('ipAddress')
-        if (!ip) {
-            appendLog('warn', "Remove Scripts: no IP address for device ${device.displayName}")
-            return
-        }
-        removeNonRequiredScripts(ip)
-    }
-
-    if (buttonName == 'btnEnableStartScripts') {
-        String selectedDni = settings?.selectedConfigDevice as String
-        if (!selectedDni) {
-            appendLog('warn', 'Enable Scripts: no device selected')
-            return
-        }
-        def device = getChildDevice(selectedDni)
-        if (!device) {
-            appendLog('warn', "Enable Scripts: device not found for DNI ${selectedDni}")
-            return
-        }
-        String ip = device.getDataValue('ipAddress')
-        if (!ip) {
-            appendLog('warn', "Enable Scripts: no IP address for device ${device.displayName}")
-            return
-        }
-        enableAndStartRequiredScripts(ip)
-    }
-
-    if (buttonName == 'btnInstallActions') {
-        String selectedDni = settings?.selectedConfigDevice as String
-        if (!selectedDni) {
-            appendLog('warn', 'Install Actions: no device selected')
-            return
-        }
-        def device = getChildDevice(selectedDni)
-        if (!device) {
-            appendLog('warn', "Install Actions: device not found for DNI ${selectedDni}")
-            return
-        }
-        String ip = device.getDataValue('ipAddress')
-        if (!ip) {
-            appendLog('warn', "Install Actions: no IP address for device ${device.displayName}")
-            return
-        }
-        installRequiredActions(ip)
     }
 
     // === Device Configuration Table Buttons ===
@@ -519,6 +431,13 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     logInfo("  MAC: ${deviceInfo.mac}")
     logInfo("  Properties: ${deviceProps}")
 
+    // Ensure the driver is installed on the hub before attempting to create the device
+    if (!ensureDriverInstalled(driverName, deviceInfo)) {
+        logError("Cannot create device '${deviceLabel}': driver '${driverName}' is not installed on the hub")
+        appendLog('error', "Failed to create ${deviceLabel}: driver not installed")
+        return
+    }
+
     try {
         def childDevice = addChildDevice('ShellyUSA', driverName, dni, deviceProps)
 
@@ -577,7 +496,14 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     // Step 1: Install required component drivers
     installComponentDriversForDevice(deviceInfo)
 
-    // Step 2: Create parent device
+    // Step 2: Ensure parent driver is installed on the hub
+    if (!ensureDriverInstalled(parentDriverName, deviceInfo)) {
+        logError("Cannot create parent device '${baseLabel}': driver '${parentDriverName}' is not installed on the hub")
+        appendLog('error', "Failed to create ${baseLabel}: parent driver not installed")
+        return
+    }
+
+    // Step 3: Create parent device
     Map parentProps = [
         name: baseLabel,
         label: baseLabel,
@@ -715,142 +641,6 @@ void uninstalled() {
     unschedule()
 }
 
-/**
- * Renders the device creation page where users can select discovered Shelly devices to create.
- * Builds a list of available devices, tracks selected devices, and provides
- * buttons for creating devices and getting detailed device information.
- *
- * @return Map containing the dynamic page definition
- */
-Map createDevicesPage() {
-    // Build options from discoveredShellys, excluding already-created devices
-    LinkedHashMap<String,String> options = [:] as LinkedHashMap
-    List<String> alreadyCreatedLabels = []
-
-    // Pre-build a set of IPs that already have child devices (for robust matching)
-    def childDevices = getChildDevices() ?: []
-    Set<String> childDeviceIps = childDevices.collect { it.getDataValue('ipAddress') }.findAll { it }.toSet()
-    Set<String> childDeviceDnis = childDevices.collect { it.deviceNetworkId }.toSet()
-
-    state.discoveredShellys.each { ip, info ->
-        String mac = info.mac ? " [${info.mac}]" : ""
-        String label = "${info?.name ?: 'Shelly'} (${info?.ipAddress ?: ip})${mac}"
-        // Check if device already exists by DNI (MAC or IP-based) or by IP data value
-        String dni = info.mac ?: "shelly-${ip.toString().replaceAll('\\.', '-')}"
-        String ipStr = ip.toString()
-        Boolean alreadyCreated = childDeviceDnis.contains(dni) || childDeviceIps.contains(ipStr)
-        if (alreadyCreated) {
-            alreadyCreatedLabels.add(label)
-        } else {
-            options["${ip}"] = label
-        }
-    }
-
-    // Normalize selection and filter out already-created devices
-    List<String> selected = settings?.selectedToCreate ?: []
-    if (!(selected instanceof List) && selected) { selected = [selected] }
-    selected = selected.findAll { options.containsKey(it) }
-    Integer selectedCount = selected.size()
-
-    logDebug("createDevicesPage: options.size=${options.size()}, selected=${selected}, alreadyCreated=${alreadyCreatedLabels.size()}")
-
-    // Build remove options from existing child devices (reuse childDevices from above)
-    LinkedHashMap<String,String> removeOptions = [:] as LinkedHashMap
-    childDevices.sort { it.displayName }.each { device ->
-        String mac = device.getDataValue('shellyMac') ? " [${device.getDataValue('shellyMac')}]" : ""
-        removeOptions[device.deviceNetworkId] = "${device.displayName} (${device.getDataValue('ipAddress') ?: 'n/a'})${mac}"
-    }
-
-    dynamicPage(name: "createDevicesPage", title: "Manage Shelly Devices", install: false, uninstall: false) {
-        section() {
-            if (!options || options.size() == 0) {
-                if (alreadyCreatedLabels.size() > 0) {
-                    paragraph "All discovered devices have already been created."
-                } else {
-                    paragraph "No devices available to create. Run discovery first."
-                }
-            } else {
-                input name: 'selectedToCreate', type: 'enum', title: 'Select devices to create', options: options, multiple: true, required: false, submitOnChange: true
-                input 'btnCreateDevices', 'button', title: 'Create Devices', submitOnChange: true
-                input 'btnGetDeviceInfo', 'button', title: 'Get Device Info', submitOnChange: true
-            }
-        }
-
-        section() {
-            if (!removeOptions || removeOptions.size() == 0) {
-                paragraph "No devices to remove."
-            } else {
-                input name: 'selectedToRemove', type: 'enum', title: 'Select devices to remove', options: removeOptions, multiple: true, required: false, submitOnChange: true
-                input 'btnRemoveDevices', 'button', title: 'Remove Devices', submitOnChange: true
-            }
-        }
-
-        section {
-            href "mainPage", title: "Back to main page", description: ""
-        }
-    }
-}
-
-/**
- * Renders the device configuration page with an all-devices table.
- * Shows every discovered Shelly plus any created devices not yet in discovery.
- * Each row displays creation status, script status, webhook status, and action buttons.
- *
- * @return Map containing the dynamic page definition
- */
-Map deviceConfigPage() {
-    // Apply pending label edit if the user has typed a new label
-    String editIp = state.pendingLabelEdit as String
-    if (editIp && settings?.editLabelValue != null) {
-        String newLabel = (settings.editLabelValue as String)?.trim()
-        if (newLabel) {
-            def device = findChildDeviceByIp(editIp)
-            if (device) {
-                device.setLabel(newLabel)
-                logInfo("Updated label for ${editIp} to '${newLabel}'")
-                appendLog('info', "Renamed ${editIp} to '${newLabel}'")
-            }
-        }
-        state.remove('pendingLabelEdit')
-        app.removeSetting('editLabelValue')
-    }
-
-    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false) {
-        // Delete confirmation (shown when user clicks delete on a device)
-        if (state.pendingDeleteIp) {
-            String deleteIp = state.pendingDeleteIp as String
-            def deleteDevice = findChildDeviceByIp(deleteIp)
-            String deleteName = deleteDevice ? deleteDevice.displayName : deleteIp
-            section() {
-                paragraph "<b style='color:#F44336'>Are you sure you want to remove '${deleteName}' (${deleteIp})?</b>"
-                input 'btnConfirmDelete', 'button', title: 'Yes, Remove Device', submitOnChange: true
-                input 'btnCancelDelete', 'button', title: 'Cancel', submitOnChange: true
-            }
-        }
-
-        // Label editing input (shown when user clicks a label in the table)
-        if (state.pendingLabelEdit) {
-            String labelIp = state.pendingLabelEdit as String
-            def labelDevice = findChildDeviceByIp(labelIp)
-            String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelIp
-            section() {
-                paragraph "<b>Editing label for device at ${labelIp}</b>"
-                input name: 'editLabelValue', type: 'text', title: "New label (current: ${currentLabel})",
-                    defaultValue: currentLabel, required: false, submitOnChange: true
-                input 'btnCancelLabelEdit', 'button', title: 'Cancel', submitOnChange: true
-            }
-        }
-
-        section() {
-            input 'btnRefreshAllStatus', 'button', title: 'Refresh All Status', submitOnChange: true
-            paragraph displayDeviceConfigTable()
-        }
-        section {
-            href "mainPage", title: "Back to main page", description: ""
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════
 // ║  Device Configuration Table                                 ║
 // ╚═══════════════════════════════════════════════════════════════
@@ -933,7 +723,7 @@ private String loadConfigTableScript() {
 private String renderDeviceConfigTableMarkup() {
     List<Map> deviceList = buildDeviceList()
     if (deviceList.size() == 0) {
-        return "<p>No devices found. Run discovery on the main page first.</p>"
+        return "<p>No devices discovered yet. Discovery is running...</p>"
     }
 
     // Sort: created devices first, then by name
@@ -2321,84 +2111,6 @@ List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = tr
 }
 
 /**
- * Installs required webhook actions on a Shelly device. Creates webhooks
- * for each required action that isn't already configured, pointing to
- * the Hubitat hub on port 39501.
- *
- * @param ipAddress The IP address of the Shelly device
- */
-void installRequiredActions(String ipAddress) {
-    String selectedDni = settings?.selectedConfigDevice as String
-    def device = selectedDni ? getChildDevice(selectedDni) : null
-    if (!device) {
-        logError("installRequiredActions: no device found")
-        return
-    }
-
-    List<Map> requiredActions = getRequiredActionsForDevice(device)
-    if (!requiredActions) {
-        logInfo("No actions required for this device")
-        return
-    }
-
-    List<Map> existingHooks = listDeviceWebhooks(ipAddress)
-    if (existingHooks == null) {
-        logError("Could not retrieve existing webhooks from ${ipAddress}")
-        return
-    }
-
-    String hubIp = location.hub.localIP
-    String hookUrl = "http://${hubIp}:39501"
-    String uri = "http://${ipAddress}/rpc"
-    Integer installed = 0
-
-    requiredActions.each { Map action ->
-        String event = action.event as String
-        String name = action.name as String
-        Integer cid = action.cid as Integer
-
-        // Check if a webhook for this event+cid already exists
-        Map existing = existingHooks.find { Map h ->
-            h.event == event && (h.cid as Integer) == cid
-        }
-
-        if (existing) {
-            // Verify it points to the right URL and is enabled
-            List<String> urls = existing.urls as List<String>
-            Boolean enabled = existing.enable as Boolean
-            if (urls?.any { it?.contains(hubIp) } && enabled) {
-                logDebug("Webhook '${name}' already configured for ${event} cid=${cid}")
-                return
-            }
-            // Update existing webhook with correct URL
-            logInfo("Updating webhook '${name}' for ${event} cid=${cid}")
-            LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, [hookUrl])
-            if (authIsEnabled() == true && getAuth().size() > 0) { updateCmd.auth = getAuth() }
-            postCommandSync(updateCmd, uri)
-            installed++
-            return
-        }
-
-        // Create new webhook
-        logInfo("Creating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
-        appendLog('info', "Creating webhook ${name} on ${device.displayName}")
-        LinkedHashMap createCmd = webhookCreateCommand(cid, event, name, [hookUrl])
-        if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
-        LinkedHashMap result = postCommandSync(createCmd, uri)
-
-        if (result?.result?.id != null) {
-            logInfo("Webhook '${name}' created (id: ${result.result.id})")
-            installed++
-        } else {
-            logError("Failed to create webhook '${name}': ${result}")
-        }
-    }
-
-    logInfo("Action provisioning complete: ${installed} webhook(s) installed/updated on ${ipAddress}")
-    appendLog('info', "Action provisioning: ${installed} webhook(s) on ${device.displayName}")
-}
-
-/**
  * Determines which scripts are required for a device by querying its actual
  * Shelly.GetStatus response and cross-referencing with component_driver.json
  * from GitHub. Matches component types via the shellyComponent field and detects
@@ -2545,231 +2257,6 @@ private String stripJsExtension(String filename) {
         return filename.substring(0, filename.length() - 3)
     }
     return filename
-}
-
-/**
- * Installs missing required scripts on a Shelly device.
- * Downloads each missing script from GitHub, creates it on the device,
- * uploads the code, enables it, and starts it.
- *
- * @param ipAddress The IP address of the Shelly device
- */
-void installRequiredScripts(String ipAddress) {
-    String selectedDni = settings?.selectedConfigDevice as String
-    if (!selectedDni) { return }
-    def device = getChildDevice(selectedDni)
-    if (!device) { return }
-
-    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
-    if (requiredScripts.size() == 0) {
-        logInfo("No required scripts for device at ${ipAddress}")
-        appendLog('info', "No required scripts for ${device.displayName}")
-        return
-    }
-
-    // Get currently installed scripts
-    List<Map> installedScripts = listDeviceScripts(ipAddress)
-    if (installedScripts == null) {
-        logError("Cannot read scripts from device at ${ipAddress}")
-        appendLog('error', "Cannot read scripts from ${device.displayName}")
-        return
-    }
-    List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
-
-    String branch = GITHUB_BRANCH
-    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts"
-    String uri = "http://${ipAddress}/rpc"
-
-    Integer installed = 0
-    requiredScripts.each { String scriptFile ->
-        String scriptName = stripJsExtension(scriptFile)
-
-        // Skip if already installed
-        if (installedNames.any { it == scriptName }) {
-            logDebug("Script '${scriptName}' already installed on ${ipAddress}")
-            return
-        }
-
-        logInfo("Installing script '${scriptName}' on ${ipAddress}...")
-        appendLog('info', "Installing ${scriptName} on ${device.displayName}...")
-
-        // Download script source from GitHub
-        String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
-        if (!scriptCode) {
-            logError("Failed to download ${scriptFile} from GitHub")
-            appendLog('error', "Failed to download ${scriptFile}")
-            return
-        }
-
-        try {
-            // Create script on device
-            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
-            if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
-            LinkedHashMap createResult = postCommandSync(createCmd, uri)
-            Integer scriptId = createResult?.result?.id as Integer
-
-            if (scriptId == null) {
-                logError("Failed to create script '${scriptName}' on device")
-                appendLog('error', "Failed to create ${scriptName}")
-                return
-            }
-
-            // Upload code
-            LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, scriptCode, false)
-            if (authIsEnabled() == true && getAuth().size() > 0) { putCmd.auth = getAuth() }
-            postCommandSync(putCmd, uri)
-
-            // Enable script
-            LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-            if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
-            postCommandSync(enableCmd, uri)
-
-            // Start script
-            LinkedHashMap startCmd = scriptStartCommand(scriptId)
-            if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
-            postCommandSync(startCmd, uri)
-
-            logInfo("Successfully installed and started '${scriptName}' (id: ${scriptId})")
-            appendLog('info', "Installed ${scriptName} on ${device.displayName}")
-            installed++
-        } catch (Exception ex) {
-            logError("Failed to install script '${scriptName}': ${ex.message}")
-            appendLog('error', "Failed to install ${scriptName}: ${ex.message}")
-        }
-    }
-
-    logInfo("Script installation complete: ${installed} script(s) installed on ${ipAddress}")
-    appendLog('info', "Script installation complete: ${installed} installed on ${device.displayName}")
-}
-
-/**
- * Removes managed scripts that are not required for a device's capabilities.
- * Only removes scripts whose names appear in MANAGED_SCRIPT_NAMES to avoid
- * deleting user-created or third-party scripts. Stops each script before deletion.
- *
- * @param ipAddress The IP address of the Shelly device
- */
-void removeNonRequiredScripts(String ipAddress) {
-    String selectedDni = settings?.selectedConfigDevice as String
-    if (!selectedDni) { return }
-    def device = getChildDevice(selectedDni)
-    if (!device) { return }
-
-    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
-    Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it) } as Set<String>
-
-    // Get currently installed scripts (need full details including id)
-    List<Map> installedScripts = listDeviceScripts(ipAddress)
-    if (installedScripts == null) {
-        logError("Cannot read scripts from device at ${ipAddress}")
-        appendLog('error', "Cannot read scripts from ${device.displayName}")
-        return
-    }
-
-    String uri = "http://${ipAddress}/rpc"
-    Integer removed = 0
-
-    installedScripts.each { Map script ->
-        String name = script.name as String
-        Integer scriptId = script.id as Integer
-
-        // Only remove scripts we manage, and only if not required
-        if (!MANAGED_SCRIPT_NAMES.contains(name)) { return }
-        if (requiredNames.contains(name)) { return }
-        if (scriptId == null) { return }
-
-        logInfo("Removing non-required script '${name}' (id: ${scriptId}) from ${ipAddress}...")
-        appendLog('info', "Removing ${name} from ${device.displayName}...")
-
-        try {
-            // Stop the script first if running
-            if (script.running) {
-                LinkedHashMap stopCmd = scriptStopCommand(scriptId)
-                if (authIsEnabled() == true && getAuth().size() > 0) { stopCmd.auth = getAuth() }
-                postCommandSync(stopCmd, uri)
-            }
-
-            // Delete the script
-            LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
-            if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
-            postCommandSync(deleteCmd, uri)
-
-            logInfo("Removed script '${name}' (id: ${scriptId})")
-            appendLog('info', "Removed ${name} from ${device.displayName}")
-            removed++
-        } catch (Exception ex) {
-            logError("Failed to remove script '${name}': ${ex.message}")
-            appendLog('error', "Failed to remove ${name}: ${ex.message}")
-        }
-    }
-
-    logInfo("Script removal complete: ${removed} script(s) removed from ${ipAddress}")
-    appendLog('info', "Script removal complete: ${removed} removed from ${device.displayName}")
-}
-
-/**
- * Enables and starts all required scripts on a Shelly device that are installed
- * but not currently enabled or running. Uses Script.SetConfig to enable (which
- * also sets the script to start on boot) and Script.Start to run it.
- *
- * @param ipAddress The IP address of the Shelly device
- */
-void enableAndStartRequiredScripts(String ipAddress) {
-    String selectedDni = settings?.selectedConfigDevice as String
-    if (!selectedDni) { return }
-    def device = getChildDevice(selectedDni)
-    if (!device) { return }
-
-    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
-    Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it) } as Set<String>
-
-    List<Map> installedScripts = listDeviceScripts(ipAddress)
-    if (installedScripts == null) {
-        logError("Cannot read scripts from device at ${ipAddress}")
-        appendLog('error', "Cannot read scripts from ${device.displayName}")
-        return
-    }
-
-    String uri = "http://${ipAddress}/rpc"
-    Integer fixed = 0
-
-    installedScripts.each { Map script ->
-        String name = script.name as String
-        Integer scriptId = script.id as Integer
-        Boolean enabled = script.enable as Boolean
-        Boolean running = script.running as Boolean
-
-        if (!requiredNames.contains(name)) { return }
-        if (scriptId == null) { return }
-        if (enabled && running) { return }
-
-        logInfo("Enabling and starting script '${name}' (id: ${scriptId}) on ${ipAddress}...")
-        appendLog('info', "Enabling ${name} on ${device.displayName}...")
-
-        try {
-            if (!enabled) {
-                LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-                if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
-                postCommandSync(enableCmd, uri)
-            }
-
-            if (!running) {
-                LinkedHashMap startCmd = scriptStartCommand(scriptId)
-                if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
-                postCommandSync(startCmd, uri)
-            }
-
-            logInfo("Script '${name}' is now enabled and running")
-            appendLog('info', "Enabled and started ${name} on ${device.displayName}")
-            fixed++
-        } catch (Exception ex) {
-            logError("Failed to enable/start script '${name}': ${ex.message}")
-            appendLog('error', "Failed to enable ${name}: ${ex.message}")
-        }
-    }
-
-    logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
-    appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
 }
 
 /**
@@ -3104,10 +2591,9 @@ void processMdnsDiscovery() {
             }
             Integer afterCount = state.discoveredShellys.size()
             if (afterCount > beforeCount) {
-                logDebug("Found ${afterCount - beforeCount} new Shelly device(s), total: ${afterCount}")
+                logDebug("Found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
+                sendFoundShellyEvents()
             }
-            logDebug("Sending discovery events, total discovered: ${state.discoveredShellys.size()}")
-            sendFoundShellyEvents()
 
             // Start processing discovery driver queue if not already running
             List<String> pendingQueue = state.discoveryDriverQueue ?: []
@@ -3187,54 +2673,13 @@ private void scheduleNextDiscoveryDriver() {
 }
 
 /**
- * Formats the list of discovered Shelly devices for display in the UI.
- * Generates an HTML-formatted string with device information including name,
- * IP address, port, generation, application type, and firmware version.
- * Devices are sorted alphabetically by name.
- *
- * @return HTML-formatted string with one device per line separated by {@code <br/>} tags,
- *         or empty string if no devices have been discovered
- */
-String getFoundShellys() {
-    if (!state.discoveredShellys || state.discoveredShellys.size() == 0) { return '' }
-
-    List<String> names = state.discoveredShellys.collect { k, v ->
-        Map device = (Map)v
-        String name = (device?.name ?: 'Shelly') as String
-        String ip = (device?.ipAddress ?: 'n/a') as String
-        Integer port = (device?.port ?: 80) as Integer
-        String gen = (device?.gen ?: '') as String
-        String deviceApp = (device?.deviceApp ?: '') as String
-        String ver = (device?.ver ?: '') as String
-        StringBuilder infoSb = new StringBuilder("${name} (${ip}:${port})")
-        if (deviceApp || gen || ver) {
-            List<String> extras = []
-            if (deviceApp) { extras.add(deviceApp) }
-            if (gen) { extras.add("Gen${gen}") }
-            if (ver) { extras.add("v${ver}") }
-            infoSb.append(' [').append(extras.join(', ')).append(']')
-        }
-        return infoSb.toString()
-    }
-
-    names.sort()
-
-    return names.join('\n')
-}
-
-/**
- * Sends discovery events to update the UI with found devices.
- * Publishes two app events: one with the count of discovered devices
- * and another with the formatted list of all discovered devices.
- * These events are used by the UI to provide real-time feedback
- * during the discovery process.
+ * Fires an SSR event to update the device configuration table on the main page.
+ * Invalidates the device status cache so the table rebuilds from current discovery data.
+ * Uses bare {@code sendEvent()} to trigger the SSR callback in {@link #processServerSideRender}.
  */
 void sendFoundShellyEvents() {
-    String countValue = "Found Devices (${state.discoveredShellys.size()}): "
-    String devicesValue = getFoundShellys()
-    logDebug("sendFoundShellyEvents: count='${countValue}', devices='${devicesValue}'")
-    app.sendEvent(name: 'shellyDiscoveredCount', value: countValue)
-    app.sendEvent(name: 'shellyDiscovered', value: devicesValue)
+    state.deviceStatusCache = null
+    sendEvent(name: 'configTable', value: 'discovery')
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -4680,10 +4125,18 @@ private Boolean installPrebuiltDriver(String driverName, List<String> components
         return false
     }
 
-    logInfo("Downloaded pre-built driver for ${driverName} (${sourceCode.length()} chars)")
-    installDriver(sourceCode)
-
+    // Patch the driver name in source to include version suffix, consistent with generated drivers.
+    // Pre-built source has e.g. name: 'Shelly Autoconf Single Switch PM' — we append ' v1.0.33'.
     String driverNameWithVersion = "${driverName} v${version}"
+    sourceCode = sourceCode.replaceFirst(/(name:\s*')${java.util.regex.Pattern.quote(driverName)}'/, "\$1${driverNameWithVersion}'")
+
+    logInfo("Downloaded pre-built driver for ${driverNameWithVersion} (${sourceCode.length()} chars)")
+    Boolean success = installDriver(sourceCode)
+    if (!success) {
+        logError("installPrebuiltDriver: installDriver failed for ${driverNameWithVersion}")
+        return false
+    }
+
     registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, components, componentPowerMonitoring)
 
     return true
@@ -4695,16 +4148,18 @@ private Boolean installPrebuiltDriver(String driverName, List<String> components
  * otherwise creates a new driver entry. Also caches to file manager.
  *
  * @param sourceCode The complete driver source code to install
+ * @return true if the driver was installed/updated successfully, false otherwise
  */
-private void installDriver(String sourceCode) {
+private Boolean installDriver(String sourceCode) {
     logInfo("Installing/updating generated driver...")
+    Boolean success = false
 
     try {
         // Extract driver name from source code
         def nameMatch = (sourceCode =~ /name:\s*['"]([^'"]+)['"]/)
         if (!nameMatch.find()) {
             logError("Could not extract driver name from source code")
-            return
+            return false
         }
         String driverName = nameMatch.group(1)
         String namespace = "ShellyUSA"
@@ -4760,6 +4215,7 @@ private void installDriver(String sourceCode) {
                         logInfo("✓ Driver updated successfully!")
                         logInfo("  Driver ID: ${existingDriver.id}")
                         logInfo("  New version: ${result.version}")
+                        success = true
                     } else {
                         logError("✗ Driver update failed: ${result?.errorMessage ?: 'Unknown error'}")
                     }
@@ -4787,6 +4243,7 @@ private void installDriver(String sourceCode) {
             httpPost(params) { resp ->
                 if (resp?.status == 200 || resp?.status == 302) {
                     logInfo("✓ Driver created successfully!")
+                    success = true
                 } else {
                     logError("✗ HTTP error ${resp?.status}")
                 }
@@ -4794,11 +4251,90 @@ private void installDriver(String sourceCode) {
         }
 
         // Cache the driver source to file manager for fast future installs
-        saveDriverToCache(baseName, sourceCode)
+        if (success) { saveDriverToCache(baseName, sourceCode) }
 
     } catch (Exception e) {
         logError("Error installing driver: ${e.message}")
+        return false
     }
+    return success
+}
+
+/**
+ * Checks whether a driver with the given name and namespace is installed on the hub.
+ *
+ * @param driverName The exact driver name to look for (including version suffix)
+ * @param namespace The driver namespace (e.g., 'ShellyUSA')
+ * @return true if the driver exists on the hub
+ */
+private Boolean isDriverOnHub(String driverName, String namespace) {
+    Boolean found = false
+    try {
+        httpGet([uri: "http://127.0.0.1:8080", path: '/device/drivers', contentType: 'application/json', timeout: 5000]) { resp ->
+            if (resp?.status == 200) {
+                found = resp.data?.drivers?.any { d ->
+                    d.type == 'usr' && d?.namespace == namespace && d?.name == driverName
+                } ?: false
+            }
+        }
+    } catch (Exception e) {
+        logError("Error checking hub drivers: ${e.message}")
+    }
+    return found
+}
+
+/**
+ * Ensures a driver is installed on the hub before device creation.
+ * Checks if the driver exists, and if not, attempts to install it via the prebuilt
+ * or cache path. Waits briefly after installation for the hub to process the driver.
+ *
+ * @param driverName The versioned driver name (e.g., "Shelly Autoconf Single Switch PM v1.0.33")
+ * @param deviceInfo The discovered device information map
+ * @return true if the driver is confirmed on the hub, false otherwise
+ */
+private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
+    String namespace = 'ShellyUSA'
+    if (isDriverOnHub(driverName, namespace)) {
+        logDebug("Driver '${driverName}' confirmed on hub")
+        return true
+    }
+
+    logInfo("Driver '${driverName}' not found on hub, attempting to install...")
+
+    // Strip version to get base name for PREBUILT_DRIVERS lookup
+    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+    String version = getAppVersion()
+    List<String> components = (deviceInfo.components ?: []) as List<String>
+    Map<String, Boolean> pmMap = (deviceInfo.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+
+    Boolean installed = false
+    if (PREBUILT_DRIVERS.containsKey(baseName)) {
+        installed = installPrebuiltDriver(baseName, components, pmMap, version)
+    } else {
+        // Try loading from file manager cache, patching version to match current app
+        String cachedSource = loadDriverFromCache(baseName)
+        if (cachedSource) {
+            cachedSource = cachedSource.replaceFirst(
+                /(name:\s*['"])${java.util.regex.Pattern.quote(baseName)}(\s+v[\d.]+)?(['"])/,
+                "\$1${driverName}\$3"
+            )
+            installed = installDriver(cachedSource)
+        }
+    }
+
+    if (!installed) {
+        logError("Driver installation returned failure for '${driverName}'")
+        return false
+    }
+
+    // Give hub time to compile and register the driver
+    pauseExecution(2000)
+
+    Boolean confirmed = isDriverOnHub(driverName, namespace)
+    if (!confirmed) {
+        logError("Driver '${driverName}' still not found on hub after installation")
+    }
+    return confirmed
 }
 
 // ═══════════════════════════════════════════════════════════════
