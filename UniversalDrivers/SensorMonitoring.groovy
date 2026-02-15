@@ -134,6 +134,79 @@ void parseBattery(Map json) {
   }
 }
 
+/**
+ * Parses smoke alarm notifications from Shelly device.
+ * Processes JSON with dst:"smoke" and updates the smoke attribute.
+ * JSON format: [dst:smoke, result:[smoke:0:[id:0, alarm:true]]]
+ *
+ * @param json The parsed JSON notification from the Shelly device
+ */
+void parseSmoke(Map json) {
+  logDebug("parseSmoke() called with: ${json}")
+
+  try {
+    Map result = json?.result
+    if (!result) {
+      logWarn("parseSmoke: No result data in JSON")
+      return
+    }
+
+    result.each { key, value ->
+      if (value instanceof Map) {
+        Boolean alarm = value.alarm
+        if (alarm != null) {
+          String smokeState = alarm ? "detected" : "clear"
+          def currentSmoke = device.currentValue('smoke')
+          if (currentSmoke == null || currentSmoke != smokeState) {
+            sendEvent(name: "smoke", value: smokeState,
+              descriptionText: "Smoke ${smokeState}")
+            logInfo("Smoke: ${smokeState}")
+          } else {
+            logDebug("Smoke unchanged: ${smokeState}")
+          }
+        }
+      }
+    }
+  } catch (Exception e) {
+    logError("parseSmoke exception: ${e.message}")
+  }
+}
+
+/**
+ * Parses illuminance notifications from Shelly device.
+ * Processes JSON with dst:"illuminance" and updates the illuminance attribute.
+ * JSON format: [dst:illuminance, result:[illuminance:0:[id:0, lux:350]]]
+ *
+ * @param json The parsed JSON notification from the Shelly device
+ */
+void parseIlluminance(Map json) {
+  logDebug("parseIlluminance() called with: ${json}")
+
+  try {
+    Map result = json?.result
+    if (!result) {
+      logWarn("parseIlluminance: No result data in JSON")
+      return
+    }
+
+    result.each { key, value ->
+      if (value instanceof Map && value.lux != null) {
+        Integer lux = value.lux as Integer
+        def currentLux = device.currentValue('illuminance')
+        if (currentLux == null || (currentLux as Integer) != lux) {
+          sendEvent(name: "illuminance", value: lux, unit: "lux",
+            descriptionText: "Illuminance is ${lux} lux")
+          logInfo("Illuminance: ${lux} lux")
+        } else {
+          logDebug("Illuminance unchanged: ${lux} lux")
+        }
+      }
+    }
+  } catch (Exception e) {
+    logError("parseIlluminance exception: ${e.message}")
+  }
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Sensor Monitoring                                       ║
 // ╚══════════════════════════════════════════════════════════════╝

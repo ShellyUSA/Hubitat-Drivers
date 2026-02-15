@@ -669,7 +669,15 @@
         }
       ],
       "commands": [],
-      "id": "IlluminanceMeasurement"
+      "id": "IlluminanceMeasurement",
+      "requiredActions": [
+        {
+          "event": "illuminance.change",
+          "name": "hubitat_illuminance",
+          "dst": "illuminance"
+        }
+      ],
+      "shellyComponent": "illuminance"
     },
     {
       "attributes": [
@@ -1540,7 +1548,15 @@
         }
       ],
       "commands": [],
-      "id": "SmokeDetector"
+      "id": "SmokeDetector",
+      "requiredActions": [
+        {
+          "event": "smoke.alarm",
+          "name": "hubitat_smoke",
+          "dst": "smoke"
+        }
+      ],
+      "shellyComponent": "smoke"
     },
     {
       "attributes": [
@@ -1657,7 +1673,18 @@
           "name": "setLevel"
         }
       ],
-      "id": "SwitchLevel"
+      "id": "SwitchLevel",
+      "shellyComponent": "light",
+      "commandFiles": [
+        "LightCommands.groovy"
+      ],
+      "requiredScripts": [
+        "lightstatus.js"
+      ],
+      "companionCapabilities": [
+        "Light",
+        "ChangeLevel"
+      ]
     },
     {
       "attributes": [
@@ -2321,10 +2348,6 @@
           "type": "number"
         },
         {
-          "name": "position",
-          "type": "number"
-        },
-        {
           "name": "windowShade",
           "type": "enum",
           "values": [
@@ -2358,7 +2381,31 @@
           "name": "setPosition"
         }
       ],
-      "id": "WindowShade"
+      "id": "WindowShade",
+      "shellyComponent": "cover",
+      "commandFiles": [
+        "CoverCommands.groovy"
+      ],
+      "requiredScripts": [
+        "coverstatus.js"
+      ],
+      "requiredActions": [
+        {
+          "event": "cover.open",
+          "name": "hubitat_cover_open",
+          "dst": "covermon"
+        },
+        {
+          "event": "cover.closed",
+          "name": "hubitat_cover_closed",
+          "dst": "covermon"
+        },
+        {
+          "event": "cover.stopped",
+          "name": "hubitat_cover_stopped",
+          "dst": "covermon"
+        }
+      ]
     },
     {
       "attributes": [
@@ -2406,9 +2453,90 @@
       ],
       "commands": [],
       "id": "pHMeasurement"
+    },
+    {
+      "attributes": [],
+      "commands": [],
+      "id": "PowerMeterComponent",
+      "shellyComponent": "pm1",
+      "commandFiles": [
+        "PowerMonitoring.groovy"
+      ],
+      "requiredScripts": [
+        "powermonitoring.js"
+      ],
+      "companionCapabilities": [
+        "PowerMeter",
+        "EnergyMeter",
+        "CurrentMeter",
+        "VoltageMeasurement"
+      ]
+    },
+    {
+      "attributes": [
+        {
+          "name": "numberOfButtons",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "InputButtonComponent",
+      "shellyComponent": "input",
+      "commandFiles": [
+        "InputCommands.groovy"
+      ],
+      "requiredActions": [
+        {
+          "event": "input.button_push",
+          "name": "hubitat_input_push",
+          "dst": "input_push"
+        },
+        {
+          "event": "input.button_double_push",
+          "name": "hubitat_input_double",
+          "dst": "input_double"
+        },
+        {
+          "event": "input.button_long_push",
+          "name": "hubitat_input_long",
+          "dst": "input_long"
+        }
+      ],
+      "companionCapabilities": [
+        "PushableButton",
+        "DoubleTapableButton",
+        "HoldableButton"
+      ]
+    },
+    {
+      "attributes": [],
+      "commands": [],
+      "id": "VoltmeterComponent",
+      "shellyComponent": "voltmeter",
+      "companionCapabilities": [
+        "VoltageMeasurement"
+      ]
     }
   ],
   "deviceSpecificPreferences": {
+    "cover": [
+      {
+        "defaultValue": "false",
+        "name": "swapOpenClose",
+        "required": false,
+        "title": "Swap Open/Close Direction",
+        "type": "bool"
+      }
+    ],
+    "light": [
+      {
+        "defaultValue": "0",
+        "name": "transitionDuration",
+        "required": false,
+        "title": "Default Transition (ms, 0=instant)",
+        "type": "number"
+      }
+    ],
     "switch": [
       {
         "defaultValue": "0",

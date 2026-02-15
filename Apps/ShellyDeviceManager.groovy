@@ -17,6 +17,8 @@
 @Field static final List<String> MANAGED_SCRIPT_NAMES = [
     'switchstatus',
     'powermonitoring',
+    'coverstatus',
+    'lightstatus',
     'HubitatBLEHelper'
 ]
 
@@ -826,6 +828,10 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName) {
         hasScript: componentTypes.contains('script'),
         hasBthome: componentTypes.contains('bthome'),
         hasSwitch: componentTypes.any { it.startsWith('switch') },
+        hasCover: componentTypes.contains('cover'),
+        hasLight: componentTypes.contains('light'),
+        hasSmoke: componentTypes.contains('smoke'),
+        hasInput: componentTypes.contains('input'),
         hasTemperature: componentTypes.contains('temperature'),
         hasHumidity: componentTypes.contains('humidity'),
         supportedWebhookEvents: (deviceInfo.supportedWebhookEvents ?: []) as List<String>,
@@ -2563,41 +2569,31 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     List<String> components = []
     Map<String, Boolean> componentPowerMonitoring = [:]
 
+    // Comprehensive set of recognized Shelly component types
+    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'input', 'pm1',
+        'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter'] as Set
+
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
-        if (key.startsWith('switch')) {
-            components.add(k.toString())
-            // Check if this switch has power monitoring
-            Boolean hasPM = false
-            if (v instanceof Map) {
-                // Check for power monitoring fields: voltage, current, power, apower, energy
-                hasPM = v.voltage != null || v.current != null || v.power != null ||
-                        v.apower != null || v.aenergy != null
-            }
-            componentPowerMonitoring[k.toString()] = hasPM
-            if (hasPM) {
-                logInfo("Switch ${k} has power monitoring capabilities")
-            }
+        String baseType = key.contains(':') ? key.split(':')[0] : key
+
+        if (!recognizedTypes.contains(baseType)) { return }
+
+        components.add(k.toString())
+
+        // Check if this component has power monitoring
+        Boolean hasPM = false
+        if (v instanceof Map && (baseType == 'switch' || baseType == 'cover')) {
+            hasPM = v.voltage != null || v.current != null || v.power != null ||
+                    v.apower != null || v.aenergy != null
         }
-        if (key.contains('input')) {
-            components.add(k.toString())
-            componentPowerMonitoring[k.toString()] = false
+        componentPowerMonitoring[k.toString()] = hasPM
+
+        if (hasPM) {
+            logInfo("Component ${k} has power monitoring capabilities")
         }
-        // Sensor components: temperature, humidity, devicepower (battery)
-        if (key.startsWith('temperature')) {
-            components.add(k.toString())
-            componentPowerMonitoring[k.toString()] = false
-            logInfo("Found temperature sensor: ${k}")
-        }
-        if (key.startsWith('humidity')) {
-            components.add(k.toString())
-            componentPowerMonitoring[k.toString()] = false
-            logInfo("Found humidity sensor: ${k}")
-        }
-        if (key.startsWith('devicepower')) {
-            components.add(k.toString())
-            componentPowerMonitoring[k.toString()] = false
-            logInfo("Found battery/power component: ${k}")
+        if (baseType != 'switch' && baseType != 'input') {
+            logInfo("Found ${baseType} component: ${k}")
         }
     }
 
@@ -2793,6 +2789,45 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
                     driver.append("    //Commands: ${cmdSignatures.join(', ')}\n")
                 }
 
+                // Add companion capabilities if defined (e.g., light → Light + ChangeLevel)
+                if (capability.companionCapabilities) {
+                    List<String> companions = capability.companionCapabilities as List<String>
+                    companions.each { String companionId ->
+                        if (!addedCapabilities.contains(companionId)) {
+                            addedCapabilities.add(companionId)
+
+                            Map companionCap = capabilities.find { cap -> cap.id == companionId }
+                            if (companionCap) {
+                                driver.append("    capability '${companionId}'\n")
+
+                                if (companionCap.attributes) {
+                                    companionCap.attributes.each { attr ->
+                                        String attrComment = "    //Attributes: ${attr.name} - ${attr.type.toUpperCase()}"
+                                        if (attr.values) {
+                                            attrComment += " ${attr.values}"
+                                        }
+                                        driver.append("${attrComment}\n")
+                                    }
+                                }
+
+                                if (companionCap.commands) {
+                                    List<String> cmdSignatures = companionCap.commands.collect { cmd ->
+                                        if (cmd.arguments && cmd.arguments.size() > 0) {
+                                            String args = cmd.arguments.collect { arg -> arg.name }.join(', ')
+                                            return "${cmd.name}(${args})"
+                                        } else {
+                                            return "${cmd.name}()"
+                                        }
+                                    }
+                                    driver.append("    //Commands: ${cmdSignatures.join(', ')}\n")
+                                }
+
+                                driver.append("\n")
+                            }
+                        }
+                    }
+                }
+
                 driver.append("\n")
 
                 // If this is a switch with power monitoring, add PM capabilities
@@ -2985,8 +3020,8 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
         logDebug("Including PowerMonitoring.groovy for power monitoring capabilities")
     }
 
-    // Include SensorMonitoring.groovy if device has temperature, humidity, or battery components
-    Set<String> sensorComponentTypes = ['temperature', 'humidity', 'devicepower'] as Set
+    // Include SensorMonitoring.groovy if device has temperature, humidity, battery, smoke, or illuminance components
+    Set<String> sensorComponentTypes = ['temperature', 'humidity', 'devicepower', 'smoke', 'illuminance'] as Set
     Boolean hasSensorComponents = componentBaseTypes.any { sensorComponentTypes.contains(it) }
     if (hasSensorComponents) {
         filesToFetch.add("SensorMonitoring.groovy")
@@ -3039,9 +3074,9 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     Boolean hasPowerMonitoring = false
 
     // Sensor and actuator type sets
-    Set<String> sensorTypes = ['temperature', 'humidity'] as Set
-    Set<String> supportTypes = ['devicepower'] as Set
-    Set<String> actuatorTypes = ['switch', 'input'] as Set
+    Set<String> sensorTypes = ['temperature', 'humidity', 'illuminance', 'smoke', 'voltmeter'] as Set
+    Set<String> supportTypes = ['devicepower', 'input', 'pm1'] as Set
+    Set<String> actuatorTypes = ['switch', 'cover', 'light'] as Set
 
     components.each { component ->
         String baseType = component.contains(':') ? component.split(':')[0] : component
@@ -3063,7 +3098,7 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         return "Shelly Autoconf Multi-Component Device${pmSuffix}"
     }
 
-    // Actuator-only device (existing behavior)
+    // Actuator-only device
     if (foundActuators.size() > 0) {
         // Filter to only actuator counts for naming
         Map<String, Integer> actuatorCounts = componentCounts.findAll { k, v -> actuatorTypes.contains(k) }
@@ -3071,7 +3106,13 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         if (actuatorCounts.size() == 1) {
             String type = actuatorCounts.keySet().first()
             Integer count = actuatorCounts[type]
-            String typeName = type.capitalize()
+            // Map Shelly component types to friendly driver names
+            Map<String, String> typeNameMap = [
+                'switch': 'Switch',
+                'cover': 'Cover',
+                'light': 'Dimmer'
+            ]
+            String typeName = typeNameMap[type] ?: type.capitalize()
             if (count == 1) {
                 return "Shelly Autoconf Single ${typeName}${pmSuffix}"
             } else {
@@ -3093,6 +3134,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
             return "Shelly Autoconf Temperature Sensor"
         } else if (hasHumidity) {
             return "Shelly Autoconf Humidity Sensor"
+        } else if (foundSensors.contains('smoke')) {
+            return "Shelly Autoconf Smoke Sensor"
+        } else if (foundSensors.contains('illuminance')) {
+            return "Shelly Autoconf Illuminance Sensor"
+        } else if (foundSensors.contains('voltmeter')) {
+            return "Shelly Autoconf Voltmeter"
         } else {
             // Other sensor types
             String sensorName = foundSensors.first().capitalize()
@@ -3239,7 +3286,7 @@ void fetchFileCallback(response, data) {
             String content = response.data
             if (content) {
                 current.files[key] = content
-                logDebug("Async fetch completed: ${key} (${content.length()} chars)")
+                logTrace("Async fetch completed: ${key} (${content.length()} chars)")
             } else {
                 current.errors = (current.errors ?: 0) + 1
                 logWarn("Async fetch failed: ${key} - empty content")
@@ -3254,7 +3301,7 @@ void fetchFileCallback(response, data) {
     } finally {
         current.inFlight = (current.inFlight ?: 1) - 1
         atomicState.driverGeneration = current
-        logDebug("In-flight requests: ${current.inFlight}, Errors: ${current.errors}")
+        logTrace("In-flight requests: ${current.inFlight}, Errors: ${current.errors}")
 
         // If all fetches complete, assemble the driver
         if (current.inFlight == 0) {
@@ -8679,10 +8726,10 @@ private void sendSwitchCommand(def childDevice, Boolean onState) {
     }
 
     String rpcUri = "http://${ipAddress}/rpc"
-    logDebug("sendSwitchCommand: sending ${action} command to ${rpcUri}")
+    Integer switchId = extractComponentId(childDevice, 'switchId')
+    logDebug("sendSwitchCommand: sending ${action} command to ${rpcUri} (switch:${switchId})")
 
-    // Assuming switch ID 0 for now - may need to handle multiple switches per device later
-    LinkedHashMap command = switchSetCommand(onState, 0)
+    LinkedHashMap command = switchSetCommand(onState, switchId)
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("sendSwitchCommand: response from ${ipAddress}: ${response}")
 
@@ -8779,6 +8826,289 @@ void componentRequestBatteryLevel(def childDevice) {
     } catch (Exception e) {
         logDebug("Could not fetch battery level for ${childDevice.displayName}: ${e.message}")
     }
+}
+
+/**
+ * Extracts a numeric component ID from a child device's data values.
+ * Looks for a data value with the specified key name. Falls back to 0
+ * for backward compatibility with single-component devices.
+ *
+ * @param childDevice The child device to extract the component ID from
+ * @param dataKey The data value key name (e.g., 'switchId', 'coverId', 'lightId')
+ * @return The component ID, or 0 if not found
+ */
+private Integer extractComponentId(def childDevice, String dataKey) {
+  String idValue = childDevice.getDataValue(dataKey)
+  if (idValue != null) {
+    try {
+      return idValue as Integer
+    } catch (Exception e) {
+      logDebug("extractComponentId: could not parse ${dataKey}='${idValue}' as Integer, defaulting to 0")
+    }
+  }
+  return 0
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Cover Component Handlers
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Handles open() command from child cover component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentOpen(def childDevice) {
+  logDebug("componentOpen() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentOpen: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer coverId = extractComponentId(childDevice, 'coverId')
+    LinkedHashMap command = coverOpenCommand(coverId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentOpen: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentOpen exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles close() command from child cover component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentClose(def childDevice) {
+  logDebug("componentClose() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentClose: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer coverId = extractComponentId(childDevice, 'coverId')
+    LinkedHashMap command = coverCloseCommand(coverId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentClose: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentClose exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles setPosition() command from child cover component devices.
+ *
+ * @param childDevice The child device that sent the command
+ * @param position Target position (0 = closed, 100 = open)
+ */
+void componentSetPosition(def childDevice, Integer position) {
+  logDebug("componentSetPosition(${position}) called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentSetPosition: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer coverId = extractComponentId(childDevice, 'coverId')
+    LinkedHashMap command = coverGoToPositionCommand(coverId, position)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentSetPosition: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentSetPosition exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles stopPositionChange() command from child cover component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentStop(def childDevice) {
+  logDebug("componentStop() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentStop: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer coverId = extractComponentId(childDevice, 'coverId')
+    LinkedHashMap command = coverStopCommand(coverId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentStop: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentStop exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Light Component Handlers
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Handles on() command from child light component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentLightOn(def childDevice) {
+  logDebug("componentLightOn() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentLightOn: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    LinkedHashMap command = lightSetCommand(lightId, true)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentLightOn: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentLightOn exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles off() command from child light component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentLightOff(def childDevice) {
+  logDebug("componentLightOff() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentLightOff: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    LinkedHashMap command = lightSetCommand(lightId, false)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentLightOff: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentLightOff exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles setLevel() command from child light component devices.
+ *
+ * @param childDevice The child device that sent the command
+ * @param level Brightness level (0 to 100)
+ * @param transitionMs Optional transition duration in milliseconds
+ */
+void componentSetLevel(def childDevice, Integer level, Integer transitionMs = null) {
+  logDebug("componentSetLevel(${level}, ${transitionMs}) called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentSetLevel: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    Boolean turnOn = level > 0
+    LinkedHashMap command = lightSetCommand(lightId, turnOn, level, transitionMs)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentSetLevel: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentSetLevel exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles startLevelChange() command from child light component devices.
+ *
+ * @param childDevice The child device that sent the command
+ * @param direction Direction of level change ("up" or "down")
+ */
+void componentStartLevelChange(def childDevice, String direction) {
+  logDebug("componentStartLevelChange(${direction}) called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentStartLevelChange: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    LinkedHashMap command = (direction == 'up') ? lightDimUpCommand(lightId) : lightDimDownCommand(lightId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentStartLevelChange: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentStartLevelChange exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles stopLevelChange() command from child light component devices.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentStopLevelChange(def childDevice) {
+  logDebug("componentStopLevelChange() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentStopLevelChange: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    LinkedHashMap command = lightDimStopCommand(lightId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentStopLevelChange: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentStopLevelChange exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Energy Monitor Reset Handler
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Handles resetEnergyMonitors() command from child devices with power monitoring.
+ * Sends a Switch.ResetCounters RPC call to reset the energy counters.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentResetEnergyMonitors(def childDevice) {
+  logDebug("componentResetEnergyMonitors() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentResetEnergyMonitors: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    String rpcUri = "http://${ipAddress}/rpc"
+    Integer switchId = extractComponentId(childDevice, 'switchId')
+    LinkedHashMap command = [
+      "id"     : 0,
+      "src"    : "resetCounters",
+      "method" : "Switch.ResetCounters",
+      "params" : ["id": switchId, "type": ["aenergy"]]
+    ]
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logDebug("componentResetEnergyMonitors: response from ${ipAddress}: ${response}")
+  } catch (Exception e) {
+    logError("componentResetEnergyMonitors exception for ${childDevice.displayName}: ${e.message}")
+  }
 }
 
 /* #endregion Component Device Command Handlers */

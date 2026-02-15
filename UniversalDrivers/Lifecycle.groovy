@@ -73,12 +73,26 @@ void parse(String description) {
             parseSwitchmon(json)
           } else if (json?.dst == "powermon") {
             parsePowermon(json)
+          } else if (json?.dst == "covermon") {
+            parseCovermon(json)
+          } else if (json?.dst == "lightmon") {
+            parseLightmon(json)
           } else if (json?.dst == "temperature") {
             parseTemperature(json)
           } else if (json?.dst == "humidity") {
             parseHumidity(json)
           } else if (json?.dst == "battery") {
             parseBattery(json)
+          } else if (json?.dst == "smoke") {
+            parseSmoke(json)
+          } else if (json?.dst == "illuminance") {
+            parseIlluminance(json)
+          } else if (json?.dst == "input_push") {
+            parseInputPush(json)
+          } else if (json?.dst == "input_double") {
+            parseInputDouble(json)
+          } else if (json?.dst == "input_long") {
+            parseInputLong(json)
           }
         } catch (Exception jsonEx) {
           // Body might be empty or not JSON
