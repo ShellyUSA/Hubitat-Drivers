@@ -2584,5 +2584,21 @@
       "title": "Logging Level",
       "type": "enum"
     }
-  ]
+  ],
+  "componentDrivers": {
+    "switch": {
+      "default": "ShellySwitchComponent.groovy",
+      "pm": "ShellySwitchComponentPM.groovy"
+    },
+    "cover": {
+      "default": "ShellyCoverComponent.groovy",
+      "pm": "ShellyCoverComponentPM.groovy"
+    },
+    "light": {
+      "default": "ShellyDimmerComponent.groovy"
+    },
+    "input": {
+      "default": "ShellyInputButtonComponent.groovy"
+    }
+  }
 }

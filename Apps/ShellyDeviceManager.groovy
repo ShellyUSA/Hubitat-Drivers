@@ -12,6 +12,16 @@
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
 @Field static final String GITHUB_BRANCH = 'master'
 
+// Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
+// These bypass the modular assembly pipeline and are downloaded/installed directly.
+@Field static final Map<String, String> PREBUILT_DRIVERS = [
+    'Shelly Autoconf Single Switch': 'UniversalDrivers/ShellySingleSwitch.groovy',
+    'Shelly Autoconf Single Switch PM': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
+    'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
+    'Shelly Autoconf 2x Switch Parent': 'UniversalDrivers/Shelly2xSwitchParent.groovy',
+    'Shelly Autoconf 2x Switch PM Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
+]
+
 // Script names (as they appear on the Shelly device) that are managed by this app.
 // Only these scripts will be considered for automatic removal.
 @Field static final List<String> MANAGED_SCRIPT_NAMES = [
@@ -304,6 +314,48 @@ void appButtonHandler(String buttonName) {
         }
         installRequiredActions(ip)
     }
+
+    // === Device Configuration Table Buttons ===
+
+    if (buttonName == 'btnRefreshAllStatus') {
+        runIn(1, 'refreshAllDeviceStatusAsync')
+        appendLog('info', 'Queued status refresh for all devices')
+    }
+
+    if (buttonName.startsWith('createDev|')) {
+        String targetIp = buttonName.minus('createDev|')
+        logInfo("Creating device for ${targetIp} via config table")
+        createShellyDevice(targetIp)
+        // Refresh cache entry after creation
+        buildDeviceStatusCacheEntry(targetIp)
+    }
+
+    if (buttonName.startsWith('removeDev|')) {
+        String targetIp = buttonName.minus('removeDev|')
+        logInfo("Removing device for ${targetIp} via config table")
+        removeDeviceByIp(targetIp)
+    }
+
+    if (buttonName.startsWith('installScripts|')) {
+        String targetIp = buttonName.minus('installScripts|')
+        logInfo("Installing scripts for ${targetIp} via config table")
+        installRequiredScriptsForIp(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+    }
+
+    if (buttonName.startsWith('enableScripts|')) {
+        String targetIp = buttonName.minus('enableScripts|')
+        logInfo("Enabling scripts for ${targetIp} via config table")
+        enableAndStartRequiredScriptsForIp(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+    }
+
+    if (buttonName.startsWith('installWebhooks|')) {
+        String targetIp = buttonName.minus('installWebhooks|')
+        logInfo("Installing webhooks for ${targetIp} via config table")
+        installRequiredActionsForIp(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+    }
 }
 
 /**
@@ -389,6 +441,26 @@ private void createShellyDevice(String ipKey) {
         }
     }
 
+    // Branch: multi-component devices use parent-child architecture
+    Boolean needsParentChild = deviceInfo.needsParentChild ?: false
+    if (needsParentChild) {
+        createMultiComponentDevice(ipKey, deviceInfo, driverName)
+        return
+    }
+
+    // Monolithic device creation (single-component path)
+    createMonolithicDevice(ipKey, deviceInfo, driverName)
+}
+
+/**
+ * Creates a monolithic (single-component) Shelly device.
+ * This is the original device creation path for devices with a single actuator.
+ *
+ * @param ipKey The device IP address
+ * @param deviceInfo The discovered device information
+ * @param driverName The generated driver name
+ */
+private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverName) {
     // Create device network ID (DNI) - use MAC address if available, otherwise IP
     String dni = deviceInfo.mac ?: "shelly-${ipKey.replaceAll('\\.', '-')}"
 
@@ -445,6 +517,125 @@ private void createShellyDevice(String ipKey) {
     } catch (Exception e) {
         logError("Failed to create device: ${e.message}")
         appendLog('error', "Failed to create ${deviceLabel}: ${e.message}")
+    }
+}
+
+/**
+ * Creates a multi-component Shelly device using parent-child architecture.
+ * Creates one parent device (LAN traffic collector) plus separate child devices
+ * per component (switch:0, switch:1, input:0, input:1, etc.).
+ *
+ * @param ipKey The device IP address
+ * @param deviceInfo The discovered device information
+ * @param parentDriverName The generated parent driver name
+ */
+private void createMultiComponentDevice(String ipKey, Map deviceInfo, String parentDriverName) {
+    String mac = deviceInfo.mac ?: "shelly-${ipKey.replaceAll('\\.', '-')}"
+    String parentDni = mac
+    String baseLabel = deviceInfo.name ?: "Shelly ${ipKey}"
+    Map deviceStatus = deviceInfo.deviceStatus ?: [:]
+    Map<String, Boolean> componentPowerMonitoring = (deviceInfo.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+
+    // Check if parent device already exists
+    def existingParent = getChildDevice(parentDni)
+    if (existingParent) {
+        logWarn("Parent device already exists: ${existingParent.displayName} (${parentDni})")
+        appendLog('warn', "Parent device already exists: ${existingParent.displayName}")
+        return
+    }
+
+    logInfo("=== Multi-Component Device Creation ===")
+    logInfo("  Parent DNI: ${parentDni}")
+    logInfo("  Parent Driver: ${parentDriverName}")
+    logInfo("  Base Label: ${baseLabel}")
+    logInfo("  IP: ${ipKey}")
+    logInfo("  Components: ${deviceStatus.keySet()}")
+
+    // Step 1: Install required component drivers
+    installComponentDriversForDevice(deviceInfo)
+
+    // Step 2: Create parent device
+    Map parentProps = [
+        name: baseLabel,
+        label: baseLabel,
+        data: [
+            ipAddress: ipKey,
+            shellyModel: deviceInfo.model ?: 'Unknown',
+            shellyId: deviceInfo.id ?: parentDni,
+            shellyMac: deviceInfo.mac ?: '',
+            isParentDevice: 'true'
+        ]
+    ]
+
+    try {
+        def parentDevice = addChildDevice('ShellyUSA', parentDriverName, parentDni, parentProps)
+        logInfo("Created parent device: ${baseLabel} using driver ${parentDriverName}")
+        appendLog('info', "Created parent: ${baseLabel} (${parentDriverName})")
+
+        // Track parent device against its driver
+        associateDeviceWithDriver(parentDriverName, 'ShellyUSA', parentDni)
+
+        // Step 3: Create child devices for each actuator and input component
+        List<String> childDnis = []
+        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'input'] as Set
+
+        deviceStatus.each { k, v ->
+            String key = k.toString()
+            String baseType = key.contains(':') ? key.split(':')[0] : key
+            if (!childComponentTypes.contains(baseType)) { return }
+
+            Integer componentId = key.contains(':') ? (key.split(':')[1] as Integer) : 0
+            Boolean hasPM = componentPowerMonitoring[key] ?: false
+            String childDriverName = getComponentDriverName(baseType, hasPM)
+            String childDni = "${mac}-${baseType}-${componentId}"
+            String childLabel = "${baseLabel} ${baseType.capitalize()} ${componentId}"
+
+            if (!childDriverName) {
+                logWarn("No component driver name found for ${baseType}")
+                return
+            }
+
+            // Determine the data key for component ID (e.g., switchId, coverId)
+            String idDataKey = "${baseType}Id"
+
+            Map childProps = [
+                name: childLabel,
+                label: childLabel,
+                data: [
+                    ipAddress: ipKey,
+                    componentType: baseType,
+                    (idDataKey): componentId.toString(),
+                    parentDni: parentDni,
+                    shellyModel: deviceInfo.model ?: 'Unknown',
+                    shellyMac: deviceInfo.mac ?: ''
+                ]
+            ]
+
+            try {
+                def childDevice = addChildDevice('ShellyUSA', childDriverName, childDni, childProps)
+                logInfo("  Created child: ${childLabel} (${childDriverName}) DNI: ${childDni}")
+                childDnis.add(childDni)
+
+                // Track child device against its component driver
+                associateDeviceWithDriver(childDriverName, 'ShellyUSA', childDni)
+            } catch (Exception ce) {
+                logError("  Failed to create child ${childLabel}: ${ce.message}")
+            }
+        }
+
+        // Store device config with parent-child metadata
+        storeDeviceConfig(parentDni, deviceInfo, parentDriverName, true, childDnis)
+
+        // Initialize parent (which will trigger script/webhook setup via app)
+        parentDevice.updateSetting('ipAddress', ipKey)
+        parentDevice.initialize()
+
+        logInfo("✓ Multi-component device created: 1 parent + ${childDnis.size()} children")
+        appendLog('info', "Created ${childDnis.size()} child devices for ${baseLabel}")
+
+    } catch (Exception e) {
+        logError("Failed to create multi-component device: ${e.message}")
+        appendLog('error', "Failed to create multi-component ${baseLabel}: ${e.message}")
     }
 }
 
@@ -578,222 +769,885 @@ Map createDevicesPage() {
 }
 
 /**
- * Renders the device configuration page for managing scripts on installed Shelly devices.
- * Shows installed scripts, required scripts based on the device's capabilities, and
- * highlights any missing scripts that need to be installed.
+ * Renders the device configuration page with an all-devices table.
+ * Shows every discovered Shelly plus any created devices not yet in discovery.
+ * Each row displays creation status, script status, webhook status, and action buttons.
  *
  * @return Map containing the dynamic page definition
  */
 Map deviceConfigPage() {
-    // Build single-select options from installed child devices
-    LinkedHashMap<String,String> deviceOptions = [:] as LinkedHashMap
-    def childDevices = getChildDevices() ?: []
-    childDevices.sort { it.displayName }.each { device ->
-        String ip = device.getDataValue('ipAddress') ?: 'n/a'
-        deviceOptions[device.deviceNetworkId] = "${device.displayName} (${ip})"
-    }
-
-    // Use periodic refresh when a battery device is selected so wake/sleep transitions update
-    Integer refreshSecs = 0
-    String selectedDniCheck = settings?.selectedConfigDevice as String
-    if (selectedDniCheck) {
-        def dev = getChildDevice(selectedDniCheck)
-        if (dev && isSleepyBatteryDevice(dev)) {
-            refreshSecs = 3
-        }
-    }
-
-    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false, refreshInterval: refreshSecs) {
+    dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false) {
         section() {
-            if (!deviceOptions || deviceOptions.size() == 0) {
-                paragraph "No installed devices found. Create devices first."
-            } else {
-                input name: 'selectedConfigDevice', type: 'enum', title: 'Select a device to configure',
-                    options: deviceOptions, multiple: false, required: false, submitOnChange: true
-            }
+            input 'btnRefreshAllStatus', 'button', title: 'Refresh All Status', submitOnChange: true
+            paragraph displayDeviceConfigTable()
         }
-
-        String selectedDni = settings?.selectedConfigDevice as String
-        if (selectedDni) {
-            def selectedDevice = getChildDevice(selectedDni)
-            if (selectedDevice) {
-                String ip = selectedDevice.getDataValue('ipAddress')
-                if (ip) {
-                    // Check if this is a battery-powered device
-                    Boolean isBatteryDevice = isSleepyBatteryDevice(selectedDevice)
-                    Integer deviceId = selectedDevice.id as Integer
-
-                    // Probe the device to determine if it's currently reachable
-                    // Use fast 2s timeout check for battery devices to avoid blocking page render
-                    Boolean deviceIsReachable = isBatteryDevice ? isDeviceReachable(ip) : (queryDeviceStatus(ip) != null)
-
-                    // When a battery device is awake, query its current state and cache it
-                    if (isBatteryDevice && deviceIsReachable) {
-                        probeBatteryDeviceState(selectedDevice, ip)
-                    }
-
-                    if (isBatteryDevice) {
-                        section() {
-                            String statusHtml = renderBatteryDeviceStatus(deviceIsReachable, selectedDevice)
-                            paragraph statusHtml
-                        }
-                    }
-
-                    // Scripts section — skip for battery devices (they don't have scripts)
-                    if (!isBatteryDevice) {
-                        List<Map> installedScripts = listDeviceScripts(ip)
-                        List<String> installedScriptNames = []
-                        if (installedScripts != null) {
-                            installedScriptNames = installedScripts.collect { (it.name ?: '') as String }
-                        }
-
-                        Set<String> requiredScriptNames = getRequiredScriptsForDevice(selectedDevice)
-                        Set<String> requiredNames = requiredScriptNames.collect { stripJsExtension(it) } as Set<String>
-                        List<String> missingScripts = requiredScriptNames.findAll { String req ->
-                            !installedScriptNames.any { it == stripJsExtension(req) }
-                        } as List<String>
-                        List<String> removableScripts = installedScriptNames.findAll { String name ->
-                            MANAGED_SCRIPT_NAMES.contains(name) && !requiredNames.contains(name)
-                        } as List<String>
-
-                        section("Installed Scripts") {
-                            if (installedScripts == null) {
-                                paragraph "Unable to retrieve scripts from device."
-                            } else if (installedScripts.size() == 0) {
-                                paragraph "No scripts installed on this device."
-                            } else {
-                                StringBuilder sb = new StringBuilder()
-                                installedScripts.each { Map script ->
-                                    String name = script.name ?: 'unnamed'
-                                    Boolean enabled = script.enable as Boolean
-                                    Boolean running = script.running as Boolean
-                                    Boolean isRequired = requiredNames.contains(name)
-                                    Boolean isManaged = MANAGED_SCRIPT_NAMES.contains(name)
-                                    String status = "${enabled ? 'enabled' : 'disabled'}, ${running ? 'running' : 'stopped'}"
-                                    String tag = isRequired ? '' : (isManaged ? ' (not required)' : '')
-                                    sb.append("${name} — ${status}${tag}\n")
-                                }
-                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
-
-                                if (removableScripts.size() > 0) {
-                                    paragraph "<b>${removableScripts.size()} removable script(s):</b> ${removableScripts.join(', ')}"
-                                    input 'btnRemoveNonRequiredScripts', 'button', title: 'Remove Non-Required Script(s)', submitOnChange: true
-                                }
-                            }
-                        }
-
-                        List<String> inactiveScripts = []
-                        if (installedScripts != null) {
-                            requiredNames.each { String reqName ->
-                                Map script = installedScripts.find { (it.name ?: '') == reqName }
-                                if (script && (!(script.enable as Boolean) || !(script.running as Boolean))) {
-                                    inactiveScripts.add(reqName)
-                                }
-                            }
-                        }
-
-                        section("Required Scripts") {
-                            if (requiredScriptNames.size() == 0) {
-                                paragraph "No scripts required for this device's capabilities."
-                            } else {
-                                StringBuilder sb = new StringBuilder()
-                                requiredScriptNames.each { String scriptFile ->
-                                    String scriptName = stripJsExtension(scriptFile)
-                                    Map script = installedScripts?.find { (it.name ?: '') == scriptName }
-                                    if (!script) {
-                                        sb.append("${scriptFile} — MISSING\n")
-                                    } else {
-                                        Boolean enabled = script.enable as Boolean
-                                        Boolean running = script.running as Boolean
-                                        if (enabled && running) {
-                                            sb.append("${scriptFile} — installed, enabled, running\n")
-                                        } else {
-                                            List<String> issues = []
-                                            if (!enabled) { issues.add('not enabled') }
-                                            if (!running) { issues.add('not running') }
-                                            sb.append("${scriptFile} — installed, ${issues.join(', ')}\n")
-                                        }
-                                    }
-                                }
-                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
-
-                                if (missingScripts.size() > 0) {
-                                    paragraph "<b>${missingScripts.size()} missing script(s):</b> ${missingScripts.join(', ')}"
-                                    input 'btnInstallScripts', 'button', title: 'Install Missing Script(s)', submitOnChange: true
-                                }
-                                if (inactiveScripts.size() > 0) {
-                                    paragraph "<b>${inactiveScripts.size()} inactive script(s):</b> ${inactiveScripts.join(', ')}"
-                                    input 'btnEnableStartScripts', 'button', title: 'Enable & Start Script(s)', submitOnChange: true
-                                }
-                                if (missingScripts.size() == 0 && inactiveScripts.size() == 0) {
-                                    paragraph "<b>All required scripts are installed and running.</b>"
-                                }
-                            }
-                        }
-                    }
-
-                    // Actions (webhooks) section
-                    List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice)
-
-                    if (requiredActions.size() > 0) {
-                        if (isBatteryDevice) {
-                            // SSR-enabled webhook section — updates dynamically when device wakes
-                            String webhookHtml = renderWebhookStatusHtml(selectedDevice, ip, requiredActions, deviceIsReachable)
-                            section("Required Actions (Webhooks)") {
-                                paragraph "<span class='ssr-device-current-state-${deviceId}-temperature' id='webhook-status-${deviceId}'>${webhookHtml}</span>"
-                            }
-                        } else {
-                            // Standard webhook section with install button
-                            List<Map> installedHooks = listDeviceWebhooks(ip)
-                            String hubIp = location.hub.localIP
-                            List<Map> missingActions = []
-                            List<Map> okActions = []
-                            requiredActions.each { Map action ->
-                                Map hook = installedHooks?.find { Map h ->
-                                    h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
-                                }
-                                if (hook) {
-                                    List<String> urls = hook.urls as List<String>
-                                    Boolean enabled = hook.enable as Boolean
-                                    if (urls?.any { it?.contains(hubIp) } && enabled) {
-                                        okActions.add(action)
-                                    } else {
-                                        missingActions.add(action)
-                                    }
-                                } else {
-                                    missingActions.add(action)
-                                }
-                            }
-
-                            section("Required Actions (Webhooks)") {
-                                StringBuilder sb = new StringBuilder()
-                                requiredActions.each { Map action ->
-                                    Boolean isOk = okActions.contains(action)
-                                    String status = isOk ? 'configured' : 'MISSING'
-                                    sb.append("${action.name} (${action.event} cid:${action.cid}) — ${status}\n")
-                                }
-                                paragraph "<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>${sb.toString().trim()}</pre>"
-
-                                if (missingActions.size() > 0) {
-                                    paragraph "<b>${missingActions.size()} action(s) need to be configured.</b>"
-                                    input 'btnInstallActions', 'button', title: 'Install Missing Action(s)', submitOnChange: true
-                                } else {
-                                    paragraph "<b>All required actions are configured.</b>"
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    section() {
-                        paragraph "Selected device has no IP address configured."
-                    }
-                }
-            }
-        }
-
         section {
             href "mainPage", title: "Back to main page", description: ""
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ║  Device Configuration Table                                 ║
+// ╚═══════════════════════════════════════════════════════════════
+
+/**
+ * Orchestrator that combines CSS, Iconify script, SSR wrapper, and table markup
+ * into a single HTML string for the device configuration table.
+ *
+ * @return Complete HTML string for the config table
+ */
+private String displayDeviceConfigTable() {
+    ensureDeviceStatusCache()
+    String tableMarkup = renderDeviceConfigTableMarkup()
+    return loadConfigTableCSS() + loadConfigTableScript() +
+        "<span class='ssr-app-state-${getAppIdHelper()}-configTable' id='config-table'>" +
+        "<div id='config-table-wrapper'>${tableMarkup}</div></span>"
+}
+
+/**
+ * Returns CSS styles for the device configuration table.
+ * Uses MDL data table as base with status color classes.
+ *
+ * @return HTML style block
+ */
+@CompileStatic
+private String loadConfigTableCSS() {
+    return """<style>
+    .mdl-data-table {
+        width: 100%;
+        border-collapse: collapse;
+        border: 1px solid #E0E0E0;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        border-radius: 4px;
+        overflow: hidden;
+    }
+    .mdl-data-table thead { background-color: #F5F5F5; }
+    .mdl-data-table th {
+        font-size: 14px !important;
+        font-weight: 500;
+        color: #424242;
+        padding: 8px !important;
+        text-align: center;
+        border-bottom: 2px solid #E0E0E0;
+        border-right: 1px solid #E0E0E0;
+    }
+    .mdl-data-table td {
+        font-size: 14px !important;
+        padding: 6px 4px !important;
+        text-align: center;
+        border-bottom: 1px solid #EEEEEE;
+        border-right: 1px solid #EEEEEE;
+    }
+    .mdl-data-table tbody tr:hover { background-color: inherit !important; }
+    .device-link a { color: #2196F3; text-decoration: none; font-weight: 500; }
+    .device-link a:hover { text-decoration: underline; }
+    .status-ok { color: #4CAF50; font-weight: 500; }
+    .status-error { color: #F44336; font-weight: 500; }
+    .status-na { color: #9E9E9E; }
+    .status-stale { color: #FF9800; }
+    .status-pending { color: #9E9E9E; font-style: italic; }
+</style>"""
+}
+
+/**
+ * Returns the Iconify script tag for icon support in the table.
+ *
+ * @return HTML script tag
+ */
+@CompileStatic
+private String loadConfigTableScript() {
+    return "<script src='https://code.iconify.design/iconify-icon/1.0.0/iconify-icon.min.js'></script>"
+}
+
+/**
+ * Renders the device configuration table markup from the status cache.
+ * Merges discovered devices with created devices for a complete list.
+ *
+ * @return HTML table markup string
+ */
+private String renderDeviceConfigTableMarkup() {
+    List<Map> deviceList = buildDeviceList()
+    if (deviceList.size() == 0) {
+        return "<p>No devices found. Run discovery on the main page first.</p>"
+    }
+
+    // Sort: created devices first, then by name
+    deviceList.sort { Map a, Map b ->
+        if (a.isCreated != b.isCreated) { return a.isCreated ? -1 : 1 }
+        String nameA = ((a.hubDeviceName ?: a.shellyName) as String).toLowerCase()
+        String nameB = ((b.hubDeviceName ?: b.shellyName) as String).toLowerCase()
+        return nameA <=> nameB
+    }
+
+    StringBuilder str = new StringBuilder()
+    str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
+    str.append("<thead><tr>")
+    str.append("<th>Device</th>")
+    str.append("<th>IP</th>")
+    str.append("<th>Created</th>")
+    str.append("<th>Scripts Installed</th>")
+    str.append("<th>Scripts Active</th>")
+    str.append("<th>Webhooks Created</th>")
+    str.append("<th>Webhooks Enabled</th>")
+    str.append("</tr></thead><tbody>")
+
+    deviceList.each { Map entry -> str.append(buildDeviceRow(entry)) }
+
+    str.append("</tbody></table></div>")
+    return str.toString()
+}
+
+/**
+ * Builds a unified list of devices from discovered Shellys and created child devices.
+ * Reads status from the device status cache for each entry.
+ *
+ * @return List of device entry maps with status information
+ */
+private List<Map> buildDeviceList() {
+    List<Map> result = []
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+    Map cache = state.deviceStatusCache ?: [:]
+    def childDevices = getChildDevices() ?: []
+
+    // Build lookup of child devices by IP
+    Map<String, Object> childByIp = [:]
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip) { childByIp[ip] = dev }
+    }
+
+    // Build set of IPs already processed
+    Set<String> processedIps = [] as Set
+
+    // First pass: iterate discovered Shellys
+    discoveredShellys.each { ipKey, info ->
+        String ip = ipKey.toString()
+        processedIps.add(ip)
+        Map cached = cache[ip] as Map
+        Map entry = cached ?: buildMinimalCacheEntry(ip, info as Map)
+
+        // Check if a child device exists for this IP
+        def dev = childByIp[ip]
+        if (dev) {
+            entry.isCreated = true
+            entry.hubDeviceId = dev.id
+            entry.hubDeviceDni = dev.deviceNetworkId
+            entry.hubDeviceName = dev.displayName
+        }
+        result.add(entry)
+    }
+
+    // Second pass: add child devices not found in discovery
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip && !processedIps.contains(ip)) {
+            processedIps.add(ip)
+            Map cached = cache[ip] as Map
+            if (cached) {
+                cached.isCreated = true
+                cached.hubDeviceId = dev.id
+                cached.hubDeviceDni = dev.deviceNetworkId
+                cached.hubDeviceName = dev.displayName
+                result.add(cached)
+            } else {
+                result.add([
+                    shellyName: dev.displayName,
+                    ip: ip,
+                    mac: dev.getDataValue('shellyMac') ?: '',
+                    isCreated: true,
+                    hubDeviceId: dev.id,
+                    hubDeviceDni: dev.deviceNetworkId,
+                    hubDeviceName: dev.displayName,
+                    isBatteryDevice: isSleepyBatteryDevice(dev),
+                    isReachable: null,
+                    requiredScriptCount: null,
+                    installedScriptCount: null,
+                    activeScriptCount: null,
+                    requiredWebhookCount: null,
+                    createdWebhookCount: null,
+                    enabledWebhookCount: null,
+                    lastRefreshed: null
+                ])
+            }
+        }
+    }
+
+    return result
+}
+
+/**
+ * Builds a minimal cache entry from discovery data without making any RPC calls.
+ *
+ * @param ip The device IP address
+ * @param info The discovered device info map
+ * @return Map with basic device information and null status fields
+ */
+@CompileStatic
+private Map buildMinimalCacheEntry(String ip, Map info) {
+    return [
+        shellyName: (info?.name ?: "Shelly ${ip}") as String,
+        ip: ip,
+        mac: (info?.mac ?: '') as String,
+        model: (info?.model ?: 'Unknown') as String,
+        isCreated: false,
+        hubDeviceDni: null,
+        hubDeviceName: null,
+        hubDeviceId: null,
+        isBatteryDevice: false,
+        isReachable: null,
+        requiredScriptCount: null,
+        installedScriptCount: null,
+        activeScriptCount: null,
+        requiredWebhookCount: null,
+        createdWebhookCount: null,
+        enabledWebhookCount: null,
+        lastRefreshed: null
+    ]
+}
+
+/**
+ * Builds a single table row for a device entry.
+ *
+ * @param entry Map containing device status information
+ * @return HTML string for one table row
+ */
+private String buildDeviceRow(Map entry) {
+    StringBuilder str = new StringBuilder()
+    str.append("<tr>")
+
+    String ip = entry.ip as String
+    Boolean isCreated = entry.isCreated as Boolean
+    Boolean isBattery = entry.isBatteryDevice as Boolean
+    Long lastRefreshed = entry.lastRefreshed as Long
+    Boolean isStale = lastRefreshed == null
+
+    // Column 1: Device name (linked if created)
+    if (isCreated && entry.hubDeviceId) {
+        String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${entry.hubDeviceName}'>${entry.hubDeviceName}</a>"
+        str.append("<td class='device-link' style='text-align:left'>${devLink}</td>")
+    } else {
+        str.append("<td style='text-align:left'>${entry.shellyName ?: 'Unknown'}</td>")
+    }
+
+    // Column 2: IP
+    str.append("<td>${ip}</td>")
+
+    // Column 3: Created status with action button
+    if (isCreated) {
+        String removeBtn = buttonLink("removeDev|${ip}", "<iconify-icon icon='material-symbols:delete-outline' style='font-size:18px'></iconify-icon>", "#F44336", "18px")
+        str.append("<td><span class='status-ok'>&#10003;</span> ${removeBtn}</td>")
+    } else {
+        String createBtn = buttonLink("createDev|${ip}", "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:18px'></iconify-icon>", "#4CAF50", "18px")
+        str.append("<td>${createBtn}</td>")
+    }
+
+    // Columns 4-7: Script and webhook status
+    if (!isCreated) {
+        // Not created — show dashes for all status columns
+        str.append("<td class='status-na'>&ndash;</td>")
+        str.append("<td class='status-na'>&ndash;</td>")
+        str.append("<td class='status-na'>&ndash;</td>")
+        str.append("<td class='status-na'>&ndash;</td>")
+    } else if (isBattery) {
+        // Battery device — no scripts, show webhooks
+        str.append("<td class='status-na'>n/a</td>")
+        str.append("<td class='status-na'>n/a</td>")
+        str.append(buildWebhookCells(entry, isStale, ip))
+    } else {
+        str.append(buildScriptCells(entry, isStale, ip))
+        str.append(buildWebhookCells(entry, isStale, ip))
+    }
+
+    str.append("</tr>")
+    return str.toString()
+}
+
+/**
+ * Builds the script installed and active table cells for a device row.
+ *
+ * @param entry The device status cache entry
+ * @param isStale Whether the data is stale (never refreshed)
+ * @param ip The device IP address
+ * @return HTML string for two table cells (scripts installed, scripts active)
+ */
+@CompileStatic
+private String buildScriptCells(Map entry, Boolean isStale, String ip) {
+    StringBuilder str = new StringBuilder()
+    Integer required = entry.requiredScriptCount as Integer
+    Integer installed = entry.installedScriptCount as Integer
+    Integer active = entry.activeScriptCount as Integer
+
+    if (required == null || installed == null) {
+        // Not yet checked
+        String prefix = isStale ? '?' : ''
+        String cssClass = isStale ? 'status-stale' : 'status-pending'
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        return str.toString()
+    }
+
+    // Scripts installed
+    if (installed >= required) {
+        str.append("<td class='status-ok'>${installed}/${required}</td>")
+    } else {
+        String installBtn = buttonLink("installScripts|${ip}",
+            "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+        str.append("<td class='status-error'>${installed}/${required} ${installBtn}</td>")
+    }
+
+    // Scripts active
+    if (active == null) { active = 0 }
+    if (active >= required) {
+        str.append("<td class='status-ok'>${active}/${required}</td>")
+    } else {
+        String enableBtn = buttonLink("enableScripts|${ip}",
+            "<iconify-icon icon='material-symbols:play-arrow' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+        str.append("<td class='status-error'>${active}/${required} ${enableBtn}</td>")
+    }
+
+    return str.toString()
+}
+
+/**
+ * Builds the webhook created and enabled table cells for a device row.
+ *
+ * @param entry The device status cache entry
+ * @param isStale Whether the data is stale (never refreshed)
+ * @param ip The device IP address
+ * @return HTML string for two table cells (webhooks created, webhooks enabled)
+ */
+@CompileStatic
+private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
+    StringBuilder str = new StringBuilder()
+    Integer required = entry.requiredWebhookCount as Integer
+    Integer created = entry.createdWebhookCount as Integer
+    Integer enabled = entry.enabledWebhookCount as Integer
+
+    if (required == null || created == null) {
+        String prefix = isStale ? '?' : ''
+        String cssClass = isStale ? 'status-stale' : 'status-pending'
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        str.append("<td class='${cssClass}'>${prefix}&ndash;</td>")
+        return str.toString()
+    }
+
+    // Webhooks created
+    if (created >= required) {
+        str.append("<td class='status-ok'>${created}/${required}</td>")
+    } else {
+        String installBtn = buttonLink("installWebhooks|${ip}",
+            "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+        str.append("<td class='status-error'>${created}/${required} ${installBtn}</td>")
+    }
+
+    // Webhooks enabled
+    if (enabled == null) { enabled = 0 }
+    if (enabled >= required) {
+        str.append("<td class='status-ok'>${enabled}/${required}</td>")
+    } else {
+        str.append("<td class='status-error'>${enabled}/${required}</td>")
+    }
+
+    return str.toString()
+}
+
+/**
+ * Creates a clickable inline button that triggers appButtonHandler on click.
+ *
+ * @param btnName The button name passed to appButtonHandler
+ * @param linkText The display text or HTML for the button
+ * @param color CSS color for the button text
+ * @param font CSS font-size for the button text
+ * @return HTML string for the inline button
+ */
+@CompileStatic
+private String buttonLink(String btnName, String linkText, String color = "#1A77C9", String font = "15px") {
+    "<div class='form-group'><input type='hidden' name='${btnName}.type' value='button'></div>" +
+    "<div style='display:inline-block'><div class='submitOnChange' onclick='buttonClick(this)' " +
+    "style='color:${color};cursor:pointer;font-size:${font}'>${linkText}</div></div>" +
+    "<input type='hidden' name='settings[${btnName}]' value=''>"
+}
+
+/**
+ * Ensures the device status cache exists. Does NOT make any RPC calls.
+ * Initializes from discovered devices and child devices with null status fields.
+ */
+private void ensureDeviceStatusCache() {
+    if (state.deviceStatusCache != null) { return }
+    Map cache = [:]
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+
+    discoveredShellys.each { ipKey, info ->
+        String ip = ipKey.toString()
+        cache[ip] = buildMinimalCacheEntry(ip, info as Map)
+    }
+
+    // Add child devices not in discovery
+    def childDevices = getChildDevices() ?: []
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip && !cache.containsKey(ip)) {
+            cache[ip] = [
+                shellyName: dev.displayName,
+                ip: ip,
+                mac: dev.getDataValue('shellyMac') ?: '',
+                isCreated: true,
+                hubDeviceDni: dev.deviceNetworkId,
+                hubDeviceName: dev.displayName,
+                hubDeviceId: dev.id,
+                isBatteryDevice: isSleepyBatteryDevice(dev),
+                isReachable: null,
+                requiredScriptCount: null,
+                installedScriptCount: null,
+                activeScriptCount: null,
+                requiredWebhookCount: null,
+                createdWebhookCount: null,
+                enabledWebhookCount: null,
+                lastRefreshed: null
+            ]
+        }
+    }
+
+    state.deviceStatusCache = cache
+}
+
+/**
+ * Returns the set of all known device IPs from discovery and child devices.
+ *
+ * @return Set of IP address strings
+ */
+private Set<String> getAllKnownDeviceIps() {
+    Set<String> ips = [] as Set
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+    discoveredShellys.each { ipKey, info -> ips.add(ipKey.toString()) }
+
+    def childDevices = getChildDevices() ?: []
+    childDevices.each { dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (ip) { ips.add(ip) }
+    }
+    return ips
+}
+
+/**
+ * Queries a single device via RPC and updates the status cache.
+ * Checks script installation/active counts and webhook created/enabled counts.
+ *
+ * @param ip The device IP address
+ * @return The updated cache entry map
+ */
+private Map buildDeviceStatusCacheEntry(String ip) {
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+    Map info = discoveredShellys[ip] as Map
+    Map cache = state.deviceStatusCache ?: [:]
+    Map entry = cache[ip] as Map ?: buildMinimalCacheEntry(ip, info ?: [:])
+
+    // Update basic info from discovery
+    if (info) {
+        entry.shellyName = (info.name ?: "Shelly ${ip}") as String
+        entry.mac = (info.mac ?: '') as String
+        entry.model = (info.model ?: 'Unknown') as String
+    }
+
+    // Find the Hubitat child device for this IP
+    def childDevice = findChildDeviceByIp(ip)
+    entry.isCreated = (childDevice != null)
+    if (childDevice) {
+        entry.hubDeviceDni = childDevice.deviceNetworkId
+        entry.hubDeviceName = childDevice.displayName
+        entry.hubDeviceId = childDevice.id
+        entry.isBatteryDevice = isSleepyBatteryDevice(childDevice)
+    }
+
+    // Check reachability
+    Boolean isBattery = entry.isBatteryDevice as Boolean
+    if (isBattery) {
+        entry.isReachable = isDeviceReachable(ip)
+    } else {
+        Map deviceStatus = queryDeviceStatus(ip)
+        entry.isReachable = (deviceStatus != null)
+    }
+
+    Boolean reachable = entry.isReachable as Boolean
+
+    // Script status (skip for battery devices and uncreated devices)
+    if (childDevice && !isBattery && reachable) {
+        Set<String> requiredScripts = getRequiredScriptsForDevice(childDevice)
+        Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it as String) } as Set<String>
+        List<Map> installedScripts = listDeviceScripts(ip)
+
+        entry.requiredScriptCount = requiredNames.size()
+        if (installedScripts != null) {
+            List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
+            Integer matchCount = 0
+            Integer activeCount = 0
+            requiredNames.each { String reqName ->
+                if (installedNames.contains(reqName)) { matchCount++ }
+                Map script = installedScripts.find { (it.name ?: '') == reqName }
+                if (script && (script.enable as Boolean) && (script.running as Boolean)) {
+                    activeCount++
+                }
+            }
+            entry.installedScriptCount = matchCount
+            entry.activeScriptCount = activeCount
+        }
+    } else if (isBattery) {
+        entry.requiredScriptCount = -1
+        entry.installedScriptCount = -1
+        entry.activeScriptCount = -1
+    }
+
+    // Webhook status (skip for uncreated devices)
+    if (childDevice && reachable) {
+        List<Map> requiredActions = getRequiredActionsForDevice(childDevice, reachable)
+        entry.requiredWebhookCount = requiredActions.size()
+
+        List<Map> installedHooks = listDeviceWebhooks(ip)
+        if (installedHooks != null) {
+            String hubIp = getLocationHelper()?.hub?.localIP ?: ''
+            Integer createdCount = 0
+            Integer enabledCount = 0
+            requiredActions.each { Map action ->
+                Map hook = installedHooks.find { Map h ->
+                    h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
+                }
+                if (hook) {
+                    createdCount++
+                    List<String> urls = hook.urls as List<String>
+                    Boolean isEnabled = hook.enable as Boolean
+                    if (urls?.any { it?.contains(hubIp) } && isEnabled) {
+                        enabledCount++
+                    }
+                }
+            }
+            entry.createdWebhookCount = createdCount
+            entry.enabledWebhookCount = enabledCount
+        }
+    }
+
+    entry.lastRefreshed = now()
+
+    // Persist to state
+    cache[ip] = entry
+    state.deviceStatusCache = cache
+    return entry
+}
+
+/**
+ * Finds a child device by its IP address data value.
+ *
+ * @param ip The IP address to search for
+ * @return The matching child device, or null if not found
+ */
+private def findChildDeviceByIp(String ip) {
+    def childDevices = getChildDevices() ?: []
+    return childDevices.find { it.getDataValue('ipAddress') == ip }
+}
+
+/**
+ * Asynchronously refreshes the status cache for all known devices.
+ * Called via runIn() after the Refresh All Status button is clicked.
+ * Fires an SSR event after each device to provide incremental table updates.
+ */
+void refreshAllDeviceStatusAsync() {
+    logInfo("Refreshing status for all devices...")
+    appendLog('info', "Refreshing all device status...")
+    Set<String> allIps = getAllKnownDeviceIps()
+    allIps.each { String ip ->
+        try {
+            buildDeviceStatusCacheEntry(ip)
+            sendEvent(name: 'configTable', value: ip)
+        } catch (Exception ex) {
+            logError("Failed to refresh status for ${ip}: ${ex.message}")
+        }
+    }
+    logInfo("Status refresh complete for ${allIps.size()} device(s)")
+    appendLog('info', "Status refresh complete for ${allIps.size()} device(s)")
+}
+
+/**
+ * Installs required scripts on a device identified by IP address.
+ * Wrapper around the script installation logic that finds the device by IP
+ * instead of relying on the selectedConfigDevice setting.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void installRequiredScriptsForIp(String ipAddress) {
+    def device = findChildDeviceByIp(ipAddress)
+    if (!device) {
+        logError("installRequiredScriptsForIp: no child device found for ${ipAddress}")
+        return
+    }
+
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    if (requiredScripts.size() == 0) {
+        logInfo("No required scripts for device at ${ipAddress}")
+        appendLog('info', "No required scripts for ${device.displayName}")
+        return
+    }
+
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logError("Cannot read scripts from device at ${ipAddress}")
+        appendLog('error', "Cannot read scripts from ${device.displayName}")
+        return
+    }
+    List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
+
+    String branch = GITHUB_BRANCH
+    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts"
+    String uri = "http://${ipAddress}/rpc"
+    Integer installed = 0
+
+    requiredScripts.each { String scriptFile ->
+        String scriptName = stripJsExtension(scriptFile)
+        if (installedNames.any { it == scriptName }) {
+            logDebug("Script '${scriptName}' already installed on ${ipAddress}")
+            return
+        }
+
+        logInfo("Installing script '${scriptName}' on ${ipAddress}...")
+        appendLog('info', "Installing ${scriptName} on ${device.displayName}...")
+
+        String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
+        if (!scriptCode) {
+            logError("Failed to download ${scriptFile} from GitHub")
+            appendLog('error', "Failed to download ${scriptFile}")
+            return
+        }
+
+        try {
+            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
+            if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
+            LinkedHashMap createResult = postCommandSync(createCmd, uri)
+            Integer scriptId = createResult?.result?.id as Integer
+
+            if (scriptId == null) {
+                logError("Failed to create script '${scriptName}' on device")
+                appendLog('error', "Failed to create ${scriptName}")
+                return
+            }
+
+            LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, scriptCode, false)
+            if (authIsEnabled() == true && getAuth().size() > 0) { putCmd.auth = getAuth() }
+            postCommandSync(putCmd, uri)
+
+            LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+            if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
+            postCommandSync(enableCmd, uri)
+
+            LinkedHashMap startCmd = scriptStartCommand(scriptId)
+            if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
+            postCommandSync(startCmd, uri)
+
+            logInfo("Successfully installed and started '${scriptName}' (id: ${scriptId})")
+            appendLog('info', "Installed ${scriptName} on ${device.displayName}")
+            installed++
+        } catch (Exception ex) {
+            logError("Failed to install script '${scriptName}': ${ex.message}")
+            appendLog('error', "Failed to install ${scriptName}: ${ex.message}")
+        }
+    }
+
+    logInfo("Script installation complete: ${installed} script(s) installed on ${ipAddress}")
+    appendLog('info', "Script installation complete: ${installed} installed on ${device.displayName}")
+}
+
+/**
+ * Enables and starts required scripts on a device identified by IP address.
+ * Wrapper that finds the device by IP instead of relying on selectedConfigDevice.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void enableAndStartRequiredScriptsForIp(String ipAddress) {
+    def device = findChildDeviceByIp(ipAddress)
+    if (!device) {
+        logError("enableAndStartRequiredScriptsForIp: no child device found for ${ipAddress}")
+        return
+    }
+
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it) } as Set<String>
+
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logError("Cannot read scripts from device at ${ipAddress}")
+        appendLog('error', "Cannot read scripts from ${device.displayName}")
+        return
+    }
+
+    String uri = "http://${ipAddress}/rpc"
+    Integer fixed = 0
+
+    installedScripts.each { Map script ->
+        String name = script.name as String
+        Integer scriptId = script.id as Integer
+        Boolean enabled = script.enable as Boolean
+        Boolean running = script.running as Boolean
+
+        if (!requiredNames.contains(name)) { return }
+        if (scriptId == null) { return }
+        if (enabled && running) { return }
+
+        logInfo("Enabling and starting script '${name}' (id: ${scriptId}) on ${ipAddress}...")
+        appendLog('info', "Enabling ${name} on ${device.displayName}...")
+
+        try {
+            if (!enabled) {
+                LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
+                postCommandSync(enableCmd, uri)
+            }
+            if (!running) {
+                LinkedHashMap startCmd = scriptStartCommand(scriptId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
+                postCommandSync(startCmd, uri)
+            }
+
+            logInfo("Script '${name}' is now enabled and running")
+            appendLog('info', "Enabled and started ${name} on ${device.displayName}")
+            fixed++
+        } catch (Exception ex) {
+            logError("Failed to enable/start script '${name}': ${ex.message}")
+            appendLog('error', "Failed to enable ${name}: ${ex.message}")
+        }
+    }
+
+    logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
+    appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
+}
+
+/**
+ * Installs required webhook actions on a device identified by IP address.
+ * Wrapper that finds the device by IP instead of relying on selectedConfigDevice.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void installRequiredActionsForIp(String ipAddress) {
+    def device = findChildDeviceByIp(ipAddress)
+    if (!device) {
+        logError("installRequiredActionsForIp: no child device found for ${ipAddress}")
+        return
+    }
+
+    List<Map> requiredActions = getRequiredActionsForDevice(device)
+    if (!requiredActions) {
+        logInfo("No actions required for this device")
+        return
+    }
+
+    List<Map> existingHooks = listDeviceWebhooks(ipAddress)
+    if (existingHooks == null) {
+        logError("Could not retrieve existing webhooks from ${ipAddress}")
+        return
+    }
+
+    String hubIp = location.hub.localIP
+    String hookUrl = "http://${hubIp}:39501"
+    String uri = "http://${ipAddress}/rpc"
+    Integer installed = 0
+
+    requiredActions.each { Map action ->
+        String event = action.event as String
+        String name = action.name as String
+        Integer cid = action.cid as Integer
+
+        Map existing = existingHooks.find { Map h ->
+            h.event == event && (h.cid as Integer) == cid
+        }
+
+        if (existing) {
+            List<String> urls = existing.urls as List<String>
+            Boolean isEnabled = existing.enable as Boolean
+            if (urls?.any { it?.contains(hubIp) } && isEnabled) {
+                logDebug("Webhook '${name}' already configured for ${event} cid=${cid}")
+                return
+            }
+            logInfo("Updating webhook '${name}' for ${event} cid=${cid}")
+            LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, [hookUrl])
+            if (authIsEnabled() == true && getAuth().size() > 0) { updateCmd.auth = getAuth() }
+            postCommandSync(updateCmd, uri)
+            installed++
+            return
+        }
+
+        logInfo("Creating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
+        appendLog('info', "Creating webhook ${name} on ${device.displayName}")
+        LinkedHashMap createCmd = webhookCreateCommand(cid, event, name, [hookUrl])
+        if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
+        LinkedHashMap result = postCommandSync(createCmd, uri)
+
+        if (result?.result?.id != null) {
+            logInfo("Webhook '${name}' created (id: ${result.result.id})")
+            installed++
+        } else {
+            logError("Failed to create webhook '${name}': ${result}")
+        }
+    }
+
+    logInfo("Action provisioning complete: ${installed} webhook(s) installed/updated on ${ipAddress}")
+    appendLog('info', "Action provisioning: ${installed} webhook(s) on ${device.displayName}")
+}
+
+/**
+ * Removes a created Shelly device and its children (if parent-child).
+ * Cleans up device configs and updates the status cache.
+ *
+ * @param ip The IP address of the device to remove
+ */
+private void removeDeviceByIp(String ip) {
+    def device = findChildDeviceByIp(ip)
+    if (!device) {
+        logWarn("removeDeviceByIp: no child device found for ${ip}")
+        return
+    }
+
+    String dni = device.deviceNetworkId
+    String name = device.displayName
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Map config = deviceConfigs[dni] as Map
+
+    // Remove children first if parent-child device
+    if (config?.isParentChild && config?.childDnis) {
+        List<String> childDnis = config.childDnis as List<String>
+        childDnis.each { String childDni ->
+            def childDev = getChildDevice(childDni)
+            if (childDev) {
+                String childName = childDev.displayName
+                deleteChildDevice(childDni)
+                logInfo("Removed child device: ${childName} (${childDni})")
+                appendLog('info', "Removed child: ${childName}")
+            }
+        }
+    }
+
+    // Remove the device itself
+    deleteChildDevice(dni)
+    logInfo("Removed device: ${name} (${dni})")
+    appendLog('info', "Removed: ${name}")
+
+    // Clean up device config
+    deviceConfigs.remove(dni)
+    state.deviceConfigs = deviceConfigs
+
+    // Update status cache
+    Map cache = state.deviceStatusCache ?: [:]
+    if (cache[ip]) {
+        Map entry = cache[ip] as Map
+        entry.isCreated = false
+        entry.hubDeviceDni = null
+        entry.hubDeviceName = null
+        entry.hubDeviceId = null
+        entry.requiredScriptCount = null
+        entry.installedScriptCount = null
+        entry.activeScriptCount = null
+        entry.requiredWebhookCount = null
+        entry.createdWebhookCount = null
+        entry.enabledWebhookCount = null
+        entry.lastRefreshed = null
+        cache[ip] = entry
+        state.deviceStatusCache = cache
     }
 }
 
@@ -806,8 +1660,10 @@ Map deviceConfigPage() {
  * @param dni The device network ID
  * @param deviceInfo The discovered device info map (from state.discoveredShellys)
  * @param driverName The assigned driver name
+ * @param isParentChild Whether this device uses parent-child architecture
+ * @param childDnis List of child device DNIs (only for parent-child devices)
  */
-private void storeDeviceConfig(String dni, Map deviceInfo, String driverName) {
+private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Boolean isParentChild = false, List<String> childDnis = []) {
     Map deviceConfigs = state.deviceConfigs ?: [:]
 
     // Extract component types from device status keys
@@ -819,7 +1675,7 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName) {
         componentTypes.add(baseType)
     }
 
-    deviceConfigs[dni] = [
+    Map config = [
         driverName: driverName,
         model: deviceInfo.model ?: 'Unknown',
         gen: deviceInfo.gen,
@@ -838,8 +1694,15 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName) {
         storedAt: now()
     ]
 
+    // Add parent-child metadata if applicable
+    if (isParentChild) {
+        config.isParentChild = true
+        config.childDnis = childDnis
+    }
+
+    deviceConfigs[dni] = config
     state.deviceConfigs = deviceConfigs
-    logDebug("Stored device config for ${dni}: ${deviceConfigs[dni]}")
+    logDebug("Stored device config for ${dni}: ${config}")
 }
 
 /**
@@ -937,24 +1800,40 @@ private void probeBatteryDeviceState(def childDevice, String ip) {
  * @param ipAddress The IP address of the Shelly device
  * @return List of script maps containing name, enable, running status, or null on failure
  */
+/**
+ * Retrieves the list of scripts installed on a Shelly device.
+ * Retries up to 3 times on timeout/connection errors before giving up.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @return List of script maps, empty list if none, or null on failure
+ */
 List<Map> listDeviceScripts(String ipAddress) {
-    try {
-        String uri = "http://${ipAddress}/rpc"
-        LinkedHashMap command = scriptListCommand()
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        LinkedHashMap json = postCommandSync(command, uri)
-        if (json?.result?.scripts) {
-            return json.result.scripts as List<Map>
+    Integer maxAttempts = 3
+    String uri = "http://${ipAddress}/rpc"
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            LinkedHashMap command = scriptListCommand()
+            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+            LinkedHashMap json = postCommandSync(command, uri)
+            if (json?.result?.scripts) {
+                return json.result.scripts as List<Map>
+            }
+            return []
+        } catch (Exception ex) {
+            Boolean isTimeout = ex.message?.contains('timed out') || ex.message?.contains('unreachable') || ex.message?.contains('No route')
+            if (isTimeout && attempt < maxAttempts) {
+                logDebug("listDeviceScripts attempt ${attempt}/${maxAttempts} failed for ${ipAddress}: ${ex.message} — retrying")
+                continue
+            }
+            if (isTimeout) {
+                logDebug("Device at ${ipAddress} is unreachable after ${maxAttempts} attempts: ${ex.message}")
+            } else {
+                logError("Failed to list scripts for ${ipAddress}: ${ex.message}")
+            }
+            return null
         }
-        return []
-    } catch (Exception ex) {
-        if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
-            logDebug("Device at ${ipAddress} is unreachable (may be asleep): ${ex.message}")
-        } else {
-            logError("Failed to list scripts for ${ipAddress}: ${ex.message}")
-        }
-        return null
     }
+    return null
 }
 
 /**
@@ -1172,7 +2051,11 @@ String processServerSideRender(Map event) {
     String elementId = event.elementId ?: ''
     String eventName = event.name ?: ''
 
-    // App-level events (e.g., driverRebuildStatus)
+    // App-level events
+    if (eventName == 'configTable') {
+        return "<div id='config-table-wrapper'>${renderDeviceConfigTableMarkup()}</div>"
+    }
+
     if (eventName == 'driverRebuildStatus') {
         return renderDriverManagementHtml()
     }
@@ -1195,7 +2078,7 @@ String processServerSideRender(Map event) {
 
     // Determine what to render based on the element
     if (elementId?.contains('webhook-status')) {
-        List<Map> requiredActions = getRequiredActionsForDevice(childDevice)
+        List<Map> requiredActions = getRequiredActionsForDevice(childDevice, deviceIsReachable)
         return renderWebhookStatusHtml(childDevice, ip, requiredActions, deviceIsReachable)
     }
 
@@ -1261,14 +2144,16 @@ List<String> listSupportedWebhookEvents(String ipAddress) {
 
 /**
  * Determines which webhook actions are required for a device by querying its
- * Shelly.GetStatus response and cross-referencing with component_driver.json.
- * Filters results against the device's Webhook.ListSupported response to only
- * include actions the device actually supports.
+ * status and cross-referencing with component_driver.json capability definitions.
+ * When the device is known to be unreachable (e.g., sleeping battery device),
+ * skips live HTTP calls and uses cached data exclusively.
  *
  * @param device The child device to check
+ * @param deviceIsReachable Whether the device is currently reachable; when false,
+ *        skips live HTTP calls to avoid blocking on timeouts
  * @return List of required action maps, each with keys: event, name, dst, cid
  */
-List<Map> getRequiredActionsForDevice(def device) {
+List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = true) {
     List<Map> requiredActions = []
 
     String ip = device.getDataValue('ipAddress')
@@ -1278,7 +2163,7 @@ List<Map> getRequiredActionsForDevice(def device) {
     }
 
     // Get supported webhook events — try live query first, fall back to stored config
-    List<String> supportedEvents = listSupportedWebhookEvents(ip)
+    List<String> supportedEvents = deviceIsReachable ? listSupportedWebhookEvents(ip) : null
     String dni = device.deviceNetworkId
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Map config = deviceConfigs[dni] as Map
@@ -1300,7 +2185,7 @@ List<Map> getRequiredActionsForDevice(def device) {
         logDebug("Using stored supported webhook events for ${device.displayName}: ${supportedEvents}")
     }
 
-    Map deviceStatus = queryDeviceStatus(ip)
+    Map deviceStatus = deviceIsReachable ? queryDeviceStatus(ip) : null
     if (!deviceStatus) {
         // Fall back to stored component types for sleepy devices
         if (config?.componentTypes) {
@@ -2597,9 +3482,34 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         }
     }
 
+    // Detect multi-component devices needing parent-child architecture
+    // A device needs parent-child if it has 2+ instances of any single actuator type
+    Set<String> actuatorComponentTypes = ['switch', 'cover', 'light'] as Set
+    Map<String, Integer> actuatorCounts = [:]
+    components.each { String comp ->
+        String baseType = comp.contains(':') ? comp.split(':')[0] : comp
+        if (actuatorComponentTypes.contains(baseType)) {
+            actuatorCounts[baseType] = (actuatorCounts[baseType] ?: 0) + 1
+        }
+    }
+    Boolean needsParentChild = actuatorCounts.any { String k, Integer v -> v > 1 }
+
+    if (needsParentChild) {
+        logInfo("Multi-component device detected: ${actuatorCounts} — using parent-child architecture")
+    }
+
+    // Store multi-component detection results on the discovered device entry
+    if (ipKey && state.discoveredShellys[ipKey]) {
+        state.discoveredShellys[ipKey].needsParentChild = needsParentChild
+        state.discoveredShellys[ipKey].actuatorCounts = actuatorCounts
+        state.discoveredShellys[ipKey].components = components
+        state.discoveredShellys[ipKey].componentPowerMonitoring = componentPowerMonitoring
+    }
+
     // Generate driver for discovered components
     if (components.size() > 0) {
-        String driverName = generateDriverName(components, componentPowerMonitoring)
+        Boolean isParent = needsParentChild
+        String driverName = generateDriverName(components, componentPowerMonitoring, isParent)
         String version = getAppVersion()
         String driverNameWithVersion = "${driverName} v${version}"
 
@@ -2637,6 +3547,19 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             }
         }
 
+        // Check for a pre-built driver before falling back to generation
+        if (PREBUILT_DRIVERS.containsKey(driverName)) {
+            logInfo("Pre-built driver available for ${driverName} — downloading")
+            Boolean installed = installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
+            if (installed) {
+                if (ipKey && state.discoveredShellys[ipKey]) {
+                    state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
+                }
+                return
+            }
+            logWarn("Pre-built driver install failed for ${driverName} — falling back to generation")
+        }
+
         // No match found — fall through to full GitHub-based generation
         logInfo("Generating driver from GitHub: ${driverNameWithVersion}")
 
@@ -2644,10 +3567,11 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         atomicState.currentDriverGeneration = [
             ipKey: ipKey,
             components: components,
-            componentPowerMonitoring: componentPowerMonitoring
+            componentPowerMonitoring: componentPowerMonitoring,
+            needsParentChild: needsParentChild
         ]
 
-        String driverCode = generateHubitatDriver(components, componentPowerMonitoring)
+        String driverCode = generateHubitatDriver(components, componentPowerMonitoring, needsParentChild)
         logDebug("Generated driver code (${driverCode?.length() ?: 0} chars)")
     }
 
@@ -2678,8 +3602,8 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
  *                   (e.g., ["switch:switch:0", "input:input:0"])
  * @return String containing the generated driver code, currently a placeholder
  */
-private String generateHubitatDriver(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:]) {
-    logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components}")
+private String generateHubitatDriver(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:], Boolean needsParentChild = false) {
+    logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components} (parentChild: ${needsParentChild})")
     logDebug("Power monitoring components: ${componentPowerMonitoring.findAll { k, v -> v }}")
 
     // Branch to fetch files from (change to 'master' for production)
@@ -2721,7 +3645,7 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
 
     // Get driver metadata from JSON
     Map driverDef = componentData?.driver as Map
-    String driverName = generateDriverName(components, componentPowerMonitoring)
+    String driverName = generateDriverName(components, componentPowerMonitoring, needsParentChild)
     String version = getAppVersion()
     String driverNameWithVersion = "${driverName} v${version}"
 
@@ -2745,8 +3669,20 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     // Track which capabilities we've already added (to avoid duplicates)
     Set<String> addedCapabilities = new HashSet<>()
 
-    // Add component-specific capabilities
-    components.each { component ->
+    // Parent drivers only get Initialize, Configuration, and Refresh
+    if (needsParentChild) {
+        driver.append("    capability 'Initialize'\n")
+        driver.append("    //Commands: initialize()\n\n")
+        driver.append("    capability 'Configuration'\n")
+        driver.append("    //Commands: configure()\n\n")
+        driver.append("    capability 'Refresh'\n")
+        driver.append("    //Commands: refresh()\n\n")
+        driver.append("    attribute 'lastUpdated', 'string'\n")
+        addedCapabilities.addAll(['Initialize', 'Configuration', 'Refresh'])
+    }
+
+    // Add component-specific capabilities (skip for parent drivers)
+    if (!needsParentChild) { components.each { component ->
         // Extract base type from "switch:0" format
         String baseType = component.contains(':') ? component.split(':')[0] : component
 
@@ -2873,7 +3809,7 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
         } else {
             logDebug("No capability mapping found for Shelly component: ${component} (base type: ${baseType})")
         }
-    }
+    } } // end if (!needsParentChild) { components.each {
 
     // Determine if this is a sleepy battery device (has Battery but no BTHome or Script)
     // Such devices are not always awake, so Initialize/Configure/Refresh are not useful
@@ -2883,19 +3819,21 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
     Boolean isSleepyBattery = addedCapabilities.contains('Battery') &&
         !componentBaseTypes.contains('bthome') && !componentBaseTypes.contains('script')
 
-    if (isSleepyBattery) {
-        logInfo("Sleepy battery device detected — skipping Initialize/Configure/Refresh capabilities")
-    } else {
-        driver.append("    capability 'Initialize'\n")
-        driver.append("    //Commands: initialize()\n")
-        driver.append("\n")
+    if (!needsParentChild) {
+        if (isSleepyBattery) {
+            logInfo("Sleepy battery device detected — skipping Initialize/Configure/Refresh capabilities")
+        } else {
+            driver.append("    capability 'Initialize'\n")
+            driver.append("    //Commands: initialize()\n")
+            driver.append("\n")
 
-        driver.append("    capability 'Configuration'\n")
-        driver.append("    //Commands: configure()\n")
-        driver.append("\n")
+            driver.append("    capability 'Configuration'\n")
+            driver.append("    //Commands: configure()\n")
+            driver.append("\n")
 
-        driver.append("    capability 'Refresh'\n")
-        driver.append("    //Commands: refresh()\n")
+            driver.append("    capability 'Refresh'\n")
+            driver.append("    //Commands: refresh()\n")
+        }
     }
 
     driver.append("  }\n")
@@ -2938,9 +3876,9 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
             driver.append("\n")
         }
 
-        // Add device-specific preferences
+        // Add device-specific preferences (skip for parent drivers — children have their own)
         Map deviceSpecificPreferences = componentData?.deviceSpecificPreferences as Map
-        if (deviceSpecificPreferences) {
+        if (deviceSpecificPreferences && !needsParentChild) {
             // Track which component types we've already added preferences for
             Set<String> addedDevicePrefs = new HashSet<>()
 
@@ -2994,36 +3932,44 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
 
     // Collect all files to fetch
     Set<String> filesToFetch = new HashSet<>()
-    filesToFetch.add("Lifecycle.groovy")
 
-    // Add command files from matched capabilities
-    components.each { component ->
-        String baseType = component.contains(':') ? component.split(':')[0] : component
-        Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
-        if (capability && capability.commandFiles) {
-            filesToFetch.addAll(capability.commandFiles as List<String>)
+    if (needsParentChild) {
+        // Parent driver: use ParentLifecycle.groovy only, skip all component-specific files
+        filesToFetch.add("ParentLifecycle.groovy")
+        filesToFetch.add("Helpers.groovy")
+        logDebug("Parent driver: fetching ParentLifecycle.groovy + Helpers.groovy only")
+    } else {
+        filesToFetch.add("Lifecycle.groovy")
+
+        // Add command files from matched capabilities
+        components.each { component ->
+            String baseType = component.contains(':') ? component.split(':')[0] : component
+            Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
+            if (capability && capability.commandFiles) {
+                filesToFetch.addAll(capability.commandFiles as List<String>)
+            }
+        }
+
+        // Include standard command files (skip for sleepy battery devices)
+        if (!isSleepyBattery) {
+            filesToFetch.add("InitializeCommands.groovy")
+            filesToFetch.add("ConfigureCommands.groovy")
+            filesToFetch.add("RefreshCommand.groovy")
+        }
+        filesToFetch.add("Helpers.groovy")
+
+        // Include PowerMonitoring.groovy if any component has power monitoring
+        Boolean hasPowerMonitoring = componentPowerMonitoring.any { k, v -> v }
+        if (hasPowerMonitoring) {
+            filesToFetch.add("PowerMonitoring.groovy")
+            logDebug("Including PowerMonitoring.groovy for power monitoring capabilities")
         }
     }
 
-    // Include standard command files (skip for sleepy battery devices)
-    if (!isSleepyBattery) {
-        filesToFetch.add("InitializeCommands.groovy")
-        filesToFetch.add("ConfigureCommands.groovy")
-        filesToFetch.add("RefreshCommand.groovy")
-    }
-    filesToFetch.add("Helpers.groovy")
-
-    // Include PowerMonitoring.groovy if any component has power monitoring
-    Boolean hasPowerMonitoring = componentPowerMonitoring.any { k, v -> v }
-    if (hasPowerMonitoring) {
-        filesToFetch.add("PowerMonitoring.groovy")
-        logDebug("Including PowerMonitoring.groovy for power monitoring capabilities")
-    }
-
-    // Include SensorMonitoring.groovy if device has temperature, humidity, battery, smoke, or illuminance components
+    // Include SensorMonitoring.groovy if device has temperature, humidity, battery, smoke, or illuminance components (monolithic only)
     Set<String> sensorComponentTypes = ['temperature', 'humidity', 'devicepower', 'smoke', 'illuminance'] as Set
     Boolean hasSensorComponents = componentBaseTypes.any { sensorComponentTypes.contains(it) }
-    if (hasSensorComponents) {
+    if (hasSensorComponents && !needsParentChild) {
         filesToFetch.add("SensorMonitoring.groovy")
         logDebug("Including SensorMonitoring.groovy for sensor capabilities")
     }
@@ -3069,7 +4015,7 @@ private String generateHubitatDriver(List<String> components, Map<String, Boolea
  * @param componentPowerMonitoring Map of component names to power monitoring flags
  * @return Generated driver name
  */
-private String generateDriverName(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:]) {
+private String generateDriverName(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:], Boolean isParent = false) {
     Map<String, Integer> componentCounts = [:]
     Boolean hasPowerMonitoring = false
 
@@ -3092,10 +4038,11 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     Set<String> foundSensors = componentCounts.keySet().findAll { sensorTypes.contains(it) } as Set
     Boolean hasBattery = componentCounts.containsKey('devicepower')
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
+    String parentSuffix = isParent ? " Parent" : ""
 
     // Mixed actuator + sensor device
     if (foundActuators.size() > 0 && foundSensors.size() > 0) {
-        return "Shelly Autoconf Multi-Component Device${pmSuffix}"
+        return "Shelly Autoconf Multi-Component Device${pmSuffix}${parentSuffix}"
     }
 
     // Actuator-only device
@@ -3114,12 +4061,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
             ]
             String typeName = typeNameMap[type] ?: type.capitalize()
             if (count == 1) {
-                return "Shelly Autoconf Single ${typeName}${pmSuffix}"
+                return "Shelly Autoconf Single ${typeName}${pmSuffix}${parentSuffix}"
             } else {
-                return "Shelly Autoconf ${count}x ${typeName}${pmSuffix}"
+                return "Shelly Autoconf ${count}x ${typeName}${pmSuffix}${parentSuffix}"
             }
         } else {
-            return "Shelly Autoconf Multi-Component Device${pmSuffix}"
+            return "Shelly Autoconf Multi-Component Device${pmSuffix}${parentSuffix}"
         }
     }
 
@@ -3129,30 +4076,30 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         Boolean hasHumidity = foundSensors.contains('humidity')
 
         if (hasTemp && hasHumidity) {
-            return "Shelly Autoconf TH Sensor"
+            return "Shelly Autoconf TH Sensor${parentSuffix}"
         } else if (hasTemp) {
-            return "Shelly Autoconf Temperature Sensor"
+            return "Shelly Autoconf Temperature Sensor${parentSuffix}"
         } else if (hasHumidity) {
-            return "Shelly Autoconf Humidity Sensor"
+            return "Shelly Autoconf Humidity Sensor${parentSuffix}"
         } else if (foundSensors.contains('smoke')) {
-            return "Shelly Autoconf Smoke Sensor"
+            return "Shelly Autoconf Smoke Sensor${parentSuffix}"
         } else if (foundSensors.contains('illuminance')) {
-            return "Shelly Autoconf Illuminance Sensor"
+            return "Shelly Autoconf Illuminance Sensor${parentSuffix}"
         } else if (foundSensors.contains('voltmeter')) {
-            return "Shelly Autoconf Voltmeter"
+            return "Shelly Autoconf Voltmeter${parentSuffix}"
         } else {
             // Other sensor types
             String sensorName = foundSensors.first().capitalize()
-            return "Shelly Autoconf ${sensorName} Sensor"
+            return "Shelly Autoconf ${sensorName} Sensor${parentSuffix}"
         }
     }
 
     // Only support components (devicepower only, no sensors or actuators)
     if (hasBattery) {
-        return "Shelly Autoconf Battery Device"
+        return "Shelly Autoconf Battery Device${parentSuffix}"
     }
 
-    return "Shelly Autoconf Unknown Device"
+    return "Shelly Autoconf Unknown Device${parentSuffix}"
 }
 
 /**
@@ -3380,19 +4327,20 @@ private void completeDriverGeneration() {
     List<String> filesToFetch = results.filesToFetch ?: []
 
     // Append fetched files in correct order
-    // 1. Lifecycle first
-    if (results.files['Lifecycle.groovy']) {
-        String lifecycleContent = results.files['Lifecycle.groovy']
-        logInfo("Adding Lifecycle.groovy (${lifecycleContent?.length() ?: 0} chars)")
-        logDebug("Lifecycle.groovy contains parse(): ${lifecycleContent?.contains('void parse(') ?: false}")
+    // 1. Lifecycle first (ParentLifecycle.groovy for parent drivers, Lifecycle.groovy for monolithic)
+    String lifecycleFile = results.files['ParentLifecycle.groovy'] ? 'ParentLifecycle.groovy' : 'Lifecycle.groovy'
+    if (results.files[lifecycleFile]) {
+        String lifecycleContent = results.files[lifecycleFile]
+        logInfo("Adding ${lifecycleFile} (${lifecycleContent?.length() ?: 0} chars)")
+        logDebug("${lifecycleFile} contains parse(): ${lifecycleContent?.contains('void parse(') ?: false}")
         driver.append(lifecycleContent)
         driver.append("\n")
-        logDebug("Added Lifecycle.groovy")
+        logDebug("Added ${lifecycleFile}")
     } else {
-        logError("Lifecycle.groovy was not fetched!")
+        logError("${lifecycleFile} was not fetched!")
     }
 
-    // 2. Standard command files
+    // 2. Standard command files (only for monolithic drivers)
     ['InitializeCommands.groovy', 'ConfigureCommands.groovy', 'RefreshCommand.groovy'].each { String fileName ->
         if (results.files[fileName]) {
             driver.append(results.files[fileName])
@@ -3401,13 +4349,11 @@ private void completeDriverGeneration() {
         }
     }
 
-    // 3. Component-specific command files
+    // 3. Component-specific command files (only for monolithic drivers)
+    Set<String> skipFiles = ['Lifecycle.groovy', 'ParentLifecycle.groovy', 'InitializeCommands.groovy',
+        'ConfigureCommands.groovy', 'RefreshCommand.groovy', 'Helpers.groovy'] as Set
     filesToFetch.each { String fileName ->
-        if (fileName != 'Lifecycle.groovy' &&
-            fileName != 'InitializeCommands.groovy' &&
-            fileName != 'ConfigureCommands.groovy' &&
-            fileName != 'RefreshCommand.groovy' &&
-            fileName != 'Helpers.groovy') {
+        if (!skipFiles.contains(fileName)) {
             if (results.files[fileName]) {
                 driver.append(results.files[fileName])
                 driver.append("\n")
@@ -3434,7 +4380,8 @@ private void completeDriverGeneration() {
     if (genContext) {
         List<String> comps = genContext.components as List<String>
         Map<String, Boolean> pmMap = (genContext.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-        String driverName = generateDriverName(comps, pmMap)
+        Boolean genIsParent = genContext.needsParentChild ?: false
+        String driverName = generateDriverName(comps, pmMap, genIsParent)
         String version = getAppVersion()
         String driverNameWithVersion = "${driverName} v${version}"
 
@@ -3629,8 +4576,45 @@ private void listAutoconfDrivers() {
 }
 
 /**
+ * Downloads and installs a pre-built driver from the GitHub repository.
+ * Looks up the driver name in PREBUILT_DRIVERS, downloads the .groovy file,
+ * installs it on the hub, and registers it in the tracking system.
+ *
+ * @param driverName The base driver name (e.g., "Shelly Autoconf Single Switch")
+ * @param components List of component identifiers for tracking registration
+ * @param componentPowerMonitoring Map of component power monitoring flags
+ * @param version The current app version string
+ * @return true if install succeeded, false otherwise
+ */
+private Boolean installPrebuiltDriver(String driverName, List<String> components, Map<String, Boolean> componentPowerMonitoring, String version) {
+    String repoPath = PREBUILT_DRIVERS[driverName]
+    if (!repoPath) {
+        logDebug("installPrebuiltDriver: no pre-built driver found for '${driverName}'")
+        return false
+    }
+
+    String rawUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${repoPath}"
+    logInfo("Downloading pre-built driver from: ${rawUrl}")
+
+    String sourceCode = downloadFile(rawUrl)
+    if (!sourceCode) {
+        logError("installPrebuiltDriver: failed to download pre-built driver from ${rawUrl}")
+        return false
+    }
+
+    logInfo("Downloaded pre-built driver for ${driverName} (${sourceCode.length()} chars)")
+    installDriver(sourceCode)
+
+    String driverNameWithVersion = "${driverName} v${version}"
+    registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, components, componentPowerMonitoring)
+
+    return true
+}
+
+/**
  * Installs a driver on the hub by posting the source code.
- * Creates a new driver entry if it doesn't exist.
+ * Updates an existing driver if one with the same name/namespace exists,
+ * otherwise creates a new driver entry. Also caches to file manager.
  *
  * @param sourceCode The complete driver source code to install
  */
@@ -3738,6 +4722,166 @@ private void installDriver(String sourceCode) {
         logError("Error installing driver: ${e.message}")
     }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// ║  Component Driver Installation (Parent-Child Architecture)  ║
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Maps a Shelly component type to its component driver file name.
+ *
+ * @param componentType The Shelly component type (switch, cover, light, input)
+ * @param hasPowerMonitoring Whether this component has power monitoring
+ * @return The component driver file name (e.g., "ShellySwitchComponentPM.groovy")
+ */
+private String getComponentDriverFileName(String componentType, Boolean hasPowerMonitoring = false) {
+    Map<String, Map<String, String>> driverMap = [
+        'switch': [default: 'ShellySwitchComponent.groovy', pm: 'ShellySwitchComponentPM.groovy'],
+        'cover': [default: 'ShellyCoverComponent.groovy', pm: 'ShellyCoverComponentPM.groovy'],
+        'light': [default: 'ShellyDimmerComponent.groovy'],
+        'input': [default: 'ShellyInputButtonComponent.groovy']
+    ]
+
+    Map<String, String> typeMap = driverMap[componentType]
+    if (!typeMap) { return null }
+
+    if (hasPowerMonitoring && typeMap.pm) {
+        return typeMap.pm
+    }
+    return typeMap['default']
+}
+
+/**
+ * Gets the Hubitat driver name for a component driver file.
+ * Extracts the name from the driver metadata definition.
+ *
+ * @param componentType The Shelly component type (switch, cover, light, input)
+ * @param hasPowerMonitoring Whether this component has power monitoring
+ * @return The driver name as defined in the component driver's metadata
+ */
+private String getComponentDriverName(String componentType, Boolean hasPowerMonitoring = false) {
+    Map<String, Map<String, String>> nameMap = [
+        'switch': [default: 'Shelly Autoconf Switch', pm: 'Shelly Autoconf Switch PM'],
+        'cover': [default: 'Shelly Autoconf Cover', pm: 'Shelly Autoconf Cover PM'],
+        'light': [default: 'Shelly Autoconf Dimmer'],
+        'input': [default: 'Shelly Autoconf Input Button']
+    ]
+
+    Map<String, String> typeMap = nameMap[componentType]
+    if (!typeMap) { return null }
+
+    if (hasPowerMonitoring && typeMap.pm) {
+        return typeMap.pm
+    }
+    return typeMap['default']
+}
+
+/**
+ * Checks if a component driver is already installed on the hub.
+ *
+ * @param driverName The driver name to check for
+ * @return true if the driver is already installed
+ */
+private Boolean isComponentDriverInstalled(String driverName) {
+    Boolean found = false
+    try {
+        Map driverParams = [
+            uri: "http://127.0.0.1:8080",
+            path: '/device/drivers',
+            contentType: 'application/json',
+            timeout: 5000
+        ]
+
+        httpGet(driverParams) { resp ->
+            if (resp?.status == 200) {
+                found = resp.data?.drivers?.any { driver ->
+                    driver.type == 'usr' &&
+                    driver?.namespace == 'ShellyUSA' &&
+                    driver?.name == driverName
+                } ?: false
+            }
+        }
+    } catch (Exception e) {
+        logError("Error checking for component driver ${driverName}: ${e.message}")
+    }
+    return found
+}
+
+/**
+ * Fetches a component driver source file from GitHub and installs it on the hub.
+ *
+ * @param fileName The component driver file name (e.g., "ShellySwitchComponentPM.groovy")
+ * @param driverName The expected driver name for tracking
+ */
+private void fetchAndInstallComponentDriver(String fileName, String driverName) {
+    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/UniversalDrivers/UniversalComponentDrivers"
+    String fileUrl = "${baseUrl}/${fileName}?v=${now()}"
+
+    logInfo("Fetching component driver from GitHub: ${fileName}")
+
+    String sourceCode = downloadFile(fileUrl)
+    if (!sourceCode) {
+        logError("Failed to fetch component driver from GitHub: ${fileName}")
+        return
+    }
+
+    installDriver(sourceCode)
+
+    // Register in autoDrivers tracking as a component driver
+    String version = getAppVersion()
+    String key = "ShellyUSA.${driverName}"
+    initializeDriverTracking()
+    state.autoDrivers[key] = [
+        name: driverName,
+        namespace: 'ShellyUSA',
+        version: version,
+        isComponentDriver: true,
+        installedAt: now(),
+        lastUpdated: now(),
+        devicesUsing: []
+    ]
+
+    logInfo("Installed component driver: ${driverName}")
+}
+
+/**
+ * Installs all required component drivers for a multi-component device.
+ * Determines which component drivers are needed based on the device's components,
+ * checks if they're already installed, and fetches/installs any missing ones.
+ *
+ * @param deviceInfo The discovered device information map
+ */
+private void installComponentDriversForDevice(Map deviceInfo) {
+    Map deviceStatus = deviceInfo.deviceStatus ?: [:]
+    Map<String, Boolean> componentPowerMonitoring = (deviceInfo.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+
+    Set<String> installedDrivers = [] as Set
+
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        String baseType = key.contains(':') ? key.split(':')[0] : key
+        if (!['switch', 'cover', 'light', 'input'].contains(baseType)) { return }
+
+        Boolean hasPM = componentPowerMonitoring[key] ?: false
+        String driverName = getComponentDriverName(baseType, hasPM)
+        if (!driverName || installedDrivers.contains(driverName)) { return }
+
+        installedDrivers.add(driverName)
+
+        if (!isComponentDriverInstalled(driverName)) {
+            String fileName = getComponentDriverFileName(baseType, hasPM)
+            if (fileName) {
+                fetchAndInstallComponentDriver(fileName, driverName)
+            }
+        } else {
+            logDebug("Component driver already installed: ${driverName}")
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ║  END Component Driver Installation                          ║
+// ═══════════════════════════════════════════════════════════════
 
 /**
  * Truncates long objects to a safe length for logging.
@@ -5890,7 +7034,7 @@ ChildDeviceWrapper createChildSwitch(Integer id, String additionalId = null) {
   String dni = additionalId == null ? "${getThisDeviceDNI()}-switch${id}" : "${getThisDeviceDNI()}-${additionalId}-switch${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = additionalId == null ? 'Shelly Switch Component' : 'Shelly OverUnder Switch Component'
+    String driverName = additionalId == null ? 'Shelly Autoconf Switch' : 'Shelly Autoconf OverUnder Switch'
     String labelText = getAppLabel() != null ? "${getAppLabel()}" : "${driverName}"
     String label = additionalId == null ? "${labelText} - Switch ${id}" : "${labelText} - ${additionalId} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
@@ -5908,7 +7052,7 @@ ChildDeviceWrapper createChildDimmer(Integer id) {
   String dni =  "${getThisDeviceDNI()}-dimmer${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly Dimmer Component'
+    String driverName = 'Shelly Autoconf Dimmer'
     String label = getAppLabel() != null ? "${getAppLabel()} - Dimmer ${id}" : "${driverName} - Dimmer ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5925,7 +7069,7 @@ ChildDeviceWrapper createChildRGB(Integer id) {
   String dni =  "${getThisDeviceDNI()}-rgb${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly RGB Component'
+    String driverName = 'Shelly Autoconf RGB'
     String label = getAppLabel() != null ? "${getAppLabel()} - RGB ${id}" : "${driverName} - RGB ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5942,7 +7086,7 @@ ChildDeviceWrapper createChildRGBW(Integer id) {
   String dni =  "${getThisDeviceDNI()}-rgbw${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly RGBW Component'
+    String driverName = 'Shelly Autoconf RGBW'
     String label = getAppLabel() != null ? "${getAppLabel()} - RGBW ${id}" : "${driverName} - RGBW ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5959,7 +7103,7 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
   String dni =  "${getThisDeviceDNI()}-switch${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly Switch PM Component'
+    String driverName = 'Shelly Autoconf Switch PM'
     String label = getAppLabel() != null ? "${getAppLabel()} - Switch ${id}" : "${driverName} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5982,7 +7126,7 @@ ChildDeviceWrapper createChildEM(Integer id, String phase) {
   String dni =  "${getThisDeviceDNI()}-em${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly EM Component'
+    String driverName = 'Shelly Autoconf EM'
     String label = getAppLabel() != null ? "${getAppLabel()} - EM${id} - phase ${phase}" : "${driverName} - EM${id} - phase ${phase}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -6006,7 +7150,7 @@ ChildDeviceWrapper createChildEM1(Integer id) {
   String dni =  "${getThisDeviceDNI()}-em${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly EM Component'
+    String driverName = 'Shelly Autoconf EM'
     String label = getAppLabel() != null ? "${getAppLabel()} - EM ${id}" : "${driverName} - EM ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -6028,7 +7172,7 @@ ChildDeviceWrapper createChildEM1(Integer id) {
 @CompileStatic
 ChildDeviceWrapper createChildInput(Integer id, String inputType) {
   logDebug("Input type is: ${inputType}")
-  String driverName = "Shelly Input ${inputType} Component"
+  String driverName = "Shelly Autoconf Input ${inputType}"
   String dni = "${getThisDeviceDNI()}-input${inputType}${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6051,7 +7195,7 @@ void removeChildInput(Integer id, String inputType) {
 }
 
 @CompileStatic
-ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Cover Component') {
+ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Autoconf Cover') {
   String dni = "${getThisDeviceDNI()}-cover${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6068,7 +7212,7 @@ ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Cove
 
 @CompileStatic
 ChildDeviceWrapper createChildPmCover(Integer id) {
-  ChildDeviceWrapper child = createChildCover(id, 'Shelly Cover PM Component')
+  ChildDeviceWrapper child = createChildCover(id, 'Shelly Autoconf Cover PM')
   child.updateDataValue('hasPM','true')
   child.updateDataValue('currentId', "${id}")
   child.updateDataValue('energyId', "${id}")
@@ -6080,7 +7224,7 @@ ChildDeviceWrapper createChildPmCover(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildTemperature(Integer id) {
-  String driverName = "Shelly Temperature Peripheral Component"
+  String driverName = "Shelly Autoconf Temperature Peripheral"
   String dni = "${getThisDeviceDNI()}-temperature${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6097,7 +7241,7 @@ ChildDeviceWrapper createChildTemperature(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildHumidity(Integer id) {
-  String driverName = "Shelly Humidity Peripheral Component"
+  String driverName = "Shelly Autoconf Humidity Peripheral"
   String dni = "${getThisDeviceDNI()}-humidity${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6114,7 +7258,7 @@ ChildDeviceWrapper createChildHumidity(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildTemperatureHumidity(Integer id) {
-  String driverName = "Shelly Temperature & Humidity Peripheral Component"
+  String driverName = "Shelly Autoconf Temperature & Humidity Peripheral"
   String dni = "${getThisDeviceDNI()}-temperatureHumidity${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6149,7 +7293,7 @@ ChildDeviceWrapper createChildIlluminance(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildPlugsUiRGB() {
-  String driverName = "Shelly RGB Component"
+  String driverName = "Shelly Autoconf RGB"
   String dni = "${getThisDeviceDNI()}-plugsui-rgb"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6166,7 +7310,7 @@ ChildDeviceWrapper createChildPlugsUiRGB() {
 
 @CompileStatic
 ChildDeviceWrapper createChildPlugsUiRGBOn() {
-  String driverName = "Shelly RGB Component"
+  String driverName = "Shelly Autoconf RGB"
   String dni = "${getThisDeviceDNI()}-plugsui-rgb-on"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6184,7 +7328,7 @@ ChildDeviceWrapper createChildPlugsUiRGBOn() {
 
 @CompileStatic
 ChildDeviceWrapper createChildPlugsUiRGBOff() {
-  String driverName = "Shelly RGB Component"
+  String driverName = "Shelly Autoconf RGB"
   String dni = "${getThisDeviceDNI()}-plugsui-rgb-off"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6202,7 +7346,7 @@ ChildDeviceWrapper createChildPlugsUiRGBOff() {
 
 @CompileStatic
 ChildDeviceWrapper createChildVoltage(Integer id) {
-  String driverName = "Shelly Polling Voltage Sensor Component"
+  String driverName = "Shelly Autoconf Polling Voltage Sensor"
   String dni = "${getThisDeviceDNI()}-adc${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -8064,18 +9208,30 @@ void processNextDriverRebuild() {
             return
         }
 
+        // Detect parent drivers by name suffix or isComponentDriver flag
+        Boolean isParentDriver = (driverInfo.name ?: '').contains(' Parent ')
+        Boolean isComponentDriver = driverInfo.isComponentDriver ?: false
+
+        // Skip component drivers during rebuild — they are self-contained files
+        if (isComponentDriver) {
+            logDebug("Skipping component driver rebuild: ${key} (fetched from GitHub as-is)")
+            runIn(1, 'processNextDriverRebuild')
+            return
+        }
+
         // Store context for the async completion callback
         atomicState.currentDriverGeneration = [
             ipKey: null,
             components: components,
             componentPowerMonitoring: pmMap,
             isRebuild: true,
-            rebuildKey: key
+            rebuildKey: key,
+            needsParentChild: isParentDriver
         ]
 
         // Async: will call completeDriverGeneration() when all fetches finish,
         // which chains back to processNextDriverRebuild()
-        generateHubitatDriver(components, pmMap)
+        generateHubitatDriver(components, pmMap, isParentDriver)
 
     } catch (Exception e) {
         logError("Failed to rebuild driver ${key}: ${e.message}")
@@ -9112,3 +10268,401 @@ void componentResetEnergyMonitors(def childDevice) {
 }
 
 /* #endregion Component Device Command Handlers */
+
+// ═══════════════════════════════════════════════════════════════
+// Parent-Child Parse Routing & Refresh
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Called by the parent device's parse() method.
+ * Routes incoming LAN messages (webhooks, script notifications) to the
+ * appropriate child device based on the message's dst and component IDs.
+ *
+ * @param parentDevice The parent device that received the LAN message
+ * @param description The raw LAN message description string
+ */
+void componentParse(def parentDevice, String description) {
+    logDebug("componentParse() called from parent: ${parentDevice.displayName}")
+
+    try {
+        Map msg = parseLanMessage(description)
+
+        // Skip HTTP responses (status != null means this is a response to our request)
+        if (msg?.status != null) { return }
+        if (!msg?.body) { return }
+
+        def json = slurper.parseText(msg.body)
+        String dst = json?.dst
+        Map result = json?.result as Map
+        String parentDni = parentDevice.deviceNetworkId
+
+        if (!result || !dst) {
+            logDebug("componentParse: no actionable data (dst=${dst})")
+            return
+        }
+
+        logDebug("componentParse: dst=${dst}, result keys=${result.keySet()}")
+
+        // Route each component entry in the result to the correct child device
+        result.each { String key, Object value ->
+            if (!(value instanceof Map)) { return }
+
+            String baseType = key.contains(':') ? key.split(':')[0] : key
+            Integer componentId = key.contains(':') ? (key.split(':')[1] as Integer) : 0
+
+            // Determine the child component type based on dst
+            String childType = mapDstToComponentType(dst, baseType)
+            if (!childType) { return }
+
+            String childDni = "${parentDni}-${childType}-${componentId}"
+            def child = getChildDevice(childDni)
+
+            if (child) {
+                List<Map> events = buildComponentEvents(dst, baseType, value as Map)
+                events.each { Map evt ->
+                    childSendEventHelper(child, evt)
+                }
+                // Update lastUpdated timestamp
+                childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+                logDebug("componentParse: sent ${events.size()} events to ${child.displayName}")
+            } else {
+                logDebug("componentParse: no child device found for DNI ${childDni}")
+            }
+        }
+    } catch (Exception e) {
+        logError("componentParse exception: ${e.message}")
+    }
+}
+
+/**
+ * Maps a Shelly notification dst type to the component type used in child DNIs.
+ *
+ * @param dst The notification destination type (switchmon, powermon, covermon, etc.)
+ * @param baseType The base component type from the result key (switch, cover, light, input)
+ * @return The component type string for child DNI construction, or null if not mappable
+ */
+private String mapDstToComponentType(String dst, String baseType) {
+    // Most dst types directly correspond to their base types
+    switch (dst) {
+        case 'switchmon':
+            return 'switch'
+        case 'powermon':
+            // Power monitoring can apply to switch, cover, or light — use the baseType from the result key
+            return baseType
+        case 'covermon':
+            return 'cover'
+        case 'lightmon':
+            return 'light'
+        case 'input_push':
+        case 'input_double':
+        case 'input_long':
+            return 'input'
+        case 'temperature':
+        case 'humidity':
+        case 'battery':
+        case 'smoke':
+        case 'illuminance':
+            return baseType
+        default:
+            logDebug("mapDstToComponentType: unknown dst type '${dst}'")
+            return null
+    }
+}
+
+/**
+ * Builds a list of Hubitat events from a Shelly notification component entry.
+ * Translates Shelly JSON data into event Maps suitable for sendEvent().
+ *
+ * @param dst The notification destination type
+ * @param baseType The base component type
+ * @param data The component data map from the notification
+ * @return List of event maps to send to the child device
+ */
+private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
+    List<Map> events = []
+
+    switch (dst) {
+        case 'switchmon':
+            if (data.output != null) {
+                String switchState = data.output ? 'on' : 'off'
+                events.add([name: 'switch', value: switchState,
+                    descriptionText: "Switch turned ${switchState}"])
+            }
+            break
+
+        case 'powermon':
+            if (data.voltage != null) {
+                events.add([name: 'voltage', value: data.voltage as BigDecimal,
+                    unit: 'V', descriptionText: "Voltage is ${data.voltage}V"])
+            }
+            if (data.current != null) {
+                events.add([name: 'amperage', value: data.current as BigDecimal,
+                    unit: 'A', descriptionText: "Current is ${data.current}A"])
+            }
+            if (data.apower != null) {
+                events.add([name: 'power', value: data.apower as BigDecimal,
+                    unit: 'W', descriptionText: "Power is ${data.apower}W"])
+            }
+            if (data.aenergy?.total != null) {
+                BigDecimal energyWh = data.aenergy.total as BigDecimal
+                BigDecimal energyKwh = energyWh / 1000
+                events.add([name: 'energy', value: energyKwh,
+                    unit: 'kWh', descriptionText: "Energy is ${energyKwh}kWh"])
+            }
+            break
+
+        case 'covermon':
+            if (data.state != null) {
+                String shadeState
+                switch (data.state) {
+                    case 'open': shadeState = 'open'; break
+                    case 'closed': shadeState = 'closed'; break
+                    case 'opening': shadeState = 'opening'; break
+                    case 'closing': shadeState = 'closing'; break
+                    case 'stopped': shadeState = 'partially open'; break
+                    default: shadeState = 'unknown'
+                }
+                events.add([name: 'windowShade', value: shadeState,
+                    descriptionText: "Window shade is ${shadeState}"])
+            }
+            if (data.current_pos != null) {
+                events.add([name: 'position', value: data.current_pos as Integer,
+                    unit: '%', descriptionText: "Position is ${data.current_pos}%"])
+            }
+            // Cover power monitoring
+            if (data.voltage != null) {
+                events.add([name: 'voltage', value: data.voltage as BigDecimal,
+                    unit: 'V', descriptionText: "Voltage is ${data.voltage}V"])
+            }
+            if (data.current != null) {
+                events.add([name: 'amperage', value: data.current as BigDecimal,
+                    unit: 'A', descriptionText: "Current is ${data.current}A"])
+            }
+            if (data.apower != null) {
+                events.add([name: 'power', value: data.apower as BigDecimal,
+                    unit: 'W', descriptionText: "Power is ${data.apower}W"])
+            }
+            break
+
+        case 'lightmon':
+            if (data.output != null) {
+                String switchState = data.output ? 'on' : 'off'
+                events.add([name: 'switch', value: switchState,
+                    descriptionText: "Switch turned ${switchState}"])
+            }
+            if (data.brightness != null) {
+                events.add([name: 'level', value: data.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${data.brightness}%"])
+            }
+            break
+
+        case 'input_push':
+            if (data.id != null) {
+                Integer buttonNumber = 1 // Each child input has one button
+                events.add([name: 'pushed', value: buttonNumber, isStateChange: true,
+                    descriptionText: "Button ${buttonNumber} was pushed"])
+            }
+            break
+
+        case 'input_double':
+            if (data.id != null) {
+                Integer buttonNumber = 1
+                events.add([name: 'doubleTapped', value: buttonNumber, isStateChange: true,
+                    descriptionText: "Button ${buttonNumber} was double-tapped"])
+            }
+            break
+
+        case 'input_long':
+            if (data.id != null) {
+                Integer buttonNumber = 1
+                events.add([name: 'held', value: buttonNumber, isStateChange: true,
+                    descriptionText: "Button ${buttonNumber} was held"])
+            }
+            break
+    }
+
+    return events
+}
+
+/**
+ * Handles refresh() command from parent or child devices.
+ * Queries Shelly.GetStatus and distributes current state to all child devices.
+ *
+ * @param childDevice The device that requested refresh (parent or child)
+ */
+void componentRefresh(def childDevice) {
+    logDebug("componentRefresh() called from device: ${childDevice.displayName}")
+
+    try {
+        String ipAddress = childDevice.getDataValue('ipAddress')
+        if (!ipAddress) {
+            logError("componentRefresh: No IP address found for device ${childDevice.displayName}")
+            return
+        }
+
+        // Determine if this is a parent device or a child device
+        String parentDni = childDevice.getDataValue('parentDni') ?: childDevice.deviceNetworkId
+        Boolean isParent = childDevice.getDataValue('isParentDevice') == 'true'
+
+        // Query full device status
+        Map deviceStatus = queryDeviceStatus(ipAddress)
+        if (!deviceStatus) {
+            logWarn("componentRefresh: Could not query device status for ${ipAddress}")
+            return
+        }
+
+        if (isParent) {
+            // Parent refresh: distribute status to all children
+            distributeStatusToChildren(parentDni, deviceStatus)
+        } else {
+            // Single child refresh: only update this child
+            String componentType = childDevice.getDataValue('componentType')
+            String idDataKey = "${componentType}Id"
+            Integer componentId = extractComponentId(childDevice, idDataKey)
+            String componentKey = "${componentType}:${componentId}"
+
+            if (deviceStatus[componentKey] instanceof Map) {
+                Map componentData = deviceStatus[componentKey] as Map
+                updateChildFromStatus(childDevice, componentType, componentData)
+            }
+        }
+    } catch (Exception e) {
+        logError("componentRefresh exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Handles initialize() command from parent devices.
+ * Sets up scripts and webhooks on the Shelly device.
+ *
+ * @param parentDevice The parent device that is initializing
+ */
+void componentInitialize(def parentDevice) {
+    logDebug("componentInitialize() called from parent: ${parentDevice.displayName}")
+    // Script and webhook installation is handled by the existing
+    // installRequiredScripts and installRequiredActions functions
+    // which are triggered during device discovery/creation
+}
+
+/**
+ * Handles configure() command from parent devices.
+ *
+ * @param parentDevice The parent device to configure
+ */
+void componentConfigure(def parentDevice) {
+    logDebug("componentConfigure() called from parent: ${parentDevice.displayName}")
+    // Configuration is handled during device creation
+}
+
+/**
+ * Distributes a full Shelly.GetStatus result to all child devices of a parent.
+ *
+ * @param parentDni The parent device network ID
+ * @param deviceStatus The full device status map from Shelly.GetStatus
+ */
+private void distributeStatusToChildren(String parentDni, Map deviceStatus) {
+    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'input'] as Set
+
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        String baseType = key.contains(':') ? key.split(':')[0] : key
+        if (!childComponentTypes.contains(baseType)) { return }
+        if (!(v instanceof Map)) { return }
+
+        Integer componentId = key.contains(':') ? (key.split(':')[1] as Integer) : 0
+        String childDni = "${parentDni}-${baseType}-${componentId}"
+        def child = getChildDevice(childDni)
+
+        if (child) {
+            updateChildFromStatus(child, baseType, v as Map)
+        }
+    }
+}
+
+/**
+ * Updates a child device's attributes from a Shelly component status map.
+ *
+ * @param child The child device to update
+ * @param componentType The component type (switch, cover, light, input)
+ * @param statusData The status data map for this component
+ */
+private void updateChildFromStatus(def child, String componentType, Map statusData) {
+    List<Map> events = []
+
+    switch (componentType) {
+        case 'switch':
+            if (statusData.output != null) {
+                String switchState = statusData.output ? 'on' : 'off'
+                events.add([name: 'switch', value: switchState,
+                    descriptionText: "Switch is ${switchState}"])
+            }
+            // Power monitoring values
+            if (statusData.voltage != null) {
+                events.add([name: 'voltage', value: statusData.voltage as BigDecimal,
+                    unit: 'V', descriptionText: "Voltage is ${statusData.voltage}V"])
+            }
+            if (statusData.current != null) {
+                events.add([name: 'amperage', value: statusData.current as BigDecimal,
+                    unit: 'A', descriptionText: "Current is ${statusData.current}A"])
+            }
+            if (statusData.apower != null) {
+                events.add([name: 'power', value: statusData.apower as BigDecimal,
+                    unit: 'W', descriptionText: "Power is ${statusData.apower}W"])
+            }
+            if (statusData.aenergy?.total != null) {
+                BigDecimal energyWh = statusData.aenergy.total as BigDecimal
+                BigDecimal energyKwh = energyWh / 1000
+                events.add([name: 'energy', value: energyKwh,
+                    unit: 'kWh', descriptionText: "Energy is ${energyKwh}kWh"])
+            }
+            break
+
+        case 'cover':
+            if (statusData.state != null) {
+                String shadeState
+                switch (statusData.state) {
+                    case 'open': shadeState = 'open'; break
+                    case 'closed': shadeState = 'closed'; break
+                    case 'opening': shadeState = 'opening'; break
+                    case 'closing': shadeState = 'closing'; break
+                    case 'stopped': shadeState = 'partially open'; break
+                    default: shadeState = 'unknown'
+                }
+                events.add([name: 'windowShade', value: shadeState,
+                    descriptionText: "Window shade is ${shadeState}"])
+            }
+            if (statusData.current_pos != null) {
+                events.add([name: 'position', value: statusData.current_pos as Integer,
+                    unit: '%', descriptionText: "Position is ${statusData.current_pos}%"])
+            }
+            break
+
+        case 'light':
+            if (statusData.output != null) {
+                String switchState = statusData.output ? 'on' : 'off'
+                events.add([name: 'switch', value: switchState,
+                    descriptionText: "Switch is ${switchState}"])
+            }
+            if (statusData.brightness != null) {
+                events.add([name: 'level', value: statusData.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${statusData.brightness}%"])
+            }
+            break
+
+        case 'input':
+            // Input components don't have persistent state to refresh
+            break
+    }
+
+    events.each { Map evt ->
+        childSendEventHelper(child, evt)
+    }
+
+    if (events.size() > 0) {
+        childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// END Parent-Child Parse Routing & Refresh
+// ═══════════════════════════════════════════════════════════════
