@@ -9864,6 +9864,40 @@ void componentOff(def childDevice) {
 }
 
 /**
+ * Handles on() command from a parent device to turn on all child switches.
+ * Finds all child devices with componentType "switch" under the given parent
+ * and sends an on command to each.
+ *
+ * @param parentDevice The parent device requesting all switches on
+ */
+void componentOnAll(def parentDevice) {
+  logDebug("componentOnAll() called from parent: ${parentDevice.displayName}")
+  String parentDni = parentDevice.deviceNetworkId
+  getChildDevices()?.each { child ->
+    if (child.deviceNetworkId.startsWith("${parentDni}-switch-")) {
+      sendSwitchCommand(child, true)
+    }
+  }
+}
+
+/**
+ * Handles off() command from a parent device to turn off all child switches.
+ * Finds all child devices with componentType "switch" under the given parent
+ * and sends an off command to each.
+ *
+ * @param parentDevice The parent device requesting all switches off
+ */
+void componentOffAll(def parentDevice) {
+  logDebug("componentOffAll() called from parent: ${parentDevice.displayName}")
+  String parentDni = parentDevice.deviceNetworkId
+  getChildDevices()?.each { child ->
+    if (child.deviceNetworkId.startsWith("${parentDni}-switch-")) {
+      sendSwitchCommand(child, false)
+    }
+  }
+}
+
+/**
  * Sends a Switch.Set command to a Shelly device.
  * Extracts the device IP address and sends the command via JSON-RPC.
  *
