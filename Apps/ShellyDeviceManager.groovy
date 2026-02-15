@@ -332,8 +332,20 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName.startsWith('removeDev|')) {
         String targetIp = buttonName.minus('removeDev|')
-        logInfo("Removing device for ${targetIp} via config table")
-        removeDeviceByIp(targetIp)
+        state.pendingDeleteIp = targetIp
+    }
+
+    if (buttonName == 'btnConfirmDelete') {
+        String targetIp = state.pendingDeleteIp as String
+        if (targetIp) {
+            logInfo("Removing device for ${targetIp} via config table")
+            removeDeviceByIp(targetIp)
+        }
+        state.remove('pendingDeleteIp')
+    }
+
+    if (buttonName == 'btnCancelDelete') {
+        state.remove('pendingDeleteIp')
     }
 
     if (buttonName.startsWith('installScripts|')) {
@@ -804,6 +816,18 @@ Map deviceConfigPage() {
     }
 
     dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false) {
+        // Delete confirmation (shown when user clicks delete on a device)
+        if (state.pendingDeleteIp) {
+            String deleteIp = state.pendingDeleteIp as String
+            def deleteDevice = findChildDeviceByIp(deleteIp)
+            String deleteName = deleteDevice ? deleteDevice.displayName : deleteIp
+            section() {
+                paragraph "<b style='color:#F44336'>Are you sure you want to remove '${deleteName}' (${deleteIp})?</b>"
+                input 'btnConfirmDelete', 'button', title: 'Yes, Remove Device', submitOnChange: true
+                input 'btnCancelDelete', 'button', title: 'Cancel', submitOnChange: true
+            }
+        }
+
         // Label editing input (shown when user clicks a label in the table)
         if (state.pendingLabelEdit) {
             String labelIp = state.pendingLabelEdit as String
