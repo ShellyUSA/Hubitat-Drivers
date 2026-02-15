@@ -47,22 +47,7 @@ void parse(String description) {
       // This is an incoming HTTP request from Shelly device (webhook/notification)
       logDebug("Received incoming request from Shelly device")
 
-      // Extract request path from headers
-      def headersList = msg.headers?.keySet()
-      def requestLine = headersList?.find { it.startsWith('GET ') || it.startsWith('POST ') }
-
-      if (requestLine) {
-        logInfo("Shelly event: ${requestLine}")
-
-        // Parse the request path to determine event type
-        // Example: "GET /switch.active_power_measurement/apower/0/0 HTTP/1.1"
-        if (requestLine.contains('/switch.')) {
-          // Switch event notification
-          logDebug("Switch state change notification received")
-          // TODO: Query device for current state
-        }
-      }
-
+      // Try POST JSON body first (script notifications like powermonitoring.js)
       if (msg.body) {
         try {
           def json = new groovy.json.JsonSlurper().parseText(msg.body)
@@ -94,15 +79,156 @@ void parse(String description) {
           } else if (json?.dst == "input_long") {
             parseInputLong(json)
           }
+          return
         } catch (Exception jsonEx) {
-          // Body might be empty or not JSON
+          // Body might be empty or not JSON — fall through to GET parsing
         }
+      }
+
+      // Try GET query parameters (webhook notifications with URL tokens)
+      Map params = parseWebhookQueryParams(msg)
+      if (params?.dst) {
+        routeWebhookParams(params)
       }
     }
   } catch (Exception e) {
     logError("Error parsing LAN message: ${e.message}")
   }
 }
+
+/**
+ * Parses query parameters from an incoming GET webhook request.
+ *
+ * @param msg The parsed LAN message map
+ * @return Map of query parameter key-value pairs, or null if not parseable
+ */
+private Map parseWebhookQueryParams(Map msg) {
+  if (!msg?.headers) { return null }
+  String requestLine = msg.headers?.keySet()?.find { key ->
+    key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+  }
+  if (!requestLine) { return null }
+  String pathAndQuery = requestLine.toString().split(' ')[1]
+  int qIdx = pathAndQuery.indexOf('?')
+  if (qIdx < 0) { return null }
+  Map params = [:]
+  pathAndQuery.substring(qIdx + 1).split('&').each { String pair ->
+    String[] kv = pair.split('=', 2)
+    if (kv.length == 2) {
+      params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+    }
+  }
+  return params
+}
+
+/**
+ * Routes parsed webhook GET query parameters to appropriate event handlers.
+ * Handles all event types: switch, cover, temperature, humidity, battery,
+ * smoke, illuminance, and input button events.
+ *
+ * @param params The parsed query parameters
+ */
+private void routeWebhookParams(Map params) {
+  switch (params.dst) {
+    case 'switchmon':
+      if (params.output != null) {
+        String switchState = params.output == 'true' ? 'on' : 'off'
+        sendEvent(name: 'switch', value: switchState,
+          descriptionText: "Switch turned ${switchState}")
+        logInfo("Switch state changed to: ${switchState}")
+      }
+      break
+
+    case 'covermon':
+      if (params.state != null) {
+        String shadeState
+        switch (params.state) {
+          case 'open': shadeState = 'open'; break
+          case 'closed': shadeState = 'closed'; break
+          case 'opening': shadeState = 'opening'; break
+          case 'closing': shadeState = 'closing'; break
+          case 'stopped': shadeState = 'partially open'; break
+          case 'calibrating': shadeState = 'unknown'; break
+          default: shadeState = 'unknown'
+        }
+        sendEvent(name: 'windowShade', value: shadeState,
+          descriptionText: "Window shade is ${shadeState}")
+        logInfo("Cover state changed to: ${shadeState}")
+      }
+      if (params.pos != null) {
+        Integer position = params.pos as Integer
+        sendEvent(name: 'position', value: position, unit: '%',
+          descriptionText: "Position is ${position}%")
+      }
+      break
+
+    case 'temperature':
+      String scale = location.temperatureScale ?: 'F'
+      BigDecimal temp = null
+      if (scale == 'C' && params.tC) {
+        temp = params.tC as BigDecimal
+      } else if (params.tF) {
+        temp = params.tF as BigDecimal
+      }
+      if (temp != null) {
+        sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
+          descriptionText: "Temperature is ${temp}°${scale}")
+        logInfo("Temperature: ${temp}°${scale}")
+      }
+      break
+
+    case 'humidity':
+      if (params.rh != null) {
+        BigDecimal humidity = params.rh as BigDecimal
+        sendEvent(name: 'humidity', value: humidity, unit: '%',
+          descriptionText: "Humidity is ${humidity}%")
+        logInfo("Humidity: ${humidity}%")
+      }
+      break
+
+    case 'smoke':
+      if (params.alarm != null) {
+        String smokeState = params.alarm == 'true' ? 'detected' : 'clear'
+        sendEvent(name: 'smoke', value: smokeState,
+          descriptionText: "Smoke ${smokeState}")
+        logInfo("Smoke: ${smokeState}")
+      }
+      break
+
+    case 'illuminance':
+      if (params.lux != null) {
+        Integer lux = params.lux as Integer
+        sendEvent(name: 'illuminance', value: lux, unit: 'lux',
+          descriptionText: "Illuminance is ${lux} lux")
+        logInfo("Illuminance: ${lux} lux")
+      }
+      break
+
+    case 'input_push':
+      sendEvent(name: 'pushed', value: 1, isStateChange: true,
+        descriptionText: 'Button 1 was pushed')
+      break
+
+    case 'input_double':
+      sendEvent(name: 'doubleTapped', value: 1, isStateChange: true,
+        descriptionText: 'Button 1 was double-tapped')
+      break
+
+    case 'input_long':
+      sendEvent(name: 'held', value: 1, isStateChange: true,
+        descriptionText: 'Button 1 was held')
+      break
+  }
+
+  // Battery data piggybacked on any webhook via supplemental URL tokens
+  if (params.battPct != null) {
+    Integer batteryPct = params.battPct as Integer
+    sendEvent(name: 'battery', value: batteryPct, unit: '%',
+      descriptionText: "Battery is ${batteryPct}%")
+    logInfo("Battery: ${batteryPct}%")
+  }
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Driver Lifecycle and Configuration                       ║
 // ╚══════════════════════════════════════════════════════════════╝

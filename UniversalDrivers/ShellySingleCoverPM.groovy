@@ -115,6 +115,7 @@ void parse(String description) {
       // This is an incoming HTTP request from Shelly device (webhook/notification)
       logDebug("Received incoming request from Shelly device")
 
+      // Try POST JSON body first (script notifications like powermonitoring.js)
       if (msg.body) {
         try {
           def json = new groovy.json.JsonSlurper().parseText(msg.body)
@@ -128,14 +129,99 @@ void parse(String description) {
           } else if (json?.dst == "temperature") {
             parseTemperature(json)
           }
+          return
         } catch (Exception jsonEx) {
-          // Body might be empty or not JSON
+          // Body might be empty or not JSON — fall through to GET parsing
         }
+      }
+
+      // Try GET query parameters (webhook notifications with URL tokens)
+      Map params = parseWebhookQueryParams(msg)
+      if (params?.dst) {
+        routeWebhookParams(params)
       }
     }
   } catch (Exception e) {
     logError("Error parsing LAN message: ${e.message}")
   }
+}
+
+/**
+ * Parses query parameters from an incoming GET webhook request.
+ *
+ * @param msg The parsed LAN message map
+ * @return Map of query parameter key-value pairs, or null if not parseable
+ */
+private Map parseWebhookQueryParams(Map msg) {
+  if (!msg?.headers) { return null }
+  String requestLine = msg.headers?.keySet()?.find { key ->
+    key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+  }
+  if (!requestLine) { return null }
+  String pathAndQuery = requestLine.toString().split(' ')[1]
+  int qIdx = pathAndQuery.indexOf('?')
+  if (qIdx < 0) { return null }
+  Map params = [:]
+  pathAndQuery.substring(qIdx + 1).split('&').each { String pair ->
+    String[] kv = pair.split('=', 2)
+    if (kv.length == 2) {
+      params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+    }
+  }
+  return params
+}
+
+/**
+ * Maps a Shelly cover state string to a Hubitat windowShade value.
+ *
+ * @param coverState The Shelly cover state
+ * @return The Hubitat windowShade state string
+ */
+private String mapCoverState(String coverState) {
+  switch (coverState) {
+    case 'open': return 'open'
+    case 'closed': return 'closed'
+    case 'opening': return 'opening'
+    case 'closing': return 'closing'
+    case 'stopped': return 'partially open'
+    case 'calibrating': return 'unknown'
+    default: return 'unknown'
+  }
+}
+
+/**
+ * Routes parsed webhook GET query parameters to appropriate event handlers.
+ *
+ * @param params The parsed query parameters
+ */
+private void routeWebhookParams(Map params) {
+  if (params.dst == 'covermon') {
+    if (params.state != null) {
+      String shadeState = mapCoverState(params.state as String)
+      sendEvent(name: 'windowShade', value: shadeState,
+        descriptionText: "Window shade is ${shadeState}")
+      logInfo("Cover state changed to: ${shadeState}")
+    }
+    if (params.pos != null) {
+      Integer position = params.pos as Integer
+      sendEvent(name: 'position', value: position, unit: '%',
+        descriptionText: "Position is ${position}%")
+    }
+  }
+  if (params.dst == 'temperature') {
+    String scale = location.temperatureScale ?: 'F'
+    BigDecimal temp = null
+    if (scale == 'C' && params.tC) {
+      temp = params.tC as BigDecimal
+    } else if (params.tF) {
+      temp = params.tF as BigDecimal
+    }
+    if (temp != null) {
+      sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
+        descriptionText: "Temperature is ${temp}°${scale}")
+    }
+  }
+  // powermon still arrives via script POST — handled by parsePowermon()
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

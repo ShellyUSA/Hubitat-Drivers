@@ -179,13 +179,6 @@
       ],
       "commands": [],
       "id": "Battery",
-      "requiredActions": [
-        {
-          "event": "devicepower.change",
-          "name": "hubitat_battery",
-          "dst": "battery"
-        }
-      ],
       "shellyComponent": "devicepower"
     },
     {
@@ -670,13 +663,6 @@
       ],
       "commands": [],
       "id": "IlluminanceMeasurement",
-      "requiredActions": [
-        {
-          "event": "illuminance.change",
-          "name": "hubitat_illuminance",
-          "dst": "illuminance"
-        }
-      ],
       "shellyComponent": "illuminance"
     },
     {
@@ -1215,13 +1201,6 @@
       ],
       "commands": [],
       "id": "RelativeHumidityMeasurement",
-      "requiredActions": [
-        {
-          "event": "humidity.change",
-          "name": "hubitat_humidity",
-          "dst": "humidity"
-        }
-      ],
       "shellyComponent": "humidity"
     },
     {
@@ -1549,13 +1528,6 @@
       ],
       "commands": [],
       "id": "SmokeDetector",
-      "requiredActions": [
-        {
-          "event": "smoke.alarm",
-          "name": "hubitat_smoke",
-          "dst": "smoke"
-        }
-      ],
       "shellyComponent": "smoke"
     },
     {
@@ -1648,9 +1620,6 @@
         }
       ],
       "id": "Switch",
-      "requiredScripts": [
-        "switchstatus.js"
-      ],
       "shellyComponent": "switch"
     },
     {
@@ -1761,13 +1730,6 @@
       ],
       "commands": [],
       "id": "TemperatureMeasurement",
-      "requiredActions": [
-        {
-          "event": "temperature.change",
-          "name": "hubitat_temperature",
-          "dst": "temperature"
-        }
-      ],
       "shellyComponent": "temperature"
     },
     {
@@ -2385,26 +2347,6 @@
       "shellyComponent": "cover",
       "commandFiles": [
         "CoverCommands.groovy"
-      ],
-      "requiredScripts": [
-        "coverstatus.js"
-      ],
-      "requiredActions": [
-        {
-          "event": "cover.open",
-          "name": "hubitat_cover_open",
-          "dst": "covermon"
-        },
-        {
-          "event": "cover.closed",
-          "name": "hubitat_cover_closed",
-          "dst": "covermon"
-        },
-        {
-          "event": "cover.stopped",
-          "name": "hubitat_cover_stopped",
-          "dst": "covermon"
-        }
       ]
     },
     {
@@ -2484,23 +2426,6 @@
       "shellyComponent": "input",
       "commandFiles": [
         "InputCommands.groovy"
-      ],
-      "requiredActions": [
-        {
-          "event": "input.button_push",
-          "name": "hubitat_input_push",
-          "dst": "input_push"
-        },
-        {
-          "event": "input.button_double_push",
-          "name": "hubitat_input_double",
-          "dst": "input_double"
-        },
-        {
-          "event": "input.button_long_push",
-          "name": "hubitat_input_long",
-          "dst": "input_long"
-        }
       ],
       "companionCapabilities": [
         "PushableButton",
@@ -2600,5 +2525,112 @@
     "input": {
       "default": "ShellyInputButtonComponent.groovy"
     }
+  },
+  "webhookDefinitions": {
+    "events": {
+      "switch.on": {
+        "dst": "switchmon",
+        "name": "hubitat_switch_on",
+        "urlParams": "output=true",
+        "shellyComponent": "switch"
+      },
+      "switch.off": {
+        "dst": "switchmon",
+        "name": "hubitat_switch_off",
+        "urlParams": "output=false",
+        "shellyComponent": "switch"
+      },
+      "cover.open": {
+        "dst": "covermon",
+        "name": "hubitat_cover_open",
+        "urlParams": "state=open&pos=${status[\"cover:__CID__\"].current_pos}",
+        "shellyComponent": "cover"
+      },
+      "cover.closed": {
+        "dst": "covermon",
+        "name": "hubitat_cover_closed",
+        "urlParams": "state=closed&pos=${status[\"cover:__CID__\"].current_pos}",
+        "shellyComponent": "cover"
+      },
+      "cover.stopped": {
+        "dst": "covermon",
+        "name": "hubitat_cover_stopped",
+        "urlParams": "state=stopped&pos=${status[\"cover:__CID__\"].current_pos}",
+        "shellyComponent": "cover"
+      },
+      "cover.opening": {
+        "dst": "covermon",
+        "name": "hubitat_cover_opening",
+        "urlParams": "state=opening&pos=${status[\"cover:__CID__\"].current_pos}",
+        "shellyComponent": "cover"
+      },
+      "cover.closing": {
+        "dst": "covermon",
+        "name": "hubitat_cover_closing",
+        "urlParams": "state=closing&pos=${status[\"cover:__CID__\"].current_pos}",
+        "shellyComponent": "cover"
+      },
+      "cover.calibrating": {
+        "dst": "covermon",
+        "name": "hubitat_cover_calibrating",
+        "urlParams": "state=calibrating&pos=${status[\"cover:__CID__\"].current_pos}",
+        "shellyComponent": "cover"
+      },
+      "temperature.change": {
+        "dst": "temperature",
+        "name": "hubitat_temperature",
+        "urlParams": "tC=${ev.tC}&tF=${ev.tF}",
+        "shellyComponent": "temperature"
+      },
+      "humidity.change": {
+        "dst": "humidity",
+        "name": "hubitat_humidity",
+        "urlParams": "rh=${ev.rh}",
+        "shellyComponent": "humidity"
+      },
+      "input.button_push": {
+        "dst": "input_push",
+        "name": "hubitat_input_push",
+        "urlParams": "",
+        "shellyComponent": "input"
+      },
+      "input.button_doublepush": {
+        "dst": "input_double",
+        "name": "hubitat_input_double",
+        "urlParams": "",
+        "shellyComponent": "input"
+      },
+      "input.button_longpush": {
+        "dst": "input_long",
+        "name": "hubitat_input_long",
+        "urlParams": "",
+        "shellyComponent": "input"
+      },
+      "smoke.alarm": {
+        "dst": "smoke",
+        "name": "hubitat_smoke",
+        "urlParams": "alarm=true",
+        "shellyComponent": "smoke"
+      },
+      "illuminance.change": {
+        "dst": "illuminance",
+        "name": "hubitat_illuminance",
+        "urlParams": "lux=${ev.lux}",
+        "shellyComponent": "illuminance"
+      }
+    },
+    "supplementalTokenGroups": {
+      "battery": {
+        "requiredComponent": "devicepower",
+        "urlParams": "battPct=${status[\"devicepower:0\"].battery.percent}&battV=${status[\"devicepower:0\"].battery.V}"
+      }
+    },
+    "skippedEvents": [
+      "ble.scan_result",
+      "wifi.sta_connect",
+      "wifi.sta_disconnect",
+      "cloud.connected",
+      "cloud.disconnected"
+    ]
   }
 }

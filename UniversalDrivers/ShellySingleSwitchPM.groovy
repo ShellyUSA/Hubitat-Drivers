@@ -110,6 +110,7 @@ void parse(String description) {
       // This is an incoming HTTP request from Shelly device (webhook/notification)
       logDebug("Received incoming request from Shelly device")
 
+      // Try POST JSON body first (script notifications like powermonitoring.js)
       if (msg.body) {
         try {
           def json = new groovy.json.JsonSlurper().parseText(msg.body)
@@ -121,14 +122,61 @@ void parse(String description) {
           } else if (json?.dst == "powermon") {
             parsePowermon(json)
           }
+          return
         } catch (Exception jsonEx) {
-          // Body might be empty or not JSON
+          // Body might be empty or not JSON — fall through to GET parsing
         }
+      }
+
+      // Try GET query parameters (webhook notifications with URL tokens)
+      Map params = parseWebhookQueryParams(msg)
+      if (params?.dst) {
+        routeWebhookParams(params)
       }
     }
   } catch (Exception e) {
     logError("Error parsing LAN message: ${e.message}")
   }
+}
+
+/**
+ * Parses query parameters from an incoming GET webhook request.
+ *
+ * @param msg The parsed LAN message map
+ * @return Map of query parameter key-value pairs, or null if not parseable
+ */
+private Map parseWebhookQueryParams(Map msg) {
+  if (!msg?.headers) { return null }
+  String requestLine = msg.headers?.keySet()?.find { key ->
+    key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+  }
+  if (!requestLine) { return null }
+  String pathAndQuery = requestLine.toString().split(' ')[1]
+  int qIdx = pathAndQuery.indexOf('?')
+  if (qIdx < 0) { return null }
+  Map params = [:]
+  pathAndQuery.substring(qIdx + 1).split('&').each { String pair ->
+    String[] kv = pair.split('=', 2)
+    if (kv.length == 2) {
+      params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+    }
+  }
+  return params
+}
+
+/**
+ * Routes parsed webhook GET query parameters to appropriate event handlers.
+ *
+ * @param params The parsed query parameters
+ */
+private void routeWebhookParams(Map params) {
+  if (params.dst == 'switchmon' && params.output != null) {
+    String switchState = params.output == 'true' ? 'on' : 'off'
+    sendEvent(name: 'switch', value: switchState,
+      descriptionText: "Switch turned ${switchState}")
+    logInfo("Switch state changed to: ${switchState}")
+  }
+  // powermon still arrives via script POST — handled by parsePowermon()
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

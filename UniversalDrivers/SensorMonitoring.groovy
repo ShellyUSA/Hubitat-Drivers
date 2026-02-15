@@ -5,16 +5,13 @@
 /**
  * Parses temperature notifications from Shelly device.
  * Processes JSON with dst:"temperature" and updates the temperature attribute.
- * Also requests battery level from the parent app while the device is awake.
+ * Battery data is now delivered via webhook URL supplemental tokens.
  * JSON format: [dst:temperature, result:[temperature:0:[id:0, tC:24.4, tF:75.9]]]
  *
  * @param json The parsed JSON notification from the Shelly device
  */
 void parseTemperature(Map json) {
   logDebug("parseTemperature() called with: ${json}")
-
-  // Device is awake — request battery level from parent app
-  parent?.componentRequestBatteryLevel(device)
 
   try {
     Map result = json?.result
@@ -55,16 +52,13 @@ void parseTemperature(Map json) {
 /**
  * Parses humidity notifications from Shelly device.
  * Processes JSON with dst:"humidity" and updates the humidity attribute.
- * Also requests battery level from the parent app while the device is awake.
+ * Battery data is now delivered via webhook URL supplemental tokens.
  * JSON format: [dst:humidity, result:[humidity:0:[id:0, rh:73.7]]]
  *
  * @param json The parsed JSON notification from the Shelly device
  */
 void parseHumidity(Map json) {
   logDebug("parseHumidity() called with: ${json}")
-
-  // Device is awake — request battery level from parent app
-  parent?.componentRequestBatteryLevel(device)
 
   try {
     Map result = json?.result
