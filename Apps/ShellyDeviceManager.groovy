@@ -733,7 +733,7 @@ Map deviceConfigPage() {
                     }
 
                     // Actions (webhooks) section
-                    List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice)
+                    List<Map> requiredActions = getRequiredActionsForDevice(selectedDevice, deviceIsReachable)
 
                     if (requiredActions.size() > 0) {
                         if (isBatteryDevice) {
@@ -1195,7 +1195,7 @@ String processServerSideRender(Map event) {
 
     // Determine what to render based on the element
     if (elementId?.contains('webhook-status')) {
-        List<Map> requiredActions = getRequiredActionsForDevice(childDevice)
+        List<Map> requiredActions = getRequiredActionsForDevice(childDevice, deviceIsReachable)
         return renderWebhookStatusHtml(childDevice, ip, requiredActions, deviceIsReachable)
     }
 
@@ -1261,14 +1261,16 @@ List<String> listSupportedWebhookEvents(String ipAddress) {
 
 /**
  * Determines which webhook actions are required for a device by querying its
- * Shelly.GetStatus response and cross-referencing with component_driver.json.
- * Filters results against the device's Webhook.ListSupported response to only
- * include actions the device actually supports.
+ * status and cross-referencing with component_driver.json capability definitions.
+ * When the device is known to be unreachable (e.g., sleeping battery device),
+ * skips live HTTP calls and uses cached data exclusively.
  *
  * @param device The child device to check
+ * @param deviceIsReachable Whether the device is currently reachable; when false,
+ *        skips live HTTP calls to avoid blocking on timeouts
  * @return List of required action maps, each with keys: event, name, dst, cid
  */
-List<Map> getRequiredActionsForDevice(def device) {
+List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = true) {
     List<Map> requiredActions = []
 
     String ip = device.getDataValue('ipAddress')
@@ -1278,7 +1280,7 @@ List<Map> getRequiredActionsForDevice(def device) {
     }
 
     // Get supported webhook events — try live query first, fall back to stored config
-    List<String> supportedEvents = listSupportedWebhookEvents(ip)
+    List<String> supportedEvents = deviceIsReachable ? listSupportedWebhookEvents(ip) : null
     String dni = device.deviceNetworkId
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Map config = deviceConfigs[dni] as Map
@@ -1300,7 +1302,7 @@ List<Map> getRequiredActionsForDevice(def device) {
         logDebug("Using stored supported webhook events for ${device.displayName}: ${supportedEvents}")
     }
 
-    Map deviceStatus = queryDeviceStatus(ip)
+    Map deviceStatus = deviceIsReachable ? queryDeviceStatus(ip) : null
     if (!deviceStatus) {
         // Fall back to stored component types for sleepy devices
         if (config?.componentTypes) {
