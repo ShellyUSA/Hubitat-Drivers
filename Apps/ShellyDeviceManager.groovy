@@ -42,19 +42,13 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.32",
-    oauth: true
+    version: "1.0.32"
 )
 
 preferences {
     page(name: "mainPage", install: true, uninstall: true)
     page(name: "createDevicesPage")
     page(name: "deviceConfigPage")
-}
-
-mappings {
-    path("/getTable") { action: [GET: "getTableEndpoint"] }
-    path("/updateLabel") { action: [GET: "updateLabelEndpoint"] }
 }
 
 /**
@@ -361,6 +355,17 @@ void appButtonHandler(String buttonName) {
         logInfo("Installing webhooks for ${targetIp} via config table")
         installRequiredActionsForIp(targetIp)
         buildDeviceStatusCacheEntry(targetIp)
+    }
+
+    if (buttonName.startsWith('editLabel|')) {
+        String targetIp = buttonName.minus('editLabel|')
+        state.pendingLabelEdit = targetIp
+        app.removeSetting('editLabelValue')
+    }
+
+    if (buttonName == 'btnCancelLabelEdit') {
+        state.remove('pendingLabelEdit')
+        app.removeSetting('editLabelValue')
     }
 }
 
@@ -782,7 +787,36 @@ Map createDevicesPage() {
  * @return Map containing the dynamic page definition
  */
 Map deviceConfigPage() {
+    // Apply pending label edit if the user has typed a new label
+    String editIp = state.pendingLabelEdit as String
+    if (editIp && settings?.editLabelValue != null) {
+        String newLabel = (settings.editLabelValue as String)?.trim()
+        if (newLabel) {
+            def device = findChildDeviceByIp(editIp)
+            if (device) {
+                device.setLabel(newLabel)
+                logInfo("Updated label for ${editIp} to '${newLabel}'")
+                appendLog('info', "Renamed ${editIp} to '${newLabel}'")
+            }
+        }
+        state.remove('pendingLabelEdit')
+        app.removeSetting('editLabelValue')
+    }
+
     dynamicPage(name: "deviceConfigPage", title: "Device Configuration", install: false, uninstall: false) {
+        // Label editing input (shown when user clicks a label in the table)
+        if (state.pendingLabelEdit) {
+            String labelIp = state.pendingLabelEdit as String
+            def labelDevice = findChildDeviceByIp(labelIp)
+            String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelIp
+            section() {
+                paragraph "<b>Editing label for device at ${labelIp}</b>"
+                input name: 'editLabelValue', type: 'text', title: "New label (current: ${currentLabel})",
+                    defaultValue: currentLabel, required: false, submitOnChange: true
+                input 'btnCancelLabelEdit', 'button', title: 'Cancel', submitOnChange: true
+            }
+        }
+
         section() {
             input 'btnRefreshAllStatus', 'button', title: 'Refresh All Status', submitOnChange: true
             paragraph displayDeviceConfigTable()
@@ -853,12 +887,6 @@ private String loadConfigTableCSS() {
     .status-na { color: #9E9E9E; }
     .status-stale { color: #FF9800; }
     .status-pending { color: #9E9E9E; font-style: italic; }
-    .editable-label {
-        cursor: pointer;
-        border-bottom: 1px dashed #9E9E9E;
-        padding-bottom: 1px;
-    }
-    .editable-label:hover { border-bottom-color: #2196F3; color: #2196F3; }
 </style>"""
 }
 
@@ -867,41 +895,9 @@ private String loadConfigTableCSS() {
  *
  * @return HTML script tag
  */
+@CompileStatic
 private String loadConfigTableScript() {
-    String token = state.accessToken ?: ''
-    Long appId = getAppIdHelper()
-    return """<script src='https://code.iconify.design/iconify-icon/1.0.0/iconify-icon.min.js'></script>
-<script>
-function editLabel(ip, currentLabel) {
-    var newLabel = prompt('Enter new label for device at ' + ip + ':', currentLabel);
-    if (newLabel === null || newLabel.trim() === '' || newLabel === currentLabel) return;
-    var xhr = new XMLHttpRequest();
-    var url = '/apps/api/${appId}/updateLabel?access_token=${token}'
-        + '&ip=' + encodeURIComponent(ip)
-        + '&label=' + encodeURIComponent(newLabel.trim());
-    xhr.open('GET', url, true);
-    xhr.onreadystatechange = function() {
-        if (xhr.readyState === 4 && xhr.status === 200) { refreshConfigTable(); }
-    };
-    xhr.send();
-}
-function refreshConfigTable() {
-    var xhr = new XMLHttpRequest();
-    xhr.open('GET', '/apps/api/${appId}/getTable?access_token=${token}&_=' + Date.now(), true);
-    xhr.onreadystatechange = function() {
-        if (xhr.readyState === 4 && xhr.status === 200) {
-            var wrapper = document.getElementById('config-table-wrapper');
-            if (wrapper) {
-                wrapper.innerHTML = xhr.responseText;
-                if (typeof Iconify !== 'undefined' && typeof Iconify.scan === 'function') {
-                    Iconify.scan(wrapper);
-                }
-            }
-        }
-    };
-    xhr.send();
-}
-</script>"""
+    return "<script src='https://code.iconify.design/iconify-icon/1.0.0/iconify-icon.min.js'></script>"
 }
 
 /**
@@ -1078,12 +1074,12 @@ private String buildDeviceRow(Map entry) {
         str.append("<td style='text-align:left'>${entry.shellyName ?: 'Unknown'}</td>")
     }
 
-    // Column 2: Device label (editable for created devices)
+    // Column 2: Device label (click to edit for created devices)
     if (isCreated && entry.hubDeviceId) {
         String currentLabel = (entry.hubDeviceLabel ?: entry.hubDeviceName ?: '') as String
-        String escapedLabel = currentLabel.replaceAll("'", "\\\\'").replaceAll('"', '&quot;')
-        String escapedIp = ip.replaceAll("'", "\\\\'")
-        str.append("<td style='text-align:left'><span class='editable-label' onclick=\"editLabel('${escapedIp}','${escapedLabel}')\" title='Click to edit label'>${currentLabel}</span></td>")
+        String editIcon = "<iconify-icon icon='material-symbols:edit' style='font-size:14px;vertical-align:middle;margin-left:4px'></iconify-icon>"
+        String editBtn = buttonLink("editLabel|${ip}", "${currentLabel} ${editIcon}", "#424242", "14px")
+        str.append("<td style='text-align:left'>${editBtn}</td>")
     } else {
         str.append("<td class='status-na'>&ndash;</td>")
     }
@@ -1707,45 +1703,6 @@ private void removeDeviceByIp(String ip) {
         cache[ip] = entry
         state.deviceStatusCache = cache
     }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ║  Config Table API Endpoints (OAuth)                         ║
-// ╚═══════════════════════════════════════════════════════════════
-
-/**
- * API endpoint that returns the device configuration table markup only.
- * Used by JavaScript AJAX calls to refresh the table without a full page reload.
- */
-def getTableEndpoint() {
-    render contentType: "text/html", data: renderDeviceConfigTableMarkup()
-}
-
-/**
- * API endpoint that updates a device's label by IP address.
- * Expects query parameters: ip (device IP), label (new label text).
- * Returns JSON with success/error status.
- */
-def updateLabelEndpoint() {
-    String ip = params.ip
-    String newLabel = params.label
-
-    if (!ip || !newLabel) {
-        render contentType: "application/json", data: '{"error":"Missing ip or label parameter"}'
-        return
-    }
-
-    def device = findChildDeviceByIp(ip)
-    if (!device) {
-        render contentType: "application/json", data: '{"error":"Device not found"}'
-        return
-    }
-
-    device.setLabel(newLabel)
-    logInfo("Updated label for ${ip} to '${newLabel}'")
-    appendLog('info', "Renamed ${ip} to '${newLabel}'")
-
-    render contentType: "application/json", data: '{"success":true}'
 }
 
 /**
@@ -2801,9 +2758,6 @@ void initialize() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
     if (state.discoveryRunning == null) { state.discoveryRunning = false }
-
-    // Ensure OAuth access token exists for API endpoints (label editing, table refresh)
-    if (!state.accessToken) { createAccessToken() }
 
     // Ensure state mirrors current settings for logging
     state.logLevel = settings?.logLevel ?: (state.logLevel ?: 'debug')
