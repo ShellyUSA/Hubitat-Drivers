@@ -1,5 +1,5 @@
 metadata {
-  definition (name: 'Shelly Cover PM Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Cover PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Initialize'
     capability 'Configuration'
     capability 'WindowShade' //windowShade - ENUM ['opening', 'partially open', 'closed', 'open', 'closing', 'unknown'] //position - NUMBER, unit:%

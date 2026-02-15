@@ -1,5 +1,5 @@
 metadata {
-  definition (name: 'Shelly Input Button Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Input Button', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'PushableButton' //numberOfButtons - NUMBER, pushed - NUMBER
     capability 'DoubleTapableButton' //doubleTapped - NUMBER
     capability 'HoldableButton' //held - NUMBER

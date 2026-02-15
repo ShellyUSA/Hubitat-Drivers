@@ -1,5 +1,5 @@
 metadata {
-  definition (name: 'Shelly OverUnder Switch Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf OverUnder Switch', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'Refresh'
 

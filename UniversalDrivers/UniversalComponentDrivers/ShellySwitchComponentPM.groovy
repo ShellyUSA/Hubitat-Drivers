@@ -1,5 +1,5 @@
 metadata {
-  definition (name: 'Shelly Switch PM Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Switch PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'Refresh'
     capability 'CurrentMeter' //amperage - NUMBER, unit:A

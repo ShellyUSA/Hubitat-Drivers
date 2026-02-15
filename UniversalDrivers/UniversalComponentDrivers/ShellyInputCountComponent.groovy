@@ -1,5 +1,5 @@
 metadata {
-  definition (name: 'Shelly Input Count Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Input Count', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Sensor'
     capability 'Refresh'
 

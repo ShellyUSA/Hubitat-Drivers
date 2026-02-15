@@ -5890,7 +5890,7 @@ ChildDeviceWrapper createChildSwitch(Integer id, String additionalId = null) {
   String dni = additionalId == null ? "${getThisDeviceDNI()}-switch${id}" : "${getThisDeviceDNI()}-${additionalId}-switch${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = additionalId == null ? 'Shelly Switch Component' : 'Shelly OverUnder Switch Component'
+    String driverName = additionalId == null ? 'Shelly Autoconf Switch' : 'Shelly Autoconf OverUnder Switch'
     String labelText = getAppLabel() != null ? "${getAppLabel()}" : "${driverName}"
     String label = additionalId == null ? "${labelText} - Switch ${id}" : "${labelText} - ${additionalId} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
@@ -5908,7 +5908,7 @@ ChildDeviceWrapper createChildDimmer(Integer id) {
   String dni =  "${getThisDeviceDNI()}-dimmer${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly Dimmer Component'
+    String driverName = 'Shelly Autoconf Dimmer'
     String label = getAppLabel() != null ? "${getAppLabel()} - Dimmer ${id}" : "${driverName} - Dimmer ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5925,7 +5925,7 @@ ChildDeviceWrapper createChildRGB(Integer id) {
   String dni =  "${getThisDeviceDNI()}-rgb${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly RGB Component'
+    String driverName = 'Shelly Autoconf RGB'
     String label = getAppLabel() != null ? "${getAppLabel()} - RGB ${id}" : "${driverName} - RGB ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5942,7 +5942,7 @@ ChildDeviceWrapper createChildRGBW(Integer id) {
   String dni =  "${getThisDeviceDNI()}-rgbw${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly RGBW Component'
+    String driverName = 'Shelly Autoconf RGBW'
     String label = getAppLabel() != null ? "${getAppLabel()} - RGBW ${id}" : "${driverName} - RGBW ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5959,7 +5959,7 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
   String dni =  "${getThisDeviceDNI()}-switch${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly Switch PM Component'
+    String driverName = 'Shelly Autoconf Switch PM'
     String label = getAppLabel() != null ? "${getAppLabel()} - Switch ${id}" : "${driverName} - Switch ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -5982,7 +5982,7 @@ ChildDeviceWrapper createChildEM(Integer id, String phase) {
   String dni =  "${getThisDeviceDNI()}-em${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly EM Component'
+    String driverName = 'Shelly Autoconf EM'
     String label = getAppLabel() != null ? "${getAppLabel()} - EM${id} - phase ${phase}" : "${driverName} - EM${id} - phase ${phase}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -6006,7 +6006,7 @@ ChildDeviceWrapper createChildEM1(Integer id) {
   String dni =  "${getThisDeviceDNI()}-em${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String driverName = 'Shelly EM Component'
+    String driverName = 'Shelly Autoconf EM'
     String label = getAppLabel() != null ? "${getAppLabel()} - EM ${id}" : "${driverName} - EM ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
@@ -6028,7 +6028,7 @@ ChildDeviceWrapper createChildEM1(Integer id) {
 @CompileStatic
 ChildDeviceWrapper createChildInput(Integer id, String inputType) {
   logDebug("Input type is: ${inputType}")
-  String driverName = "Shelly Input ${inputType} Component"
+  String driverName = "Shelly Autoconf Input ${inputType}"
   String dni = "${getThisDeviceDNI()}-input${inputType}${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6051,7 +6051,7 @@ void removeChildInput(Integer id, String inputType) {
 }
 
 @CompileStatic
-ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Cover Component') {
+ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Autoconf Cover') {
   String dni = "${getThisDeviceDNI()}-cover${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6068,7 +6068,7 @@ ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Cove
 
 @CompileStatic
 ChildDeviceWrapper createChildPmCover(Integer id) {
-  ChildDeviceWrapper child = createChildCover(id, 'Shelly Cover PM Component')
+  ChildDeviceWrapper child = createChildCover(id, 'Shelly Autoconf Cover PM')
   child.updateDataValue('hasPM','true')
   child.updateDataValue('currentId', "${id}")
   child.updateDataValue('energyId', "${id}")
@@ -6080,7 +6080,7 @@ ChildDeviceWrapper createChildPmCover(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildTemperature(Integer id) {
-  String driverName = "Shelly Temperature Peripheral Component"
+  String driverName = "Shelly Autoconf Temperature Peripheral"
   String dni = "${getThisDeviceDNI()}-temperature${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6097,7 +6097,7 @@ ChildDeviceWrapper createChildTemperature(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildHumidity(Integer id) {
-  String driverName = "Shelly Humidity Peripheral Component"
+  String driverName = "Shelly Autoconf Humidity Peripheral"
   String dni = "${getThisDeviceDNI()}-humidity${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6114,7 +6114,7 @@ ChildDeviceWrapper createChildHumidity(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildTemperatureHumidity(Integer id) {
-  String driverName = "Shelly Temperature & Humidity Peripheral Component"
+  String driverName = "Shelly Autoconf Temperature & Humidity Peripheral"
   String dni = "${getThisDeviceDNI()}-temperatureHumidity${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6149,7 +6149,7 @@ ChildDeviceWrapper createChildIlluminance(Integer id) {
 
 @CompileStatic
 ChildDeviceWrapper createChildPlugsUiRGB() {
-  String driverName = "Shelly RGB Component"
+  String driverName = "Shelly Autoconf RGB"
   String dni = "${getThisDeviceDNI()}-plugsui-rgb"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6166,7 +6166,7 @@ ChildDeviceWrapper createChildPlugsUiRGB() {
 
 @CompileStatic
 ChildDeviceWrapper createChildPlugsUiRGBOn() {
-  String driverName = "Shelly RGB Component"
+  String driverName = "Shelly Autoconf RGB"
   String dni = "${getThisDeviceDNI()}-plugsui-rgb-on"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6184,7 +6184,7 @@ ChildDeviceWrapper createChildPlugsUiRGBOn() {
 
 @CompileStatic
 ChildDeviceWrapper createChildPlugsUiRGBOff() {
-  String driverName = "Shelly RGB Component"
+  String driverName = "Shelly Autoconf RGB"
   String dni = "${getThisDeviceDNI()}-plugsui-rgb-off"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
@@ -6202,7 +6202,7 @@ ChildDeviceWrapper createChildPlugsUiRGBOff() {
 
 @CompileStatic
 ChildDeviceWrapper createChildVoltage(Integer id) {
-  String driverName = "Shelly Polling Voltage Sensor Component"
+  String driverName = "Shelly Autoconf Polling Voltage Sensor"
   String dni = "${getThisDeviceDNI()}-adc${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {

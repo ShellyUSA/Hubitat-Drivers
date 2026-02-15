@@ -1,5 +1,5 @@
 metadata {
-  definition (name: 'Shelly Polling Voltage Sensor Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Polling Voltage Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V
     capability 'Refresh'
 
