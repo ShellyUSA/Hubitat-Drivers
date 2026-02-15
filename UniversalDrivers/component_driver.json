@@ -2617,6 +2617,48 @@
         "name": "hubitat_illuminance",
         "urlParams": "lux=${ev.lux}",
         "shellyComponent": "illuminance"
+      },
+      "switch.active_power_change": {
+        "dst": "powermon",
+        "name": "hubitat_power_change",
+        "urlParams": "apower=${ev.apower}",
+        "shellyComponent": "switch"
+      },
+      "switch.active_power_measurement": {
+        "dst": "powermon",
+        "name": "hubitat_power_measurement",
+        "urlParams": "apower=${ev.apower}",
+        "shellyComponent": "switch"
+      },
+      "input.toggle_on": {
+        "dst": "input_toggle",
+        "name": "hubitat_input_toggle_on",
+        "urlParams": "",
+        "shellyComponent": "input"
+      },
+      "input.toggle_off": {
+        "dst": "input_toggle",
+        "name": "hubitat_input_toggle_off",
+        "urlParams": "",
+        "shellyComponent": "input"
+      },
+      "input.button_triplepush": {
+        "dst": "input_triple",
+        "name": "hubitat_input_triple",
+        "urlParams": "",
+        "shellyComponent": "input"
+      },
+      "input.analog_measurement": {
+        "dst": "input_analog",
+        "name": "hubitat_input_analog_measurement",
+        "urlParams": "percent=${ev.percent}",
+        "shellyComponent": "input"
+      },
+      "input.analog_change": {
+        "dst": "input_analog",
+        "name": "hubitat_input_analog_change",
+        "urlParams": "percent=${ev.percent}",
+        "shellyComponent": "input"
       }
     },
     "supplementalTokenGroups": {

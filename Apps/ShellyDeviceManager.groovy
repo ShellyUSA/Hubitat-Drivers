@@ -284,6 +284,13 @@ void appButtonHandler(String buttonName) {
         runInMillis(500, 'fireConfigTableSSR')
     }
 
+    if (buttonName.startsWith('reinitDev|')) {
+        String targetIp = buttonName.minus('reinitDev|')
+        reinitializeDevice(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
+    }
+
     if (buttonName.startsWith('editLabel|')) {
         String targetIp = buttonName.minus('editLabel|')
         state.pendingLabelEdit = targetIp
@@ -708,6 +715,7 @@ private String renderDeviceConfigTableMarkup() {
     str.append("<th>Scripts Active</th>")
     str.append("<th>Webhooks Created</th>")
     str.append("<th>Webhooks Enabled</th>")
+    str.append("<th>Reinit</th>")
     str.append("</tr></thead><tbody>")
 
     deviceList.each { Map entry -> str.append(buildDeviceRow(entry)) }
@@ -888,6 +896,14 @@ private String buildDeviceRow(Map entry) {
     } else {
         str.append(buildScriptCells(entry, isStale, ip))
         str.append(buildWebhookCells(entry, isStale, ip))
+    }
+
+    // Column 9: Reinit button
+    if (isCreated) {
+        String reinitIcon = "<iconify-icon icon='material-symbols:refresh' style='font-size:18px'></iconify-icon>"
+        str.append("<td>${buttonLink("reinitDev|${ip}", reinitIcon, '#1A77C9', '18px')}</td>")
+    } else {
+        str.append("<td class='status-na'>&ndash;</td>")
     }
 
     str.append("</tr>")
@@ -1196,6 +1212,44 @@ void refreshAllDeviceStatusAsync() {
     sendEvent(name: 'configTable', value: 'refreshAll')
     logInfo("Status refresh complete for ${allIps.size()} device(s)")
     appendLog('info', "Status refresh complete for ${allIps.size()} device(s)")
+}
+
+/**
+ * Fully reinitializes a created device: re-queries its physical state,
+ * pushes all required scripts, starts them, installs all required webhooks,
+ * and calls the driver's initialize() method.
+ * Useful after firmware updates, factory resets, or architecture transitions.
+ *
+ * @param ipAddress The IP address of the Shelly device to reinitialize
+ */
+private void reinitializeDevice(String ipAddress) {
+    def childDevice = findChildDeviceByIp(ipAddress)
+    if (!childDevice) {
+        logError("reinitializeDevice: no child device found for ${ipAddress}")
+        appendLog('error', "Reinit failed: no device for ${ipAddress}")
+        return
+    }
+
+    logInfo("Reinitializing device at ${ipAddress}")
+    appendLog('info', "Reinitializing device at ${ipAddress}...")
+
+    // Step 1: Re-query device info and status from physical device
+    fetchAndStoreDeviceInfo(ipAddress)
+
+    // Step 2: Install any missing required scripts
+    installRequiredScriptsForIp(ipAddress)
+
+    // Step 3: Enable and start all required scripts
+    enableAndStartRequiredScriptsForIp(ipAddress)
+
+    // Step 4: Install/update all required webhooks (also removes obsolete scripts)
+    installRequiredActionsForIp(ipAddress)
+
+    // Step 5: Call the driver's initialize() to reset driver state
+    childDevice.initialize()
+
+    logInfo("Reinitialization complete for ${ipAddress}")
+    appendLog('info', "Reinitialization complete for ${ipAddress}")
 }
 
 /**
