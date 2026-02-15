@@ -12,6 +12,14 @@
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
 @Field static final String GITHUB_BRANCH = 'master'
 
+// Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
+// These bypass the modular assembly pipeline and are downloaded/installed directly.
+@Field static final Map<String, String> PREBUILT_DRIVERS = [
+    'Shelly Autoconf Single Switch': 'UniversalDrivers/ShellySingleSwitch.groovy',
+    'Shelly Autoconf Single Switch PM': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
+    'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
+]
+
 // Script names (as they appear on the Shelly device) that are managed by this app.
 // Only these scripts will be considered for automatic removal.
 @Field static final List<String> MANAGED_SCRIPT_NAMES = [
@@ -2828,6 +2836,19 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             }
         }
 
+        // Check for a pre-built driver before falling back to generation
+        if (PREBUILT_DRIVERS.containsKey(driverName)) {
+            logInfo("Pre-built driver available for ${driverName} — downloading")
+            Boolean installed = installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
+            if (installed) {
+                if (ipKey && state.discoveredShellys[ipKey]) {
+                    state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
+                }
+                return
+            }
+            logWarn("Pre-built driver install failed for ${driverName} — falling back to generation")
+        }
+
         // No match found — fall through to full GitHub-based generation
         logInfo("Generating driver from GitHub: ${driverNameWithVersion}")
 
@@ -3844,8 +3865,45 @@ private void listAutoconfDrivers() {
 }
 
 /**
+ * Downloads and installs a pre-built driver from the GitHub repository.
+ * Looks up the driver name in PREBUILT_DRIVERS, downloads the .groovy file,
+ * installs it on the hub, and registers it in the tracking system.
+ *
+ * @param driverName The base driver name (e.g., "Shelly Autoconf Single Switch")
+ * @param components List of component identifiers for tracking registration
+ * @param componentPowerMonitoring Map of component power monitoring flags
+ * @param version The current app version string
+ * @return true if install succeeded, false otherwise
+ */
+private Boolean installPrebuiltDriver(String driverName, List<String> components, Map<String, Boolean> componentPowerMonitoring, String version) {
+    String repoPath = PREBUILT_DRIVERS[driverName]
+    if (!repoPath) {
+        logDebug("installPrebuiltDriver: no pre-built driver found for '${driverName}'")
+        return false
+    }
+
+    String rawUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${repoPath}"
+    logInfo("Downloading pre-built driver from: ${rawUrl}")
+
+    String sourceCode = downloadFile(rawUrl)
+    if (!sourceCode) {
+        logError("installPrebuiltDriver: failed to download pre-built driver from ${rawUrl}")
+        return false
+    }
+
+    logInfo("Downloaded pre-built driver for ${driverName} (${sourceCode.length()} chars)")
+    installDriver(sourceCode)
+
+    String driverNameWithVersion = "${driverName} v${version}"
+    registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, components, componentPowerMonitoring)
+
+    return true
+}
+
+/**
  * Installs a driver on the hub by posting the source code.
- * Creates a new driver entry if it doesn't exist.
+ * Updates an existing driver if one with the same name/namespace exists,
+ * otherwise creates a new driver entry. Also caches to file manager.
  *
  * @param sourceCode The complete driver source code to install
  */
