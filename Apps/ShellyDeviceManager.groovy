@@ -42,13 +42,19 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.32"
+    version: "1.0.32",
+    oauth: true
 )
 
 preferences {
     page(name: "mainPage", install: true, uninstall: true)
     page(name: "createDevicesPage")
     page(name: "deviceConfigPage")
+}
+
+mappings {
+    path("/getTable") { action: [GET: "getTableEndpoint"] }
+    path("/updateLabel") { action: [GET: "updateLabelEndpoint"] }
 }
 
 /**
@@ -847,6 +853,12 @@ private String loadConfigTableCSS() {
     .status-na { color: #9E9E9E; }
     .status-stale { color: #FF9800; }
     .status-pending { color: #9E9E9E; font-style: italic; }
+    .editable-label {
+        cursor: pointer;
+        border-bottom: 1px dashed #9E9E9E;
+        padding-bottom: 1px;
+    }
+    .editable-label:hover { border-bottom-color: #2196F3; color: #2196F3; }
 </style>"""
 }
 
@@ -855,9 +867,41 @@ private String loadConfigTableCSS() {
  *
  * @return HTML script tag
  */
-@CompileStatic
 private String loadConfigTableScript() {
-    return "<script src='https://code.iconify.design/iconify-icon/1.0.0/iconify-icon.min.js'></script>"
+    String token = state.accessToken ?: ''
+    Long appId = getAppIdHelper()
+    return """<script src='https://code.iconify.design/iconify-icon/1.0.0/iconify-icon.min.js'></script>
+<script>
+function editLabel(ip, currentLabel) {
+    var newLabel = prompt('Enter new label for device at ' + ip + ':', currentLabel);
+    if (newLabel === null || newLabel.trim() === '' || newLabel === currentLabel) return;
+    var xhr = new XMLHttpRequest();
+    var url = '/apps/api/${appId}/updateLabel?access_token=${token}'
+        + '&ip=' + encodeURIComponent(ip)
+        + '&label=' + encodeURIComponent(newLabel.trim());
+    xhr.open('GET', url, true);
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) { refreshConfigTable(); }
+    };
+    xhr.send();
+}
+function refreshConfigTable() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', '/apps/api/${appId}/getTable?access_token=${token}&_=' + Date.now(), true);
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+            var wrapper = document.getElementById('config-table-wrapper');
+            if (wrapper) {
+                wrapper.innerHTML = xhr.responseText;
+                if (typeof Iconify !== 'undefined' && typeof Iconify.scan === 'function') {
+                    Iconify.scan(wrapper);
+                }
+            }
+        }
+    };
+    xhr.send();
+}
+</script>"""
 }
 
 /**
@@ -884,6 +928,7 @@ private String renderDeviceConfigTableMarkup() {
     str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
     str.append("<thead><tr>")
     str.append("<th>Device</th>")
+    str.append("<th>Label</th>")
     str.append("<th>IP</th>")
     str.append("<th>Created</th>")
     str.append("<th>Scripts Installed</th>")
@@ -934,6 +979,7 @@ private List<Map> buildDeviceList() {
             entry.hubDeviceId = dev.id
             entry.hubDeviceDni = dev.deviceNetworkId
             entry.hubDeviceName = dev.displayName
+            entry.hubDeviceLabel = dev.label ?: dev.displayName
         }
         result.add(entry)
     }
@@ -949,6 +995,7 @@ private List<Map> buildDeviceList() {
                 cached.hubDeviceId = dev.id
                 cached.hubDeviceDni = dev.deviceNetworkId
                 cached.hubDeviceName = dev.displayName
+                cached.hubDeviceLabel = dev.label ?: dev.displayName
                 result.add(cached)
             } else {
                 result.add([
@@ -959,6 +1006,7 @@ private List<Map> buildDeviceList() {
                     hubDeviceId: dev.id,
                     hubDeviceDni: dev.deviceNetworkId,
                     hubDeviceName: dev.displayName,
+                    hubDeviceLabel: dev.label ?: dev.displayName,
                     isBatteryDevice: isSleepyBatteryDevice(dev),
                     isReachable: null,
                     requiredScriptCount: null,
@@ -1030,10 +1078,20 @@ private String buildDeviceRow(Map entry) {
         str.append("<td style='text-align:left'>${entry.shellyName ?: 'Unknown'}</td>")
     }
 
-    // Column 2: IP
+    // Column 2: Device label (editable for created devices)
+    if (isCreated && entry.hubDeviceId) {
+        String currentLabel = (entry.hubDeviceLabel ?: entry.hubDeviceName ?: '') as String
+        String escapedLabel = currentLabel.replaceAll("'", "\\\\'").replaceAll('"', '&quot;')
+        String escapedIp = ip.replaceAll("'", "\\\\'")
+        str.append("<td style='text-align:left'><span class='editable-label' onclick=\"editLabel('${escapedIp}','${escapedLabel}')\" title='Click to edit label'>${currentLabel}</span></td>")
+    } else {
+        str.append("<td class='status-na'>&ndash;</td>")
+    }
+
+    // Column 3: IP
     str.append("<td>${ip}</td>")
 
-    // Column 3: Created status with action button
+    // Column 4: Created status with action button
     if (isCreated) {
         String removeBtn = buttonLink("removeDev|${ip}", "<iconify-icon icon='material-symbols:delete-outline' style='font-size:18px'></iconify-icon>", "#F44336", "18px")
         str.append("<td><span class='status-ok'>&#10003;</span> ${removeBtn}</td>")
@@ -1042,7 +1100,7 @@ private String buildDeviceRow(Map entry) {
         str.append("<td>${createBtn}</td>")
     }
 
-    // Columns 4-7: Script and webhook status
+    // Columns 5-8: Script and webhook status
     if (!isCreated) {
         // Not created — show dashes for all status columns
         str.append("<td class='status-na'>&ndash;</td>")
@@ -1649,6 +1707,45 @@ private void removeDeviceByIp(String ip) {
         cache[ip] = entry
         state.deviceStatusCache = cache
     }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ║  Config Table API Endpoints (OAuth)                         ║
+// ╚═══════════════════════════════════════════════════════════════
+
+/**
+ * API endpoint that returns the device configuration table markup only.
+ * Used by JavaScript AJAX calls to refresh the table without a full page reload.
+ */
+def getTableEndpoint() {
+    render contentType: "text/html", data: renderDeviceConfigTableMarkup()
+}
+
+/**
+ * API endpoint that updates a device's label by IP address.
+ * Expects query parameters: ip (device IP), label (new label text).
+ * Returns JSON with success/error status.
+ */
+def updateLabelEndpoint() {
+    String ip = params.ip
+    String newLabel = params.label
+
+    if (!ip || !newLabel) {
+        render contentType: "application/json", data: '{"error":"Missing ip or label parameter"}'
+        return
+    }
+
+    def device = findChildDeviceByIp(ip)
+    if (!device) {
+        render contentType: "application/json", data: '{"error":"Device not found"}'
+        return
+    }
+
+    device.setLabel(newLabel)
+    logInfo("Updated label for ${ip} to '${newLabel}'")
+    appendLog('info', "Renamed ${ip} to '${newLabel}'")
+
+    render contentType: "application/json", data: '{"success":true}'
 }
 
 /**
@@ -2704,6 +2801,9 @@ void initialize() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
     if (state.discoveryRunning == null) { state.discoveryRunning = false }
+
+    // Ensure OAuth access token exists for API endpoints (label editing, table refresh)
+    if (!state.accessToken) { createAccessToken() }
 
     // Ensure state mirrors current settings for logging
     state.logLevel = settings?.logLevel ?: (state.logLevel ?: 'debug')
