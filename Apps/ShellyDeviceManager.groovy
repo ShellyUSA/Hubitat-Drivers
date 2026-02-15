@@ -238,8 +238,9 @@ void appButtonHandler(String buttonName) {
         String targetIp = buttonName.minus('createDev|')
         logInfo("Creating device for ${targetIp} via config table")
         createShellyDevice(targetIp)
-        // Refresh cache entry after creation
+        // Refresh cache entry after creation; defer SSR so state persists first
         buildDeviceStatusCacheEntry(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('removeDev|')) {
@@ -252,6 +253,8 @@ void appButtonHandler(String buttonName) {
         if (targetIp) {
             logInfo("Removing device for ${targetIp} via config table")
             removeDeviceByIp(targetIp)
+            buildDeviceStatusCacheEntry(targetIp)
+            runInMillis(500, 'fireConfigTableSSR')
         }
         state.remove('pendingDeleteIp')
     }
@@ -265,6 +268,7 @@ void appButtonHandler(String buttonName) {
         logInfo("Installing scripts for ${targetIp} via config table")
         installRequiredScriptsForIp(targetIp)
         buildDeviceStatusCacheEntry(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('enableScripts|')) {
@@ -272,6 +276,7 @@ void appButtonHandler(String buttonName) {
         logInfo("Enabling scripts for ${targetIp} via config table")
         enableAndStartRequiredScriptsForIp(targetIp)
         buildDeviceStatusCacheEntry(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('installWebhooks|')) {
@@ -279,6 +284,7 @@ void appButtonHandler(String buttonName) {
         logInfo("Installing webhooks for ${targetIp} via config table")
         installRequiredActionsForIp(targetIp)
         buildDeviceStatusCacheEntry(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('editLabel|')) {
@@ -1225,11 +1231,12 @@ void refreshAllDeviceStatusAsync() {
     allIps.each { String ip ->
         try {
             buildDeviceStatusCacheEntry(ip)
-            sendEvent(name: 'configTable', value: ip)
         } catch (Exception ex) {
             logError("Failed to refresh status for ${ip}: ${ex.message}")
         }
     }
+    // Fire single SSR update after all devices are refreshed
+    sendEvent(name: 'configTable', value: 'refreshAll')
     logInfo("Status refresh complete for ${allIps.size()} device(s)")
     appendLog('info', "Status refresh complete for ${allIps.size()} device(s)")
 }
@@ -1905,6 +1912,16 @@ private String renderWebhookStatusHtml(def device, String ip, List<Map> required
 }
 
 /**
+ * Fires a deferred SSR config table update event.
+ * Called via {@code runInMillis(500, 'fireConfigTableSSR')} from button handlers
+ * to ensure state is persisted before the SSR callback reads it.
+ * Using bare {@code sendEvent()} triggers the SSR callback in {@link #processServerSideRender}.
+ */
+void fireConfigTableSSR() {
+    sendEvent(name: 'configTable', value: 'update')
+}
+
+/**
  * Handles SSR (Server-Side Render) callbacks from Hubitat.
  * Called when a device event occurs and an SSR-tagged HTML element on the
  * currently displayed app page matches the event. Returns updated HTML
@@ -1921,6 +1938,7 @@ String processServerSideRender(Map event) {
 
     // App-level events
     if (eventName == 'configTable') {
+        ensureDeviceStatusCache()
         return "<div id='config-table-wrapper'>${renderDeviceConfigTableMarkup()}</div>"
     }
 
@@ -2674,11 +2692,20 @@ private void scheduleNextDiscoveryDriver() {
 
 /**
  * Fires an SSR event to update the device configuration table on the main page.
- * Invalidates the device status cache so the table rebuilds from current discovery data.
+ * Merges newly discovered devices into the existing cache without destroying entries
+ * that already have detailed status data (script/webhook counts from RPC queries).
  * Uses bare {@code sendEvent()} to trigger the SSR callback in {@link #processServerSideRender}.
  */
 void sendFoundShellyEvents() {
-    state.deviceStatusCache = null
+    Map cache = state.deviceStatusCache ?: [:]
+    Map discoveredShellys = state.discoveredShellys ?: [:]
+    discoveredShellys.each { ipKey, info ->
+        String ip = ipKey.toString()
+        if (!cache.containsKey(ip)) {
+            cache[ip] = buildMinimalCacheEntry(ip, info as Map)
+        }
+    }
+    state.deviceStatusCache = cache
     sendEvent(name: 'configTable', value: 'discovery')
 }
 
