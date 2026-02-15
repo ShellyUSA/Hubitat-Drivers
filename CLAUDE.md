@@ -15,6 +15,312 @@ If you can't validate automatically, create a draft PR and request a human with 
 - Only use `section("Title")` when grouping multiple related controls that genuinely benefit from a heading (e.g., `section("Options", hideable: true)` or `section("Logging", hideable: true)`).
 - The page-level `title:` in `dynamicPage(...)` is sufficient for identifying the page. Don't repeat it in section headers.
 
+## HTML Tables and Interactive Buttons in App Pages
+
+Hubitat app pages use `paragraph` to render raw HTML. Tables use Material Design Lite (`mdl-data-table`) which is built into the Hubitat UI.
+
+### Table Architecture
+
+A table consists of three parts returned as a single HTML string via `paragraph`:
+
+1. **CSS styles** (`<style>` block) -- define table appearance
+2. **Table markup** (`<table>` with `<thead>` and row `<tr>` elements) -- the data
+3. **Optional JavaScript** (`<script>` block) -- for popup interactions or AJAX refresh
+
+Separate these into distinct functions for maintainability:
+
+```groovy
+// In dynamicPage section:
+paragraph displayTable()
+
+// Orchestrator: combines CSS + JS + table markup
+String displayTable() {
+  // Process any pending state changes from button clicks first
+  processPendingActions()
+  String tableMarkup = renderTableMarkup()
+  return loadTableCSS() + loadTableScript() + "<div id='table-wrapper'>${tableMarkup}</div>"
+}
+
+// Table markup only (also used by AJAX refresh endpoint)
+String renderTableMarkup() {
+  String str = "<div style='overflow-x:auto'><table class='mdl-data-table'>"
+  str += "<thead><tr><th>Device</th><th>Status</th><th>Action</th></tr></thead>"
+  devices.each { dev -> str += buildDeviceRow(dev) }
+  str += "</table></div>"
+  return str
+}
+```
+
+### CSS Styling
+
+Use `mdl-data-table` as the base class. Override default styles and add custom classes:
+
+```groovy
+String loadTableCSS() {
+  return """<style>
+    .mdl-data-table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid #E0E0E0;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .mdl-data-table thead { background-color: #F5F5F5; }
+    .mdl-data-table th {
+      font-size: 14px !important;
+      font-weight: 500;
+      color: #424242;
+      padding: 8px !important;
+      text-align: center;
+      border-bottom: 2px solid #E0E0E0;
+      border-right: 1px solid #E0E0E0;
+    }
+    .mdl-data-table td {
+      font-size: 14px !important;
+      padding: 6px 4px !important;
+      text-align: center;
+      border-bottom: 1px solid #EEEEEE;
+      border-right: 1px solid #EEEEEE;
+    }
+    .mdl-data-table tbody tr:hover { background-color: inherit !important; }
+
+    /* Section separators */
+    th.section-border, td.section-border { border-right: 1px solid gray !important; }
+    td.group-border-bottom { border-bottom: 1px solid gray !important; }
+
+    /* Device name links */
+    .device-link a { color: #2196F3; text-decoration: none; font-weight: 500; }
+    .device-link a:hover { text-decoration: underline; }
+  </style>"""
+}
+```
+
+### Table Markup and Row Building
+
+**Device links** -- link to the Hubitat device page:
+```groovy
+String devLink = "<a href='/device/edit/${dev.id}' target='_blank' title='Open ${dev}'>${dev}</a>"
+```
+
+**Rowspan** -- merge cells vertically when a device has multiple schedule rows:
+```groovy
+int scheduleCount = deviceSchedules.size()
+String deviceCell = "<td class='device-link' rowspan='${scheduleCount}'>${devLink}</td>"
+// Only include deviceCell in the first <tr> for that device
+```
+
+**Conditional cell styling:**
+```groovy
+String statusColor = dev.currentSwitch == "on" ? "#4CAF50" : "#F44336"
+str += "<td style='color:${statusColor}'>${dev.currentSwitch}</td>"
+```
+
+**Tooltips** -- add `title` attribute to any element:
+```groovy
+str += "<td title='Click to toggle device state'>${stateButton}</td>"
+```
+
+**Cell class builder** -- dynamically assemble CSS classes per cell:
+```groovy
+def buildCellAttr = { boolean highlight, boolean rightBorder, boolean bottomBorder ->
+  List<String> classes = []
+  if (highlight) classes << "group-highlight"
+  if (rightBorder) classes << "section-border"
+  if (bottomBorder) classes << "group-border-bottom"
+  return classes ? "class='${classes.join(' ')}'" : ""
+}
+// Usage: str += "<td ${buildCellAttr(true, false, isLastRow)}>...</td>"
+```
+
+### Icons (Iconify)
+
+Hubitat pages can load [Iconify](https://iconify.design/) for icons. Load the script once in your CSS/JS block:
+
+```groovy
+String loadTableScript() {
+  return "<script src='https://code.iconify.design/iconify-icon/1.0.0/iconify-icon.min.js'></script>"
+}
+```
+
+Use icons inline in table cells:
+```groovy
+// Checkbox states
+String checked = "<iconify-icon icon='material-symbols:check-box'></iconify-icon>"
+String unchecked = "<iconify-icon icon='material-symbols:check-box-outline-blank'></iconify-icon>"
+
+// Status icons
+String onIcon = "<iconify-icon icon='material-symbols:lightbulb'></iconify-icon>"
+String offIcon = "<iconify-icon icon='material-symbols:lightbulb-outline'></iconify-icon>"
+
+// Action icons
+String addIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded'></iconify-icon>"
+String resetIcon = "<iconify-icon icon='bx:reset'></iconify-icon>"
+
+// Use inside buttonLink:
+buttonLink("toggle|${dev.id}", dev.currentSwitch == "on" ? checked : unchecked, dev.currentSwitch == "on" ? "green" : "black", "23px")
+```
+
+### Interactive Buttons (buttonLink)
+
+Use `buttonLink()` to create clickable elements that trigger `appButtonHandler()`:
+
+```groovy
+String buttonLink(String btnName, String linkText, String color = "#1A77C9", String font = "15px") {
+  "<div class='form-group'><input type='hidden' name='${btnName}.type' value='button'></div>" +
+  "<div><div class='submitOnChange' onclick='buttonClick(this)' " +
+  "style='color:${color};cursor:pointer;font-size:${font}'>${linkText}</div></div>" +
+  "<input type='hidden' name='settings[${btnName}]' value=''>"
+}
+```
+
+**How it works:**
+1. Renders a clickable `<div>` with hidden form inputs
+2. `submitOnChange` class + `buttonClick(this)` submits the page form on click
+3. Hubitat calls `appButtonHandler(btn)` where `btn` is the `btnName`
+4. The page re-renders, calling `displayTable()` again
+
+### appButtonHandler and Two-Phase Commit Pattern
+
+Encode context into button names using delimiters (e.g., `|`), then parse in the handler. Use a **two-phase commit**: `appButtonHandler` stores intent in `state`, then `displayTable()` applies the change on the next render.
+
+```groovy
+// Phase 1: Store intent
+void appButtonHandler(String btn) {
+  if (btn == "refresh") { /* direct action */ }
+  else if (btn.startsWith("toggle|")) state.pendingToggle = btn.minus("toggle|")
+  else if (btn.startsWith("remove|")) state.pendingRemove = btn.minus("remove|")
+  else if (btn.startsWith("checked|")) state.pendingCheck = btn.minus("checked|")
+  else if (btn.startsWith("unchecked|")) state.pendingUncheck = btn.minus("unchecked|")
+}
+
+// Phase 2: Apply changes (called at start of displayTable)
+void processPendingActions() {
+  if (state.pendingToggle) {
+    String deviceId = state.pendingToggle
+    state.devices[deviceId].enabled = !state.devices[deviceId].enabled
+    state.remove("pendingToggle")
+  }
+  if (state.pendingRemove) {
+    state.devices.remove(state.pendingRemove)
+    state.remove("pendingRemove")
+  }
+  // ... etc
+}
+```
+
+**Why two-phase?** `appButtonHandler` runs before the page renders. Storing intent first, then applying during `displayTable()`, ensures the table always reflects the latest state.
+
+### AJAX Table Refresh (No Full Page Reload)
+
+For popup-based interactions (time pickers, text inputs), use OAuth API endpoints + JavaScript to update the table without a Hubitat page re-render:
+
+**1. Enable OAuth and create API endpoints:**
+```groovy
+// In definition():
+definition(name: "My App", ..., oauth: true)
+
+// In preferences:
+mappings { path("/getTable") { action: [GET: "getTableEndpoint"] } }
+
+// Endpoint returns table markup only (no CSS/JS wrapper):
+def getTableEndpoint() {
+  render contentType: "text/html", data: renderTableMarkup()
+}
+```
+
+**2. JavaScript refresh function:**
+```groovy
+String loadTableScript() {
+  return """<script>
+    function refreshTable() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', '/apps/api/${app.id}/getTable?access_token=${state.accessToken}&_=' + Date.now(), true);
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+          var wrapper = document.getElementById('table-wrapper');
+          if (wrapper) {
+            wrapper.innerHTML = xhr.responseText;
+            if (window.Iconify && typeof window.Iconify.scan === 'function') {
+              window.Iconify.scan(wrapper);
+            }
+          }
+        }
+      };
+      xhr.send();
+    }
+  </script>"""
+}
+```
+
+**3. Popup-triggering buttonLink variant:**
+```groovy
+// For buttons that open a JS popup instead of submitting the form:
+String popupButtonLink(String action, String deviceId, String linkText, String color = "#2196F3") {
+  """<span role="button" onclick='event.preventDefault(); ${action}Popup("${deviceId}"); return false;' """ +
+  """style='color:${color};cursor:pointer;font-weight:500'>$linkText</span>"""
+}
+```
+
+### Programmatic Page Submit
+
+Force a page re-submit from within a `dynamicPage` (e.g., after state changes via `submitOnChange` input):
+```groovy
+paragraph "<script>{changeSubmit(this)}</script>"
+```
+
+### Complete Minimal Example
+
+```groovy
+def mainPage() {
+  dynamicPage(name: "mainPage", title: "Device Monitor", install: true, uninstall: true) {
+    section {
+      input "devices", "capability.switch", title: "Select Devices", multiple: true, submitOnChange: true
+      if (devices) { paragraph displayTable() }
+    }
+  }
+}
+
+String displayTable() {
+  return loadTableCSS() + renderTableMarkup()
+}
+
+String loadTableCSS() {
+  return """<style>
+    .mdl-data-table { width:100%; border-collapse:collapse; border:1px solid #E0E0E0; }
+    .mdl-data-table th { padding:8px; text-align:center; border-bottom:2px solid #E0E0E0; }
+    .mdl-data-table td { padding:6px 4px; text-align:center; border-bottom:1px solid #EEE; }
+    .mdl-data-table tbody tr:hover { background-color:inherit !important; }
+  </style>"""
+}
+
+String renderTableMarkup() {
+  String str = "<div style='overflow-x:auto'><table class='mdl-data-table'>"
+  str += "<thead><tr><th>Device</th><th>State</th><th>Action</th></tr></thead>"
+  devices.sort { it.displayName.toLowerCase() }.each { dev ->
+    String link = "<a href='/device/edit/${dev.id}' target='_blank'>${dev}</a>"
+    String color = dev.currentSwitch == "on" ? "#4CAF50" : "#F44336"
+    String action = buttonLink("reset|${dev.id}", "Reset", "purple")
+    str += "<tr><td>${link}</td><td style='color:${color}'>${dev.currentSwitch}</td><td>${action}</td></tr>"
+  }
+  str += "</table></div>"
+  return str
+}
+
+String buttonLink(String btnName, String linkText, String color = "#1A77C9", String font = "15px") {
+  "<div class='form-group'><input type='hidden' name='${btnName}.type' value='button'></div>" +
+  "<div><div class='submitOnChange' onclick='buttonClick(this)' style='color:${color};cursor:pointer;font-size:${font}'>${linkText}</div></div>" +
+  "<input type='hidden' name='settings[${btnName}]' value=''>"
+}
+
+void appButtonHandler(String btn) {
+  if (btn.startsWith("reset|")) {
+    String deviceId = btn.minus("reset|")
+    // perform reset action
+  }
+}
+```
+
 ## Code Quality and Type Safety
 
 ### @CompileStatic Usage - CRITICAL
