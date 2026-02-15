@@ -5,21 +5,22 @@
 
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
-// into generated drivers and to detect app updates for automatic driver regeneration.
-@Field static final String APP_VERSION = "1.0.33"
+// into prebuilt drivers and to detect app updates for automatic driver updates.
+@Field static final String APP_VERSION = "1.0.34"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
 @Field static final String GITHUB_BRANCH = 'master'
 
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
-// These bypass the modular assembly pipeline and are downloaded/installed directly.
+// New device types should be added here as prebuilt .groovy files.
 @Field static final Map<String, String> PREBUILT_DRIVERS = [
     'Shelly Autoconf Single Switch': 'UniversalDrivers/ShellySingleSwitch.groovy',
     'Shelly Autoconf Single Switch PM': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
     'Shelly Autoconf 2x Switch Parent': 'UniversalDrivers/Shelly2xSwitchParent.groovy',
     'Shelly Autoconf 2x Switch PM Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
+    'Shelly Autoconf Single Cover PM': 'UniversalDrivers/ShellySingleCoverPM.groovy',
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -42,7 +43,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: true,
-    version: "1.0.33"
+    version: "1.0.34"
 )
 
 preferences {
@@ -141,15 +142,13 @@ Map mainPage() {
         }
 
         section("Driver Management", hideable: true, hidden: true) {
-            input name: 'rebuildOnUpdate', type: 'bool', title: 'Rebuild drivers when app is updated',
-                description: 'Automatically rebuilds in-use drivers and removes unused ones whenever the app version changes.',
+            input name: 'rebuildOnUpdate', type: 'bool', title: 'Update drivers when app is updated',
+                description: 'Automatically updates pre-built driver versions when the app version changes.',
                 defaultValue: true, submitOnChange: true
 
             String driverMgmtHtml = renderDriverManagementHtml()
             paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${driverMgmtHtml}</span>"
-            if (!state.driverRebuildInProgress) {
-                input 'btnForceRebuildDrivers', 'button', title: 'Force Rebuild All Drivers', submitOnChange: true
-            }
+            input 'btnForceRebuildDrivers', 'button', title: 'Force Update All Drivers', submitOnChange: true
         }
 
         section("Logging", hideable: true) {
@@ -216,15 +215,13 @@ void appButtonHandler(String buttonName) {
     if (buttonName == 'btnForceRebuildDrivers') {
         Map allDrivers = state.autoDrivers ?: [:]
         if (allDrivers.isEmpty()) {
-            appendLog('warn', 'No auto-generated drivers to rebuild')
+            appendLog('warn', 'No tracked drivers to update')
             return
         }
-        logInfo("Manual force rebuild of all drivers requested")
-        appendLog('info', "Force rebuilding ${allDrivers.size()} driver(s)...")
-
-        // Update the stored version to current before rebuilding
+        logInfo("Manual force update of all drivers requested")
+        appendLog('info', "Updating ${allDrivers.size()} driver(s)...")
         state.lastAutoconfVersion = getAppVersion()
-        rebuildAllTrackedDrivers()
+        reinstallAllPrebuiltDrivers()
     }
 
     // === Device Configuration Table Buttons ===
@@ -300,35 +297,9 @@ void appButtonHandler(String buttonName) {
 }
 
 /**
- * Handles the {@code driverGenerationComplete} event fired by
- * {@link #completeDriverGeneration}. Checks for any devices that were
- * deferred in {@link #createShellyDevice} because their driver was still
- * being generated, and retries device creation for them.
- *
- * @param evt The event containing the IP key of the completed driver
- */
-void handleDriverGenerationComplete(evt) {
-    String completedIpKey = evt.value
-    logDebug("Driver generation complete event received for ${completedIpKey}")
-
-    List<String> pending = state.pendingDeviceCreations ?: []
-    if (pending.contains(completedIpKey)) {
-        pending.remove(completedIpKey)
-        state.pendingDeviceCreations = pending
-        logInfo("Resuming deferred device creation for ${completedIpKey}")
-        createShellyDevice(completedIpKey)
-    }
-}
-
-/**
  * Creates a Hubitat device for a discovered Shelly device.
- * Retrieves device information, determines the appropriate driver,
- * and creates a child device with the generated driver code.
- * <p>
- * If async driver generation is in progress, defers creation by adding the
- * IP to {@code state.pendingDeviceCreations}. The
- * {@link #handleDriverGenerationComplete} event handler will retry when
- * the driver is ready.
+ * Retrieves device information, determines the appropriate prebuilt driver,
+ * and creates a child device.
  *
  * @param ipKey The IP address key of the device to create
  */
@@ -363,23 +334,9 @@ private void createShellyDevice(String ipKey) {
     // Get the generated driver name
     String driverName = deviceInfo.generatedDriverName
     if (!driverName) {
-        // Check if async driver generation is in progress (GitHub fetch)
-        Map genContext = atomicState.currentDriverGeneration
-        if (genContext?.ipKey == ipKey) {
-            // Defer device creation until driver generation completes
-            logInfo("Driver generation in progress for ${ipKey} — deferring device creation until complete")
-            appendLog('info', "Driver for ${ipKey} is being generated, will create device when ready...")
-            List<String> pending = state.pendingDeviceCreations ?: []
-            if (!pending.contains(ipKey)) {
-                pending.add(ipKey)
-                state.pendingDeviceCreations = pending
-            }
-            return
-        } else {
-            logError("No driver could be generated for ${ipKey}. Device may not have supported components.")
-            appendLog('error', "Failed to create device for ${ipKey}: no driver generated")
-            return
-        }
+        logError("No driver available for ${ipKey}. Device may not have supported components.")
+        appendLog('error', "Failed to create device for ${ipKey}: no driver available")
+        return
     }
 
     // Branch: multi-component devices use parent-child architecture
@@ -1718,9 +1675,9 @@ List<Map> listDeviceScripts(String ipAddress) {
  * @return HTML string for the rebuild status
  */
 /**
- * Renders the full driver management section HTML, including tracked
- * driver list with device counts and rebuild status. Used both for
- * initial page render and SSR updates when rebuilds complete.
+ * Renders the driver management section HTML, including tracked
+ * driver list with device counts and update status. Used both for
+ * initial page render and SSR updates.
  *
  * @return HTML string for the driver management section
  */
@@ -1729,12 +1686,11 @@ private String renderDriverManagementHtml() {
     String currentVersion = getAppVersion()
     Map allDrivers = state.autoDrivers ?: [:]
 
-    // Driver list
     if (allDrivers.isEmpty()) {
-        sb.append("No auto-generated drivers are currently tracked.<br>")
+        sb.append("No drivers are currently tracked.<br>")
     } else {
         def childDevices = getChildDevices() ?: []
-        sb.append("<b>${allDrivers.size()}</b> auto-generated driver(s) tracked (app v${currentVersion}):<br>")
+        sb.append("<b>${allDrivers.size()}</b> driver(s) tracked (app v${currentVersion}):<br>")
         allDrivers.each { key, info ->
             Integer deviceCount = childDevices.count { it.typeName == info.name }
             String versionTag = (info.version && info.version != currentVersion) ? " <i>(outdated: v${info.version})</i>" : ''
@@ -1742,24 +1698,17 @@ private String renderDriverManagementHtml() {
         }
     }
 
-    // Rebuild status
     sb.append('<br>')
-    if (state.driverRebuildInProgress) {
-        Integer remaining = (state.driverRebuildQueue?.size() ?: 0) as Integer
-        sb.append("<b>Rebuild in progress...</b> (${remaining} remaining)")
-    } else {
-        List<String> outdated = []
-        allDrivers.each { key, info ->
-            String driverVersion = info.version ?: ''
-            if (driverVersion && driverVersion != currentVersion) {
-                outdated.add(info.name as String)
-            }
+    List<String> outdated = []
+    allDrivers.each { key, info ->
+        if (info.version && info.version != currentVersion) {
+            outdated.add(info.name as String)
         }
-        if (outdated.size() > 0) {
-            sb.append("<b>${outdated.size()} driver(s) need rebuilding.</b>")
-        } else if (!allDrivers.isEmpty()) {
-            sb.append("<b>All drivers are up to date (v${currentVersion}).</b>")
-        }
+    }
+    if (outdated.size() > 0) {
+        sb.append("<b>${outdated.size()} driver(s) need updating.</b>")
+    } else if (!allDrivers.isEmpty()) {
+        sb.append("<b>All drivers are up to date (v${currentVersion}).</b>")
     }
 
     return sb.toString()
@@ -2295,60 +2244,46 @@ void initialize() {
     // mDNS listeners must be registered on system startup per Hubitat docs
     subscribe(location, 'systemStart', 'systemStartHandler')
 
-    // Subscribe to driver generation completion events for deferred device creation
-    subscribe(app, 'driverGenerationComplete', 'handleDriverGenerationComplete')
-
     // Also register now in case hub has been up for a while
     startMdnsDiscovery()
 
-    // Check for interrupted rebuild (hub may have restarted mid-rebuild)
-    if (state.driverRebuildInProgress) {
-        logWarn("Detected interrupted driver rebuild (hub may have restarted)")
-        appendLog('warn', "Resuming interrupted driver rebuild...")
-
-        // Re-add the current driver to the front of the queue if it was in progress
-        String currentKey = state.driverRebuildCurrentKey
-        List<String> queue = state.driverRebuildQueue ?: []
-        if (currentKey && !queue.contains(currentKey)) {
-            queue.add(0, currentKey)
-            state.driverRebuildQueue = queue
-        }
-
-        // Reset flag and resume after hub has fully initialized
-        state.driverRebuildInProgress = false
-        runIn(30, 'rebuildAllTrackedDrivers')
-        return
-    }
+    // Clean up stale rebuild state from previous versions
+    state.remove('driverRebuildInProgress')
+    state.remove('driverRebuildQueue')
+    state.remove('driverRebuildCurrentKey')
+    state.remove('driverRebuildErrors')
+    state.remove('pendingDeviceCreations')
+    state.remove('discoveryDriverQueue')
+    state.remove('discoveryDriverInProgress')
 
     // Clean up stale driver tracking entries from old app versions
     pruneStaleDriverTracking()
 
-    // Check for app version change and trigger driver regeneration
+    // Check for app version change and trigger driver update
     String currentVersion = getAppVersion()
     String lastVersion = state.lastAutoconfVersion
 
     if (lastVersion == null) {
-        // First install: store version, no rebuild needed
+        // First install: store version, no update needed
         state.lastAutoconfVersion = currentVersion
         logInfo("First install detected, storing app version: ${currentVersion}")
     } else if (lastVersion != currentVersion) {
         state.lastAutoconfVersion = currentVersion
         if (settings?.rebuildOnUpdate != false) {
-            logInfo("App version changed from ${lastVersion} to ${currentVersion}, rebuilding drivers and cleaning up unused")
-            rebuildAllTrackedDrivers()
+            logInfo("App version changed from ${lastVersion} to ${currentVersion}, updating drivers")
+            reinstallAllPrebuiltDrivers()
         } else {
-            logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver rebuild disabled)")
+            logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver update disabled)")
         }
     } else {
         // Even if app version hasn't changed, check if any tracked drivers are outdated
-        // (e.g., from a failed rebuild or interrupted update)
         Map allDrivers = state.autoDrivers ?: [:]
         Boolean hasOutdated = allDrivers.any { key, info -> info.version != currentVersion }
         if (hasOutdated && settings?.rebuildOnUpdate != false) {
-            logInfo("Found outdated drivers at app version ${currentVersion}, triggering rebuild")
-            rebuildAllTrackedDrivers()
+            logInfo("Found outdated drivers at app version ${currentVersion}, triggering update")
+            reinstallAllPrebuiltDrivers()
         } else {
-            logDebug("App version unchanged (${currentVersion}), no driver regeneration needed")
+            logDebug("App version unchanged (${currentVersion}), no driver update needed")
         }
     }
 
@@ -2598,12 +2533,12 @@ void processMdnsDiscovery() {
                     ts: now()
                 ]
 
-                // Queue newly discovered devices for automatic driver check
+                // Fetch device info and install prebuilt driver for newly discovered devices
                 if (isNewToState) {
-                    List<String> queue = state.discoveryDriverQueue ?: []
-                    if (!queue.contains(key)) {
-                        queue.add(key)
-                        state.discoveryDriverQueue = queue
+                    try {
+                        fetchAndStoreDeviceInfo(key)
+                    } catch (Exception fetchEx) {
+                        logWarn("Discovery: error fetching info for ${key}: ${fetchEx.message}")
                     }
                 }
             }
@@ -2612,12 +2547,6 @@ void processMdnsDiscovery() {
                 logDebug("Found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
                 sendFoundShellyEvents()
             }
-
-            // Start processing discovery driver queue if not already running
-            List<String> pendingQueue = state.discoveryDriverQueue ?: []
-            if (pendingQueue.size() > 0 && !state.discoveryDriverInProgress && !state.driverRebuildInProgress) {
-                runIn(2, 'processNextDiscoveryDriver')
-            }
         }
     } catch (Exception e) {
         logWarn("Error processing mDNS entries: ${e.message}")
@@ -2625,68 +2554,6 @@ void processMdnsDiscovery() {
 
     if (state.discoveryRunning && getRemainingDiscoverySeconds() > 0) {
         runIn(getMdnsPollSeconds(), 'processMdnsDiscovery')
-    }
-}
-
-/**
- * Processes the next device in the discovery driver queue.
- * Fetches device info and triggers driver determination, which will either
- * install from cache, skip (driver already exists), or generate from GitHub.
- * Processes devices sequentially with delays to avoid hammering the network.
- */
-void processNextDiscoveryDriver() {
-    List<String> queue = state.discoveryDriverQueue ?: []
-    if (queue.isEmpty()) {
-        state.discoveryDriverInProgress = false
-        logDebug("Discovery driver queue is empty, processing complete")
-        return
-    }
-
-    // Don't run if a rebuild is in progress (shared driver generation pipeline)
-    if (state.driverRebuildInProgress) {
-        logDebug("Driver rebuild in progress, deferring discovery queue processing")
-        runIn(30, 'processNextDiscoveryDriver')
-        return
-    }
-
-    state.discoveryDriverInProgress = true
-    String ipKey = queue.remove(0)
-    state.discoveryDriverQueue = queue
-
-    logInfo("Processing discovery driver queue: fetching info for ${ipKey} (${queue.size()} remaining)")
-
-    // fetchAndStoreDeviceInfo queries the device and triggers determineDeviceDriver,
-    // which will either skip (driver exists), install from cache, or generate (new driver needed)
-    try {
-        fetchAndStoreDeviceInfo(ipKey)
-    } catch (Exception e) {
-        logWarn("Discovery queue: error processing ${ipKey}: ${e.message}")
-    }
-
-    // Check if async driver generation was started for this device.
-    // If so, completeDriverGeneration will schedule the next queue item when done.
-    // If not (driver already existed, installed from cache, or error), schedule next here.
-    Map genContext = atomicState.currentDriverGeneration
-    Boolean asyncGenStarted = (genContext != null && genContext.ipKey == ipKey)
-
-    if (asyncGenStarted) {
-        logDebug("Discovery queue: async driver generation in progress for ${ipKey}, waiting for completion callback")
-    } else {
-        scheduleNextDiscoveryDriver()
-    }
-}
-
-/**
- * Schedules the next device in the discovery driver queue for processing.
- * If the queue is empty, clears the in-progress flag.
- */
-private void scheduleNextDiscoveryDriver() {
-    List<String> remaining = state.discoveryDriverQueue ?: []
-    if (!remaining.isEmpty()) {
-        runIn(10, 'processNextDiscoveryDriver')
-    } else {
-        state.discoveryDriverInProgress = false
-        logDebug("Discovery driver queue complete")
     }
 }
 
@@ -2976,12 +2843,8 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
  *   <li>DevicePower: status keys starting with "devicepower" (battery)</li>
  * </ul>
  * <p>
- * Uses a three-tier resolution strategy:
- * <ol>
- *   <li>Check {@code state.autoDrivers} for an existing driver with matching version</li>
- *   <li>Check Hubitat File Manager cache for previously generated source</li>
- *   <li>Fall through to GitHub-based generation via {@link #generateHubitatDriver}</li>
- * </ol>
+ * Uses prebuilt drivers from {@code PREBUILT_DRIVERS} map. If a device's components
+ * don't match any prebuilt driver, a warning is logged.
  *
  * @param deviceStatus Map containing the device status with component keys
  * @param ipKey Optional IP key for the discovered device entry
@@ -3056,73 +2919,25 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         state.discoveredShellys[ipKey].componentPowerMonitoring = componentPowerMonitoring
     }
 
-    // Generate driver for discovered components
+    // Determine driver name for discovered components and install prebuilt driver
     if (components.size() > 0) {
         Boolean isParent = needsParentChild
         String driverName = generateDriverName(components, componentPowerMonitoring, isParent)
         String version = getAppVersion()
         String driverNameWithVersion = "${driverName} v${version}"
 
-        // Check if this driver is already installed and up to date
-        Map allDrivers = state.autoDrivers ?: [:]
-        String trackingKey = "ShellyUSA.${driverNameWithVersion}"
-        Map existingEntry = allDrivers[trackingKey] as Map
-        if (existingEntry && existingEntry.version == version) {
-            logInfo("Driver already exists and is up to date: ${driverNameWithVersion} — skipping generation")
+        if (PREBUILT_DRIVERS.containsKey(driverName)) {
+            // Prebuilt driver exists — install it (idempotent, skips if already installed)
+            installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
+
             // Store the driver name on the discovered device entry
             if (ipKey && state.discoveredShellys[ipKey]) {
                 state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
             }
-            return
+        } else {
+            logWarn("No prebuilt driver for '${driverName}' (components: ${components}). " +
+                    "Add this type to PREBUILT_DRIVERS to support it.")
         }
-
-        // Check file manager cache for a previously generated driver
-        String cachedSource = loadDriverFromCache(driverName)
-        if (cachedSource) {
-            // Verify the cached version matches current app version
-            def versionMatch = (cachedSource =~ /version:\s*['"]([^'"]+)['"]/)
-            String cachedVersion = versionMatch.find() ? versionMatch.group(1) : null
-            if (cachedVersion == version) {
-                logInfo("Found cached driver source for ${driverName} (v${cachedVersion}) — installing from cache")
-                installDriver(cachedSource)
-
-                // Register in tracking and store on discovered device
-                registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, components, componentPowerMonitoring)
-                if (ipKey && state.discoveredShellys[ipKey]) {
-                    state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
-                }
-                return
-            } else {
-                logDebug("Cached driver version (${cachedVersion}) does not match app version (${version}) — regenerating")
-            }
-        }
-
-        // Check for a pre-built driver before falling back to generation
-        if (PREBUILT_DRIVERS.containsKey(driverName)) {
-            logInfo("Pre-built driver available for ${driverName} — downloading")
-            Boolean installed = installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
-            if (installed) {
-                if (ipKey && state.discoveredShellys[ipKey]) {
-                    state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
-                }
-                return
-            }
-            logWarn("Pre-built driver install failed for ${driverName} — falling back to generation")
-        }
-
-        // No match found — fall through to full GitHub-based generation
-        logInfo("Generating driver from GitHub: ${driverNameWithVersion}")
-
-        // Store context for async callback to use
-        atomicState.currentDriverGeneration = [
-            ipKey: ipKey,
-            components: components,
-            componentPowerMonitoring: componentPowerMonitoring,
-            needsParentChild: needsParentChild
-        ]
-
-        String driverCode = generateHubitatDriver(components, componentPowerMonitoring, needsParentChild)
-        logDebug("Generated driver code (${driverCode?.length() ?: 0} chars)")
     }
 
     // Log device type heuristics
@@ -3142,427 +2957,26 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
 }
 
 /**
- * Generates a Hubitat device driver based on discovered Shelly components.
- * Uses StringBuilder to construct the driver code incrementally. Currently
- * a placeholder implementation that will be expanded to generate complete
- * driver definitions with capabilities, attributes, commands, and component
- * handling logic.
- *
- * @param components List of component identifiers discovered in the device
- *                   (e.g., ["switch:switch:0", "input:input:0"])
- * @return String containing the generated driver code, currently a placeholder
- */
-private String generateHubitatDriver(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:], Boolean needsParentChild = false) {
-    logDebug("generateHubitatDriver called with ${components?.size() ?: 0} components: ${components} (parentChild: ${needsParentChild})")
-    logDebug("Power monitoring components: ${componentPowerMonitoring.findAll { k, v -> v }}")
-
-    // Branch to fetch files from (change to 'master' for production)
-    String branch = GITHUB_BRANCH
-    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/UniversalDrivers"
-
-    // Fetch component_driver.json from GitHub
-    String componentJsonUrl = "${baseUrl}/component_driver.json"
-    logDebug("Fetching capability definitions from: ${componentJsonUrl}")
-
-    String jsonContent = downloadFile(componentJsonUrl)
-    if (!jsonContent) {
-        logError("Failed to fetch component_driver.json from GitHub")
-        return null
-    }
-
-    // Parse the JSON to extract capability definitions
-    Map componentData = null
-    try {
-        componentData = slurper.parseText(jsonContent) as Map
-        logDebug("Successfully parsed component_driver.json with ${componentData?.capabilities?.size() ?: 0} capabilities")
-    } catch (Exception e) {
-        logError("Failed to parse component_driver.json: ${e.message}")
-        return null
-    }
-
-    List<Map> capabilities = componentData?.capabilities as List<Map>
-    if (!capabilities) {
-        logError("No capabilities found in component_driver.json")
-        return null
-    }
-
-    // Build the driver code using StringBuilder
-    StringBuilder driver = new StringBuilder()
-
-    // Build metadata section
-    driver.append("metadata {\n")
-    driver.append("  definition (")
-
-    // Get driver metadata from JSON
-    Map driverDef = componentData?.driver as Map
-    String driverName = generateDriverName(components, componentPowerMonitoring, needsParentChild)
-    String version = getAppVersion()
-    String driverNameWithVersion = "${driverName} v${version}"
-
-    if (driverDef) {
-        driver.append("name: '${driverNameWithVersion}', ")
-        driver.append("namespace: '${driverDef.namespace}', ")
-        driver.append("author: '${driverDef.author}', ")
-        driver.append("singleThreaded: ${driverDef.singleThreaded}, ")
-        driver.append("importUrl: '${driverDef.importUrl ?: ''}'")
-    } else {
-        // Fallback if definition not found
-        driver.append("name: '${driverNameWithVersion}', ")
-        driver.append("namespace: 'ShellyUSA', ")
-        driver.append("author: 'Daniel Winks', ")
-        driver.append("singleThreaded: false, ")
-        driver.append("importUrl: ''")
-    }
-
-    driver.append(") {\n")
-
-    // Track which capabilities we've already added (to avoid duplicates)
-    Set<String> addedCapabilities = new HashSet<>()
-
-    // Parent drivers only get Initialize, Configuration, and Refresh
-    if (needsParentChild) {
-        driver.append("    capability 'Initialize'\n")
-        driver.append("    //Commands: initialize()\n\n")
-        driver.append("    capability 'Configuration'\n")
-        driver.append("    //Commands: configure()\n\n")
-        driver.append("    capability 'Refresh'\n")
-        driver.append("    //Commands: refresh()\n\n")
-        driver.append("    attribute 'lastUpdated', 'string'\n")
-        addedCapabilities.addAll(['Initialize', 'Configuration', 'Refresh'])
-    }
-
-    // Add component-specific capabilities (skip for parent drivers)
-    if (!needsParentChild) { components.each { component ->
-        // Extract base type from "switch:0" format
-        String baseType = component.contains(':') ? component.split(':')[0] : component
-
-        // Find matching capability by shellyComponent field
-        Map capability = capabilities.find { cap ->
-            cap.shellyComponent == baseType
-        }
-
-        if (capability) {
-            String capId = capability.id
-
-            // Only add if not already added
-            if (!addedCapabilities.contains(capId)) {
-                addedCapabilities.add(capId)
-
-                // Add capability declaration
-                driver.append("    capability '${capId}'\n")
-
-                // Add attributes comments
-                if (capability.attributes) {
-                    capability.attributes.each { attr ->
-                        String attrComment = "    //Attributes: ${attr.name} - ${attr.type.toUpperCase()}"
-                        if (attr.values) {
-                            attrComment += " ${attr.values}"
-                        }
-                        driver.append("${attrComment}\n")
-                    }
-                }
-
-                // Add commands comments
-                if (capability.commands) {
-                    List<String> cmdSignatures = capability.commands.collect { cmd ->
-                        if (cmd.arguments && cmd.arguments.size() > 0) {
-                            String args = cmd.arguments.collect { arg -> arg.name }.join(', ')
-                            return "${cmd.name}(${args})"
-                        } else {
-                            return "${cmd.name}()"
-                        }
-                    }
-                    driver.append("    //Commands: ${cmdSignatures.join(', ')}\n")
-                }
-
-                // Add companion capabilities if defined (e.g., light → Light + ChangeLevel)
-                if (capability.companionCapabilities) {
-                    List<String> companions = capability.companionCapabilities as List<String>
-                    companions.each { String companionId ->
-                        if (!addedCapabilities.contains(companionId)) {
-                            addedCapabilities.add(companionId)
-
-                            Map companionCap = capabilities.find { cap -> cap.id == companionId }
-                            if (companionCap) {
-                                driver.append("    capability '${companionId}'\n")
-
-                                if (companionCap.attributes) {
-                                    companionCap.attributes.each { attr ->
-                                        String attrComment = "    //Attributes: ${attr.name} - ${attr.type.toUpperCase()}"
-                                        if (attr.values) {
-                                            attrComment += " ${attr.values}"
-                                        }
-                                        driver.append("${attrComment}\n")
-                                    }
-                                }
-
-                                if (companionCap.commands) {
-                                    List<String> cmdSignatures = companionCap.commands.collect { cmd ->
-                                        if (cmd.arguments && cmd.arguments.size() > 0) {
-                                            String args = cmd.arguments.collect { arg -> arg.name }.join(', ')
-                                            return "${cmd.name}(${args})"
-                                        } else {
-                                            return "${cmd.name}()"
-                                        }
-                                    }
-                                    driver.append("    //Commands: ${cmdSignatures.join(', ')}\n")
-                                }
-
-                                driver.append("\n")
-                            }
-                        }
-                    }
-                }
-
-                driver.append("\n")
-
-                // If this is a switch with power monitoring, add PM capabilities
-                if (baseType == 'switch' && componentPowerMonitoring[component]) {
-                    logDebug("Adding power monitoring capabilities for ${component}")
-
-                    // Add power monitoring capabilities
-                    ['CurrentMeter', 'PowerMeter', 'VoltageMeasurement', 'EnergyMeter'].each { pmCapId ->
-                        if (!addedCapabilities.contains(pmCapId)) {
-                            addedCapabilities.add(pmCapId)
-
-                            Map pmCap = capabilities.find { cap -> cap.id == pmCapId }
-                            if (pmCap) {
-                                driver.append("    capability '${pmCapId}'\n")
-
-                                // Add attributes comments
-                                if (pmCap.attributes) {
-                                    pmCap.attributes.each { attr ->
-                                        String attrComment = "    //Attributes: ${attr.name} - ${attr.type.toUpperCase()}"
-                                        driver.append("${attrComment}\n")
-                                    }
-                                }
-
-                                // Add commands comments
-                                if (pmCap.commands) {
-                                    List<String> cmdSignatures = pmCap.commands.collect { cmd ->
-                                        if (cmd.arguments && cmd.arguments.size() > 0) {
-                                            String args = cmd.arguments.collect { arg -> arg.name }.join(', ')
-                                            return "${cmd.name}(${args})"
-                                        } else {
-                                            return "${cmd.name}()"
-                                        }
-                                    }
-                                    driver.append("    //Commands: ${cmdSignatures.join(', ')}\n")
-                                }
-
-                                driver.append("\n")
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            logDebug("No capability mapping found for Shelly component: ${component} (base type: ${baseType})")
-        }
-    } } // end if (!needsParentChild) { components.each {
-
-    // Determine if this is a sleepy battery device (has Battery but no BTHome or Script)
-    // Such devices are not always awake, so Initialize/Configure/Refresh are not useful
-    Set<String> componentBaseTypes = components.collect { String c ->
-        (c.contains(':') ? c.split(':')[0] : c).toLowerCase()
-    }.toSet()
-    Boolean isSleepyBattery = addedCapabilities.contains('Battery') &&
-        !componentBaseTypes.contains('bthome') && !componentBaseTypes.contains('script')
-
-    if (!needsParentChild) {
-        if (isSleepyBattery) {
-            logInfo("Sleepy battery device detected — skipping Initialize/Configure/Refresh capabilities")
-        } else {
-            driver.append("    capability 'Initialize'\n")
-            driver.append("    //Commands: initialize()\n")
-            driver.append("\n")
-
-            driver.append("    capability 'Configuration'\n")
-            driver.append("    //Commands: configure()\n")
-            driver.append("\n")
-
-            driver.append("    capability 'Refresh'\n")
-            driver.append("    //Commands: refresh()\n")
-        }
-    }
-
-    driver.append("  }\n")
-    driver.append("}\n\n")
-
-    // Add preferences section
-    List<Map> preferences = componentData?.preferences as List<Map>
-    logDebug("Preferences found in JSON: ${preferences?.size() ?: 0}")
-    logDebug("Device specific preferences found: ${componentData?.deviceSpecificPreferences ? 'yes' : 'no'}")
-
-    if (preferences) {
-        logDebug("Adding preferences section to driver")
-        driver.append("preferences {\n")
-
-        // Add standard preferences (always included)
-        preferences.each { pref ->
-            driver.append("  input ")
-            driver.append("name: '${pref.name}', ")
-            driver.append("type: '${pref.type}', ")
-            driver.append("title: '${pref.title}'")
-
-            // Add options if present (for enum types)
-            if (pref.options) {
-                driver.append(", options: [")
-                List<String> optionPairs = pref.options.collect { k, v -> "'${k}':'${v}'" }
-                driver.append(optionPairs.join(','))
-                driver.append("]")
-            }
-
-            // Add defaultValue if present
-            if (pref.defaultValue != null) {
-                driver.append(", defaultValue: '${pref.defaultValue}'")
-            }
-
-            // Add required if present
-            if (pref.required != null) {
-                driver.append(", required: ${pref.required}")
-            }
-
-            driver.append("\n")
-        }
-
-        // Add device-specific preferences (skip for parent drivers — children have their own)
-        Map deviceSpecificPreferences = componentData?.deviceSpecificPreferences as Map
-        if (deviceSpecificPreferences && !needsParentChild) {
-            // Track which component types we've already added preferences for
-            Set<String> addedDevicePrefs = new HashSet<>()
-
-            components.each { component ->
-                // Extract base type from "switch:0" format
-                String baseType = component.contains(':') ? component.split(':')[0] : component
-
-                // Check if we have device-specific preferences for this type and haven't added them yet
-                if (deviceSpecificPreferences[baseType] && !addedDevicePrefs.contains(baseType)) {
-                    addedDevicePrefs.add(baseType)
-
-                    List<Map> devicePrefs = deviceSpecificPreferences[baseType] as List<Map>
-                    devicePrefs.each { pref ->
-                        driver.append("  input ")
-                        driver.append("name: '${pref.name}', ")
-                        driver.append("type: '${pref.type}', ")
-                        driver.append("title: '${pref.title}'")
-
-                        // Add options if present (for enum types)
-                        if (pref.options) {
-                            driver.append(", options: [")
-                            List<String> optionPairs = pref.options.collect { k, v -> "'${k}':'${v}'" }
-                            driver.append(optionPairs.join(','))
-                            driver.append("]")
-                        }
-
-                        // Add defaultValue if present
-                        if (pref.defaultValue != null) {
-                            driver.append(", defaultValue: '${pref.defaultValue}'")
-                        }
-
-                        // Add required if present
-                        if (pref.required != null) {
-                            driver.append(", required: ${pref.required}")
-                        }
-
-                        driver.append("\n")
-                    }
-                }
-            }
-        }
-
-        logDebug("Closing preferences section")
-        driver.append("}\n\n")
-    } else {
-        logDebug("No preferences found in JSON, skipping preferences section")
-    }
-
-    // Initialize async operation tracking
-    initializeAsyncDriverGeneration()
-
-    // Collect all files to fetch
-    Set<String> filesToFetch = new HashSet<>()
-
-    if (needsParentChild) {
-        // Parent driver: use ParentLifecycle.groovy only, skip all component-specific files
-        filesToFetch.add("ParentLifecycle.groovy")
-        filesToFetch.add("Helpers.groovy")
-        logDebug("Parent driver: fetching ParentLifecycle.groovy + Helpers.groovy only")
-    } else {
-        filesToFetch.add("Lifecycle.groovy")
-
-        // Add command files from matched capabilities
-        components.each { component ->
-            String baseType = component.contains(':') ? component.split(':')[0] : component
-            Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
-            if (capability && capability.commandFiles) {
-                filesToFetch.addAll(capability.commandFiles as List<String>)
-            }
-        }
-
-        // Include standard command files (skip for sleepy battery devices)
-        if (!isSleepyBattery) {
-            filesToFetch.add("InitializeCommands.groovy")
-            filesToFetch.add("ConfigureCommands.groovy")
-            filesToFetch.add("RefreshCommand.groovy")
-        }
-        filesToFetch.add("Helpers.groovy")
-
-        // Include PowerMonitoring.groovy if any component has power monitoring
-        Boolean hasPowerMonitoring = componentPowerMonitoring.any { k, v -> v }
-        if (hasPowerMonitoring) {
-            filesToFetch.add("PowerMonitoring.groovy")
-            logDebug("Including PowerMonitoring.groovy for power monitoring capabilities")
-        }
-    }
-
-    // Include SensorMonitoring.groovy if device has temperature, humidity, battery, smoke, or illuminance components (monolithic only)
-    Set<String> sensorComponentTypes = ['temperature', 'humidity', 'devicepower', 'smoke', 'illuminance'] as Set
-    Boolean hasSensorComponents = componentBaseTypes.any { sensorComponentTypes.contains(it) }
-    if (hasSensorComponents && !needsParentChild) {
-        filesToFetch.add("SensorMonitoring.groovy")
-        logDebug("Including SensorMonitoring.groovy for sensor capabilities")
-    }
-
-    logDebug("Files to fetch asynchronously: ${filesToFetch}")
-
-    // Store partial driver and files list in atomicState for completion callback
-    // IMPORTANT: Set inFlight to total count BEFORE launching any requests to avoid race condition
-    Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
-    current.partialDriver = driver.toString()
-    current.filesToFetch = filesToFetch as List<String>
-    current.inFlight = filesToFetch.size()
-    atomicState.driverGeneration = current
-
-    // Launch all async fetch operations (inFlight already set, don't increment in fetchFileAsync)
-    // Add timestamp to bust GitHub CDN cache
-    Long cacheBuster = now()
-    filesToFetch.each { String fileName ->
-        String fileUrl = "${baseUrl}/${fileName}?v=${cacheBuster}"
-        fetchFileAsync(fileUrl, fileName)
-    }
-
-    // Return immediately - completeDriverGeneration() will be called when all fetches finish
-    logDebug("Async fetches launched, waiting for callbacks to complete")
-    return null
-}
-
-/**
  * Generates a dynamic driver name based on the Shelly components.
  * <p>
- * Categorizes components into switches/inputs (actuators) and sensors
+ * Categorizes components into actuators (switch, cover, light) and sensors
  * (temperature, humidity). The {@code devicepower} component adds Battery
  * capability but does not affect the driver name.
  * <p>
+ * When actuators are present, the actuator type drives naming — sensor
+ * components (e.g., internal temperature monitors on switch/cover devices)
+ * are treated as supplementary and handled by the prebuilt driver.
+ * <p>
  * Naming rules:
  * <ul>
- *   <li>Switch-only: "Shelly Autoconf Single Switch [PM]" or "Shelly Autoconf 2x Switch [PM]"</li>
+ *   <li>Actuator present: "Shelly Autoconf Single Switch [PM]", "Shelly Autoconf Single Cover PM", etc.</li>
  *   <li>Sensor-only: "Shelly Autoconf TH Sensor" (temp+humidity), "Shelly Autoconf Temperature Sensor", etc.</li>
- *   <li>Mixed: "Shelly Autoconf Multi-Component Device [PM]"</li>
+ *   <li>Multiple actuator types: "Shelly Autoconf Multi-Component Device [PM]"</li>
  * </ul>
  *
  * @param components List of Shelly components (e.g., ["switch:0", "temperature:0"])
  * @param componentPowerMonitoring Map of component names to power monitoring flags
+ * @param isParent Whether this device needs a parent driver (multi-component with children)
  * @return Generated driver name
  */
 private String generateDriverName(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:], Boolean isParent = false) {
@@ -3590,12 +3004,8 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
     String parentSuffix = isParent ? " Parent" : ""
 
-    // Mixed actuator + sensor device
-    if (foundActuators.size() > 0 && foundSensors.size() > 0) {
-        return "Shelly Autoconf Multi-Component Device${pmSuffix}${parentSuffix}"
-    }
-
-    // Actuator-only device
+    // When actuators are present, classify by actuator type
+    // (sensor components like temperature are supplementary — handled by the driver)
     if (foundActuators.size() > 0) {
         // Filter to only actuator counts for naming
         Map<String, Integer> actuatorCounts = componentCounts.findAll { k, v -> actuatorTypes.contains(k) }
@@ -3653,479 +3063,6 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
 }
 
 /**
- * Converts a driver base name to a file manager filename for caching.
- * Strips the "Shelly Autoconf" prefix, converts to lowercase kebab-case,
- * and prepends the {@code shellyautoconf_} prefix with a {@code .groovy} extension.
- *
- * <p>Example: {@code "Shelly Autoconf Single Switch PM"} → {@code "shellyautoconf_single-switch-pm.groovy"}</p>
- *
- * @param driverBaseName The driver base name (without version suffix)
- * @return The file manager filename for caching
- */
-@CompileStatic
-static String driverNameToFileName(String driverBaseName) {
-    String slug = driverBaseName
-        .replaceAll(/^Shelly Autoconf\s*/, '')
-        .trim()
-        .toLowerCase()
-        .replaceAll(/\s+/, '-')
-        .replaceAll(/[^a-z0-9\-]/, '')
-    return "shellyautoconf_${slug}.groovy"
-}
-
-/**
- * Saves generated driver source code to Hubitat's file manager for caching.
- * Overwrites any existing cached version. This avoids expensive GitHub fetches
- * on subsequent driver installations for the same device type.
- *
- * @param driverBaseName The driver base name (without version suffix)
- * @param sourceCode The complete driver source code to cache
- */
-private void saveDriverToCache(String driverBaseName, String sourceCode) {
-    String fileName = driverNameToFileName(driverBaseName)
-    try {
-        deleteHubFileHelper(fileName)
-    } catch (Exception ignored) {
-        // File may not exist yet — safe to ignore
-    }
-    try {
-        uploadHubFileHelper(fileName, sourceCode.getBytes('UTF-8'))
-        logInfo("Cached driver source to file manager: ${fileName}")
-    } catch (Exception e) {
-        logWarn("Failed to cache driver source to file manager: ${e.message}")
-    }
-}
-
-/**
- * Loads cached driver source code from Hubitat's file manager.
- * Returns {@code null} if the file does not exist (e.g., user deleted it).
- *
- * @param driverBaseName The driver base name (without version suffix)
- * @return The cached driver source code, or {@code null} if not found
- */
-private String loadDriverFromCache(String driverBaseName) {
-    String fileName = driverNameToFileName(driverBaseName)
-    try {
-        byte[] bytes = downloadHubFileHelper(fileName)
-        if (bytes != null && bytes.length > 0) {
-            return new String(bytes, 'UTF-8')
-        }
-    } catch (Exception e) {
-        logDebug("No cached driver found in file manager for ${fileName}: ${e.message}")
-    }
-    return null
-}
-
-/**
- * Deletes a cached driver source file from Hubitat's file manager.
- * Silently ignores errors if the file does not exist.
- *
- * @param driverBaseName The driver base name (without version suffix)
- */
-private void deleteDriverFromCache(String driverBaseName) {
-    String fileName = driverNameToFileName(driverBaseName)
-    try {
-        deleteHubFileHelper(fileName)
-        logDebug("Deleted cached driver from file manager: ${fileName}")
-    } catch (Exception e) {
-        logDebug("Could not delete cached driver ${fileName}: ${e.message}")
-    }
-}
-
-/**
- * Initializes atomicState for async driver generation operations.
- * Sets up tracking for in-flight requests, errors, and fetched file contents.
- */
-private void initializeAsyncDriverGeneration() {
-    atomicState.driverGeneration = [
-        inFlight: 0,
-        errors: 0,
-        files: [:],
-        partialDriver: '',
-        filesToFetch: []
-    ]
-}
-
-/**
- * Fetches a file asynchronously from a URL and stores it in atomicState.
- * Increments in-flight counter and uses asynchttpGet with callback.
- *
- * @param url The URL to fetch from
- * @param key The key to store the file content under in atomicState
- */
-private void fetchFileAsync(String url, String key) {
-    logDebug("Async fetch started: ${key} from ${url}")
-
-    Map params = [
-        uri: url,
-        contentType: 'text/plain',
-        timeout: 15000  // 15 seconds in milliseconds
-    ]
-
-    asynchttpGet('fetchFileCallback', params, [key: key])
-}
-
-/**
- * Callback for async file fetch operations.
- * Stores fetched content in atomicState, decrements in-flight counter,
- * and increments error counter if the fetch failed.
- *
- * @param response The HTTP response object
- * @param data Map containing the key for storing the result
- */
-void fetchFileCallback(response, data) {
-    String key = data.key
-    Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
-
-    try {
-        if (response?.status == 200) {
-            // response.data is already a String when contentType is 'text/plain'
-            String content = response.data
-            if (content) {
-                current.files[key] = content
-                logTrace("Async fetch completed: ${key} (${content.length()} chars)")
-            } else {
-                current.errors = (current.errors ?: 0) + 1
-                logWarn("Async fetch failed: ${key} - empty content")
-            }
-        } else {
-            current.errors = (current.errors ?: 0) + 1
-            logWarn("Async fetch failed: ${key} - status ${response?.status}")
-        }
-    } catch (Exception e) {
-        current.errors = (current.errors ?: 0) + 1
-        logError("Async fetch error: ${key} - ${e.message}")
-    } finally {
-        current.inFlight = (current.inFlight ?: 1) - 1
-        atomicState.driverGeneration = current
-        logTrace("In-flight requests: ${current.inFlight}, Errors: ${current.errors}")
-
-        // If all fetches complete, assemble the driver
-        if (current.inFlight == 0) {
-            completeDriverGeneration()
-        }
-    }
-}
-
-/**
- * Waits for all async file fetch operations to complete.
- * Polls atomicState every 500ms checking if in-flight count is 0.
- *
- * @param timeoutSeconds Maximum time to wait before timing out
- * @return true if all requests completed, false if timeout occurred
- */
-private Boolean waitForAsyncCompletion(Integer timeoutSeconds = 30) {
-    Integer maxIterations = timeoutSeconds * 2  // Check every 500ms
-    Integer iteration = 0
-
-    logDebug("Waiting for async operations to complete (timeout: ${timeoutSeconds}s)")
-
-    while (iteration < maxIterations) {
-        Map current = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
-        Integer inFlight = current.inFlight ?: 0
-
-        if (inFlight == 0) {
-            logDebug("All async operations completed after ${iteration * 500}ms")
-            return true
-        }
-
-        pauseExecution(500)
-        iteration++
-
-        // Log progress every 5 seconds
-        if (iteration % 10 == 0) {
-            logDebug("Still waiting... In-flight: ${inFlight}, Iteration: ${iteration}/${maxIterations}")
-        }
-    }
-
-    logError("Async operations timed out after ${timeoutSeconds} seconds")
-    return false
-}
-
-/**
- * Completes driver generation after all async file fetches finish.
- * Called by fetchFileCallback when inFlight reaches 0.
- * Assembles the complete driver from partial driver + fetched files.
- */
-private void completeDriverGeneration() {
-    Map results = atomicState.driverGeneration ?: [inFlight: 0, errors: 0, files: [:]]
-
-    // Check for errors
-    if (results.errors > 0) {
-        logError("Driver generation failed: ${results.errors} file(s) failed to fetch")
-
-        // If part of rebuild queue, record error and continue to next driver
-        if (state.driverRebuildInProgress) {
-            String rebuildKey = state.driverRebuildCurrentKey
-            List<Map> errors = state.driverRebuildErrors ?: []
-            errors.add([key: rebuildKey ?: 'unknown', error: "${results.errors} file fetch failures"])
-            state.driverRebuildErrors = errors
-            runIn(5, 'processNextDriverRebuild')
-        }
-        // If part of discovery queue, continue to next device despite error
-        if (state.discoveryDriverInProgress && !state.driverRebuildInProgress) {
-            atomicState.remove('currentDriverGeneration')
-            scheduleNextDiscoveryDriver()
-        }
-        return
-    }
-
-    logDebug("All async fetches completed, assembling driver")
-
-    // Start with partial driver (metadata + preferences)
-    StringBuilder driver = new StringBuilder(results.partialDriver ?: '')
-    List<String> filesToFetch = results.filesToFetch ?: []
-
-    // Append fetched files in correct order
-    // 1. Lifecycle first (ParentLifecycle.groovy for parent drivers, Lifecycle.groovy for monolithic)
-    String lifecycleFile = results.files['ParentLifecycle.groovy'] ? 'ParentLifecycle.groovy' : 'Lifecycle.groovy'
-    if (results.files[lifecycleFile]) {
-        String lifecycleContent = results.files[lifecycleFile]
-        logInfo("Adding ${lifecycleFile} (${lifecycleContent?.length() ?: 0} chars)")
-        logDebug("${lifecycleFile} contains parse(): ${lifecycleContent?.contains('void parse(') ?: false}")
-        driver.append(lifecycleContent)
-        driver.append("\n")
-        logDebug("Added ${lifecycleFile}")
-    } else {
-        logError("${lifecycleFile} was not fetched!")
-    }
-
-    // 2. Standard command files (only for monolithic drivers)
-    ['InitializeCommands.groovy', 'ConfigureCommands.groovy', 'RefreshCommand.groovy'].each { String fileName ->
-        if (results.files[fileName]) {
-            driver.append(results.files[fileName])
-            driver.append("\n")
-            logDebug("Added ${fileName}")
-        }
-    }
-
-    // 3. Component-specific command files (only for monolithic drivers)
-    Set<String> skipFiles = ['Lifecycle.groovy', 'ParentLifecycle.groovy', 'InitializeCommands.groovy',
-        'ConfigureCommands.groovy', 'RefreshCommand.groovy', 'Helpers.groovy'] as Set
-    filesToFetch.each { String fileName ->
-        if (!skipFiles.contains(fileName)) {
-            if (results.files[fileName]) {
-                driver.append(results.files[fileName])
-                driver.append("\n")
-                logDebug("Added ${fileName}")
-            }
-        }
-    }
-
-    // 4. Helpers.groovy last
-    if (results.files['Helpers.groovy']) {
-        driver.append(results.files['Helpers.groovy'])
-        driver.append("\n")
-        logDebug("Added Helpers.groovy")
-    }
-
-    String driverCode = driver.toString()
-    logInfo("Generated driver code:\n${driverCode}", true)
-
-    // Install the generated driver (also caches to file manager)
-    installDriver(driverCode)
-
-    // Post-install: register driver and handle context
-    Map genContext = atomicState.currentDriverGeneration
-    if (genContext) {
-        List<String> comps = genContext.components as List<String>
-        Map<String, Boolean> pmMap = (genContext.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-        Boolean genIsParent = genContext.needsParentChild ?: false
-        String driverName = generateDriverName(comps, pmMap, genIsParent)
-        String version = getAppVersion()
-        String driverNameWithVersion = "${driverName} v${version}"
-
-        if (genContext.isRebuild) {
-            // Rebuild mode: update tracking only, no device creation context needed
-            logInfo("Rebuild complete: driver installed as ${driverNameWithVersion}")
-        } else if (genContext.ipKey) {
-            // New device mode: store driver name for device creation
-            if (state.discoveredShellys[genContext.ipKey]) {
-                state.discoveredShellys[genContext.ipKey].generatedDriverName = driverNameWithVersion
-                logInfo("Stored driver name for ${genContext.ipKey}: ${driverNameWithVersion}")
-            }
-        }
-
-        // Register/update in tracking system with full metadata
-        registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, comps, pmMap)
-
-        // Clear the generation context and notify listeners
-        String completedIpKey = genContext.ipKey
-        atomicState.remove('currentDriverGeneration')
-
-        // Fire event to trigger deferred device creation
-        if (completedIpKey && !genContext.isRebuild) {
-            sendAppEventHelper([name: 'driverGenerationComplete', value: completedIpKey])
-        }
-    }
-
-    // Clean up any duplicate drivers
-    logInfo("Cleaning up duplicate drivers...")
-    pauseExecution(1000)  // Give hub time to process
-    cleanupDuplicateDrivers()
-
-    // List all installed Shelly Autoconf drivers after installation
-    logInfo("Checking installed drivers after cleanup...")
-    pauseExecution(500)
-    listAutoconfDrivers()
-
-    // If part of rebuild queue, schedule the next driver
-    if (state.driverRebuildInProgress) {
-        logInfo("Rebuild: scheduling next driver in queue")
-        runIn(5, 'processNextDriverRebuild')
-    }
-
-    // If part of discovery queue, schedule next device
-    if (state.discoveryDriverInProgress && !state.driverRebuildInProgress) {
-        scheduleNextDiscoveryDriver()
-    }
-}
-
-/**
- * Cleans up unused Shelly Autoconf drivers created by this app.
- * Deletes any auto-generated driver that has no devices currently using it.
- */
-private void cleanupDuplicateDrivers() {
-    logInfo("Checking for unused Shelly Autoconf drivers...")
-
-    try {
-        Map driverParams = [
-            uri: "http://127.0.0.1:8080",
-            path: '/device/drivers',
-            contentType: 'application/json',
-            timeout: 5000
-        ]
-
-        httpGet(driverParams) { driverResp ->
-            if (driverResp?.status != 200) { return }
-
-            def autoconfDrivers = driverResp.data?.drivers?.findAll { driver ->
-                driver.type == 'usr' &&
-                driver?.namespace == 'ShellyUSA' &&
-                driver?.name?.toString()?.startsWith("Shelly Autoconf")
-            }
-
-            if (!autoconfDrivers) {
-                logDebug("No Shelly Autoconf drivers found")
-                return
-            }
-
-            // Build set of driver names actually in use by child devices
-            def childDevices = getChildDevices() ?: []
-            Set<String> inUseDriverNames = childDevices.collect { it.typeName }.toSet()
-
-            // Also protect drivers tracked in state.autoDrivers with current version
-            // (they may have been just generated and not yet assigned to a device)
-            String currentVersion = getAppVersion()
-            Map trackedDrivers = state.autoDrivers ?: [:]
-            Set<String> trackedDriverNames = trackedDrivers.findAll { k, v ->
-                v instanceof Map && v.version == currentVersion
-            }.collect { k, v -> k.replaceAll(/^ShellyUSA\./, '') }.toSet()
-
-            int removed = 0
-            autoconfDrivers.each { driver ->
-                String name = driver.name?.toString()
-                if (inUseDriverNames.contains(name)) {
-                    // In use by a child device — keep it
-                } else if (trackedDriverNames.contains(name)) {
-                    logDebug("Keeping tracked driver (not yet assigned to device): ${name}")
-                } else {
-                    logInfo("Removing unused driver: ${name} (ID: ${driver.id})")
-                    if (deleteDriver(driver.id as Integer)) {
-                        // Also remove the cached source file from file manager
-                        String baseName = name?.replaceAll(/\s+v\d+(\.\d+)*$/, '')
-                        if (baseName) { deleteDriverFromCache(baseName) }
-                        removed++
-                    }
-                }
-            }
-
-            if (removed > 0) {
-                logInfo("Removed ${removed} unused Shelly Autoconf driver(s)")
-            } else {
-                logDebug("No unused Shelly Autoconf drivers to remove")
-            }
-        }
-    } catch (Exception e) {
-        logError("Error cleaning up drivers: ${e.message}")
-    }
-}
-
-/**
- * Deletes a driver by ID from the hub.
- *
- * @param driverId The driver ID to delete
- * @return true if successful, false otherwise
- */
-private Boolean deleteDriver(Integer driverId) {
-    try {
-        // Use same endpoint as Sonos app
-        Map params = [
-            uri: "http://127.0.0.1:8080",
-            path: "/driver/editor/deleteJson/${driverId}",
-            timeout: 10,
-            ignoreSSLIssues: true
-        ]
-
-        Boolean result = false
-        httpGet(params) { resp ->
-            if (resp?.data?.status == true) {
-                result = true
-            } else {
-                logWarn("Failed to delete driver ${driverId}: ${resp?.data}")
-            }
-        }
-        return result
-    } catch (Exception e) {
-        logError("Error deleting driver ${driverId}: ${e.message}")
-        return false
-    }
-}
-
-private void listAutoconfDrivers() {
-    logInfo("Checking for installed Shelly Autoconf drivers...")
-
-    try {
-        // Get all drivers
-        Map driverParams = [
-            uri: "http://127.0.0.1:8080",
-            path: '/device/drivers',
-            contentType: 'application/json',
-            timeout: 5000
-        ]
-
-        httpGet(driverParams) { driverResp ->
-            if (driverResp?.status == 200) {
-                // Filter for user-installed Shelly Autoconf drivers
-                def autoconfDrivers = driverResp.data?.drivers?.findAll { driver ->
-                    driver.type == 'usr' &&
-                    driver?.namespace == 'ShellyUSA' &&
-                    driver?.name?.startsWith("Shelly Autoconf")
-                }
-
-                if (autoconfDrivers.size() > 0) {
-                    // Count actual child devices per driver using Hubitat's child device API
-                    def childDevices = getChildDevices() ?: []
-
-                    logInfo("Found ${autoconfDrivers.size()} installed Shelly Autoconf driver(s):")
-                    autoconfDrivers.each { driver ->
-                        def deviceCount = childDevices.count { it.typeName == driver.name }
-                        def inUseStatus = deviceCount > 0 ? "IN USE by ${deviceCount} device(s)" : "NOT IN USE"
-                        logInfo("  - ${driver.name} (ID: ${driver.id}) - ${inUseStatus}")
-                    }
-                } else {
-                    logInfo("No Shelly Autoconf drivers installed")
-                }
-            } else {
-                logWarn("Failed to get driver list: HTTP ${driverResp?.status}")
-            }
-        }
-    } catch (Exception e) {
-        logError("Error querying installed drivers: ${e.message}")
-    }
-}
-
-/**
  * Downloads and installs a pre-built driver from the GitHub repository.
  * Looks up the driver name in PREBUILT_DRIVERS, downloads the .groovy file,
  * installs it on the hub, and registers it in the tracking system.
@@ -4172,7 +3109,7 @@ private Boolean installPrebuiltDriver(String driverName, List<String> components
 /**
  * Installs a driver on the hub by posting the source code.
  * Updates an existing driver if one with the same name/namespace exists,
- * otherwise creates a new driver entry. Also caches to file manager.
+ * otherwise creates a new driver entry.
  *
  * @param sourceCode The complete driver source code to install
  * @return true if the driver was installed/updated successfully, false otherwise
@@ -4277,9 +3214,6 @@ private Boolean installDriver(String sourceCode) {
             }
         }
 
-        // Cache the driver source to file manager for fast future installs
-        if (success) { saveDriverToCache(baseName, sourceCode) }
-
     } catch (Exception e) {
         logError("Error installing driver: ${e.message}")
         return false
@@ -4312,10 +3246,10 @@ private Boolean isDriverOnHub(String driverName, String namespace) {
 
 /**
  * Ensures a driver is installed on the hub before device creation.
- * Checks if the driver exists, and if not, attempts to install it via the prebuilt
- * or cache path. Waits briefly after installation for the hub to process the driver.
+ * Checks if the driver exists, and if not, attempts to install via
+ * the prebuilt driver path. Waits briefly after installation for the hub to process.
  *
- * @param driverName The versioned driver name (e.g., "Shelly Autoconf Single Switch PM v1.0.33")
+ * @param driverName The versioned driver name (e.g., "Shelly Autoconf Single Switch PM v1.0.34")
  * @param deviceInfo The discovered device information map
  * @return true if the driver is confirmed on the hub, false otherwise
  */
@@ -4328,7 +3262,6 @@ private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
 
     logInfo("Driver '${driverName}' not found on hub, attempting to install...")
 
-    // Strip version to get base name for PREBUILT_DRIVERS lookup
     String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
     String version = getAppVersion()
     List<String> components = (deviceInfo.components ?: []) as List<String>
@@ -4338,25 +3271,15 @@ private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
     if (PREBUILT_DRIVERS.containsKey(baseName)) {
         installed = installPrebuiltDriver(baseName, components, pmMap, version)
     } else {
-        // Try loading from file manager cache, patching version to match current app
-        String cachedSource = loadDriverFromCache(baseName)
-        if (cachedSource) {
-            cachedSource = cachedSource.replaceFirst(
-                /(name:\s*['"])${java.util.regex.Pattern.quote(baseName)}(\s+v[\d.]+)?(['"])/,
-                "\$1${driverName}\$3"
-            )
-            installed = installDriver(cachedSource)
-        }
+        logWarn("No prebuilt driver for '${baseName}'. Add to PREBUILT_DRIVERS to support this device type.")
     }
 
     if (!installed) {
-        logError("Driver installation returned failure for '${driverName}'")
+        logError("Driver installation failed for '${driverName}'")
         return false
     }
 
-    // Give hub time to compile and register the driver
     pauseExecution(2000)
-
     Boolean confirmed = isDriverOnHub(driverName, namespace)
     if (!confirmed) {
         logError("Driver '${driverName}' still not found on hub after installation")
@@ -8471,264 +7394,6 @@ private String login() {
   }
 }
 
-/**
- * Retrieves all user-installed drivers from the hub.
- *
- * @return List of driver maps with id, name, and namespace properties
- */
-private List getDriverList() {
-  try {
-    String cookie = login()
-    if(!cookie) { return [] }
-
-    Map params = [
-      uri: "http://127.0.0.1:8080",
-      path: '/device/drivers',
-      headers: [
-        'Cookie': cookie
-      ],
-      timeout: 15
-    ]
-
-    List drivers = []
-
-    httpGet(params) { resp ->
-      if(resp?.status == 200 && resp.data?.drivers) {
-        // Filter to only user drivers
-        drivers = resp.data.drivers.findAll { it.type == 'usr' }
-      }
-    }
-
-    return drivers
-  } catch(Exception e) {
-    logError("Error getting driver list: ${e.message}")
-    return []
-  }
-}
-
-/**
- * Gets the installed version of a specific driver from the hub.
- * Retrieves the driver's source code and extracts the version string
- * from the driver definition metadata.
- *
- * @param driverName The driver name to search for
- * @param namespace The driver namespace (e.g., 'ShellyUSA')
- * @return Version string extracted from driver source, or null if not found
- */
-private String getInstalledDriverVersion(String driverName, String namespace) {
-  String foundVersion = null
-
-  try {
-    String cookie = login()
-    if(!cookie) {
-      logWarn('Failed to authenticate with hub')
-      return null
-    }
-
-    Map params = [
-      uri: "http://127.0.0.1:8080",
-      path: '/device/drivers',
-      headers: [Cookie: cookie]
-    ]
-
-    httpGet(params) { resp ->
-      if(resp?.status == 200) {
-        logDebug("Driver list response received, checking for ${driverName} in namespace ${namespace}")
-
-        def userDrivers = resp.data?.drivers?.findAll { it.type == 'usr' }
-        logDebug("Found ${userDrivers?.size()} user drivers")
-
-        def driver = resp.data?.drivers?.find {
-          it.type == 'usr' && it?.name == driverName && it?.namespace == namespace
-        }
-
-        if(driver && driver.id) {
-          Integer driverId = driver.id
-          logDebug("Found driver ${driverName}, getting source code...")
-
-          Map codeParams = [
-            uri: "http://127.0.0.1:8080",
-            path: '/driver/ajax/code',
-            headers: [Cookie: cookie],
-            query: [id: driverId]
-          ]
-
-          httpGet(codeParams) { codeResp ->
-            if(codeResp?.status == 200 && codeResp.data?.source) {
-              String source = codeResp.data.source
-              def matcher = (source =~ /version:\s*['"]([^'"]+)['"]/)
-              if(matcher.find()) {
-                foundVersion = matcher.group(1)
-                logDebug("Extracted version ${foundVersion} from ${driverName}")
-              } else {
-                logWarn("Could not find version pattern in source for ${driverName}")
-              }
-            } else {
-              logWarn("Failed to get source code for ${driverName}, status: ${codeResp?.status}")
-            }
-          }
-        } else if(!driver) {
-          logDebug("Driver not found in hub: ${driverName} (${namespace})")
-        }
-      } else {
-        logWarn("Failed to get driver list, status: ${resp?.status}")
-      }
-    }
-  } catch(Exception e) {
-    logWarn("Error getting version for ${driverName}: ${e.message}")
-  }
-
-  return foundVersion
-}
-
-/**
- * Gets the hub's internal version number for a driver.
- * This is different from the semantic version in the driver metadata and
- * is used by the hub for tracking updates.
- *
- * @param driverName The driver name
- * @param namespace The driver namespace
- * @return Hub's internal version string, or null if not found
- */
-private String getDriverVersionForUpdate(String driverName, String namespace) {
-  String hubVersion = null
-
-  try {
-    String cookie = login()
-    if(!cookie) { return null }
-
-    Map params = [
-      uri: "http://127.0.0.1:8080",
-      path: '/device/drivers',
-      headers: [Cookie: cookie]
-    ]
-
-    httpGet(params) { resp ->
-      def driver = resp.data?.drivers?.find {
-        it.type == 'usr' && it?.name == driverName && it?.namespace == namespace
-      }
-
-      if(driver?.id) {
-        Map codeParams = [
-          uri: "http://127.0.0.1:8080",
-          path: '/driver/ajax/code',
-          headers: [Cookie: cookie],
-          query: [id: driver.id]
-        ]
-
-        httpGet(codeParams) { codeResp ->
-          if(codeResp?.status == 200 && codeResp.data?.version) {
-            hubVersion = codeResp.data.version.toString()
-            logDebug("Got hub version ${hubVersion} for ${driverName}")
-          }
-        }
-      }
-    }
-  } catch(Exception e) {
-    logWarn("Error getting hub version for ${driverName}: ${e.message}")
-  }
-
-  return hubVersion
-}
-
-/**
- * Creates or updates a driver on the hub.
- * If the driver doesn't exist, creates it. If it exists, updates the source code.
- * Uses the hub's internal API endpoints for driver management.
- *
- * @param driverName The name of the driver
- * @param namespace The driver namespace (e.g., 'ShellyUSA')
- * @param sourceCode Complete driver source code
- * @param newVersionForLogging Version string for logging purposes
- * @return true if successful, false otherwise
- */
-private Boolean updateDriver(String driverName, String namespace, String sourceCode, String newVersionForLogging) {
-  try {
-    String cookie = login()
-    if(!cookie) {
-      logError('Failed to authenticate with hub')
-      return false
-    }
-
-    List allDrivers = getDriverList()
-    Map targetDriver = allDrivers.find { driver ->
-      driver.name == driverName && driver.namespace == namespace
-    }
-
-    if(!targetDriver) {
-      // Driver doesn't exist - create it
-      logInfo("Driver not found, creating new driver: ${namespace}.${driverName}")
-
-      Map createParams = [
-        uri: "http://127.0.0.1:8080",
-        path: '/driver/save',
-        requestContentType: 'application/x-www-form-urlencoded',
-        headers: [
-          'Cookie': cookie
-        ],
-        body: [
-          id: '',
-          version: '',
-          create: '',
-          source: sourceCode
-        ],
-        timeout: 300,
-        ignoreSSLIssues: true
-      ]
-
-      Boolean result = false
-      httpPost(createParams) { resp ->
-        if(resp.headers?.Location != null) {
-          String newId = resp.headers.Location.replaceAll("https?://127.0.0.1:(?:8080|8443)/driver/editor/", "")
-          logInfo("Successfully created driver ${driverName} with id ${newId}")
-          result = true
-        } else {
-          logError("Driver ${driverName} creation failed - no Location header")
-          result = false
-        }
-      }
-      return result
-    }
-
-    // Driver exists - update it
-    logInfo("Updating existing driver ${driverName} (id: ${targetDriver.id})")
-
-    String currentHubVersion = getDriverVersionForUpdate(driverName, namespace) ?: ''
-    logDebug("Updating driver ${driverName}: hub version=${currentHubVersion}, new version=${newVersionForLogging}")
-
-    Map updateParams = [
-      uri: "http://127.0.0.1:8080",
-      path: '/driver/ajax/update',
-      requestContentType: 'application/x-www-form-urlencoded',
-      headers: [
-        'Cookie': cookie
-      ],
-      body: [
-        id: targetDriver.id,
-        version: currentHubVersion,
-        source: sourceCode
-      ],
-      timeout: 300,
-      ignoreSSLIssues: true
-    ]
-
-    Boolean result = false
-    httpPost(updateParams) { resp ->
-      logDebug("Driver update response: ${resp.data}")
-      if(resp.data?.status == 'success') {
-        logInfo("Successfully updated driver ${driverName}")
-        result = true
-      } else {
-        logError("Driver ${driverName} update failed - response: ${resp.data}")
-        result = false
-      }
-    }
-    return result
-  } catch(Exception e) {
-    logError("Error updating/creating driver ${driverName}: ${e.message}")
-    return false
-  }
-}
 
 /**
  * Downloads a file from a URL.
@@ -8760,156 +7425,51 @@ private String downloadFile(String uri) {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Driver Auto-Update / Rebuild Queue                          ║
+// ║  Driver Auto-Update                                          ║
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region Driver Auto-Update */
 
 /**
- * Initiates serial rebuild of all tracked auto-generated drivers.
- * Builds a queue from state.autoDrivers and processes one driver at a time.
- * Each driver regeneration is async (fetches files from GitHub), so the queue
- * uses runIn() callbacks chained from completeDriverGeneration().
+ * Reinstalls all tracked prebuilt drivers with the current app version.
+ * Called on app version change to update driver version suffixes.
  */
-private void rebuildAllTrackedDrivers() {
+private void reinstallAllPrebuiltDrivers() {
     initializeDriverTracking()
 
+    String version = getAppVersion()
     Map allDrivers = state.autoDrivers ?: [:]
     if (allDrivers.isEmpty()) {
-        logInfo("No tracked drivers to rebuild")
+        logInfo("No tracked drivers to update")
         return
     }
 
-    // Prevent concurrent rebuilds
-    if (state.driverRebuildInProgress) {
-        logWarn("Driver rebuild already in progress, skipping")
-        return
-    }
+    logInfo("Updating ${allDrivers.size()} driver(s) to v${version}...")
+    appendLog('info', "Updating ${allDrivers.size()} driver(s) to v${version}...")
 
-    // Build queue of driver keys
-    List<String> queue = allDrivers.keySet() as List<String>
-    state.driverRebuildQueue = queue
-    state.driverRebuildInProgress = true
-    state.driverRebuildCurrentKey = null
-    state.driverRebuildErrors = []
+    int updated = 0
+    int errors = 0
+    allDrivers.each { key, info ->
+        String baseName = (info.name ?: '').replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        Boolean isComponent = info.isComponentDriver ?: false
 
-    // Fire app event to trigger SSR update on main page
-    // NOTE: bare sendEvent() is required for ssr-app-state- elements;
-    // app.sendEvent() only triggers client-side app-state- bindings.
-    sendEvent(name: 'driverRebuildStatus', value: 'in_progress')
-
-    logInfo("Starting serial rebuild of ${queue.size()} tracked driver(s): ${queue}")
-    appendLog('info', "Rebuilding ${queue.size()} auto-generated driver(s)...")
-
-    // Start processing the first item after a short delay
-    runIn(2, 'processNextDriverRebuild')
-}
-
-/**
- * Processes one driver from the rebuild queue.
- * Pops the next driver key, reads its stored metadata, and triggers
- * async driver regeneration. completeDriverGeneration() will chain
- * back to this method when done.
- */
-void processNextDriverRebuild() {
-    List<String> queue = state.driverRebuildQueue ?: []
-
-    if (queue.isEmpty()) {
-        finishDriverRebuild()
-        return
-    }
-
-    // Pop the first item
-    String key = queue.remove(0)
-    state.driverRebuildQueue = queue
-    state.driverRebuildCurrentKey = key
-
-    Map driverInfo = state.autoDrivers[key]
-    if (!driverInfo) {
-        logWarn("Driver ${key} not found in tracking data, skipping")
-        runIn(1, 'processNextDriverRebuild')
-        return
-    }
-
-    logInfo("Rebuilding driver: ${key} (${queue.size()} remaining)")
-    appendLog('info', "Rebuilding: ${driverInfo.name}")
-
-    // Fire SSR update so the UI shows progress
-    sendEvent(name: 'driverRebuildStatus', value: "rebuilding_${queue.size()}")
-
-    try {
-        List<String> components = driverInfo.components as List<String>
-        Map<String, Boolean> pmMap = (driverInfo.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-
-        if (!components || components.isEmpty()) {
-            logWarn("Driver ${key} has no components metadata, skipping")
-            List<Map> errors = state.driverRebuildErrors ?: []
-            errors.add([key: key, error: "No components metadata stored"])
-            state.driverRebuildErrors = errors
-            runIn(1, 'processNextDriverRebuild')
+        if (isComponent) {
+            logDebug("Skipping component driver update: ${key} (version-independent)")
             return
         }
 
-        // Detect parent drivers by name suffix or isComponentDriver flag
-        Boolean isParentDriver = (driverInfo.name ?: '').contains(' Parent ')
-        Boolean isComponentDriver = driverInfo.isComponentDriver ?: false
-
-        // Skip component drivers during rebuild — they are self-contained files
-        if (isComponentDriver) {
-            logDebug("Skipping component driver rebuild: ${key} (fetched from GitHub as-is)")
-            runIn(1, 'processNextDriverRebuild')
-            return
+        if (PREBUILT_DRIVERS.containsKey(baseName)) {
+            List<String> components = (info.components ?: []) as List<String>
+            Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+            Boolean success = installPrebuiltDriver(baseName, components, pmMap, version)
+            if (success) { updated++ } else { errors++ }
+        } else {
+            logWarn("No prebuilt driver for '${baseName}' — cannot update. Add to PREBUILT_DRIVERS.")
+            errors++
         }
-
-        // Store context for the async completion callback
-        atomicState.currentDriverGeneration = [
-            ipKey: null,
-            components: components,
-            componentPowerMonitoring: pmMap,
-            isRebuild: true,
-            rebuildKey: key,
-            needsParentChild: isParentDriver
-        ]
-
-        // Async: will call completeDriverGeneration() when all fetches finish,
-        // which chains back to processNextDriverRebuild()
-        generateHubitatDriver(components, pmMap, isParentDriver)
-
-    } catch (Exception e) {
-        logError("Failed to rebuild driver ${key}: ${e.message}")
-        List<Map> errors = state.driverRebuildErrors ?: []
-        errors.add([key: key, error: e.message])
-        state.driverRebuildErrors = errors
-
-        // Continue with next driver despite the error
-        runIn(2, 'processNextDriverRebuild')
-    }
-}
-
-/**
- * Called when the rebuild queue is fully processed.
- * Logs a summary of successes and failures, then cleans up queue state.
- */
-private void finishDriverRebuild() {
-    state.driverRebuildInProgress = false
-    state.driverRebuildCurrentKey = null
-
-    List<Map> errors = state.driverRebuildErrors ?: []
-
-    if (errors.isEmpty()) {
-        logInfo("All tracked drivers rebuilt successfully")
-        appendLog('info', "All drivers rebuilt successfully")
-    } else {
-        logWarn("Driver rebuild completed with ${errors.size()} error(s):")
-        errors.each { err ->
-            logWarn("  - ${err.key}: ${err.error}")
-        }
-        appendLog('warn', "Driver rebuild finished with ${errors.size()} error(s)")
     }
 
-    // Clean up queue state
-    state.remove('driverRebuildQueue')
-    state.remove('driverRebuildErrors')
-    state.remove('driverRebuildCurrentKey')
+    logInfo("Driver update complete: ${updated} updated, ${errors} error(s)")
+    appendLog('info', "Driver update complete: ${updated} updated, ${errors} error(s)")
 
     // Fire app event to trigger SSR update on main page
     sendEvent(name: 'driverRebuildStatus', value: 'complete')
@@ -9369,114 +7929,6 @@ private void associateDeviceWithDriver(String driverName, String namespace, Stri
     state.autoDrivers[key].devicesUsing.add(deviceDNI)
     logDebug("Associated device ${deviceDNI} with driver ${key}")
   }
-}
-
-/**
- * Removes a device association from an auto-generated driver.
- * Called when a device is deleted or switches to a different driver.
- *
- * @param driverName The driver name
- * @param namespace The driver namespace
- * @param deviceDNI The device network ID to disassociate
- */
-private void disassociateDeviceFromDriver(String driverName, String namespace, String deviceDNI) {
-  initializeDriverTracking()
-
-  String key = "${namespace}.${driverName}"
-  if(state.autoDrivers[key]?.devicesUsing) {
-    state.autoDrivers[key].devicesUsing.remove(deviceDNI)
-    logDebug("Disassociated device ${deviceDNI} from driver ${key}")
-
-    // If no devices are using this driver anymore, we could optionally clean it up
-    if(state.autoDrivers[key].devicesUsing.size() == 0) {
-      logInfo("Driver ${key} is no longer in use by any devices")
-    }
-  }
-}
-
-/**
- * Gets the version of a tracked auto-generated driver.
- *
- * @param driverName The driver name
- * @param namespace The driver namespace
- * @return Version string, or null if driver is not tracked
- */
-private String getTrackedDriverVersion(String driverName, String namespace) {
-  initializeDriverTracking()
-  String key = "${namespace}.${driverName}"
-  return state.autoDrivers[key]?.version
-}
-
-/**
- * Updates the version of a tracked auto-generated driver.
- *
- * @param driverName The driver name
- * @param namespace The driver namespace
- * @param newVersion The new version string
- */
-private void updateTrackedDriverVersion(String driverName, String namespace, String newVersion) {
-  initializeDriverTracking()
-  String key = "${namespace}.${driverName}"
-
-  if(state.autoDrivers[key]) {
-    String oldVersion = state.autoDrivers[key].version
-    state.autoDrivers[key].version = newVersion
-    state.autoDrivers[key].lastUpdated = now()
-    logInfo("Updated driver ${key} version from ${oldVersion} to ${newVersion}")
-  }
-}
-
-/**
- * Gets all devices using a specific auto-generated driver.
- *
- * @param driverName The driver name
- * @param namespace The driver namespace
- * @return List of device DNIs using this driver
- */
-private List<String> getDevicesUsingDriver(String driverName, String namespace) {
-  initializeDriverTracking()
-  String key = "${namespace}.${driverName}"
-  return state.autoDrivers[key]?.devicesUsing ?: []
-}
-
-/**
- * Gets a summary of all tracked auto-generated drivers.
- *
- * @return Map of driver keys to their tracking information
- */
-private Map getAllTrackedDrivers() {
-  initializeDriverTracking()
-  return state.autoDrivers
-}
-
-/**
- * Checks if an auto-generated driver needs to be updated.
- * Compares the installed version on the hub with the tracked version
- * in app state to detect version mismatches.
- *
- * @param driverName The driver name
- * @param namespace The driver namespace
- * @return true if the driver needs updating, false otherwise
- */
-private Boolean driverNeedsUpdate(String driverName, String namespace) {
-  String trackedVersion = getTrackedDriverVersion(driverName, namespace)
-  if(!trackedVersion) {
-    logDebug("Driver ${namespace}.${driverName} is not tracked")
-    return false
-  }
-
-  String installedVersion = getInstalledDriverVersion(driverName, namespace)
-  if(!installedVersion) {
-    logWarn("Driver ${namespace}.${driverName} is tracked but not installed on hub")
-    return true
-  }
-
-  Boolean needsUpdate = trackedVersion != installedVersion
-  if(needsUpdate) {
-    logInfo("Driver ${namespace}.${driverName} version mismatch: tracked=${trackedVersion}, installed=${installedVersion}")
-  }
-
-  return needsUpdate
 }
 
 /* #endregion Driver Version Tracking */
