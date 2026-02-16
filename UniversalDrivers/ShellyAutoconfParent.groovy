@@ -234,18 +234,27 @@ void parse(String description) {
 
   try {
     Map msg = parseLanMessage(description)
+    logTrace("parse() msg keys: ${msg?.keySet()}, status=${msg?.status}, body=${msg?.body ? 'present' : 'null'}, headers=${msg?.headers ? 'present' : 'null'}, header=${msg?.header ? 'present' : 'null'}")
+    if (msg?.headers) { logTrace("parse() headers map keys: ${msg.headers.keySet()}") }
+    if (msg?.header) { logTrace("parse() raw header: ${msg.header}") }
 
     // Skip HTTP responses (only process incoming requests)
-    if (msg?.status != null) { return }
+    if (msg?.status != null) {
+      logTrace("parse() skipping HTTP response (status=${msg.status})")
+      return
+    }
 
     // Try POST body first (script notifications with dst field)
     if (msg?.body) {
       try {
         def json = new groovy.json.JsonSlurper().parseText(msg.body)
         if (json?.dst && json?.result) {
+          logDebug("POST notification dst=${json.dst}")
+          logTrace("POST result: ${json.result}")
           routePostNotification(json.dst as String, json)
           return
         }
+        logTrace("POST body parsed but no dst/result")
       } catch (Exception e) {
         // Body might be empty or not JSON — fall through to GET parsing
       }
@@ -254,7 +263,11 @@ void parse(String description) {
     // Try GET query parameters (webhook notifications)
     Map params = parseWebhookQueryParams(msg)
     if (params?.dst && params?.comp) {
+      logDebug("GET webhook dst=${params.dst}, comp=${params.comp}")
+      logTrace("Webhook params: ${params}")
       routeWebhookParams(params)
+    } else {
+      logTrace("parse() no dst/comp found in message, unable to route")
     }
   } catch (Exception e) {
     logError("Error parsing LAN message: ${e.message}")
@@ -269,15 +282,37 @@ void parse(String description) {
  */
 @CompileStatic
 private Map parseWebhookQueryParams(Map msg) {
-  if (!msg?.headers) { return null }
+  String requestLine = null
 
-  String requestLine = msg.headers?.keySet()?.find { key ->
-    key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+  // Try parsed headers map first
+  if (msg?.headers) {
+    requestLine = msg.headers.keySet()?.find { key ->
+      key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+    }?.toString()
+    logTrace("parseWebhookQueryParams: headers map search result: ${requestLine ? 'found' : 'not found'}")
   }
 
-  if (!requestLine) { return null }
+  // Fallback: parse raw header string for request line
+  if (!requestLine && msg?.header) {
+    String rawHeader = msg.header.toString()
+    logTrace("parseWebhookQueryParams: trying raw header fallback")
+    String[] lines = rawHeader.split('\n')
+    for (String line : lines) {
+      String trimmed = line.trim()
+      if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
+        requestLine = trimmed
+        logTrace("parseWebhookQueryParams: found request line in raw header: ${requestLine}")
+        break
+      }
+    }
+  }
 
-  String pathAndQuery = requestLine.toString().split(' ')[1]
+  if (!requestLine) {
+    logTrace('parseWebhookQueryParams: no request line found in headers or raw header')
+    return null
+  }
+
+  String pathAndQuery = requestLine.split(' ')[1]
   int qIdx = pathAndQuery.indexOf('?')
   if (qIdx < 0) { return null }
 
@@ -288,6 +323,7 @@ private Map parseWebhookQueryParams(Map msg) {
       params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
     }
   }
+  logTrace("parseWebhookQueryParams: parsed params: ${params}")
   return params
 }
 

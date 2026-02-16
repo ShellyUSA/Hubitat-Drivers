@@ -1482,7 +1482,9 @@ private void installRequiredActionsForIp(String ipAddress) {
         if (existing) {
             List<String> urls = existing.urls as List<String>
             Boolean isEnabled = existing.enable as Boolean
-            if (urls?.any { it?.contains(hubIp) } && isEnabled) {
+            String existingName = existing.name as String
+            Boolean nameNeedsUpdate = !existingName?.startsWith('hubitat_sdm_')
+            if (urls?.any { it?.contains(hubIp) } && isEnabled && !nameNeedsUpdate) {
                 // Check if URL needs updating (new format with query params)
                 Boolean urlNeedsUpdate = !urls?.any { String u -> u?.contains('dst=') }
                 if (!urlNeedsUpdate) {
@@ -1491,7 +1493,7 @@ private void installRequiredActionsForIp(String ipAddress) {
                 }
             }
             logInfo("Updating webhook '${name}' for ${event} cid=${cid}")
-            LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, [hookUrl])
+            LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, name, [hookUrl])
             if (authIsEnabled() == true && getAuth().size() > 0) { updateCmd.auth = getAuth() }
             postCommandSync(updateCmd, uri)
             installed++
@@ -1524,7 +1526,8 @@ private void installRequiredActionsForIp(String ipAddress) {
 
 /**
  * Removes webhooks that shouldn't exist on the device. Only removes webhooks
- * that start with 'hubitat_sdm_' and are not in the required actions list.
+ * managed by Hubitat ('hubitat_sdm_' or legacy 'hubitat.' prefix) that are
+ * not in the required actions list.
  * This cleans up webhooks from old configurations (e.g., power monitoring
  * webhooks when the device now uses powermonitoring.js script).
  *
@@ -1552,8 +1555,8 @@ private void removeObsoleteWebhooks(String ipAddress, def device, List<Map> requ
         Integer cid = hook.cid as Integer
         Integer hookId = hook.id as Integer
 
-        // Only remove webhooks that start with 'hubitat_sdm_' (our managed webhooks)
-        if (!name?.startsWith('hubitat_sdm_')) { return }
+        // Only remove webhooks managed by Hubitat (hubitat_sdm_ or legacy hubitat. prefix)
+        if (!name?.startsWith('hubitat_sdm_') && !name?.startsWith('hubitat.')) { return }
 
         // Check if this webhook should exist
         String identifier = "${event}:${cid}"
@@ -1634,7 +1637,7 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
             installedHooks.each { Map hook ->
                 String hookName = hook.name as String
                 Integer hookId = hook.id as Integer
-                if (hookName?.startsWith('hubitat_sdm_') && hookId != null) {
+                if ((hookName?.startsWith('hubitat_sdm_') || hookName?.startsWith('hubitat.')) && hookId != null) {
                     try {
                         LinkedHashMap deleteCmd = webhookDeleteCommand(hookId)
                         if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
@@ -4861,19 +4864,21 @@ LinkedHashMap webhookCreateCommand(Integer cid, String event, String name, List<
  * Builds a Webhook.Update RPC command to update an existing webhook on a Shelly device.
  *
  * @param id Webhook ID to update
+ * @param name Webhook name (must use hubitat_sdm_ prefix)
  * @param urls Updated list of URLs
  * @param enable Whether the webhook should be enabled
  * @param src Source identifier for the RPC call
  * @return LinkedHashMap containing the Webhook.Update RPC command
  */
 @CompileStatic
-LinkedHashMap webhookUpdateCommand(Integer id, List<String> urls, Boolean enable = true, String src = 'webhookUpdate') {
+LinkedHashMap webhookUpdateCommand(Integer id, String name, List<String> urls, Boolean enable = true, String src = 'webhookUpdate') {
   LinkedHashMap command = [
     "id" : 0,
     "src" : src,
     "method" : "Webhook.Update",
     "params" : [
       "id"     : id,
+      "name"   : name,
       "enable" : enable,
       "urls"   : urls
     ]
