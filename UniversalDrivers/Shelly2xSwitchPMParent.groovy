@@ -207,6 +207,11 @@ void reconcileChildDevices() {
 void parse(String description) {
   logTrace('parse() received message')
 
+  // Diagnostic: log raw description to see if query params survive at this level
+  if (shouldLogLevel('trace') && description?.contains('powermon')) {
+    logTrace("parse() raw description (first 500 chars): ${description.take(500)}")
+  }
+
   try {
     Map msg = parseLanMessage(description)
     // Forward to parent app for structured trace logging (gate check ensures minimal overhead)
@@ -371,17 +376,25 @@ private String dstToComponentType(String dst) {
 private Map parseWebhookQueryParams(Map msg) {
   String requestLine = null
 
+  // Diagnostic: log all available msg fields
+  logTrace("parseWebhookQueryParams: msg keys=${msg?.keySet()}")
+  logTrace("parseWebhookQueryParams: msg.header (hex, first 200)=${msg?.header?.toString()?.take(200)}")
+  logTrace("parseWebhookQueryParams: msg.headers keys=${msg?.headers?.keySet()}")
+  logTrace("parseWebhookQueryParams: msg.body=${msg?.body}")
+
   // Try hex-decoded raw header first — preserves full URL with query parameters.
   // parseLanMessage's headers MAP strips query params from the request line.
   if (msg?.header) {
     try {
       byte[] decoded = hubitat.helper.HexUtils.hexStringToByteArray(msg.header.toString())
       String rawHeader = new String(decoded, 'UTF-8')
+      logTrace("parseWebhookQueryParams: hex-decoded header (first 500)=${rawHeader.take(500)}")
       String[] lines = rawHeader.split('\\r?\\n')
       for (String line : lines) {
         String trimmed = line.trim()
         if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
           requestLine = trimmed
+          logTrace("parseWebhookQueryParams: request line from hex decode='${requestLine}'")
           break
         }
       }
@@ -395,6 +408,7 @@ private Map parseWebhookQueryParams(Map msg) {
     requestLine = msg.headers.keySet()?.find { key ->
       key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
     }?.toString()
+    logTrace("parseWebhookQueryParams: request line from headers map='${requestLine}'")
   }
 
   if (!requestLine) {
