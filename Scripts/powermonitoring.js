@@ -224,38 +224,112 @@ function sendPostReport(compId, compType, phase, data) {
   print("Reported:", url, JSON.stringify(body));
 }
 
-// Timer callback: average accumulated readings and send to Hubitat via POST
-function sendReport() {
-  if (compKeys.length === 0) {
-    print("No power events received yet");
-    return;
+// Push fresh status readings into accumulator arrays for averaging.
+// Unlike seedFromStatus(), does NOT set lastV/lastC/etc. — those are
+// updated by sendPostReport() after computing the cycle average.
+function pushStatusReadings(res) {
+  let prefixes = ["switch", "pm1", "cover", "em", "em1"];
+  for (let p = 0; p < prefixes.length; p++) {
+    for (let id = 0; id < 8; id++) {
+      let key = prefixes[p] + ":" + JSON.stringify(id);
+      let s = res[key];
+      if (!s) continue;
+
+      if (prefixes[p] === "em") {
+        let entry = getOrCreateComp(key, "em", id);
+        let phases = ["a", "b", "c"];
+        for (let j = 0; j < phases.length; j++) {
+          let ph = entry[phases[j]];
+          let vKey = phases[j] + "_voltage";
+          let cKey = phases[j] + "_current";
+          let pKey = phases[j] + "_act_power";
+          let fKey = phases[j] + "_freq";
+          if (typeof s[vKey] === "number") ph.vs.push(s[vKey]);
+          if (typeof s[cKey] === "number") ph.cs.push(s[cKey]);
+          if (typeof s[pKey] === "number") ph.ps.push(s[pKey]);
+          if (typeof s[fKey] === "number") ph.fs.push(s[fKey]);
+        }
+      } else if (prefixes[p] === "em1") {
+        let entry = getOrCreateComp(key, "em1", id);
+        if (typeof s.voltage === "number") entry.vs.push(s.voltage);
+        if (typeof s.current === "number") entry.cs.push(s.current);
+        if (typeof s.act_power === "number") entry.ps.push(s.act_power);
+        if (typeof s.freq === "number") entry.fs.push(s.freq);
+      } else {
+        let entry = getOrCreateComp(key, prefixes[p], id);
+        if (typeof s.voltage === "number") entry.vs.push(s.voltage);
+        if (typeof s.current === "number") entry.cs.push(s.current);
+        if (typeof s.apower === "number") entry.ps.push(s.apower);
+        if (typeof s.freq === "number") entry.fs.push(s.freq);
+        if (s.aenergy && typeof s.aenergy.total === "number") {
+          entry.e = s.aenergy.total;
+        }
+      }
+    }
   }
 
+  // Update energy counters from emdata/em1data
+  for (let id = 0; id < 8; id++) {
+    let emdKey = "emdata:" + JSON.stringify(id);
+    let emd = res[emdKey];
+    if (emd) {
+      let emKey = "em:" + JSON.stringify(id);
+      let entry = getOrCreateComp(emKey, "em", id);
+      if (typeof emd.a_total_act_energy === "number") entry.a.e = emd.a_total_act_energy;
+      if (typeof emd.b_total_act_energy === "number") entry.b.e = emd.b_total_act_energy;
+      if (typeof emd.c_total_act_energy === "number") entry.c.e = emd.c_total_act_energy;
+    }
+    let em1dKey = "em1data:" + JSON.stringify(id);
+    let em1d = res[em1dKey];
+    if (em1d) {
+      let em1Key = "em1:" + JSON.stringify(id);
+      let entry = getOrCreateComp(em1Key, "em1", id);
+      if (typeof em1d.total_act_energy === "number") entry.e = em1d.total_act_energy;
+    }
+  }
+}
+
+// Send all accumulated reports for every tracked component, then reset arrays
+function sendAllReports() {
   for (let i = 0; i < compKeys.length; i++) {
     let entry = comps[compKeys[i]];
 
     if (entry.type === "em") {
-      // 3-phase: one request per phase
       let phases = ["a", "b", "c"];
       for (let j = 0; j < phases.length; j++) {
         let ph = entry[phases[j]];
         sendPostReport(entry.id, "em", phases[j], ph);
-        // Reset averaged arrays; keep energy (cumulative)
         ph.vs = [];
         ph.cs = [];
         ph.ps = [];
         ph.fs = [];
       }
     } else {
-      // Single-phase: one request per component
       sendPostReport(entry.id, entry.type, null, entry);
-      // Reset averaged arrays; keep energy (cumulative)
       entry.vs = [];
       entry.cs = [];
       entry.ps = [];
       entry.fs = [];
     }
   }
+}
+
+// Timer callback: fetch fresh status, merge with accumulated deltas, then report
+function sendReport() {
+  if (compKeys.length === 0) {
+    print("No power events received yet");
+    return;
+  }
+
+  // Fetch fresh readings so every cycle has at least one data point,
+  // even when delta events don't fire for small value changes
+  Shelly.call("Shelly.GetStatus", {}, function (res, err, msg) {
+    if (err === 0 && res) {
+      pushStatusReadings(res);
+    }
+    // Send reports even if GetStatus failed — deltas may exist
+    sendAllReports();
+  });
 }
 
 // Seed accumulators with initial readings from Shelly.GetStatus.
