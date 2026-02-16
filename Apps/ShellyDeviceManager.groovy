@@ -2764,10 +2764,14 @@ Set<String> getRequiredScriptsForDevice(def device) {
         }
 
         // Check for power monitoring fields on this component
+        // Covers both standard fields (voltage, current, apower, aenergy) used by pm1/switch/cover
+        // and EM-specific fields (a_voltage, a_current, a_act_power) used by em/em1 components
         if (v instanceof Map) {
             Map statusMap = v as Map
             if (statusMap.voltage != null || statusMap.current != null ||
-                    statusMap.apower != null || statusMap.aenergy != null) {
+                    statusMap.apower != null || statusMap.aenergy != null ||
+                    statusMap.a_voltage != null || statusMap.a_current != null ||
+                    statusMap.a_act_power != null || statusMap.act_power != null) {
                 ['PowerMeter', 'EnergyMeter', 'CurrentMeter', 'VoltageMeasurement'].each { String capId ->
                     Map pmCap = capabilities.find { cap -> cap.id == capId }
                     if (pmCap?.requiredScripts) {
@@ -3660,7 +3664,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     Map<String, Boolean> componentPowerMonitoring = [:]
 
     // Comprehensive set of recognized Shelly component types
-    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'input', 'pm1',
+    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'input', 'pm1', 'em', 'em1',
         'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter'] as Set
 
     deviceStatus.each { k, v ->
@@ -3672,8 +3676,9 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         components.add(k.toString())
 
         // Check if this component has power monitoring
-        Boolean hasPM = false
-        if (v instanceof Map && (baseType == 'switch' || baseType == 'cover')) {
+        // em, em1, pm1 are inherently power monitoring components
+        Boolean hasPM = (baseType == 'em' || baseType == 'em1' || baseType == 'pm1')
+        if (!hasPM && v instanceof Map && (baseType == 'switch' || baseType == 'cover')) {
             hasPM = v.voltage != null || v.current != null || v.power != null ||
                     v.apower != null || v.aenergy != null
         }

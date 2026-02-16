@@ -2415,6 +2415,36 @@
       ]
     },
     {
+      "attributes": [],
+      "commands": [],
+      "id": "EnergyMeterComponent",
+      "shellyComponent": "em",
+      "requiredScripts": [
+        "powermonitoring.js"
+      ],
+      "companionCapabilities": [
+        "PowerMeter",
+        "EnergyMeter",
+        "CurrentMeter",
+        "VoltageMeasurement"
+      ]
+    },
+    {
+      "attributes": [],
+      "commands": [],
+      "id": "EnergyMeterPhaseComponent",
+      "shellyComponent": "em1",
+      "requiredScripts": [
+        "powermonitoring.js"
+      ],
+      "companionCapabilities": [
+        "PowerMeter",
+        "EnergyMeter",
+        "CurrentMeter",
+        "VoltageMeasurement"
+      ]
+    },
+    {
       "attributes": [
         {
           "name": "numberOfButtons",
