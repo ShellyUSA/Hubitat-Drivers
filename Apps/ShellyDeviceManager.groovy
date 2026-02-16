@@ -1706,7 +1706,7 @@ private void removeObsoleteScripts(String ipAddress, def device) {
         }
     }
 
-    // Check if all managed scripts are now gone — if so, remove hubitat_ip from KVS
+    // Check if all managed scripts are now gone — if so, remove hubitat_sdm_ip from KVS
     checkAndRemoveKvsIfNoScripts(ipAddress)
 }
 
@@ -1782,9 +1782,9 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
         logDebug("Could not list scripts for cleanup: ${ex.message}")
     }
 
-    // Step 3: Remove all Hubitat KVS entries (currently just 'hubitat_ip', but iterate in case we add more)
+    // Step 3: Remove all Hubitat KVS entries
     try {
-        List<String> hubitatKvsKeys = ['hubitat_ip', 'pm_ri']
+        List<String> hubitatKvsKeys = ['hubitat_sdm_ip', 'hubitat_sdm_pm_ri']
         Integer kvsRemoved = 0
         hubitatKvsKeys.each { String key ->
             try {
@@ -5297,16 +5297,16 @@ private void writeHubitatIpToKVS(String ipAddress) {
     logDebug("Writing Hubitat IP (${hubitatIp}) to KVS on ${ipAddress}")
     String uri = "http://${ipAddress}/rpc"
 
-    LinkedHashMap command = kvsSetCommand('hubitat_ip', hubitatIp)
+    LinkedHashMap command = kvsSetCommand('hubitat_sdm_ip', hubitatIp)
     if (authIsEnabled() == true && getAuth().size() > 0) {
         command.auth = getAuth()
     }
 
     LinkedHashMap response = postCommandSync(command, uri)
     if (response?.error) {
-        logError("Failed to write hubitat_ip to KVS on ${ipAddress}: ${response.error}")
+        logError("Failed to write hubitat_sdm_ip to KVS on ${ipAddress}: ${response.error}")
     } else {
-        logDebug("Successfully wrote hubitat_ip=${hubitatIp} to KVS on ${ipAddress}")
+        logDebug("Successfully wrote hubitat_sdm_ip=${hubitatIp} to KVS on ${ipAddress}")
     }
 }
 
@@ -5370,7 +5370,7 @@ private void removeKvsEntry(String ipAddress, String key) {
  * @param ipAddress The IP address of the Shelly device
  */
 private void removeHubitatIpFromKVS(String ipAddress) {
-    removeKvsEntry(ipAddress, 'hubitat_ip')
+    removeKvsEntry(ipAddress, 'hubitat_sdm_ip')
 }
 
 /**
@@ -5391,8 +5391,8 @@ private void checkAndRemoveKvsIfNoScripts(String ipAddress) {
 
     if (!hasAnyManagedScript) {
         logDebug("No managed scripts remain on ${ipAddress} — removing Hubitat KVS entries")
-        removeKvsEntry(ipAddress, 'hubitat_ip')
-        removeKvsEntry(ipAddress, 'pm_ri')
+        removeKvsEntry(ipAddress, 'hubitat_sdm_ip')
+        removeKvsEntry(ipAddress, 'hubitat_sdm_pm_ri')
     }
 }
 

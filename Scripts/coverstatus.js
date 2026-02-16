@@ -9,7 +9,7 @@
 
 // === USER CONFIGURATION ===
 // Hubitat KVS configuration
-let HUBITAT_KVS_KEY = "hubitat_ip"; // store only the IP (no protocol/port) in Shelly KVS
+let HUBITAT_KVS_KEY = "hubitat_sdm_ip"; // store only the IP (no protocol/port) in Shelly KVS
 let HUBITAT_DEFAULT_IP = "192.168.1.4"; // fallback if KVS lookup fails
 let HUBITAT_PORT = 39501;
 let HUBITAT_PROTO = "http://";
@@ -65,9 +65,9 @@ function fetchRemoteUrlFromKVS() {
       else if (typeof res === "string") ipVal = res;
       if (ipVal) {
         REMOTE_URL = buildRemoteUrlFromRaw(ipVal);
-        print("KVS hubitat_ip found; REMOTE_URL set to " + REMOTE_URL);
+        print("KVS hubitat_sdm_ip found; REMOTE_URL set to " + REMOTE_URL);
       } else {
-        print("KVS hubitat_ip empty; using REMOTE_URL=" + REMOTE_URL);
+        print("KVS hubitat_sdm_ip empty; using REMOTE_URL=" + REMOTE_URL);
       }
     });
   } catch (e) {

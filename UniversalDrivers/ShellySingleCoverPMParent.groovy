@@ -84,6 +84,7 @@ void installed() {
 void updated() {
   logDebug('Parent device updated')
   initialize()
+  sendPmReportingIntervalToKVS()
 }
 
 /**
@@ -104,8 +105,15 @@ void initialize() {
 void configure() {
   logDebug('Parent device configure() called')
   parent?.componentConfigure(device)
+  sendPmReportingIntervalToKVS()
+}
+
+/**
+ * Sends the PM reporting interval setting to the device KVS via the parent app.
+ */
+private void sendPmReportingIntervalToKVS() {
   Integer interval = settings?.pmReportingInterval != null ? settings.pmReportingInterval as Integer : 60
-  parent?.componentWriteKvsToDevice(device, 'pm_ri', interval)
+  parent?.componentWriteKvsToDevice(device, 'hubitat_sdm_pm_ri', interval)
 }
 
 /**
