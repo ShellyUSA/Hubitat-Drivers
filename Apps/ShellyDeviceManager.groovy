@@ -40,6 +40,91 @@
     'HubitatBLEHelper'
 ]
 
+// ═══════════════════════════════════════════════════════════════
+// Gen 1 Device Identification Constants
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Maps Gen 1 Shelly device type codes (from {@code /shelly} API) to friendly model names.
+ * The type code is returned in the {@code type} field of the Gen 1 {@code /shelly} endpoint.
+ */
+@Field static final Map<String, String> GEN1_TYPE_TO_MODEL = [
+    'SHSW-1':    'Shelly 1',
+    'SHSW-PM':   'Shelly 1PM',
+    'SHSW-L':    'Shelly 1L',
+    'SHSW-21':   'Shelly 2',
+    'SHSW-25':   'Shelly 2.5',
+    'SHSW-44':   'Shelly 4Pro',
+    'SHPLG-1':   'Shelly Plug',
+    'SHPLG-S':   'Shelly Plug S',
+    'SHPLG-U1':  'Shelly Plug US',
+    'SHDM-1':    'Shelly Dimmer',
+    'SHDM-2':    'Shelly Dimmer 2',
+    'SHEM':      'Shelly EM',
+    'SHEM-3':    'Shelly 3EM',
+    'SHBLB-1':   'Shelly Bulb',
+    'SHVIN-1':   'Shelly Vintage',
+    'SHBDUO-1':  'Shelly Duo',
+    'SHCB-1':    'Shelly Bulb RGBW',
+    'SHRGBW2':   'Shelly RGBW2',
+    'SHHT-1':    'Shelly H&T',
+    'SHWT-1':    'Shelly Flood',
+    'SHDW-1':    'Shelly Door/Window',
+    'SHDW-2':    'Shelly Door/Window 2',
+    'SHMOS-01':  'Shelly Motion',
+    'SHMOS-02':  'Shelly Motion 2',
+    'SHBTN-1':   'Shelly Button 1',
+    'SHBTN-2':   'Shelly Button 1 v2',
+    'SHGS-1':    'Shelly Gas',
+    'SHIX3-1':   'Shelly i3',
+    'SHUNI-1':   'Shelly Uni',
+    'SHTRV-01':  'Shelly TRV',
+]
+
+/** Gen 1 type codes that are battery-powered (sleep between sensor updates). */
+@Field static final Set<String> GEN1_BATTERY_TYPES = [
+    'SHHT-1', 'SHWT-1', 'SHDW-1', 'SHDW-2',
+    'SHMOS-01', 'SHMOS-02', 'SHBTN-1', 'SHBTN-2',
+] as Set<String>
+
+/**
+ * Maps Gen 1 mDNS hostname prefixes to device type codes.
+ * Gen 1 hostnames follow the pattern {@code <prefix>-<MAC12>}, e.g. {@code shelly1-AABBCCDDEEFF}.
+ * Used to identify Gen 1 devices from mDNS alone (critical for sleeping battery devices).
+ */
+@Field static final Map<String, String> GEN1_HOSTNAME_TO_TYPE = [
+    'shelly1':          'SHSW-1',
+    'shelly1pm':        'SHSW-PM',
+    'shelly1l':         'SHSW-L',
+    'shellyswitch':     'SHSW-21',
+    'shellyswitch25':   'SHSW-25',
+    'shelly4pro':       'SHSW-44',
+    'shellyplug':       'SHPLG-1',
+    'shellyplug-s':     'SHPLG-S',
+    'shellyplug-u1':    'SHPLG-U1',
+    'shellydimmer':     'SHDM-1',
+    'shellydimmer2':    'SHDM-2',
+    'shellyem':         'SHEM',
+    'shellyem3':        'SHEM-3',
+    'shellybulb':       'SHBLB-1',
+    'shellyvintage':    'SHVIN-1',
+    'shellybulbduo':    'SHBDUO-1',
+    'shellycolorbulb':  'SHCB-1',
+    'shellyrgbw2':      'SHRGBW2',
+    'shellyht':         'SHHT-1',
+    'shellyflood':      'SHWT-1',
+    'shellydw':         'SHDW-1',
+    'shellydw2':        'SHDW-2',
+    'shellymotion':     'SHMOS-01',
+    'shellymotion2':    'SHMOS-02',
+    'shellybutton1':    'SHBTN-1',
+    'shellybutton2':    'SHBTN-2',
+    'shellygas':        'SHGS-1',
+    'shellyix3':        'SHIX3-1',
+    'shellyuni':        'SHUNI-1',
+    'shellytrv':        'SHTRV-01',
+]
+
 definition(
     name: "Shelly Device Manager",
     namespace: "ShellyUSA",
@@ -836,7 +921,7 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
         hubDeviceDni: null,
         hubDeviceName: null,
         hubDeviceId: null,
-        isBatteryDevice: false,
+        isBatteryDevice: (info?.isBatteryDevice ?: false) as Boolean,
         isReachable: null,
         requiredScriptCount: null,
         installedScriptCount: null,
@@ -3168,11 +3253,20 @@ void processMdnsDiscovery() {
             allEntries.each { entry ->
                 // Actual mDNS entry fields: server, port, ip4Addresses, ip6Addresses, gen, app, ver
                 String server = (entry?.server ?: '') as String
-                String ip4 = (entry?.ip4Addresses ?: '') as String
                 Integer port = (entry?.port ?: 0) as Integer
                 String gen = (entry?.gen ?: '') as String
                 String deviceApp = (entry?.app ?: '') as String
                 String ver = (entry?.ver ?: '') as String
+
+                // Defensive parsing: ip4Addresses may be String or List<String> depending on service type
+                Object rawIp4 = entry?.ip4Addresses
+                logTrace("mDNS ip4Addresses isList=${rawIp4 instanceof List}, value=${rawIp4}")
+                String ip4 = ''
+                if (rawIp4 instanceof List) {
+                    ip4 = rawIp4.find { it && !it.toString().contains(':') }?.toString() ?: ''
+                } else if (rawIp4) {
+                    ip4 = rawIp4.toString().replaceAll(/[\[\]]/, '').trim()
+                }
 
                 logTrace("mDNS entry: server=${server}, ip=${ip4}, port=${port}, gen=${gen}, app=${deviceApp}, ver=${ver}")
 
@@ -3186,7 +3280,7 @@ void processMdnsDiscovery() {
                 }
 
                 // Clean up server name (remove trailing dot and .local.)
-                String deviceName = server.replaceAll(/\.local\.$/, '').replaceAll(/\.$/, '')
+                String deviceName = stripMdnsDomainSuffix(server)
 
                 String key = ip4
                 Boolean isNewToState = !state.discoveredShellys.containsKey(key)
@@ -3198,7 +3292,7 @@ void processMdnsDiscovery() {
                     foundDevices.put(key, true)
                 }
 
-                state.discoveredShellys[key] = [
+                Map deviceEntry = [
                     name: deviceName ?: "Shelly ${ip4}",
                     ipAddress: ip4,
                     port: (port ?: 80),
@@ -3207,6 +3301,23 @@ void processMdnsDiscovery() {
                     ver: ver,
                     ts: now()
                 ]
+
+                // Pre-enrich Gen 1 devices from hostname when no TXT records are present
+                if (isLikelyGen1Device(gen, deviceApp, server)) {
+                    String gen1Type = extractGen1TypeFromHostname(deviceName)
+                    if (gen1Type) {
+                        String typeKey = gen1Type.toString()
+                        deviceEntry.gen = '1'
+                        deviceEntry.gen1Type = typeKey
+                        deviceEntry.model = GEN1_TYPE_TO_MODEL.get(typeKey) ?: typeKey
+                        deviceEntry.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
+                        String hostnameMac = extractMacFromMdnsName(deviceName)
+                        if (hostnameMac) { deviceEntry.mac = hostnameMac }
+                        logDebug("Gen 1 identified from hostname: ${deviceName} -> ${deviceEntry.model} (type=${typeKey})")
+                    }
+                }
+
+                state.discoveredShellys[key] = deviceEntry
 
                 // Schedule async device info fetch for newly discovered devices
                 // This prevents blocking page loads while waiting for sleepy battery devices
@@ -3240,8 +3351,22 @@ void sendFoundShellyEvents() {
     Map discoveredShellys = state.discoveredShellys ?: [:]
     discoveredShellys.each { ipKey, info ->
         String ip = ipKey.toString()
+        Map infoMap = info as Map
         if (!cache.containsKey(ip)) {
-            cache[ip] = buildMinimalCacheEntry(ip, info as Map)
+            cache[ip] = buildMinimalCacheEntry(ip, infoMap)
+        } else {
+            // Update existing cache entries with enriched data from async fetches
+            Map existing = cache[ip] as Map
+            if (infoMap.mac && (!existing.mac || existing.mac == '')) {
+                existing.mac = infoMap.mac.toString()
+            }
+            if (infoMap.model && (!existing.model || existing.model == 'Unknown')) {
+                existing.model = infoMap.model.toString()
+            }
+            if (infoMap.isBatteryDevice == true && existing.isBatteryDevice != true) {
+                existing.isBatteryDevice = true
+            }
+            cache[ip] = existing
         }
     }
     state.deviceStatusCache = cache
@@ -3251,6 +3376,22 @@ void sendFoundShellyEvents() {
 // ═══════════════════════════════════════════════════════════════
 // IP Address Watchdog (mDNS-based IP change detection)
 // ═══════════════════════════════════════════════════════════════
+
+/**
+ * Strips domain suffixes from an mDNS server name, returning just the hostname.
+ * Handles standard {@code .local.} as well as custom domains (e.g. {@code .winks.casa}).
+ * mDNS hostnames for Shelly devices never contain dots, so everything from
+ * the first dot onward is a domain suffix.
+ *
+ * @param serverName The raw mDNS server name (e.g. {@code shellymotion2-2c1165cb0429.winks.casa})
+ * @return The bare hostname (e.g. {@code shellymotion2-2c1165cb0429}), or the input unchanged if no dot found
+ */
+@CompileStatic
+static String stripMdnsDomainSuffix(String serverName) {
+    if (!serverName) { return serverName }
+    Integer dotIndex = serverName.indexOf('.')
+    return (dotIndex > 0) ? serverName.substring(0, dotIndex) : serverName
+}
 
 /**
  * Extracts the MAC address from an mDNS server name.
@@ -3263,13 +3404,53 @@ void sendFoundShellyEvents() {
 @CompileStatic
 static String extractMacFromMdnsName(String serverName) {
     if (!serverName) { return null }
-    // Remove trailing .local. or trailing dot
-    String cleaned = serverName.replaceAll(/\.local\.$/, '').replaceAll(/\.$/, '')
+    String cleaned = stripMdnsDomainSuffix(serverName)
     Integer lastDash = cleaned.lastIndexOf('-')
     if (lastDash < 0 || lastDash >= cleaned.length() - 1) { return null }
     String candidate = cleaned.substring(lastDash + 1).toUpperCase()
     if (candidate.length() == 12 && candidate.matches(/^[0-9A-F]{12}$/)) {
         return candidate
+    }
+    return null
+}
+
+/**
+ * Determines whether a discovered device is likely a Gen 1 Shelly based on mDNS TXT fields.
+ * Gen 1 devices register under {@code _http._tcp} without {@code gen} or {@code app} TXT records,
+ * but their hostname contains "shelly".
+ *
+ * @param gen The gen TXT record value (empty for Gen 1)
+ * @param deviceApp The app TXT record value (empty for Gen 1)
+ * @param serverName The mDNS server/hostname
+ * @return true if the device appears to be Gen 1
+ */
+@CompileStatic
+static Boolean isLikelyGen1Device(String gen, String deviceApp, String serverName) {
+    return !gen && !deviceApp && serverName?.toLowerCase()?.contains('shelly')
+}
+
+/**
+ * Extracts the Gen 1 device type code from an mDNS hostname.
+ * Gen 1 hostnames follow the pattern {@code <model-prefix>-<MAC12>}, e.g. {@code shelly1pm-AABBCCDDEEFF}.
+ * Handles hyphenated model prefixes like {@code shellyplug-s} by matching against {@link #GEN1_HOSTNAME_TO_TYPE}.
+ *
+ * @param hostname The mDNS hostname (without .local. suffix)
+ * @return The Gen 1 type code (e.g. {@code SHSW-PM}), or null if not recognized
+ */
+@CompileStatic
+static String extractGen1TypeFromHostname(String hostname) {
+    if (!hostname) { return null }
+    String lower = stripMdnsDomainSuffix(hostname).toLowerCase()
+
+    // Find the last segment that looks like a 12-char hex MAC
+    // Hostname format: <prefix>-<MAC12> or <prefix-with-hyphens>-<MAC12>
+    Integer lastDash = lower.lastIndexOf('-')
+    if (lastDash < 0 || lastDash >= lower.length() - 1) { return null }
+
+    String maybeMac = lower.substring(lastDash + 1)
+    if (maybeMac.length() == 12 && maybeMac.matches(/^[0-9a-f]{12}$/)) {
+        String prefix = lower.substring(0, lastDash)
+        return GEN1_HOSTNAME_TO_TYPE.get(prefix)
     }
     return null
 }
@@ -3322,7 +3503,15 @@ void watchdogProcessResults() {
         Integer updatedCount = 0
         allEntries.each { entry ->
             String server = (entry?.server ?: '') as String
-            String ip4 = (entry?.ip4Addresses ?: '') as String
+
+            // Defensive parsing: ip4Addresses may be String or List<String>
+            Object rawIp4 = entry?.ip4Addresses
+            String ip4 = ''
+            if (rawIp4 instanceof List) {
+                ip4 = rawIp4.find { it && !it.toString().contains(':') }?.toString() ?: ''
+            } else if (rawIp4) {
+                ip4 = rawIp4.toString().replaceAll(/[\[\]]/, '').trim()
+            }
             if (!server || !ip4) { return }
 
             String mac = extractMacFromMdnsName(server)
@@ -3615,11 +3804,109 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         determineDeviceDriver(deviceStatus, ipKey)
     } catch (Exception e) {
         String errorMsg = e.message ?: e.toString() ?: e.class.simpleName
-        appendLog('error', "Failed to get device info from ${ip}: ${errorMsg}")
         logDebug("fetchAndStoreDeviceInfo exception: ${e.class.name}: ${errorMsg}")
         if (e.stackTrace && e.stackTrace.length > 0) {
             logDebug("fetchAndStoreDeviceInfo stack trace (first 3 lines): ${e.stackTrace.take(3).join(' | ')}")
         }
+
+        // Gen 1 fallback: if RPC failed, try Gen 1 REST API
+        if (isLikelyGen1Device(device.gen?.toString() ?: '', device.deviceApp?.toString() ?: '', device.name?.toString() ?: '')) {
+            logDebug("fetchAndStoreDeviceInfo: RPC failed for ${ip}, trying Gen 1 REST API")
+            if (fetchGen1DeviceInfo(ipKey, device)) {
+                sendFoundShellyEvents()
+                return
+            }
+        }
+
+        // Last resort: hostname-based identification for sleeping/unreachable Gen 1 devices
+        String deviceName = (device.name ?: '').toString()
+        String gen1Type = extractGen1TypeFromHostname(deviceName)
+        if (gen1Type && !device.model) {
+            String typeKey = gen1Type.toString()
+            device.gen = '1'
+            device.gen1Type = typeKey
+            device.model = GEN1_TYPE_TO_MODEL.get(typeKey) ?: typeKey
+            device.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
+            String hostnameMac = extractMacFromMdnsName(deviceName)
+            if (hostnameMac && !device.mac) { device.mac = hostnameMac }
+            state.discoveredShellys[ipKey] = device
+            appendLog('info', "Gen 1 identified from hostname (device unreachable): ${deviceName} -> ${device.model}")
+            sendFoundShellyEvents()
+            return
+        }
+
+        appendLog('error', "Failed to get device info from ${ip}: ${errorMsg}")
+    }
+}
+
+/**
+ * Fetches device information from a Gen 1 Shelly device via its REST API.
+ * Gen 1 devices expose a {@code /shelly} endpoint that returns device identity
+ * without requiring authentication. Response includes type, MAC, auth status, and firmware.
+ *
+ * @param ipKey The IP address key in discoveredShellys
+ * @param device The mutable device map from discoveredShellys
+ * @return true if Gen 1 info was successfully fetched, false otherwise
+ */
+private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
+    String ip = (device.ipAddress ?: ipKey).toString()
+    String uri = "http://${ip}/shelly"
+    logDebug("fetchGen1DeviceInfo: querying ${uri}")
+
+    try {
+        Map shellyInfo = null
+        httpGetHelper([uri: uri, timeout: 5, contentType: 'application/json']) { resp ->
+            if (resp?.status == 200 && resp.data) {
+                shellyInfo = resp.data as Map
+            }
+        }
+
+        if (!shellyInfo) {
+            logDebug("fetchGen1DeviceInfo: no response from ${ip}")
+            return false
+        }
+
+        // If response contains 'gen' field, it's actually Gen 2+ — not Gen 1
+        if (shellyInfo.gen) {
+            logDebug("fetchGen1DeviceInfo: ${ip} returned gen=${shellyInfo.gen}, not a Gen 1 device")
+            return false
+        }
+
+        // Gen 1 /shelly response: {"type":"SHSW-1","mac":"AABBCCDDEEFF","auth":true,"fw":"...","discoverable":true}
+        String typeCode = shellyInfo.type?.toString()
+        if (!typeCode) {
+            logDebug("fetchGen1DeviceInfo: ${ip} has no type field in /shelly response")
+            return false
+        }
+
+        device.gen = '1'
+        device.gen1Type = typeCode
+        device.model = GEN1_TYPE_TO_MODEL.get(typeCode) ?: typeCode
+        device.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeCode)
+        if (shellyInfo.mac) { device.mac = shellyInfo.mac.toString().toUpperCase() }
+        if (shellyInfo.fw) { device.ver = shellyInfo.fw.toString() }
+        if (shellyInfo.auth != null) { device.auth_en = shellyInfo.auth }
+
+        device.ts = now()
+        state.discoveredShellys[ipKey] = device
+
+        // Also update the cache entry
+        Map cache = state.deviceStatusCache ?: [:]
+        if (cache.containsKey(ip)) {
+            Map cacheEntry = cache[ip] as Map
+            if (device.mac) { cacheEntry.mac = device.mac.toString() }
+            if (device.model) { cacheEntry.model = device.model.toString() }
+            cacheEntry.isBatteryDevice = device.isBatteryDevice ?: false
+            cache[ip] = cacheEntry
+            state.deviceStatusCache = cache
+        }
+
+        appendLog('info', "Gen 1 device info from ${ip}: ${device.model} (${typeCode}), mac=${device.mac ?: 'n/a'}, fw=${device.ver ?: 'n/a'}")
+        logDebug("fetchGen1DeviceInfo: success for ${ip}: ${shellyInfo}")
+        return true
+    } catch (Exception e) {
+        logDebug("fetchGen1DeviceInfo: failed for ${ip}: ${e.message}")
+        return false
     }
 }
 
