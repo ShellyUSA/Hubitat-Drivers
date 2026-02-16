@@ -9501,21 +9501,59 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
  * @return Map of query parameter key-value pairs, or null if not a GET request
  */
 private Map parseWebhookQueryParams(Map msg) {
-    if (!msg?.headers) { return null }
+    String requestLine = null
 
-    // Request line is stored as a header key: "GET /webhook/switchmon/0 HTTP/1.1"
-    String requestLine = msg.headers?.keySet()?.find { key ->
-        key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+    // Try hex-decoded raw header first — preserves full URL with query parameters.
+    // parseLanMessage's headers MAP strips query params from the request line.
+    if (msg?.header) {
+        try {
+            byte[] decoded = hubitat.helper.HexUtils.hexStringToByteArray(msg.header.toString())
+            String rawHeader = new String(decoded, 'UTF-8')
+            String[] lines = rawHeader.split('\\r?\\n')
+            for (String line : lines) {
+                String trimmed = line.trim()
+                if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
+                    requestLine = trimmed
+                    break
+                }
+            }
+        } catch (Exception e) {
+            logDebug("parseWebhookQueryParams: raw header decode failed: ${e.message}")
+        }
     }
+
+    // Fallback: parsed headers map (may not include query string)
+    if (!requestLine && msg?.headers) {
+        requestLine = msg.headers.keySet()?.find { key ->
+            key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+        }?.toString()
+    }
+
     if (!requestLine) { return null }
 
-    String pathAndQuery = requestLine.toString().split(' ')[1]
+    String pathAndQuery = requestLine.split(' ')[1]
 
-    // Parse path segments: /webhook/<dst>/<cid>
+    // Parse path segments: /webhook/<dst>/<cid>[?key=val&...]
     if (pathAndQuery.startsWith('/webhook/')) {
-        String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+        String webhookPath = pathAndQuery.substring('/webhook/'.length())
+        String queryString = null
+        int qMarkIdx = webhookPath.indexOf('?')
+        if (qMarkIdx >= 0) {
+            queryString = webhookPath.substring(qMarkIdx + 1)
+            webhookPath = webhookPath.substring(0, qMarkIdx)
+        }
+        String[] segments = webhookPath.split('/')
         if (segments.length >= 2) {
-            return [dst: segments[0], cid: segments[1]]
+            Map params = [dst: segments[0], cid: segments[1]]
+            if (queryString) {
+                queryString.split('&').each { String pair ->
+                    String[] kv = pair.split('=', 2)
+                    if (kv.length == 2) {
+                        params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+                    }
+                }
+            }
+            return params
         }
         return null
     }

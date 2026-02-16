@@ -248,27 +248,30 @@ void parse(String description) {
 private Map parseWebhookQueryParams(Map msg) {
   String requestLine = null
 
-  // Try parsed headers map first
-  if (msg?.headers) {
+  // Try hex-decoded raw header first — preserves full URL with query parameters.
+  // parseLanMessage's headers MAP strips query params from the request line.
+  if (msg?.header) {
+    try {
+      byte[] decoded = hubitat.helper.HexUtils.hexStringToByteArray(msg.header.toString())
+      String rawHeader = new String(decoded, 'UTF-8')
+      String[] lines = rawHeader.split('\\r?\\n')
+      for (String line : lines) {
+        String trimmed = line.trim()
+        if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
+          requestLine = trimmed
+          break
+        }
+      }
+    } catch (Exception e) {
+      logTrace("parseWebhookQueryParams: raw header decode failed: ${e.message}")
+    }
+  }
+
+  // Fallback: parsed headers map (may not include query string)
+  if (!requestLine && msg?.headers) {
     requestLine = msg.headers.keySet()?.find { key ->
       key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
     }?.toString()
-    logTrace("parseWebhookQueryParams: headers map search result: ${requestLine ? 'found' : 'not found'}")
-  }
-
-  // Fallback: parse raw header string for request line
-  if (!requestLine && msg?.header) {
-    String rawHeader = msg.header.toString()
-    logTrace("parseWebhookQueryParams: trying raw header fallback")
-    String[] lines = rawHeader.split('\n')
-    for (String line : lines) {
-      String trimmed = line.trim()
-      if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
-        requestLine = trimmed
-        logTrace("parseWebhookQueryParams: found request line in raw header: ${requestLine}")
-        break
-      }
-    }
   }
 
   if (!requestLine) {
