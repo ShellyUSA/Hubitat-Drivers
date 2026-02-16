@@ -263,11 +263,26 @@ private Map parseWebhookQueryParams(Map msg) {
   // Extract path from request line: "GET /webhook/switchmon/0 HTTP/1.1" -> "/webhook/switchmon/0"
   String pathAndQuery = requestLine.split(' ')[1]
 
-  // Parse path segments: /webhook/<dst>/<cid>
+  // Parse path segments: /webhook/<dst>/<cid>[?key=val&...]
   if (pathAndQuery.startsWith('/webhook/')) {
-    String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+    String webhookPath = pathAndQuery.substring('/webhook/'.length())
+    String queryString = null
+    int qMarkIdx = webhookPath.indexOf('?')
+    if (qMarkIdx >= 0) {
+      queryString = webhookPath.substring(qMarkIdx + 1)
+      webhookPath = webhookPath.substring(0, qMarkIdx)
+    }
+    String[] segments = webhookPath.split('/')
     if (segments.length >= 2) {
       Map params = [dst: segments[0], cid: segments[1]]
+      if (queryString) {
+        queryString.split('&').each { String pair ->
+          String[] kv = pair.split('=', 2)
+          if (kv.length == 2) {
+            params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+          }
+        }
+      }
       logTrace("parseWebhookQueryParams: parsed path params: ${params}")
       return params
     }
@@ -306,9 +321,6 @@ private void routePostNotification(String dst, Map json) {
   switch (dst) {
     case 'covermon':
       parseCovermon(json)
-      break
-    case 'powermon':
-      parsePowermon(json)
       break
     case 'temperature':
       parseTemperature(json)
@@ -415,6 +427,41 @@ private void routeWebhookParams(Map params) {
         sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
           descriptionText: "Temperature is ${temp}°${scale}")
       }
+      break
+
+    // Power monitoring via GET (from powermonitoring.js)
+    case 'powermon':
+      if (params.voltage != null) {
+        BigDecimal voltage = params.voltage as BigDecimal
+        sendEvent(name: 'voltage', value: voltage, unit: 'V',
+          descriptionText: "Voltage is ${voltage}V")
+        logDebug("Voltage: ${voltage}V")
+      }
+      if (params.current != null) {
+        BigDecimal current = params.current as BigDecimal
+        sendEvent(name: 'amperage', value: current, unit: 'A',
+          descriptionText: "Current is ${current}A")
+        logDebug("Current: ${current}A")
+      }
+      if (params.apower != null) {
+        BigDecimal power = params.apower as BigDecimal
+        sendEvent(name: 'power', value: power, unit: 'W',
+          descriptionText: "Power is ${power}W")
+        logDebug("Power: ${power}W")
+      }
+      if (params.aenergy != null) {
+        BigDecimal energyWh = params.aenergy as BigDecimal
+        BigDecimal energyKwh = energyWh / 1000
+        sendEvent(name: 'energy', value: energyKwh, unit: 'kWh',
+          descriptionText: "Energy is ${energyKwh}kWh")
+        logDebug("Energy: ${energyKwh}kWh (${energyWh}Wh from device)")
+      }
+      if (params.freq != null) {
+        BigDecimal freq = params.freq as BigDecimal
+        sendEvent(name: 'frequency', value: freq, unit: 'Hz',
+          descriptionText: "Frequency is ${freq}Hz")
+      }
+      logInfo("Power monitoring updated: ${params.apower ?: 0}W, ${params.voltage ?: 0}V, ${params.current ?: 0}A")
       break
 
     default:
@@ -591,68 +638,8 @@ void parseCovermon(Map json) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Power Monitoring Commands and Parsing                       ║
+// ║  Power Monitoring Commands                                   ║
 // ╚══════════════════════════════════════════════════════════════╝
-
-/**
- * Parses power monitoring notifications from Shelly device.
- * Processes JSON with dst:"powermon" and updates power/energy attributes.
- * JSON format: [dst:powermon, result:[cover:0:[aenergy:[total:76207], apower:0, current:0, id:0, voltage:120.8]]]
- *
- * @param json The parsed JSON notification from the Shelly device
- */
-void parsePowermon(Map json) {
-  logDebug("parsePowermon() called with: ${json}")
-
-  try {
-    Map result = json?.result
-    if (!result) {
-      logWarn('parsePowermon: No result data in JSON')
-      return
-    }
-
-    // Iterate over component entries (e.g., "cover:0")
-    result.each { key, value ->
-      if (value instanceof Map) {
-        Integer componentId = value.id
-
-        // Extract power monitoring values
-        if (value.voltage != null) {
-          BigDecimal voltage = value.voltage as BigDecimal
-          sendEvent(name: 'voltage', value: voltage, unit: 'V',
-            descriptionText: "Voltage is ${voltage}V")
-          logDebug("Voltage: ${voltage}V")
-        }
-
-        if (value.current != null) {
-          BigDecimal current = value.current as BigDecimal
-          sendEvent(name: 'amperage', value: current, unit: 'A',
-            descriptionText: "Current is ${current}A")
-          logDebug("Current: ${current}A")
-        }
-
-        if (value.apower != null) {
-          BigDecimal power = value.apower as BigDecimal
-          sendEvent(name: 'power', value: power, unit: 'W',
-            descriptionText: "Power is ${power}W")
-          logDebug("Power: ${power}W")
-        }
-
-        if (value.aenergy?.total != null) {
-          BigDecimal energyWh = value.aenergy.total as BigDecimal
-          BigDecimal energyKwh = energyWh / 1000
-          sendEvent(name: 'energy', value: energyKwh, unit: 'kWh',
-            descriptionText: "Energy is ${energyKwh}kWh")
-          logDebug("Energy: ${energyKwh}kWh (${energyWh}Wh from device)")
-        }
-
-        logInfo("Component ${key} power monitoring updated: ${value.apower}W, ${value.voltage}V, ${value.current}A")
-      }
-    }
-  } catch (Exception e) {
-    logError("parsePowermon exception: ${e.message}")
-  }
-}
 
 /**
  * Resets energy monitoring counters by delegating to the parent app.
@@ -663,7 +650,7 @@ void resetEnergyMonitors() {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Power Monitoring Commands and Parsing                   ║
+// ║  END Power Monitoring Commands                               ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 

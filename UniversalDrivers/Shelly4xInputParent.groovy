@@ -280,11 +280,26 @@ private Map parseWebhookQueryParams(Map msg) {
   // Extract path from request line: "GET /webhook/switchmon/0 HTTP/1.1" -> "/webhook/switchmon/0"
   String pathAndQuery = requestLine.split(' ')[1]
 
-  // Parse path segments: /webhook/<dst>/<cid>
+  // Parse path segments: /webhook/<dst>/<cid>[?key=val&...]
   if (pathAndQuery.startsWith('/webhook/')) {
-    String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+    String webhookPath = pathAndQuery.substring('/webhook/'.length())
+    String queryString = null
+    int qMarkIdx = webhookPath.indexOf('?')
+    if (qMarkIdx >= 0) {
+      queryString = webhookPath.substring(qMarkIdx + 1)
+      webhookPath = webhookPath.substring(0, qMarkIdx)
+    }
+    String[] segments = webhookPath.split('/')
     if (segments.length >= 2) {
       Map params = [dst: segments[0], cid: segments[1]]
+      if (queryString) {
+        queryString.split('&').each { String pair ->
+          String[] kv = pair.split('=', 2)
+          if (kv.length == 2) {
+            params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+          }
+        }
+      }
       logTrace("parseWebhookQueryParams: parsed path params: ${params}")
       return params
     }

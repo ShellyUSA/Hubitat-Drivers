@@ -123,7 +123,7 @@ function onStatus(ev) {
   }
 }
 
-// Timer callback: average accumulated readings and send to Hubitat
+// Timer callback: average accumulated readings and send to Hubitat via GET
 function sendReport() {
   if (compName === null) {
     print("No power events received yet");
@@ -146,30 +146,23 @@ function sendReport() {
     return;
   }
 
-  // Build the component update with only the fields we have
-  let update = { id: compId };
-  if (v !== null) update.voltage = v;
-  if (c !== null) update.current = c;
-  if (p !== null) update.apower = p;
-  if (f !== null) update.freq = f;
-  if (latestAenergy !== null) {
-    update.aenergy = { total: latestAenergy };
-  }
+  // Extract component type from compName (e.g., "switch" from "switch:0")
+  let compType = compName;
+  let colonIdx = compName.indexOf(":");
+  if (colonIdx >= 0) compType = compName.substring(0, colonIdx);
 
-  // Wrap in the JSON structure the Hubitat driver expects:
-  // { "dst": "...", "result": { "<component>": { ... } } }
-  let result = {};
-  result[compName] = update;
+  // Build GET URL: /webhook/powermon/<cid>?comp=<type>&voltage=X&current=X&...
+  let url =
+    REMOTE_URL + "/webhook/powermon/" + JSON.stringify(compId) + "?comp=" + compType;
+  if (v !== null) url += "&voltage=" + JSON.stringify(v);
+  if (c !== null) url += "&current=" + JSON.stringify(c);
+  if (p !== null) url += "&apower=" + JSON.stringify(p);
+  if (latestAenergy !== null) url += "&aenergy=" + JSON.stringify(latestAenergy);
+  if (f !== null) url += "&freq=" + JSON.stringify(f);
 
-  let body = JSON.stringify({ dst: "powermon", result: result });
+  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
 
-  Shelly.call(
-    "HTTP.POST",
-    { url: REMOTE_URL, body: body, content_type: "application/json" },
-    onHTTPResponse,
-  );
-
-  print("Reported:", body);
+  print("Reported:", url);
 
   // Reset averaged arrays; keep latestAenergy (it is cumulative)
   voltages = [];

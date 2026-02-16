@@ -245,6 +245,7 @@ void parse(String description) {
       logTrace("Webhook params: ${params}")
       routeWebhookNotification(params)
       processWebhookAggregation(params)
+      processWebhookPowerAggregation(params)
     } else {
       logTrace("parse() no dst found in message, unable to route")
     }
@@ -311,7 +312,10 @@ private void routeWebhookNotification(Map params) {
   }
 
   Integer componentId = params.cid as Integer
-  String baseType = dstToComponentType(dst)
+
+  // For powermon, component type comes from the 'comp' query param (e.g., 'switch')
+  String baseType = (dst == 'powermon' && params.comp) ?
+      (params.comp as String) : dstToComponentType(dst)
 
   List<Map> events = buildWebhookEvents(dst, params)
   logTrace("buildWebhookEvents(dst=${dst}) → ${events.size()} events: ${events}")
@@ -399,11 +403,26 @@ private Map parseWebhookQueryParams(Map msg) {
   // Extract path from request line: "GET /webhook/switchmon/0 HTTP/1.1" -> "/webhook/switchmon/0"
   String pathAndQuery = requestLine.split(' ')[1]
 
-  // Parse path segments: /webhook/<dst>/<cid>
+  // Parse path segments: /webhook/<dst>/<cid>[?key=val&...]
   if (pathAndQuery.startsWith('/webhook/')) {
-    String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+    String webhookPath = pathAndQuery.substring('/webhook/'.length())
+    String queryString = null
+    int qMarkIdx = webhookPath.indexOf('?')
+    if (qMarkIdx >= 0) {
+      queryString = webhookPath.substring(qMarkIdx + 1)
+      webhookPath = webhookPath.substring(0, qMarkIdx)
+    }
+    String[] segments = webhookPath.split('/')
     if (segments.length >= 2) {
       Map params = [dst: segments[0], cid: segments[1]]
+      if (queryString) {
+        queryString.split('&').each { String pair ->
+          String[] kv = pair.split('=', 2)
+          if (kv.length == 2) {
+            params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+          }
+        }
+      }
       logTrace("parseWebhookQueryParams: parsed path params: ${params}")
       return params
     }
@@ -451,23 +470,6 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
       if (data.output != null) {
         String switchState = data.output ? 'on' : 'off'
         events.add([name: 'switch', value: switchState, descriptionText: "Switch turned ${switchState}"])
-      }
-      break
-
-    case 'powermon':
-      if (data.voltage != null) {
-        events.add([name: 'voltage', value: data.voltage as BigDecimal, unit: 'V'])
-      }
-      if (data.current != null) {
-        events.add([name: 'amperage', value: data.current as BigDecimal, unit: 'A'])
-      }
-      if (data.apower != null) {
-        events.add([name: 'power', value: data.apower as BigDecimal, unit: 'W'])
-      }
-      if (data.aenergy?.total != null) {
-        BigDecimal energyWh = data.aenergy.total as BigDecimal
-        BigDecimal energyKwh = energyWh / 1000
-        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
       }
       break
 
@@ -536,6 +538,32 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       if (params.state) {
         String toggleState = params.state as String
         events.add([name: 'switch', value: toggleState, isStateChange: true, descriptionText: "Input toggled ${toggleState}"])
+      }
+      break
+
+    // Power monitoring via GET (from powermonitoring.js)
+    case 'powermon':
+      if (params.voltage != null) {
+        events.add([name: 'voltage', value: params.voltage as BigDecimal, unit: 'V',
+          descriptionText: "Voltage is ${params.voltage}V"])
+      }
+      if (params.current != null) {
+        events.add([name: 'amperage', value: params.current as BigDecimal, unit: 'A',
+          descriptionText: "Current is ${params.current}A"])
+      }
+      if (params.apower != null) {
+        events.add([name: 'power', value: params.apower as BigDecimal, unit: 'W',
+          descriptionText: "Power is ${params.apower}W"])
+      }
+      if (params.aenergy != null) {
+        BigDecimal energyWh = params.aenergy as BigDecimal
+        BigDecimal energyKwh = energyWh / 1000
+        events.add([name: 'energy', value: energyKwh, unit: 'kWh',
+          descriptionText: "Energy is ${energyKwh}kWh"])
+      }
+      if (params.freq != null) {
+        events.add([name: 'frequency', value: params.freq as BigDecimal, unit: 'Hz',
+          descriptionText: "Frequency is ${params.freq}Hz"])
       }
       break
   }
@@ -629,7 +657,6 @@ void off() {
  */
 private void processAggregation(String dst, Map json) {
   if (dst == 'switchmon') { parseSwitchmon(json) }
-  else if (dst == 'powermon') { parsePowermon(json) }
   else if (dst == 'input_push') { handleInputEvent(json, 'pushed') }
   else if (dst == 'input_double') { handleInputEvent(json, 'doubleTapped') }
   else if (dst == 'input_long') { handleInputEvent(json, 'held') }
@@ -671,47 +698,6 @@ private void updateParentSwitchState() {
   }
 }
 
-/**
- * Parses powermon notification and updates aggregate power values.
- */
-void parsePowermon(Map json) {
-  Map result = json?.result
-  if (!result) { return }
-
-  BigDecimal totalPower = 0
-  BigDecimal totalEnergy = 0
-  BigDecimal totalCurrent = 0
-  BigDecimal maxVoltage = 0
-  Integer count = 0
-
-  result.each { key, value ->
-    if (key.toString().startsWith('switch:') && value instanceof Map) {
-      if (value.apower != null) {
-        totalPower += value.apower as BigDecimal
-        count++
-      }
-      if (value.aenergy?.total != null) {
-        totalEnergy += (value.aenergy.total as BigDecimal) / 1000
-      }
-      if (value.current != null) {
-        totalCurrent += value.current as BigDecimal
-      }
-      if (value.voltage != null) {
-        BigDecimal v = value.voltage as BigDecimal
-        if (v > maxVoltage) { maxVoltage = v }
-      }
-    }
-  }
-
-  if (count > 0) {
-    sendEvent(name: 'power', value: totalPower, unit: 'W', descriptionText: "Total power: ${totalPower}W")
-    sendEvent(name: 'energy', value: totalEnergy, unit: 'kWh', descriptionText: "Total energy: ${totalEnergy}kWh")
-    sendEvent(name: 'amperage', value: totalCurrent, unit: 'A', descriptionText: "Total current: ${totalCurrent}A")
-    sendEvent(name: 'voltage', value: maxVoltage, unit: 'V', descriptionText: "Voltage: ${maxVoltage}V")
-    logDebug("Aggregate power: ${totalPower}W, energy: ${totalEnergy}kWh, current: ${totalCurrent}A, voltage: ${maxVoltage}V")
-  }
-}
-
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Parent Switch Commands and Aggregation                   ║
 // ╚══════════════════════════════════════════════════════════════╝
@@ -743,6 +729,53 @@ void handleInputEvent(Map json, String eventName) {
       logInfo("Parent button ${eventName}")
     }
   }
+}
+
+/**
+ * Processes webhook power aggregation for parent device.
+ * Stores per-component power in state and re-aggregates totals across all components.
+ *
+ * @param params The parsed webhook query parameters including power values
+ */
+private void processWebhookPowerAggregation(Map params) {
+  String dst = params.dst
+  if (dst != 'powermon') { return }
+
+  String cid = params.cid as String
+  Map powerStates = state.powerStates ?: [:]
+
+  // Store per-component power data
+  Map compPower = [:]
+  if (params.voltage != null) { compPower.voltage = params.voltage as BigDecimal }
+  if (params.current != null) { compPower.current = params.current as BigDecimal }
+  if (params.apower != null) { compPower.apower = params.apower as BigDecimal }
+  if (params.aenergy != null) { compPower.aenergy = params.aenergy as BigDecimal }
+  powerStates[cid] = compPower
+  state.powerStates = powerStates
+
+  // Re-aggregate totals across all components
+  BigDecimal totalPower = 0
+  BigDecimal totalEnergy = 0
+  BigDecimal totalCurrent = 0
+  BigDecimal maxVoltage = 0
+
+  powerStates.each { key, value ->
+    if (value instanceof Map) {
+      if (value.apower != null) { totalPower += value.apower as BigDecimal }
+      if (value.aenergy != null) { totalEnergy += (value.aenergy as BigDecimal) / 1000 }
+      if (value.current != null) { totalCurrent += value.current as BigDecimal }
+      if (value.voltage != null) {
+        BigDecimal v = value.voltage as BigDecimal
+        if (v > maxVoltage) { maxVoltage = v }
+      }
+    }
+  }
+
+  sendEvent(name: 'power', value: totalPower, unit: 'W', descriptionText: "Total power: ${totalPower}W")
+  sendEvent(name: 'energy', value: totalEnergy, unit: 'kWh', descriptionText: "Total energy: ${totalEnergy}kWh")
+  sendEvent(name: 'amperage', value: totalCurrent, unit: 'A', descriptionText: "Total current: ${totalCurrent}A")
+  sendEvent(name: 'voltage', value: maxVoltage, unit: 'V', descriptionText: "Voltage: ${maxVoltage}V")
+  logDebug("Aggregate power: ${totalPower}W, energy: ${totalEnergy}kWh, current: ${totalCurrent}A, voltage: ${maxVoltage}V")
 }
 
 /**

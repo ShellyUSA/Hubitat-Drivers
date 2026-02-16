@@ -315,11 +315,26 @@ private Map parseWebhookQueryParams(Map msg) {
   // Extract path from request line: "GET /webhook/switchmon/0 HTTP/1.1" -> "/webhook/switchmon/0"
   String pathAndQuery = requestLine.split(' ')[1]
 
-  // Parse path segments: /webhook/<dst>/<cid>
+  // Parse path segments: /webhook/<dst>/<cid>[?key=val&...]
   if (pathAndQuery.startsWith('/webhook/')) {
-    String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+    String webhookPath = pathAndQuery.substring('/webhook/'.length())
+    String queryString = null
+    int qMarkIdx = webhookPath.indexOf('?')
+    if (qMarkIdx >= 0) {
+      queryString = webhookPath.substring(qMarkIdx + 1)
+      webhookPath = webhookPath.substring(0, qMarkIdx)
+    }
+    String[] segments = webhookPath.split('/')
     if (segments.length >= 2) {
       Map params = [dst: segments[0], cid: segments[1]]
+      if (queryString) {
+        queryString.split('&').each { String pair ->
+          String[] kv = pair.split('=', 2)
+          if (kv.length == 2) {
+            params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+          }
+        }
+      }
       logTrace("parseWebhookQueryParams: parsed path params: ${params}")
       return params
     }
@@ -396,7 +411,10 @@ private void routeWebhookParams(Map params) {
   }
 
   Integer compId = params.cid as Integer
-  String baseType = dstToComponentType(dst)
+
+  // For powermon, component type comes from the 'comp' query param (e.g., 'switch', 'cover')
+  String baseType = (dst == 'powermon' && params.comp) ?
+      (params.comp as String) : dstToComponentType(dst)
   logDebug("routeWebhookParams: dst=${dst}, baseType=${baseType}, cid=${compId}")
 
   String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
@@ -497,23 +515,6 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
         String switchState = data.output ? 'on' : 'off'
         events.add([name: 'switch', value: switchState,
           descriptionText: "Switch turned ${switchState}"])
-      }
-      break
-
-    case 'powermon':
-      if (data.voltage != null) {
-        events.add([name: 'voltage', value: data.voltage as BigDecimal, unit: 'V'])
-      }
-      if (data.current != null) {
-        events.add([name: 'amperage', value: data.current as BigDecimal, unit: 'A'])
-      }
-      if (data.apower != null) {
-        events.add([name: 'power', value: data.apower as BigDecimal, unit: 'W'])
-      }
-      if (data.aenergy?.total != null) {
-        BigDecimal energyWh = data.aenergy.total as BigDecimal
-        BigDecimal energyKwh = energyWh / 1000
-        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
       }
       break
 
@@ -694,6 +695,32 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
     case 'smoke':
       events.add([name: 'smoke', value: 'detected',
         descriptionText: 'Smoke detected'])
+      break
+
+    // Power monitoring via GET (from powermonitoring.js)
+    case 'powermon':
+      if (params.voltage != null) {
+        events.add([name: 'voltage', value: params.voltage as BigDecimal, unit: 'V',
+          descriptionText: "Voltage is ${params.voltage}V"])
+      }
+      if (params.current != null) {
+        events.add([name: 'amperage', value: params.current as BigDecimal, unit: 'A',
+          descriptionText: "Current is ${params.current}A"])
+      }
+      if (params.apower != null) {
+        events.add([name: 'power', value: params.apower as BigDecimal, unit: 'W',
+          descriptionText: "Power is ${params.apower}W"])
+      }
+      if (params.aenergy != null) {
+        BigDecimal energyWh = params.aenergy as BigDecimal
+        BigDecimal energyKwh = energyWh / 1000
+        events.add([name: 'energy', value: energyKwh, unit: 'kWh',
+          descriptionText: "Energy is ${energyKwh}kWh"])
+      }
+      if (params.freq != null) {
+        events.add([name: 'frequency', value: params.freq as BigDecimal, unit: 'Hz',
+          descriptionText: "Frequency is ${params.freq}Hz"])
+      }
       break
   }
 
