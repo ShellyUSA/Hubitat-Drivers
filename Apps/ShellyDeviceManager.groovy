@@ -756,6 +756,13 @@ private List<Map> buildDeviceList() {
             entry.hubDeviceDni = dev.deviceNetworkId
             entry.hubDeviceName = dev.displayName
             entry.hubDeviceLabel = dev.label ?: dev.displayName
+        } else {
+            // Device doesn't exist - clear stale cached data
+            entry.isCreated = false
+            entry.hubDeviceId = null
+            entry.hubDeviceDni = null
+            entry.hubDeviceName = null
+            entry.hubDeviceLabel = null
         }
         result.add(entry)
     }
@@ -2828,13 +2835,10 @@ void processMdnsDiscovery() {
                     ts: now()
                 ]
 
-                // Fetch device info and install prebuilt driver for newly discovered devices
+                // Schedule async device info fetch for newly discovered devices
+                // This prevents blocking page loads while waiting for sleepy battery devices
                 if (isNewToState) {
-                    try {
-                        fetchAndStoreDeviceInfo(key)
-                    } catch (Exception fetchEx) {
-                        logWarn("Discovery: error fetching info for ${key}: ${fetchEx.message}")
-                    }
+                    scheduleAsyncDeviceInfoFetch(key)
                 }
             }
             Integer afterCount = state.discoveredShellys.size()
@@ -3016,6 +3020,128 @@ private LinkedHashMap postCommandSyncWithRetry(LinkedHashMap command, String uri
     }
     return null
 }
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Async Device Info Fetching                                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Schedules an asynchronous device info fetch for a discovered device.
+ * This prevents blocking the app page load while waiting for sleepy battery devices
+ * that may timeout during discovery. Uses staggered delays to avoid overwhelming
+ * the network with simultaneous requests.
+ *
+ * @param ipKey The IP address key identifying the device in discoveredShellys map
+ */
+private void scheduleAsyncDeviceInfoFetch(String ipKey) {
+    if (!ipKey) { return }
+
+    // Initialize async fetch queue if needed
+    if (!state.asyncFetchQueue) {
+        state.asyncFetchQueue = [:] as Map
+    }
+
+    // Check if this IP is already queued or in progress
+    if (state.asyncFetchQueue[ipKey]) {
+        logDebug("Async fetch already queued for ${ipKey}")
+        return
+    }
+
+    // Mark as queued
+    state.asyncFetchQueue[ipKey] = [
+        status: 'queued',
+        queuedAt: now(),
+        attempts: 0
+    ]
+
+    // Calculate staggered delay (100ms per queued device to avoid network flooding)
+    Integer queueSize = state.asyncFetchQueue.size()
+    Integer delayMs = 100 + (queueSize * 100)
+
+    logDebug("Scheduling async device info fetch for ${ipKey} in ${delayMs}ms")
+    runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey]])
+}
+
+/**
+ * Callback handler for async device info fetch.
+ * Called by runInMillis after scheduled delay. Fetches device info in the background
+ * and updates discovery state. If the fetch fails due to timeout (sleepy device),
+ * marks it as unreachable but doesn't retry to avoid blocking.
+ *
+ * @param data Map containing ipKey
+ */
+void processAsyncDeviceInfoFetch(Map data) {
+    String ipKey = data?.ipKey
+    if (!ipKey) { return }
+
+    logDebug("Processing async device info fetch for ${ipKey}")
+
+    // Update queue status
+    Map queueEntry = state.asyncFetchQueue[ipKey] as Map
+    if (queueEntry) {
+        queueEntry.status = 'in_progress'
+        queueEntry.startedAt = now()
+        state.asyncFetchQueue[ipKey] = queueEntry
+    }
+
+    try {
+        // Attempt to fetch device info (with retries built into fetchAndStoreDeviceInfo)
+        fetchAndStoreDeviceInfo(ipKey)
+
+        // Mark as completed
+        if (queueEntry) {
+            queueEntry.status = 'completed'
+            queueEntry.completedAt = now()
+            state.asyncFetchQueue[ipKey] = queueEntry
+        }
+
+        logDebug("Async fetch completed for ${ipKey}")
+
+    } catch (Exception e) {
+        // Log but don't block on errors (likely sleepy device or network timeout)
+        logDebug("Async fetch failed for ${ipKey}: ${e.message}")
+
+        if (queueEntry) {
+            queueEntry.status = 'failed'
+            queueEntry.failedAt = now()
+            queueEntry.error = e.message
+            state.asyncFetchQueue[ipKey] = queueEntry
+        }
+    }
+
+    // Clean up old queue entries (keep last 50)
+    cleanupAsyncFetchQueue()
+}
+
+/**
+ * Cleans up old async fetch queue entries to prevent state bloat.
+ * Keeps only the 50 most recent entries.
+ */
+private void cleanupAsyncFetchQueue() {
+    Map queue = state.asyncFetchQueue as Map
+    if (!queue || queue.size() <= 50) { return }
+
+    // Sort by timestamp (most recent first)
+    List<Map.Entry> entries = queue.entrySet().toList()
+    entries.sort { Map.Entry a, Map.Entry b ->
+        Long aTime = (a.value as Map)?.queuedAt as Long ?: 0L
+        Long bTime = (b.value as Map)?.queuedAt as Long ?: 0L
+        return bTime <=> aTime  // Descending (newest first)
+    }
+
+    // Keep only the 50 most recent
+    Map cleaned = [:] as Map
+    entries.take(50).each { Map.Entry entry ->
+        cleaned[entry.key] = entry.value
+    }
+
+    state.asyncFetchQueue = cleaned
+    logDebug("Cleaned async fetch queue: kept ${cleaned.size()} entries")
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Async Device Info Fetching                               ║
+// ╚══════════════════════════════════════════════════════════════╝
 
 /**
  * Fetches comprehensive device information from a discovered Shelly device.
