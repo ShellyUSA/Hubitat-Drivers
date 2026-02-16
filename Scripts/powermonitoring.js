@@ -183,8 +183,8 @@ function onStatus(ev) {
   }
 }
 
-// Build and send a GET request with normalized power monitoring params
-function sendGetReport(compId, compType, phase, data) {
+// Build and send a POST request with normalized power monitoring params as JSON body
+function sendPostReport(compId, compType, phase, data) {
   let v = average(data.vs);
   let cur = average(data.cs);
   let p = average(data.ps);
@@ -200,18 +200,13 @@ function sendGetReport(compId, compType, phase, data) {
     return;
   }
 
-  let url =
-    REMOTE_URL +
-    "/webhook/powermon/" +
-    JSON.stringify(compId) +
-    "?comp=" +
-    compType;
-  if (phase) url += "&phase=" + phase;
-  if (v !== null) url += "&voltage=" + JSON.stringify(v);
-  if (cur !== null) url += "&current=" + JSON.stringify(cur);
-  if (p !== null) url += "&apower=" + JSON.stringify(p);
-  if (data.e !== null) url += "&aenergy=" + JSON.stringify(data.e);
-  if (f !== null) url += "&freq=" + JSON.stringify(f);
+  let body = { dst: "powermon", cid: compId, comp: compType };
+  if (phase) body.phase = phase;
+  if (v !== null) body.voltage = v;
+  if (cur !== null) body.current = cur;
+  if (p !== null) body.apower = p;
+  if (data.e !== null) body.aenergy = data.e;
+  if (f !== null) body.freq = f;
 
   // Store reported values as last-known for next cycle
   if (v !== null) data.lastV = v;
@@ -219,12 +214,17 @@ function sendGetReport(compId, compType, phase, data) {
   if (p !== null) data.lastP = p;
   if (f !== null) data.lastF = f;
 
-  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
+  let url = REMOTE_URL + "/webhook/powermon/" + JSON.stringify(compId);
+  Shelly.call(
+    "HTTP.POST",
+    { url: url, body: JSON.stringify(body), content_type: "application/json" },
+    onHTTPResponse,
+  );
 
-  print("Reported:", url);
+  print("Reported:", url, JSON.stringify(body));
 }
 
-// Timer callback: average accumulated readings and send to Hubitat via GET
+// Timer callback: average accumulated readings and send to Hubitat via POST
 function sendReport() {
   if (compKeys.length === 0) {
     print("No power events received yet");
@@ -239,7 +239,7 @@ function sendReport() {
       let phases = ["a", "b", "c"];
       for (let j = 0; j < phases.length; j++) {
         let ph = entry[phases[j]];
-        sendGetReport(entry.id, "em", phases[j], ph);
+        sendPostReport(entry.id, "em", phases[j], ph);
         // Reset averaged arrays; keep energy (cumulative)
         ph.vs = [];
         ph.cs = [];
@@ -248,7 +248,7 @@ function sendReport() {
       }
     } else {
       // Single-phase: one request per component
-      sendGetReport(entry.id, entry.type, null, entry);
+      sendPostReport(entry.id, entry.type, null, entry);
       // Reset averaged arrays; keep energy (cumulative)
       entry.vs = [];
       entry.cs = [];

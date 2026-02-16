@@ -91,20 +91,20 @@ function getCoverId(comp, fallbackId) {
   return 0;
 }
 
-// Send cover state for a single component via GET
+// Send cover state for a single component via POST with JSON body
 function sendCoverReport(id, state, currentPos) {
-  let url =
-    REMOTE_URL +
-    "/webhook/covermon/" +
-    JSON.stringify(id) +
-    "?comp=cover";
-  if (state !== undefined && state !== null) url += "&state=" + state;
-  if (currentPos !== undefined && currentPos !== null)
-    url += "&pos=" + JSON.stringify(currentPos);
+  let url = REMOTE_URL + "/webhook/covermon/" + JSON.stringify(id);
+  let body = { dst: "covermon", cid: id, comp: "cover" };
+  if (state !== undefined && state !== null) body.state = state;
+  if (currentPos !== undefined && currentPos !== null) body.pos = currentPos;
 
-  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
+  Shelly.call(
+    "HTTP.POST",
+    { url: url, body: JSON.stringify(body), content_type: "application/json" },
+    onHTTPResponse,
+  );
 
-  print("Reported:", url);
+  print("Reported:", url, JSON.stringify(body));
 }
 
 // Reset the heartbeat timer with a new random interval

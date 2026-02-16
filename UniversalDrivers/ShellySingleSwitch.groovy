@@ -61,45 +61,66 @@ void updated() {
  *
  * @param description Raw LAN message description string from Hubitat
  */
+/**
+ * Parses incoming LAN messages from the Shelly device.
+ * POST requests (from Shelly scripts) carry data in the JSON body.
+ * GET requests (from Shelly Action Webhooks) carry state in the URL path.
+ *
+ * @param description Raw LAN message description string from Hubitat
+ */
 void parse(String description) {
-  logTrace('parse() received message')
-
   try {
     Map msg = parseLanMessage(description)
-    // Forward to parent app for structured trace logging (gate check ensures minimal overhead)
     if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
 
-    if (msg?.status != null) {
-      logTrace("parse() skipping HTTP response (status=${msg.status})")
-      return
-    }
+    if (msg?.status != null) { return }
 
-    // Try JSON body first (legacy script notifications)
     if (msg?.body) {
-      try {
-        def json = new groovy.json.JsonSlurper().parseText(msg.body)
-        String dst = json?.dst as String
-        logDebug("Script notification dst=${dst}")
-        logTrace("Script notification body: ${json}")
-
-        if (dst == 'switchmon') { parseSwitchmon(json) }
-        return
-      } catch (Exception jsonEx) {
-        // Body might be empty or not JSON — fall through to GET parsing
-      }
-    }
-
-    // Try GET query parameters (webhook notifications with URL tokens)
-    Map params = parseWebhookQueryParams(msg)
-    if (params?.dst) {
-      logDebug("GET webhook dst=${params.dst}")
-      logTrace("Webhook params: ${params}")
-      routeWebhookParams(params)
+      handlePostWebhook(msg)
     } else {
-      logTrace("parse() no dst found in message, unable to route")
+      handleGetWebhook(msg)
     }
   } catch (Exception e) {
     logError("Error parsing LAN message: ${e.message}")
+  }
+}
+
+/**
+ * Handles POST webhook notifications from Shelly scripts.
+ * Parses JSON body and routes to webhook params handler.
+ *
+ * @param msg The parsed LAN message map containing a JSON body
+ */
+private void handlePostWebhook(Map msg) {
+  try {
+    Map json = new groovy.json.JsonSlurper().parseText(msg.body) as Map
+    String dst = json?.dst?.toString()
+    if (!dst) { logTrace('POST webhook: no dst in body'); return }
+
+    Map params = [:]
+    json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
+
+    logDebug("POST webhook dst=${dst}, cid=${params.cid}")
+    logTrace("POST webhook params: ${params}")
+    routeWebhookParams(params)
+  } catch (Exception e) {
+    logDebug("POST webhook parse error: ${e.message}")
+  }
+}
+
+/**
+ * Handles GET webhook notifications from Shelly Action Webhooks.
+ *
+ * @param msg The parsed LAN message map (no body)
+ */
+private void handleGetWebhook(Map msg) {
+  Map params = parseWebhookQueryParams(msg)
+  if (params?.dst) {
+    logDebug("GET webhook dst=${params.dst}, cid=${params.cid}")
+    logTrace("GET webhook params: ${params}")
+    routeWebhookParams(params)
+  } else {
+    logTrace('GET webhook: no dst found, unable to route')
   }
 }
 
@@ -109,85 +130,36 @@ void parse(String description) {
  * @param msg The parsed LAN message map
  * @return Map of query parameter key-value pairs, or null if not parseable
  */
+/**
+ * Parses webhook GET request path to extract dst and cid from URL segments.
+ * GET Action Webhooks encode state in the path (e.g., /webhook/switch_on/0).
+ *
+ * @param msg The parsed LAN message map from parseLanMessage()
+ * @return Map with dst and cid keys, or null if not parseable
+ */
 private Map parseWebhookQueryParams(Map msg) {
   String requestLine = null
 
-  // Try hex-decoded raw header first — preserves full URL with query parameters.
-  // parseLanMessage's headers MAP strips query params from the request line.
-  if (msg?.header) {
-    try {
-      byte[] decoded = hubitat.helper.HexUtils.hexStringToByteArray(msg.header.toString())
-      String rawHeader = new String(decoded, 'UTF-8')
-      String[] lines = rawHeader.split('\\r?\\n')
-      for (String line : lines) {
-        String trimmed = line.trim()
-        if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
-          requestLine = trimmed
-          break
-        }
-      }
-    } catch (Exception e) {
-      logTrace("parseWebhookQueryParams: raw header decode failed: ${e.message}")
-    }
-  }
-
-  // Fallback: parsed headers map (may not include query string)
-  if (!requestLine && msg?.headers) {
+  if (msg?.headers) {
     requestLine = msg.headers.keySet()?.find { key ->
       key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
     }?.toString()
   }
 
-  if (!requestLine) {
-    logTrace('parseWebhookQueryParams: no request line found in headers or raw header')
-    return null
-  }
+  if (!requestLine) { return null }
 
-  // Extract path from request line: "GET /webhook/switchmon/0 HTTP/1.1" -> "/webhook/switchmon/0"
   String pathAndQuery = requestLine.split(' ')[1]
 
-  // Parse path segments: /webhook/<dst>/<cid>[?key=val&...]
   if (pathAndQuery.startsWith('/webhook/')) {
     String webhookPath = pathAndQuery.substring('/webhook/'.length())
-    String queryString = null
     int qMarkIdx = webhookPath.indexOf('?')
-    if (qMarkIdx >= 0) {
-      queryString = webhookPath.substring(qMarkIdx + 1)
-      webhookPath = webhookPath.substring(0, qMarkIdx)
-    }
+    if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
     String[] segments = webhookPath.split('/')
     if (segments.length >= 2) {
-      Map params = [dst: segments[0], cid: segments[1]]
-      if (queryString) {
-        queryString.split('&').each { String pair ->
-          String[] kv = pair.split('=', 2)
-          if (kv.length == 2) {
-            params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
-          }
-        }
-      }
-      logTrace("parseWebhookQueryParams: parsed path params: ${params}")
-      return params
+      return [dst: segments[0], cid: segments[1]]
     }
-    logTrace("parseWebhookQueryParams: not enough path segments in '${pathAndQuery}'")
-    return null
   }
 
-  // Fallback: try query string parsing for backwards compatibility
-  int qIdx = pathAndQuery.indexOf('?')
-  if (qIdx >= 0) {
-    Map params = [:]
-    pathAndQuery.substring(qIdx + 1).split('&').each { String pair ->
-      String[] kv = pair.split('=', 2)
-      if (kv.length == 2) {
-        params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
-      }
-    }
-    logTrace("parseWebhookQueryParams: parsed query params: ${params}")
-    return params
-  }
-
-  logTrace("parseWebhookQueryParams: no webhook path or query string in '${pathAndQuery}'")
   return null
 }
 

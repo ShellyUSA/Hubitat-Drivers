@@ -92,21 +92,21 @@ function getLightId(comp, fallbackId) {
   return 0;
 }
 
-// Send light state for a single component via GET
+// Send light state for a single component via POST with JSON body
 function sendLightReport(id, output, brightness) {
-  let url =
-    REMOTE_URL +
-    "/webhook/lightmon/" +
-    JSON.stringify(id) +
-    "?comp=light";
-  if (output !== undefined && output !== null)
-    url += "&output=" + JSON.stringify(output);
+  let url = REMOTE_URL + "/webhook/lightmon/" + JSON.stringify(id);
+  let body = { dst: "lightmon", cid: id, comp: "light" };
+  if (output !== undefined && output !== null) body.output = output;
   if (brightness !== undefined && brightness !== null)
-    url += "&brightness=" + JSON.stringify(brightness);
+    body.brightness = brightness;
 
-  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
+  Shelly.call(
+    "HTTP.POST",
+    { url: url, body: JSON.stringify(body), content_type: "application/json" },
+    onHTTPResponse,
+  );
 
-  print("Reported:", url);
+  print("Reported:", url, JSON.stringify(body));
 }
 
 // Reset the heartbeat timer with a new random interval

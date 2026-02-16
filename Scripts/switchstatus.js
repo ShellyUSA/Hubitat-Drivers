@@ -91,18 +91,18 @@ function getSwitchId(comp, fallbackId) {
   return 0;
 }
 
-// Send switch state for a single component via GET
+// Send switch state for a single component via POST with JSON body
 function sendSwitchReport(id, output) {
-  let url =
-    REMOTE_URL +
-    "/webhook/switchmon/" +
-    JSON.stringify(id) +
-    "?output=" +
-    JSON.stringify(output);
+  let url = REMOTE_URL + "/webhook/switchmon/" + JSON.stringify(id);
+  let body = { dst: "switchmon", cid: id, output: output };
 
-  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
+  Shelly.call(
+    "HTTP.POST",
+    { url: url, body: JSON.stringify(body), content_type: "application/json" },
+    onHTTPResponse,
+  );
 
-  print("Reported:", url);
+  print("Reported:", url, JSON.stringify(body));
 }
 
 // Reset the heartbeat timer with a new random interval

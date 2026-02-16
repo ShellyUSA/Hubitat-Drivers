@@ -9259,14 +9259,12 @@ void componentResetEnergyMonitors(def childDevice) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Called by the parent device's parse() method.
- * Routes incoming LAN messages (webhooks, script notifications) to the
- * appropriate child device based on the message's dst and component IDs.
- * Handles both POST requests (JSON body from scripts) and GET requests
- * (query parameters from webhooks with URL token replacement).
+ * Parses incoming LAN messages forwarded from parent devices.
+ * POST requests (from Shelly scripts) carry data in the JSON body.
+ * GET requests (from Shelly Action Webhooks) carry state in the URL path.
  *
  * @param parentDevice The parent device that received the LAN message
- * @param description The raw LAN message description string
+ * @param description Raw LAN message description string from Hubitat
  */
 void componentParse(def parentDevice, String description) {
     logDebug("componentParse() called from parent: ${parentDevice.displayName}")
@@ -9274,38 +9272,56 @@ void componentParse(def parentDevice, String description) {
     try {
         Map msg = parseLanMessage(description)
 
-        // Skip HTTP responses (status != null means this is a response to our request)
         if (msg?.status != null) { return }
 
         String parentDni = parentDevice.deviceNetworkId
 
-        // Try POST JSON body first (script notifications like powermonitoring.js)
         if (msg?.body) {
-            try {
-                def json = slurper.parseText(msg.body)
-                String dst = json?.dst
-                Map result = json?.result as Map
-
-                if (result && dst) {
-                    logDebug("componentParse: script notification dst=${dst}, result keys=${result.keySet()}")
-                    routeScriptNotification(parentDni, dst, result)
-                    return
-                }
-            } catch (Exception jsonEx) {
-                logDebug("componentParse: body is not valid JSON, trying GET params")
-            }
-        }
-
-        // Try GET query parameters (webhook notifications with URL tokens)
-        Map params = parseWebhookQueryParams(msg)
-        if (params?.dst) {
-            logDebug("componentParse: GET webhook dst=${params.dst}, cid=${params.cid}")
-            processWebhookParams(parentDni, params)
+            handlePostWebhook(parentDni, msg)
         } else {
-            logDebug("componentParse: no actionable data in message")
+            handleGetWebhook(parentDni, msg)
         }
     } catch (Exception e) {
         logError("componentParse exception: ${e.message}")
+    }
+}
+
+/**
+ * Handles POST webhook notifications from Shelly scripts.
+ * Parses JSON body and routes to webhook params handler.
+ *
+ * @param parentDni The parent device network ID
+ * @param msg The parsed LAN message map containing a JSON body
+ */
+private void handlePostWebhook(String parentDni, Map msg) {
+    try {
+        Map json = slurper.parseText(msg.body) as Map
+        String dst = json?.dst?.toString()
+        if (!dst) { logDebug('componentParse: POST webhook has no dst in body'); return }
+
+        Map params = [:]
+        json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
+
+        logDebug("componentParse: POST webhook dst=${dst}, cid=${params.cid}")
+        processWebhookParams(parentDni, params)
+    } catch (Exception e) {
+        logDebug("componentParse: POST webhook parse error: ${e.message}")
+    }
+}
+
+/**
+ * Handles GET webhook notifications from Shelly Action Webhooks.
+ *
+ * @param parentDni The parent device network ID
+ * @param msg The parsed LAN message map (no body)
+ */
+private void handleGetWebhook(String parentDni, Map msg) {
+    Map params = parseWebhookQueryParams(msg)
+    if (params?.dst) {
+        logDebug("componentParse: GET webhook dst=${params.dst}, cid=${params.cid}")
+        processWebhookParams(parentDni, params)
+    } else {
+        logDebug('componentParse: no actionable data in message')
     }
 }
 
@@ -9494,36 +9510,16 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
 }
 
 /**
- * Parses webhook query parameters from an incoming GET request.
- * Extracts query string from the HTTP request line stored in message headers.
+ * Parses webhook GET request path to extract dst and cid from URL segments.
+ * GET Action Webhooks encode state in the path (e.g., /webhook/switch_on/0).
  *
  * @param msg The parsed LAN message map from parseLanMessage()
- * @return Map of query parameter key-value pairs, or null if not a GET request
+ * @return Map with dst and cid keys, or null if not parseable
  */
 private Map parseWebhookQueryParams(Map msg) {
     String requestLine = null
 
-    // Try hex-decoded raw header first — preserves full URL with query parameters.
-    // parseLanMessage's headers MAP strips query params from the request line.
-    if (msg?.header) {
-        try {
-            byte[] decoded = hubitat.helper.HexUtils.hexStringToByteArray(msg.header.toString())
-            String rawHeader = new String(decoded, 'UTF-8')
-            String[] lines = rawHeader.split('\\r?\\n')
-            for (String line : lines) {
-                String trimmed = line.trim()
-                if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
-                    requestLine = trimmed
-                    break
-                }
-            }
-        } catch (Exception e) {
-            logDebug("parseWebhookQueryParams: raw header decode failed: ${e.message}")
-        }
-    }
-
-    // Fallback: parsed headers map (may not include query string)
-    if (!requestLine && msg?.headers) {
+    if (msg?.headers) {
         requestLine = msg.headers.keySet()?.find { key ->
             key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
         }?.toString()
@@ -9533,44 +9529,17 @@ private Map parseWebhookQueryParams(Map msg) {
 
     String pathAndQuery = requestLine.split(' ')[1]
 
-    // Parse path segments: /webhook/<dst>/<cid>[?key=val&...]
     if (pathAndQuery.startsWith('/webhook/')) {
         String webhookPath = pathAndQuery.substring('/webhook/'.length())
-        String queryString = null
         int qMarkIdx = webhookPath.indexOf('?')
-        if (qMarkIdx >= 0) {
-            queryString = webhookPath.substring(qMarkIdx + 1)
-            webhookPath = webhookPath.substring(0, qMarkIdx)
-        }
+        if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
         String[] segments = webhookPath.split('/')
         if (segments.length >= 2) {
-            Map params = [dst: segments[0], cid: segments[1]]
-            if (queryString) {
-                queryString.split('&').each { String pair ->
-                    String[] kv = pair.split('=', 2)
-                    if (kv.length == 2) {
-                        params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
-                    }
-                }
-            }
-            return params
-        }
-        return null
-    }
-
-    // Fallback: try query string parsing for backwards compatibility
-    int qIdx = pathAndQuery.indexOf('?')
-    if (qIdx < 0) { return null }
-
-    String queryString = pathAndQuery.substring(qIdx + 1)
-    Map params = [:]
-    queryString.split('&').each { String pair ->
-        String[] kv = pair.split('=', 2)
-        if (kv.length == 2) {
-            params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+            return [dst: segments[0], cid: segments[1]]
         }
     }
-    return params
+
+    return null
 }
 
 /**
