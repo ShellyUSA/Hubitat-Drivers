@@ -298,13 +298,15 @@ void parse(String description) {
     }
 
     // Try GET query parameters (webhook notifications)
+    // Note: only dst is required; comp is only present for powermon webhooks.
+    // Other webhook types (switch_on, input_push, cover_open, etc.) have dst and cid only.
     Map params = parseWebhookQueryParams(msg)
-    if (params?.dst && params?.comp) {
+    if (params?.dst) {
       logDebug("GET webhook dst=${params.dst}, cid=${params.cid}")
       logTrace("Webhook params: ${params}")
       routeWebhookParams(params)
     } else {
-      logTrace("parse() no dst/comp found in message, unable to route")
+      logTrace("parse() no dst found in message, unable to route")
     }
   } catch (Exception e) {
     logError("Error parsing LAN message: ${e.message}")
@@ -563,6 +565,20 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
         String switchState = data.output ? 'on' : 'off'
         events.add([name: 'switch', value: switchState,
           descriptionText: "Switch turned ${switchState}"])
+      }
+      // Inline power monitoring for switches (from Shelly.GetStatus data)
+      if (data.voltage != null) {
+        events.add([name: 'voltage', value: data.voltage as BigDecimal, unit: 'V'])
+      }
+      if (data.current != null) {
+        events.add([name: 'amperage', value: data.current as BigDecimal, unit: 'A'])
+      }
+      if (data.apower != null) {
+        events.add([name: 'power', value: data.apower as BigDecimal, unit: 'W'])
+      }
+      if (data.aenergy?.total != null) {
+        BigDecimal energyKwh = (data.aenergy.total as BigDecimal) / 1000
+        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
       }
       break
 

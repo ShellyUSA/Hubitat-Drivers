@@ -101,12 +101,12 @@ function getOrCreateComp(key, type, id) {
     c = {
       type: "em",
       id: id,
-      a: { vs: [], cs: [], ps: [], fs: [], e: null },
-      b: { vs: [], cs: [], ps: [], fs: [], e: null },
-      c: { vs: [], cs: [], ps: [], fs: [], e: null },
+      a: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null },
+      b: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null },
+      c: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null },
     };
   } else {
-    c = { type: type, id: id, vs: [], cs: [], ps: [], fs: [], e: null };
+    c = { type: type, id: id, vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null };
   }
   comps[key] = c;
   compKeys.push(key);
@@ -190,6 +190,12 @@ function sendGetReport(compId, compType, phase, data) {
   let p = average(data.ps);
   let f = average(data.fs);
 
+  // Fall back to last-known values when no deltas were received
+  if (v === null && data.lastV !== null) v = data.lastV;
+  if (cur === null && data.lastC !== null) cur = data.lastC;
+  if (p === null && data.lastP !== null) p = data.lastP;
+  if (f === null && data.lastF !== null) f = data.lastF;
+
   if (v === null && cur === null && p === null && f === null && data.e === null) {
     return;
   }
@@ -206,6 +212,12 @@ function sendGetReport(compId, compType, phase, data) {
   if (p !== null) url += "&apower=" + JSON.stringify(p);
   if (data.e !== null) url += "&aenergy=" + JSON.stringify(data.e);
   if (f !== null) url += "&freq=" + JSON.stringify(f);
+
+  // Store reported values as last-known for next cycle
+  if (v !== null) data.lastV = v;
+  if (cur !== null) data.lastC = cur;
+  if (p !== null) data.lastP = p;
+  if (f !== null) data.lastF = f;
 
   Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
 
@@ -246,8 +258,84 @@ function sendReport() {
   }
 }
 
-// Initialize REMOTE_URL from KVS (async) then start handlers/timer
+// Seed accumulators with initial readings from Shelly.GetStatus.
+// Ensures the first report cycle includes all PM fields even if no
+// status delta events arrive before the first timer fires (e.g., for
+// devices with stable power draw that don't trigger frequent change events).
+function seedFromStatus() {
+  Shelly.call("Shelly.GetStatus", {}, function (res, err, msg) {
+    if (err !== 0 || !res) {
+      print("seedFromStatus: GetStatus failed, err=" + JSON.stringify(err));
+      return;
+    }
+    // Iterate known component prefixes and seed their accumulators
+    let prefixes = ["switch", "pm1", "cover", "em", "em1"];
+    for (let p = 0; p < prefixes.length; p++) {
+      for (let id = 0; id < 8; id++) {
+        let key = prefixes[p] + ":" + JSON.stringify(id);
+        let s = res[key];
+        if (!s) continue;
+
+        if (prefixes[p] === "em") {
+          let entry = getOrCreateComp(key, "em", id);
+          let phases = ["a", "b", "c"];
+          for (let j = 0; j < phases.length; j++) {
+            let ph = entry[phases[j]];
+            let vKey = phases[j] + "_voltage";
+            let cKey = phases[j] + "_current";
+            let pKey = phases[j] + "_act_power";
+            let fKey = phases[j] + "_freq";
+            if (typeof s[vKey] === "number") { ph.vs.push(s[vKey]); ph.lastV = s[vKey]; }
+            if (typeof s[cKey] === "number") { ph.cs.push(s[cKey]); ph.lastC = s[cKey]; }
+            if (typeof s[pKey] === "number") { ph.ps.push(s[pKey]); ph.lastP = s[pKey]; }
+            if (typeof s[fKey] === "number") { ph.fs.push(s[fKey]); ph.lastF = s[fKey]; }
+          }
+        } else if (prefixes[p] === "em1") {
+          let entry = getOrCreateComp(key, "em1", id);
+          if (typeof s.voltage === "number") { entry.vs.push(s.voltage); entry.lastV = s.voltage; }
+          if (typeof s.current === "number") { entry.cs.push(s.current); entry.lastC = s.current; }
+          if (typeof s.act_power === "number") { entry.ps.push(s.act_power); entry.lastP = s.act_power; }
+          if (typeof s.freq === "number") { entry.fs.push(s.freq); entry.lastF = s.freq; }
+        } else {
+          // switch, pm1, cover: use voltage, current, apower, freq
+          let entry = getOrCreateComp(key, prefixes[p], id);
+          if (typeof s.voltage === "number") { entry.vs.push(s.voltage); entry.lastV = s.voltage; }
+          if (typeof s.current === "number") { entry.cs.push(s.current); entry.lastC = s.current; }
+          if (typeof s.apower === "number") { entry.ps.push(s.apower); entry.lastP = s.apower; }
+          if (typeof s.freq === "number") { entry.fs.push(s.freq); entry.lastF = s.freq; }
+          if (s.aenergy && typeof s.aenergy.total === "number") {
+            entry.e = s.aenergy.total;
+          }
+        }
+        print("Seeded " + key + " from GetStatus");
+      }
+    }
+
+    // Also seed emdata/em1data energy counters
+    for (let id = 0; id < 8; id++) {
+      let emdKey = "emdata:" + JSON.stringify(id);
+      let emd = res[emdKey];
+      if (emd) {
+        let emKey = "em:" + JSON.stringify(id);
+        let entry = getOrCreateComp(emKey, "em", id);
+        if (typeof emd.a_total_act_energy === "number") entry.a.e = emd.a_total_act_energy;
+        if (typeof emd.b_total_act_energy === "number") entry.b.e = emd.b_total_act_energy;
+        if (typeof emd.c_total_act_energy === "number") entry.c.e = emd.c_total_act_energy;
+      }
+      let em1dKey = "em1data:" + JSON.stringify(id);
+      let em1d = res[em1dKey];
+      if (em1d) {
+        let em1Key = "em1:" + JSON.stringify(id);
+        let entry = getOrCreateComp(em1Key, "em1", id);
+        if (typeof em1d.total_act_energy === "number") entry.e = em1d.total_act_energy;
+      }
+    }
+  });
+}
+
+// Initialize REMOTE_URL from KVS (async), seed from status, then start handlers/timer
 fetchRemoteUrlFromKVS();
+seedFromStatus();
 Shelly.addStatusHandler(onStatus);
 Timer.set(REPORT_INTERVAL * 1000, true, sendReport);
 
