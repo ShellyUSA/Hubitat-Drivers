@@ -183,7 +183,7 @@ void reconcileChildDevices() {
       if (baseType == 'input') {
         child.sendEvent(name: 'numberOfButtons', value: 1)
       }
-      child.initialize()
+      // Note: addChildDevice triggers installed() → initialize() automatically
       logInfo("Created child: ${label} (${driverName})")
     } catch (Exception e) {
       logError("Failed to create child ${label}: ${e.message}")

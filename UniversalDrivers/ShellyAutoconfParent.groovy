@@ -203,7 +203,7 @@ private void reconcileChildDevices() {
         def child = getChildDeviceHelper(childDni)
         if (child) {
           childData.each { k, v -> childUpdateDataValueHelper(child, k, v) }
-          childInitializeHelper(child)
+          // Note: addChildDevice triggers installed() → initialize() automatically
           logInfo("Created child: ${label}")
         }
       } catch (Exception e) {

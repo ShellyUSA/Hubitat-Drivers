@@ -399,14 +399,14 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         ]
     ]
 
-    logInfo("=== Device Creation Details ===")
+    logInfo("════════════════════════════════════════════════════════════")
+    logInfo("  STARTING DEVICE CREATION: ${deviceLabel}")
+    logInfo("════════════════════════════════════════════════════════════")
     logInfo("  DNI: ${dni}")
     logInfo("  Driver: ${driverName}")
-    logInfo("  Label: ${deviceLabel}")
     logInfo("  IP: ${ipKey}")
     logInfo("  Model: ${deviceInfo.model}")
     logInfo("  MAC: ${deviceInfo.mac}")
-    logInfo("  Properties: ${deviceProps}")
 
     // Ensure the driver is installed on the hub before attempting to create the device
     if (!ensureDriverInstalled(driverName, deviceInfo)) {
@@ -434,10 +434,14 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         // Install scripts and webhooks on the Shelly device
         reinitializeDevice(ipKey)
 
-        logInfo("✓ Device initialized successfully")
+        logInfo("════════════════════════════════════════════════════════════")
+        logInfo("  ✓ DEVICE CREATION COMPLETE: ${deviceLabel}")
+        logInfo("════════════════════════════════════════════════════════════")
 
     } catch (Exception e) {
-        logError("Failed to create device: ${e.message}")
+        logError("════════════════════════════════════════════════════════════")
+        logError("  ✗ DEVICE CREATION FAILED: ${deviceLabel} — ${e.message}")
+        logError("════════════════════════════════════════════════════════════")
         appendLog('error', "Failed to create ${deviceLabel}: ${e.message}")
     }
 }
@@ -466,11 +470,14 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         return
     }
 
-    logInfo("=== Multi-Component Device Creation ===")
+    logInfo("════════════════════════════════════════════════════════════")
+    logInfo("  STARTING DEVICE CREATION: ${baseLabel}")
+    logInfo("════════════════════════════════════════════════════════════")
     logInfo("  Parent DNI: ${parentDni}")
     logInfo("  Parent Driver: ${parentDriverName}")
-    logInfo("  Base Label: ${baseLabel}")
     logInfo("  IP: ${ipKey}")
+    logInfo("  Model: ${deviceInfo.model}")
+    logInfo("  MAC: ${deviceInfo.mac}")
     logInfo("  Components: ${deviceStatus.keySet()}")
 
     // Step 1: Install required component drivers
@@ -544,11 +551,15 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // Install scripts and webhooks on the Shelly device
         reinitializeDevice(ipKey)
 
-        logInfo("✓ Multi-component parent device created (driver-level children will be created by parent)")
+        logInfo("════════════════════════════════════════════════════════════")
+        logInfo("  ✓ DEVICE CREATION COMPLETE: ${baseLabel}")
+        logInfo("════════════════════════════════════════════════════════════")
         appendLog('info', "Created parent device ${baseLabel} with ${components.size()} components")
 
     } catch (Exception e) {
-        logError("Failed to create multi-component device: ${e.message}")
+        logError("════════════════════════════════════════════════════════════")
+        logError("  ✗ DEVICE CREATION FAILED: ${baseLabel} — ${e.message}")
+        logError("════════════════════════════════════════════════════════════")
         appendLog('error', "Failed to create multi-component ${baseLabel}: ${e.message}")
     }
 }
