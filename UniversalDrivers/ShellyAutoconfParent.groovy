@@ -134,11 +134,19 @@ private void reconcileChildDevices() {
   List<String> components = componentStr.split(',').toList()
 
   // Build set of DNIs that SHOULD exist
+  // EM (3-phase) expands to 3 children per component (one per phase a/b/c)
   Set<String> desiredDnis = [] as Set
   components.each { String comp ->
     String baseType = comp.contains(':') ? comp.split(':')[0] : comp
     Integer compId = comp.contains(':') ? (comp.split(':')[1] as Integer) : 0
-    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
+    if (baseType == 'em') {
+      // 3 children per EM component: em-0, em-1, em-2 (for em:0)
+      for (int i = 0; i < 3; i++) {
+        desiredDnis.add("${device.deviceNetworkId}-em-${compId * 3 + i}".toString())
+      }
+    } else {
+      desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
+    }
   }
 
   // Build set of DNIs that currently exist
@@ -156,9 +164,34 @@ private void reconcileChildDevices() {
   }
 
   // Create missing children (should exist but don't)
+  List<String> phaseLabels = ['A', 'B', 'C']
   components.each { String comp ->
     String baseType = comp.contains(':') ? comp.split(':')[0] : comp
     Integer compId = comp.contains(':') ? (comp.split(':')[1] as Integer) : 0
+
+    // EM (3-phase) creates 3 children per component
+    if (baseType == 'em') {
+      for (int phaseIdx = 0; phaseIdx < 3; phaseIdx++) {
+        Integer childId = compId * 3 + phaseIdx
+        String childDni = "${device.deviceNetworkId}-em-${childId}"
+        if (existingDnis.contains(childDni)) { continue }
+
+        String label = "${device.displayName} EM${compId} Phase ${phaseLabels[phaseIdx]}"
+        Map childData = [componentType: 'em', emId: compId.toString(), phase: phaseLabels[phaseIdx].toLowerCase()]
+        try {
+          addChildDeviceHelper('ShellyUSA', 'Shelly Autoconf EM', childDni,
+            [name: label, label: label])
+          def child = getChildDeviceHelper(childDni)
+          if (child) {
+            childData.each { k, v -> childUpdateDataValueHelper(child, k, v) }
+            logInfo("Created child: ${label}")
+          }
+        } catch (Exception e) {
+          logError("Failed to create child ${label}: ${e.message}")
+        }
+      }
+      return // skip the standard single-child path
+    }
 
     String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
     if (existingDnis.contains(childDni)) { return } // already exists, leave it alone
@@ -188,6 +221,11 @@ private void reconcileChildDevices() {
       case 'input':
         driverName = 'Shelly Autoconf Input Button'
         childData.inputId = compId.toString()
+        break
+
+      case 'em1':
+        driverName = 'Shelly Autoconf EM'
+        childData.em1Id = compId.toString()
         break
 
       default:
@@ -234,9 +272,8 @@ void parse(String description) {
 
   try {
     Map msg = parseLanMessage(description)
-    logTrace("parse() msg keys: ${msg?.keySet()}, status=${msg?.status}, body=${msg?.body ? 'present' : 'null'}, headers=${msg?.headers ? 'present' : 'null'}, header=${msg?.header ? 'present' : 'null'}")
-    if (msg?.headers) { logTrace("parse() headers map keys: ${msg.headers.keySet()}") }
-    if (msg?.header) { logTrace("parse() raw header: ${msg.header}") }
+    // Forward to parent app for structured trace logging (gate check ensures minimal overhead)
+    if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
 
     // Skip HTTP responses (only process incoming requests)
     if (msg?.status != null) {
@@ -400,8 +437,10 @@ private void routePostNotification(String dst, Map json) {
 
 /**
  * Routes webhook GET query parameters to appropriate children.
+ * For EM (3-phase) powermon, the phase param (a/b/c) maps to child index
+ * within the EM component: em:0 phase a → em-0, phase b → em-1, phase c → em-2.
  *
- * @param params The parsed query parameters including comp (e.g., "switch:0")
+ * @param params The parsed query parameters including dst, cid, and optionally comp/phase
  */
 private void routeWebhookParams(Map params) {
   String dst = params.dst as String
@@ -412,9 +451,17 @@ private void routeWebhookParams(Map params) {
 
   Integer compId = params.cid as Integer
 
-  // For powermon, component type comes from the 'comp' query param (e.g., 'switch', 'cover')
+  // For powermon, component type comes from the 'comp' query param (e.g., 'switch', 'cover', 'em', 'em1')
   String baseType = (dst == 'powermon' && params.comp) ?
       (params.comp as String) : dstToComponentType(dst)
+
+  // EM 3-phase: map phase letter to child index (a→0, b→1, c→2)
+  if (dst == 'powermon' && baseType == 'em' && params.phase) {
+    Map phaseMap = [a: 0, b: 1, c: 2]
+    Integer phaseIdx = phaseMap[params.phase as String] ?: 0
+    compId = compId * 3 + phaseIdx
+  }
+
   logDebug("routeWebhookParams: dst=${dst}, baseType=${baseType}, cid=${compId}")
 
   String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
@@ -427,7 +474,7 @@ private void routeWebhookParams(Map params) {
       logDebug("Sent webhook event to ${child.displayName}: ${evt}")
     }
   } else {
-    logWarn("No child found for ${comp}")
+    logDebug("routeWebhookParams: no child found for DNI ${childDni}")
   }
 }
 

@@ -5,6 +5,11 @@
 // power readings from status events, average
 // them over a configurable interval, and
 // report aggregated data to a Hubitat hub.
+//
+// Supported components:
+//   PM1/switch/cover  — single-phase, inline energy (aenergy.total)
+//   EM1               — single-phase, separate energy (em1data)
+//   EM                — 3-phase, separate energy (emdata)
 // ==========================================
 
 // === USER CONFIGURATION ===
@@ -18,14 +23,9 @@ let HUBITAT_PROTO = "http://";
 // REMOTE_URL is built from KVS value (or fallback)
 let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 
-// === Internal accumulators ===
-let voltages = [];
-let currents = [];
-let apowers = [];
-let freqs = [];
-let latestAenergy = null; // Most recent aenergy.total (Wh, cumulative)
-let compName = null; // Component name from status events (e.g. "switch:0")
-let compId = 0; // Component id number
+// === Per-component accumulators ===
+let comps = {}; // Keyed by component name (e.g. "pm1:0", "em:0")
+let compKeys = []; // Track keys for iteration (mJS has no Object.keys)
 
 // HTTP response handler
 function onHTTPResponse(result, error_code, error_message) {
@@ -93,82 +93,157 @@ function average(arr) {
   return Math.round((sum / arr.length) * 100) / 100;
 }
 
+// Get or create a component accumulator entry
+function getOrCreateComp(key, type, id) {
+  if (comps[key]) return comps[key];
+  let c;
+  if (type === "em") {
+    c = {
+      type: "em",
+      id: id,
+      a: { vs: [], cs: [], ps: [], fs: [], e: null },
+      b: { vs: [], cs: [], ps: [], fs: [], e: null },
+      c: { vs: [], cs: [], ps: [], fs: [], e: null },
+    };
+  } else {
+    c = { type: type, id: id, vs: [], cs: [], ps: [], fs: [], e: null };
+  }
+  comps[key] = c;
+  compKeys.push(key);
+  return c;
+}
+
 // Status handler: collect power data from status change events
 function onStatus(ev) {
   let d = ev.delta;
   if (d === undefined || d === null) return;
 
-  let c = ev.component;
-  if (c === undefined || c === null) return;
+  let comp = ev.component;
+  if (comp === undefined || comp === null) return;
 
-  // Only process power-capable components
-  if (
-    c.indexOf("switch") !== 0 &&
-    c.indexOf("pm1") !== 0 &&
-    c.indexOf("cover") !== 0
-  )
+  let colonIdx = comp.indexOf(":");
+  let type = colonIdx >= 0 ? comp.substring(0, colonIdx) : comp;
+  let id = ev.id !== undefined ? ev.id : 0;
+
+  // emdata: energy counters for 3-phase em components
+  if (type === "emdata") {
+    let emKey = "em:" + JSON.stringify(id);
+    let entry = getOrCreateComp(emKey, "em", id);
+    if (typeof d.a_total_act_energy === "number") entry.a.e = d.a_total_act_energy;
+    if (typeof d.b_total_act_energy === "number") entry.b.e = d.b_total_act_energy;
+    if (typeof d.c_total_act_energy === "number") entry.c.e = d.c_total_act_energy;
     return;
+  }
 
-  compName = c;
-  if (ev.id !== undefined) compId = ev.id;
+  // em1data: energy counter for single-phase em1 components
+  if (type === "em1data") {
+    let em1Key = "em1:" + JSON.stringify(id);
+    let entry = getOrCreateComp(em1Key, "em1", id);
+    if (typeof d.total_act_energy === "number") entry.e = d.total_act_energy;
+    return;
+  }
 
-  if (typeof d.voltage === "number") voltages.push(d.voltage);
-  if (typeof d.current === "number") currents.push(d.current);
-  if (typeof d.apower === "number") apowers.push(d.apower);
-  if (typeof d.freq === "number") freqs.push(d.freq);
+  // em: 3-phase energy meter (a_voltage, a_current, a_act_power, a_freq, etc.)
+  if (type === "em") {
+    let entry = getOrCreateComp(comp, "em", id);
+    let phases = ["a", "b", "c"];
+    for (let i = 0; i < phases.length; i++) {
+      let p = phases[i];
+      let ph = entry[p];
+      if (typeof d[p + "_voltage"] === "number") ph.vs.push(d[p + "_voltage"]);
+      if (typeof d[p + "_current"] === "number") ph.cs.push(d[p + "_current"]);
+      if (typeof d[p + "_act_power"] === "number") ph.ps.push(d[p + "_act_power"]);
+      if (typeof d[p + "_freq"] === "number") ph.fs.push(d[p + "_freq"]);
+    }
+    return;
+  }
+
+  // em1: single-phase energy meter (voltage, current, act_power, freq)
+  if (type === "em1") {
+    let entry = getOrCreateComp(comp, "em1", id);
+    if (typeof d.voltage === "number") entry.vs.push(d.voltage);
+    if (typeof d.current === "number") entry.cs.push(d.current);
+    if (typeof d.act_power === "number") entry.ps.push(d.act_power);
+    if (typeof d.freq === "number") entry.fs.push(d.freq);
+    return;
+  }
+
+  // pm1, switch, cover: single-phase power monitoring (voltage, current, apower, freq)
+  if (type !== "switch" && type !== "pm1" && type !== "cover") return;
+
+  let entry = getOrCreateComp(comp, type, id);
+  if (typeof d.voltage === "number") entry.vs.push(d.voltage);
+  if (typeof d.current === "number") entry.cs.push(d.current);
+  if (typeof d.apower === "number") entry.ps.push(d.apower);
+  if (typeof d.freq === "number") entry.fs.push(d.freq);
   if (d.aenergy !== undefined && d.aenergy !== null) {
     if (typeof d.aenergy.total === "number") {
-      latestAenergy = d.aenergy.total;
+      entry.e = d.aenergy.total;
     }
   }
 }
 
-// Timer callback: average accumulated readings and send to Hubitat via GET
-function sendReport() {
-  if (compName === null) {
-    print("No power events received yet");
+// Build and send a GET request with normalized power monitoring params
+function sendGetReport(compId, compType, phase, data) {
+  let v = average(data.vs);
+  let cur = average(data.cs);
+  let p = average(data.ps);
+  let f = average(data.fs);
+
+  if (v === null && cur === null && p === null && f === null && data.e === null) {
     return;
   }
 
-  let v = average(voltages);
-  let c = average(currents);
-  let p = average(apowers);
-  let f = average(freqs);
-
-  if (
-    v === null &&
-    c === null &&
-    p === null &&
-    f === null &&
-    latestAenergy === null
-  ) {
-    print("No readings to report");
-    return;
-  }
-
-  // Extract component type from compName (e.g., "switch" from "switch:0")
-  let compType = compName;
-  let colonIdx = compName.indexOf(":");
-  if (colonIdx >= 0) compType = compName.substring(0, colonIdx);
-
-  // Build GET URL: /webhook/powermon/<cid>?comp=<type>&voltage=X&current=X&...
   let url =
-    REMOTE_URL + "/webhook/powermon/" + JSON.stringify(compId) + "?comp=" + compType;
+    REMOTE_URL +
+    "/webhook/powermon/" +
+    JSON.stringify(compId) +
+    "?comp=" +
+    compType;
+  if (phase) url += "&phase=" + phase;
   if (v !== null) url += "&voltage=" + JSON.stringify(v);
-  if (c !== null) url += "&current=" + JSON.stringify(c);
+  if (cur !== null) url += "&current=" + JSON.stringify(cur);
   if (p !== null) url += "&apower=" + JSON.stringify(p);
-  if (latestAenergy !== null) url += "&aenergy=" + JSON.stringify(latestAenergy);
+  if (data.e !== null) url += "&aenergy=" + JSON.stringify(data.e);
   if (f !== null) url += "&freq=" + JSON.stringify(f);
 
   Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
 
   print("Reported:", url);
+}
 
-  // Reset averaged arrays; keep latestAenergy (it is cumulative)
-  voltages = [];
-  currents = [];
-  apowers = [];
-  freqs = [];
+// Timer callback: average accumulated readings and send to Hubitat via GET
+function sendReport() {
+  if (compKeys.length === 0) {
+    print("No power events received yet");
+    return;
+  }
+
+  for (let i = 0; i < compKeys.length; i++) {
+    let entry = comps[compKeys[i]];
+
+    if (entry.type === "em") {
+      // 3-phase: one request per phase
+      let phases = ["a", "b", "c"];
+      for (let j = 0; j < phases.length; j++) {
+        let ph = entry[phases[j]];
+        sendGetReport(entry.id, "em", phases[j], ph);
+        // Reset averaged arrays; keep energy (cumulative)
+        ph.vs = [];
+        ph.cs = [];
+        ph.ps = [];
+        ph.fs = [];
+      }
+    } else {
+      // Single-phase: one request per component
+      sendGetReport(entry.id, entry.type, null, entry);
+      // Reset averaged arrays; keep energy (cumulative)
+      entry.vs = [];
+      entry.cs = [];
+      entry.ps = [];
+      entry.fs = [];
+    }
+  }
 }
 
 // Initialize REMOTE_URL from KVS (async) then start handlers/timer

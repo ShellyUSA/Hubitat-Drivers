@@ -2672,7 +2672,23 @@
       "wifi.sta_connect",
       "wifi.sta_disconnect",
       "cloud.connected",
-      "cloud.disconnected"
+      "cloud.disconnected",
+      "em.active_power_change",
+      "em.current_change",
+      "em.total_active_power_change",
+      "em.total_apparent_power_change",
+      "em.total_current_change",
+      "em.voltage_change",
+      "bthomesensor.double_push",
+      "bthomesensor.long_double_push",
+      "bthomesensor.long_push",
+      "bthomesensor.long_triple_push",
+      "bthomesensor.rotate_left",
+      "bthomesensor.rotate_right",
+      "bthomesensor.single_push",
+      "bthomesensor.state_change",
+      "bthomesensor.triple_push",
+      "bthomesensor.value_change"
     ]
   }
 }

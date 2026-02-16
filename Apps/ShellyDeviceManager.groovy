@@ -1375,23 +1375,18 @@ private void installRequiredScriptsForIp(String ipAddress) {
         appendLog('error', "Cannot read scripts from ${device.displayName}")
         return
     }
-    List<String> installedNames = installedScripts.collect { (it.name ?: '') as String }
-
     String branch = GITHUB_BRANCH
     String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts"
     String uri = "http://${ipAddress}/rpc"
     Integer installed = 0
 
+    Integer updated = 0
+    Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
+
     requiredScripts.each { String scriptFile ->
         String scriptName = stripJsExtension(scriptFile)
-        if (installedNames.any { it == scriptName }) {
-            logDebug("Script '${scriptName}' already installed on ${ipAddress}")
-            return
-        }
 
-        logInfo("Installing script '${scriptName}' on ${ipAddress}...")
-        appendLog('info', "Installing ${scriptName} on ${device.displayName}...")
-
+        // Download latest script code from GitHub
         String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
         if (!scriptCode) {
             logError("Failed to download ${scriptFile} from GitHub")
@@ -1399,43 +1394,66 @@ private void installRequiredScriptsForIp(String ipAddress) {
             return
         }
 
-        try {
-            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
-            if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
-            LinkedHashMap createResult = postCommandSync(createCmd, uri)
-            Integer scriptId = createResult?.result?.id as Integer
+        // Check if script already exists on device
+        Map existingScript = installedScripts.find { (it.name ?: '') == scriptName }
 
-            if (scriptId == null) {
-                logError("Failed to create script '${scriptName}' on device")
-                appendLog('error', "Failed to create ${scriptName}")
-                return
+        try {
+            Integer scriptId
+            if (existingScript) {
+                // Update existing script: stop → putCode → enable → start
+                scriptId = existingScript.id as Integer
+                logInfo("Updating script '${scriptName}' (id: ${scriptId}) on ${ipAddress}...")
+                appendLog('info', "Updating ${scriptName} on ${device.displayName}...")
+
+                LinkedHashMap stopCmd = scriptStopCommand(scriptId)
+                if (hasAuth) { stopCmd.auth = getAuth() }
+                postCommandSync(stopCmd, uri)
+            } else {
+                // Create new script
+                logInfo("Installing script '${scriptName}' on ${ipAddress}...")
+                appendLog('info', "Installing ${scriptName} on ${device.displayName}...")
+
+                LinkedHashMap createCmd = scriptCreateCommand(scriptName)
+                if (hasAuth) { createCmd.auth = getAuth() }
+                LinkedHashMap createResult = postCommandSync(createCmd, uri)
+                scriptId = createResult?.result?.id as Integer
+
+                if (scriptId == null) {
+                    logError("Failed to create script '${scriptName}' on device")
+                    appendLog('error', "Failed to create ${scriptName}")
+                    return
+                }
             }
 
             LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, scriptCode, false)
-            if (authIsEnabled() == true && getAuth().size() > 0) { putCmd.auth = getAuth() }
+            if (hasAuth) { putCmd.auth = getAuth() }
             postCommandSync(putCmd, uri)
 
             LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-            if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
+            if (hasAuth) { enableCmd.auth = getAuth() }
             postCommandSync(enableCmd, uri)
 
             LinkedHashMap startCmd = scriptStartCommand(scriptId)
-            if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
+            if (hasAuth) { startCmd.auth = getAuth() }
             postCommandSync(startCmd, uri)
 
-            logInfo("Successfully installed and started '${scriptName}' (id: ${scriptId})")
-            appendLog('info', "Installed ${scriptName} on ${device.displayName}")
+            String action = existingScript ? 'Updated' : 'Installed'
+            logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
+            appendLog('info', "${action} ${scriptName} on ${device.displayName}")
             installed++
+            if (existingScript) { updated++ }
         } catch (Exception ex) {
-            logError("Failed to install script '${scriptName}': ${ex.message}")
-            appendLog('error', "Failed to install ${scriptName}: ${ex.message}")
+            String action = existingScript ? 'update' : 'install'
+            logError("Failed to ${action} script '${scriptName}': ${ex.message}")
+            appendLog('error', "Failed to ${action} ${scriptName}: ${ex.message}")
         }
     }
 
-    logInfo("Script installation complete: ${installed} script(s) installed on ${ipAddress}")
-    appendLog('info', "Script installation complete: ${installed} installed on ${device.displayName}")
+    Integer newlyInstalled = installed - updated
+    logInfo("Script installation complete: ${newlyInstalled} installed, ${updated} updated on ${ipAddress}")
+    appendLog('info', "Script installation complete: ${newlyInstalled} installed, ${updated} updated on ${device.displayName}")
 
-    // Write Hubitat IP to KVS after installing scripts
+    // Write Hubitat IP to KVS after installing/updating scripts
     if (installed > 0) {
         writeHubitatIpToKVS(ipAddress)
     }
@@ -9258,6 +9276,156 @@ void componentParse(def parentDevice, String description) {
     } catch (Exception e) {
         logError("componentParse exception: ${e.message}")
     }
+}
+
+/**
+ * Logs detailed parsed LAN message information for webhook debugging from child devices.
+ * Called by child drivers when trace logging is enabled in the driver.
+ * Outputs structured trace logs showing HTTP request details, headers,
+ * URL path components, parameters, and body content with clear visual separation.
+ *
+ * @param device The child device calling this method
+ * @param msg The parsed LAN message map from parseLanMessage()
+ */
+void componentLogParsedMessage(DeviceWrapper device, Map msg) {
+    // Early exit if app trace logging is disabled (driver already checked its own setting)
+    if (!(settings.logEnable == true && settings.traceLogEnable == true)) { return }
+
+    if (!msg) {
+        logTrace("[${device.displayName}] componentLogParsedMessage: msg is null")
+        return
+    }
+
+    String deviceLabel = device.displayName
+
+    // Determine message type
+    String messageType = "Unknown"
+    if (msg?.status != null) {
+        messageType = "HTTP Response (status=${msg.status})"
+    } else if (msg?.body) {
+        messageType = "POST with JSON Body"
+    } else {
+        messageType = "GET Webhook"
+    }
+
+    // Extract request line from headers
+    String requestLine = null
+    String method = "UNKNOWN"
+    String path = "/"
+    String version = "HTTP/1.1"
+
+    if (msg?.headers) {
+        // Find request line in headers map (first key that starts with HTTP method)
+        requestLine = msg.headers.keySet()?.find { key ->
+            key.toString().startsWith('GET ') ||
+            key.toString().startsWith('POST ') ||
+            key.toString().startsWith('PUT ') ||
+            key.toString().startsWith('DELETE ')
+        }?.toString()
+    }
+
+    // Fallback to raw header string if headers map didn't have it
+    if (!requestLine && msg?.header) {
+        String rawHeader = msg.header.toString()
+        String[] lines = rawHeader.split('\n')
+        for (String line : lines) {
+            String trimmed = line.trim()
+            if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
+                requestLine = trimmed
+                break
+            }
+        }
+    }
+
+    // Parse request line
+    if (requestLine) {
+        String[] parts = requestLine.split(' ')
+        if (parts.length >= 1) method = parts[0]
+        if (parts.length >= 2) path = parts[1]
+        if (parts.length >= 3) version = parts[2]
+    }
+
+    // Parse path components
+    List<String> pathComponents = path.tokenize('/')
+
+    // Parse URL parameters from path (for /webhook/dst/cid pattern)
+    Map params = [:]
+    if (path.startsWith('/webhook/') && pathComponents.size() >= 2) {
+        // pathComponents = ['webhook', 'dst', 'cid', ...]
+        if (pathComponents.size() >= 1) params.dst = pathComponents[0]
+        if (pathComponents.size() >= 2) params.cid = pathComponents[1]
+    }
+
+    // Check for query string parameters
+    Integer qIdx = path.indexOf('?')
+    if (qIdx >= 0) {
+        path.substring(qIdx + 1).split('&').each { String pair ->
+            String[] kv = pair.split('=', 2)
+            if (kv.length == 2) {
+                params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+            }
+        }
+    }
+
+    // Analyze body
+    String body = msg?.body as String
+    Boolean hasBody = (body != null && body != '')
+    Boolean isJson = false
+    if (hasBody) {
+        String trimmedBody = body.trim()
+        isJson = (trimmedBody.startsWith('{') || trimmedBody.startsWith('['))
+    }
+
+    // Output structured logging with device label prefix
+    logTrace("[${deviceLabel}] " + "=" * 79)
+    logTrace("[${deviceLabel}] PARSED LAN MESSAGE [${messageType}]")
+    logTrace("[${deviceLabel}] " + "=" * 79)
+
+    logTrace("[${deviceLabel}] --- HTTP Request Line ---")
+    logTrace("[${deviceLabel}] Method:  ${method}")
+    logTrace("[${deviceLabel}] Path:    ${path}")
+    logTrace("[${deviceLabel}] Version: ${version}")
+
+    logTrace("[${deviceLabel}] --- HTTP Headers ---")
+    if (msg?.headers) {
+        msg.headers.each { Object key, Object value ->
+            String keyStr = key.toString()
+            if (keyStr != requestLine) {  // Skip the request line itself
+                String headerValue = value != null ? value.toString() : "[null]"
+                logTrace("[${deviceLabel}] ${keyStr.padRight(20)}: ${headerValue}")
+            }
+        }
+    } else {
+        logTrace("[${deviceLabel}] [no headers map]")
+    }
+
+    logTrace("[${deviceLabel}] --- URL Path Components ---")
+    pathComponents.eachWithIndex { String component, Integer index ->
+        logTrace("[${deviceLabel}] [${index}] ${component}")
+    }
+
+    logTrace("[${deviceLabel}] --- URL Parameters ---")
+    if (params.size() > 0) {
+        params.each { key, value ->
+            logTrace("[${deviceLabel}] ${key}: ${value}")
+        }
+    } else if (hasBody) {
+        logTrace("[${deviceLabel}] [none - POST body present]")
+    } else {
+        logTrace("[${deviceLabel}] [none]")
+    }
+
+    logTrace("[${deviceLabel}] --- HTTP Body ---")
+    logTrace("[${deviceLabel}] Present: ${hasBody ? 'Yes' : 'No'}")
+    logTrace("[${deviceLabel}] JSON:    ${hasBody ? (isJson ? 'Yes' : 'No') : 'N/A'}")
+    if (hasBody) {
+        logTrace("[${deviceLabel}] Content:")
+        logTrace("[${deviceLabel}] ${body}")
+    } else {
+        logTrace("[${deviceLabel}] Content: [empty]")
+    }
+
+    logTrace("[${deviceLabel}] " + "=" * 79)
 }
 
 /**

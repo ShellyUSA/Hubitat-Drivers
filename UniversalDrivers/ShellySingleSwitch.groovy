@@ -66,9 +66,8 @@ void parse(String description) {
 
   try {
     Map msg = parseLanMessage(description)
-    logTrace("parse() msg keys: ${msg?.keySet()}, status=${msg?.status}, body=${msg?.body ? 'present' : 'null'}, headers=${msg?.headers ? 'present' : 'null'}, header=${msg?.header ? 'present' : 'null'}")
-    if (msg?.headers) { logTrace("parse() headers map keys: ${msg.headers.keySet()}") }
-    if (msg?.header) { logTrace("parse() raw header: ${msg.header}") }
+    // Forward to parent app for structured trace logging (gate check ensures minimal overhead)
+    if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
 
     if (msg?.status != null) {
       logTrace("parse() skipping HTTP response (status=${msg.status})")
