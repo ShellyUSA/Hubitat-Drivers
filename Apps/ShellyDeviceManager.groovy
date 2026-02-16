@@ -1470,10 +1470,10 @@ private void installRequiredActionsForIp(String ipAddress) {
         Integer cid = action.cid as Integer
         String urlParams = action.urlParams as String ?: ''
 
-        // Build webhook URL with query parameters including Shelly token replacement
-        // \${ev.component} is sent literally to Shelly, which resolves it at fire time
-        String hookUrl = "${baseUrl}?dst=${action.dst}&comp=\${ev.component}"
-        if (urlParams) { hookUrl += "&${urlParams}" }
+        // Build webhook URL with routing info encoded in path segments
+        // Shelly firmware strips static query params; only template variables are preserved
+        // Format: /webhook/<dst>/<cid>
+        String hookUrl = "${baseUrl}/webhook/${action.dst}/${cid}"
 
         Map existing = existingHooks.find { Map h ->
             h.event == event && (h.cid as Integer) == cid
@@ -1484,15 +1484,17 @@ private void installRequiredActionsForIp(String ipAddress) {
             Boolean isEnabled = existing.enable as Boolean
             String existingName = existing.name as String
             Boolean nameNeedsUpdate = !existingName?.startsWith('hubitat_sdm_')
+            logDebug("Existing webhook check: name='${existingName}', urls=${urls}, enabled=${isEnabled}, nameNeedsUpdate=${nameNeedsUpdate}")
             if (urls?.any { it?.contains(hubIp) } && isEnabled && !nameNeedsUpdate) {
-                // Check if URL needs updating (new format with query params)
-                Boolean urlNeedsUpdate = !urls?.any { String u -> u?.contains('dst=') }
+                // Check if URL needs updating (must have /webhook/<dst>/<cid> path format)
+                Boolean urlNeedsUpdate = !urls?.any { String u -> u ==~ /.*\/webhook\/[^\/]+\/\d+.*/ }
+                logDebug("URL format check: urlNeedsUpdate=${urlNeedsUpdate}, target hookUrl=${hookUrl}")
                 if (!urlNeedsUpdate) {
                     logDebug("Webhook '${name}' already configured for ${event} cid=${cid}")
                     return
                 }
             }
-            logInfo("Updating webhook '${name}' for ${event} cid=${cid}")
+            logInfo("Updating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
             LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, name, [hookUrl])
             if (authIsEnabled() == true && getAuth().size() > 0) { updateCmd.auth = getAuth() }
             postCommandSync(updateCmd, uri)
@@ -2949,13 +2951,13 @@ void extendDiscovery(Integer seconds) {
 void startMdnsDiscovery() {
     try {
         registerMDNSListener('_shelly._tcp')
-        logDebug('Registered mDNS listener: _shelly._tcp')
+        logTrace('Registered mDNS listener: _shelly._tcp')
     } catch (Exception e) {
         logWarn("mDNS listener registration failed for _shelly._tcp: ${e.message}")
     }
     try {
         registerMDNSListener('_http._tcp')
-        logDebug('Registered mDNS listener: _http._tcp')
+        logTrace('Registered mDNS listener: _http._tcp')
     } catch (Exception e) {
         logWarn("mDNS listener registration failed for _http._tcp: ${e.message}")
     }
@@ -2969,7 +2971,7 @@ void startMdnsDiscovery() {
  * @param evt The system start event
  */
 void systemStartHandler(evt) {
-    logDebug('System start detected, registering mDNS listeners')
+    logTrace('System start detected, registering mDNS listeners')
     startMdnsDiscovery()
 }
 
@@ -2989,7 +2991,7 @@ void stopDiscovery() {
     unschedule('stopDiscovery')
 
     // Do NOT unregister mDNS listeners - keep them active so data accumulates
-    logDebug('Discovery stopped (mDNS listeners remain active)')
+    logTrace('Discovery stopped (mDNS listeners remain active)')
 }
 
 /**
@@ -3054,17 +3056,17 @@ void processMdnsDiscovery() {
         List<Map<String,Object>> shellyEntries = getMDNSEntries('_shelly._tcp')
         List<Map<String,Object>> httpEntries = getMDNSEntries('_http._tcp')
 
-        logDebug("processMdnsDiscovery: _shelly._tcp raw=${shellyEntries}, _http._tcp raw=${httpEntries}")
-        logDebug("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries?.size() ?: 0} entries, _http._tcp returned ${httpEntries?.size() ?: 0} entries")
+        logTrace("processMdnsDiscovery: _shelly._tcp raw=${shellyEntries}, _http._tcp raw=${httpEntries}")
+        logTrace("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries?.size() ?: 0} entries, _http._tcp returned ${httpEntries?.size() ?: 0} entries")
 
         List allEntries = []
         if (shellyEntries) { allEntries.addAll(shellyEntries) }
         if (httpEntries) { allEntries.addAll(httpEntries) }
 
         if (!allEntries) {
-            logDebug('processMdnsDiscovery: no mDNS entries found for either service type')
+            logTrace('processMdnsDiscovery: no mDNS entries found for either service type')
         } else {
-            logDebug("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
+            logTrace("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
             Integer beforeCount = state.discoveredShellys.size()
             allEntries.each { entry ->
                 // Actual mDNS entry fields: server, port, ip4Addresses, ip6Addresses, gen, app, ver
@@ -3075,7 +3077,7 @@ void processMdnsDiscovery() {
                 String deviceApp = (entry?.app ?: '') as String
                 String ver = (entry?.ver ?: '') as String
 
-                logDebug("mDNS entry: server=${server}, ip=${ip4}, port=${port}, gen=${gen}, app=${deviceApp}, ver=${ver}")
+                logTrace("mDNS entry: server=${server}, ip=${ip4}, port=${port}, gen=${gen}, app=${deviceApp}, ver=${ver}")
 
                 // All entries from _shelly._tcp are Shelly devices
                 // For _http._tcp entries, check if server name contains 'shelly'
@@ -3186,11 +3188,11 @@ static String extractMacFromMdnsName(String serverName) {
 void watchdogScan() {
     Long lastScan = state.lastWatchdogScan ?: 0L
     if (now() - lastScan < 300000) {
-        logDebug("watchdogScan: skipping, last scan was ${(now() - lastScan) / 1000} seconds ago (cooldown 300s)")
+        logTrace("watchdogScan: skipping, last scan was ${(now() - lastScan) / 1000} seconds ago (cooldown 300s)")
         return
     }
     state.lastWatchdogScan = now()
-    logDebug('watchdogScan: starting mDNS scan for IP changes')
+    logTrace('watchdogScan: starting mDNS scan for IP changes')
 
     // Re-register listeners to trigger fresh mDNS queries on the network
     startMdnsDiscovery()
@@ -3205,7 +3207,7 @@ void watchdogScan() {
  * any that have changed. Also updates {@code state.discoveredShellys} entries.
  */
 void watchdogProcessResults() {
-    logDebug('watchdogProcessResults: checking for IP changes')
+    logTrace('watchdogProcessResults: checking for IP changes')
 
     try {
         List<Map<String, Object>> shellyEntries = getMDNSEntries('_shelly._tcp')
@@ -3216,7 +3218,7 @@ void watchdogProcessResults() {
         if (httpEntries) { allEntries.addAll(httpEntries) }
 
         if (!allEntries) {
-            logDebug('watchdogProcessResults: no mDNS entries found')
+            logTrace('watchdogProcessResults: no mDNS entries found')
             return
         }
 
@@ -3252,7 +3254,7 @@ void watchdogProcessResults() {
         if (updatedCount > 0) {
             logInfo("watchdogProcessResults: updated ${updatedCount} device IP(s)")
         } else {
-            logDebug('watchdogProcessResults: all device IPs are current')
+            logTrace('watchdogProcessResults: all device IPs are current')
         }
     } catch (Exception e) {
         logWarn("watchdogProcessResults: error processing mDNS entries: ${e.message}")
@@ -9171,7 +9173,7 @@ void componentParse(def parentDevice, String description) {
         // Try GET query parameters (webhook notifications with URL tokens)
         Map params = parseWebhookQueryParams(msg)
         if (params?.dst) {
-            logDebug("componentParse: GET webhook dst=${params.dst}, comp=${params.comp}")
+            logDebug("componentParse: GET webhook dst=${params.dst}, cid=${params.cid}")
             processWebhookParams(parentDni, params)
         } else {
             logDebug("componentParse: no actionable data in message")
@@ -9225,14 +9227,24 @@ private void routePostNotification(String parentDni, String dst, Map result) {
 private Map parseWebhookQueryParams(Map msg) {
     if (!msg?.headers) { return null }
 
-    // Request line is stored as a header key: "GET /?dst=switchmon&comp=switch:0&output=true HTTP/1.1"
+    // Request line is stored as a header key: "GET /webhook/switchmon/0 HTTP/1.1"
     String requestLine = msg.headers?.keySet()?.find { key ->
         key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
     }
     if (!requestLine) { return null }
 
-    // Extract query string from path
     String pathAndQuery = requestLine.toString().split(' ')[1]
+
+    // Parse path segments: /webhook/<dst>/<cid>
+    if (pathAndQuery.startsWith('/webhook/')) {
+        String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+        if (segments.length >= 2) {
+            return [dst: segments[0], cid: segments[1]]
+        }
+        return null
+    }
+
+    // Fallback: try query string parsing for backwards compatibility
     int qIdx = pathAndQuery.indexOf('?')
     if (qIdx < 0) { return null }
 
@@ -9257,15 +9269,13 @@ private Map parseWebhookQueryParams(Map msg) {
  */
 private void processWebhookParams(String parentDni, Map params) {
     String dst = params.dst
-    String comp = params.comp  // e.g., "switch:0", "cover:0", "temperature:0"
-    if (!comp) {
-        logDebug("processWebhookParams: missing comp parameter")
+    if (!dst || params.cid == null) {
+        logDebug("processWebhookParams: missing dst or cid parameter")
         return
     }
 
-    String baseType = comp.contains(':') ? comp.split(':')[0] : comp
-    Integer componentId = comp.contains(':') ? (comp.split(':')[1] as Integer) : 0
-
+    Integer componentId = params.cid as Integer
+    String baseType = dstToComponentType(dst)
     String childType = mapDstToComponentType(dst, baseType)
     if (!childType) { return }
 
@@ -9392,6 +9402,18 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
  * @param baseType The base component type from the result key (switch, cover, light, input)
  * @return The component type string for child DNI construction, or null if not mappable
  */
+/**
+ * Maps a webhook dst parameter to its Shelly component type.
+ */
+private String dstToComponentType(String dst) {
+    if (dst.startsWith('input_')) { return 'input' }
+    switch (dst) {
+        case 'switchmon': return 'switch'
+        case 'covermon': return 'cover'
+        default: return dst
+    }
+}
+
 private String mapDstToComponentType(String dst, String baseType) {
     // Most dst types directly correspond to their base types
     switch (dst) {

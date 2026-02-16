@@ -156,19 +156,37 @@ private Map parseWebhookQueryParams(Map msg) {
     return null
   }
 
+  // Extract path from request line: "GET /webhook/switchmon/0 HTTP/1.1" -> "/webhook/switchmon/0"
   String pathAndQuery = requestLine.split(' ')[1]
-  int qIdx = pathAndQuery.indexOf('?')
-  if (qIdx < 0) { return null }
 
-  Map params = [:]
-  pathAndQuery.substring(qIdx + 1).split('&').each { String pair ->
-    String[] kv = pair.split('=', 2)
-    if (kv.length == 2) {
-      params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+  // Parse path segments: /webhook/<dst>/<cid>
+  if (pathAndQuery.startsWith('/webhook/')) {
+    String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+    if (segments.length >= 2) {
+      Map params = [dst: segments[0], cid: segments[1]]
+      logTrace("parseWebhookQueryParams: parsed path params: ${params}")
+      return params
     }
+    logTrace("parseWebhookQueryParams: not enough path segments in '${pathAndQuery}'")
+    return null
   }
-  logTrace("parseWebhookQueryParams: parsed params: ${params}")
-  return params
+
+  // Fallback: try query string parsing for backwards compatibility
+  int qIdx = pathAndQuery.indexOf('?')
+  if (qIdx >= 0) {
+    Map params = [:]
+    pathAndQuery.substring(qIdx + 1).split('&').each { String pair ->
+      String[] kv = pair.split('=', 2)
+      if (kv.length == 2) {
+        params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+      }
+    }
+    logTrace("parseWebhookQueryParams: parsed query params: ${params}")
+    return params
+  }
+
+  logTrace("parseWebhookQueryParams: no webhook path or query string in '${pathAndQuery}'")
+  return null
 }
 
 /**

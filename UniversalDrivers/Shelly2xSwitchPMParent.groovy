@@ -241,7 +241,7 @@ void parse(String description) {
     // Try GET query params (webhooks)
     Map params = parseWebhookQueryParams(msg)
     if (params?.dst) {
-      logDebug("GET webhook dst=${params.dst}, comp=${params.comp}")
+      logDebug("GET webhook dst=${params.dst}, cid=${params.cid}")
       logTrace("Webhook params: ${params}")
       routeWebhookNotification(params)
       processWebhookAggregation(params)
@@ -305,14 +305,13 @@ private void routePostNotification(String dst, Map result) {
  */
 private void routeWebhookNotification(Map params) {
   String dst = params.dst
-  String comp = params.comp
-  if (!comp || !comp.contains(':')) {
-    logTrace("routeWebhookNotification: no valid comp param (comp=${comp})")
+  if (!dst || params.cid == null) {
+    logTrace("routeWebhookNotification: missing dst or cid (dst=${dst}, cid=${params.cid})")
     return
   }
 
-  String baseType = comp.split(':')[0]
-  Integer componentId = comp.split(':')[1] as Integer
+  Integer componentId = params.cid as Integer
+  String baseType = dstToComponentType(dst)
 
   List<Map> events = buildWebhookEvents(dst, params)
   logTrace("buildWebhookEvents(dst=${dst}) → ${events.size()} events: ${events}")
@@ -346,6 +345,21 @@ private void routeWebhookNotification(Map params) {
 }
 
 /**
+ * Maps a webhook dst parameter to its Shelly component type.
+ *
+ * @param dst The webhook destination (e.g., 'switchmon', 'input_toggle')
+ * @return The Shelly component type (e.g., 'switch', 'input')
+ */
+private String dstToComponentType(String dst) {
+  if (dst.startsWith('input_')) { return 'input' }
+  switch (dst) {
+    case 'switchmon': return 'switch'
+    case 'covermon': return 'cover'
+    default: return dst
+  }
+}
+
+/**
  * Parses webhook GET query parameters.
  */
 private Map parseWebhookQueryParams(Map msg) {
@@ -356,7 +370,7 @@ private Map parseWebhookQueryParams(Map msg) {
     requestLine = msg.headers.keySet()?.find { key ->
       key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
     }?.toString()
-    logTrace("parseWebhookQueryParams: headers map search result: ${requestLine ? 'found' : 'not found'}")
+    logTrace("parseWebhookQueryParams: request line from headers map: '${requestLine}'")
   }
 
   // Fallback: parse raw header string for request line
@@ -368,7 +382,7 @@ private Map parseWebhookQueryParams(Map msg) {
       String trimmed = line.trim()
       if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
         requestLine = trimmed
-        logTrace("parseWebhookQueryParams: found request line in raw header: ${requestLine}")
+        logTrace("parseWebhookQueryParams: found request line in raw header: '${requestLine}'")
         break
       }
     }
@@ -379,20 +393,38 @@ private Map parseWebhookQueryParams(Map msg) {
     return null
   }
 
+  // Extract path from request line: "GET /webhook/switchmon/0 HTTP/1.1" -> "/webhook/switchmon/0"
   String pathAndQuery = requestLine.split(' ')[1]
-  int qIdx = pathAndQuery.indexOf('?')
-  if (qIdx < 0) { return null }
 
-  String queryString = pathAndQuery.substring(qIdx + 1)
-  Map params = [:]
-  queryString.split('&').each { String pair ->
-    String[] kv = pair.split('=', 2)
-    if (kv.length == 2) {
-      params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+  // Parse path segments: /webhook/<dst>/<cid>
+  if (pathAndQuery.startsWith('/webhook/')) {
+    String[] segments = pathAndQuery.substring('/webhook/'.length()).split('/')
+    if (segments.length >= 2) {
+      Map params = [dst: segments[0], cid: segments[1]]
+      logTrace("parseWebhookQueryParams: parsed path params: ${params}")
+      return params
     }
+    logTrace("parseWebhookQueryParams: not enough path segments in '${pathAndQuery}'")
+    return null
   }
-  logTrace("parseWebhookQueryParams: parsed params: ${params}")
-  return params
+
+  // Fallback: try query string parsing for backwards compatibility
+  int qIdx = pathAndQuery.indexOf('?')
+  if (qIdx >= 0) {
+    String queryString = pathAndQuery.substring(qIdx + 1)
+    Map params = [:]
+    queryString.split('&').each { String pair ->
+      String[] kv = pair.split('=', 2)
+      if (kv.length == 2) {
+        params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+      }
+    }
+    logTrace("parseWebhookQueryParams: parsed query params: ${params}")
+    return params
+  }
+
+  logTrace("parseWebhookQueryParams: no webhook path or query string in '${pathAndQuery}'")
+  return null
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
