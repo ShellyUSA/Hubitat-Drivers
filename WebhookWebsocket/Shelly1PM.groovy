@@ -14,29 +14,9 @@ metadata {
   }
 }
 
-preferences {
-  input name: 'pmReportingInterval', type: 'number', title: 'Power Monitoring Reporting Interval (seconds)',
-    required: false, defaultValue: 60, range: '5..3600'
-}
-
 @Field static Boolean GEN1 = true
 @Field static Boolean HAS_PM_GEN1 = true
 @Field static Boolean NOCHILDREN = true
-
-void deviceSpecificConfigure() {
-  sendPmReportingIntervalToKVS()
-}
-
-private void sendPmReportingIntervalToKVS() {
-  Integer interval = settings?.pmReportingInterval != null ? settings.pmReportingInterval as Integer : 60
-  logDebug("Sending PM reporting interval (${interval}s) to device KVS as 'pm_ri'")
-  LinkedHashMap command = [
-    "id" : 0, "src" : "kvsSet", "method" : "KVS.Set",
-    "params" : ["key": "pm_ri", "value": interval]
-  ]
-  postCommandSync(command)
-}
-
 @Field static List<String> ACTIONS_TO_CREATE = [
   'out_on_url',
   'out_off_url',
