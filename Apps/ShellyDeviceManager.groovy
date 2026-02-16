@@ -1425,9 +1425,7 @@ private void installRequiredScriptsForIp(String ipAddress) {
                 }
             }
 
-            LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, scriptCode, false)
-            if (hasAuth) { putCmd.auth = getAuth() }
-            postCommandSync(putCmd, uri)
+            uploadScriptInChunks(scriptId, scriptCode, uri, hasAuth)
 
             LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
             if (hasAuth) { enableCmd.auth = getAuth() }
@@ -5076,6 +5074,34 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
     ]
   ]
   return command
+}
+
+/**
+ * Uploads script code to a Shelly device in chunks to avoid 413 Payload Too Large errors.
+ * Shelly Script.PutCode has a per-request size limit; this sends the code in 1024-byte chunks.
+ * First chunk uses append=false to overwrite, subsequent chunks use append=true.
+ *
+ * @param scriptId The script ID on the device
+ * @param code The full script source code
+ * @param uri The device RPC URI (e.g. http://192.168.1.x/rpc)
+ * @param hasAuth Whether authentication is required
+ */
+private void uploadScriptInChunks(Integer scriptId, String code, String uri, Boolean hasAuth) {
+  Integer chunkSize = 1024
+  Integer offset = 0
+  Integer total = code.length()
+  Boolean first = true
+
+  while (offset < total) {
+    Integer end = Math.min(offset + chunkSize, total) as Integer
+    String chunk = code.substring(offset, end)
+    LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, chunk, !first)
+    if (hasAuth) { putCmd.auth = getAuth() }
+    postCommandSync(putCmd, uri)
+    first = false
+    offset = end
+  }
+  logDebug("Uploaded script id=${scriptId} in ${(int) Math.ceil(total / (double) chunkSize)} chunks (${total} bytes)")
 }
 
 /**
