@@ -191,30 +191,41 @@ private Map parseWebhookQueryParams(Map msg) {
 /**
  * Routes parsed webhook GET query parameters to appropriate event handlers.
  * Handles temperature, humidity, and piggybacked battery data.
+ * TH sensor dst values (temperature, humidity) did not change between legacy and new
+ * webhook formats, so the same cases handle both.
  *
- * @param params The parsed query parameters
+ * @param params The parsed query parameters including dst and sensor value fields
  */
 private void routeWebhookParams(Map params) {
-  if (params.dst == 'temperature') {
-    String scale = location.temperatureScale ?: 'F'
-    BigDecimal temp = null
-    if (scale == 'C' && params.tC) {
-      temp = params.tC as BigDecimal
-    } else if (params.tF) {
-      temp = params.tF as BigDecimal
-    }
-    if (temp != null) {
-      sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
-        descriptionText: "Temperature is ${temp}°${scale}")
-      logInfo("Temperature: ${temp}°${scale}")
-    }
+  switch (params.dst) {
+    case 'temperature':
+      String scale = location.temperatureScale ?: 'F'
+      BigDecimal temp = null
+      if (scale == 'C' && params.tC) {
+        temp = params.tC as BigDecimal
+      } else if (params.tF) {
+        temp = params.tF as BigDecimal
+      }
+      if (temp != null) {
+        sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
+          descriptionText: "Temperature is ${temp}°${scale}")
+        logInfo("Temperature: ${temp}°${scale}")
+      }
+      break
+
+    case 'humidity':
+      if (params.rh != null) {
+        BigDecimal humidity = params.rh as BigDecimal
+        sendEvent(name: 'humidity', value: humidity, unit: '%',
+          descriptionText: "Humidity is ${humidity}%")
+        logInfo("Humidity: ${humidity}%")
+      }
+      break
+
+    default:
+      logDebug("routeWebhookParams: unhandled dst=${params.dst}")
   }
-  if (params.dst == 'humidity' && params.rh != null) {
-    BigDecimal humidity = params.rh as BigDecimal
-    sendEvent(name: 'humidity', value: humidity, unit: '%',
-      descriptionText: "Humidity is ${humidity}%")
-    logInfo("Humidity: ${humidity}%")
-  }
+
   // Battery data piggybacked on sensor webhooks via supplemental URL tokens
   if (params.battPct != null) {
     Integer batteryPct = params.battPct as Integer

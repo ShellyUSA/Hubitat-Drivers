@@ -191,17 +191,57 @@ private Map parseWebhookQueryParams(Map msg) {
 
 /**
  * Routes parsed webhook GET query parameters to appropriate event handlers.
+ * Supports both new discrete dst values (switch_on, switch_off, input_toggle_on,
+ * input_toggle_off) and legacy combined dst values (switchmon, input_toggle).
  *
- * @param params The parsed query parameters
+ * @param params The parsed query parameters including dst and optional output/state fields
  */
 private void routeWebhookParams(Map params) {
-  if (params.dst == 'switchmon' && params.output != null) {
-    String switchState = params.output == 'true' ? 'on' : 'off'
-    sendEvent(name: 'switch', value: switchState,
-      descriptionText: "Switch turned ${switchState}")
-    logInfo("Switch state changed to: ${switchState}")
+  switch (params.dst) {
+    // New discrete switch webhooks — state is encoded in the dst name
+    case 'switch_on':
+      sendEvent(name: 'switch', value: 'on', descriptionText: 'Switch turned on')
+      logInfo('Switch state changed to: on')
+      break
+    case 'switch_off':
+      sendEvent(name: 'switch', value: 'off', descriptionText: 'Switch turned off')
+      logInfo('Switch state changed to: off')
+      break
+
+    // Legacy combined switch webhook — state is in params.output
+    case 'switchmon':
+      if (params.output != null) {
+        String switchState = params.output == 'true' ? 'on' : 'off'
+        sendEvent(name: 'switch', value: switchState,
+          descriptionText: "Switch turned ${switchState}")
+        logInfo("Switch state changed to: ${switchState}")
+      }
+      break
+
+    // New discrete input toggle webhooks — state is encoded in the dst name
+    case 'input_toggle_on':
+      sendEvent(name: 'switch', value: 'on', descriptionText: 'Switch turned on (input toggle)')
+      logInfo('Switch state changed to: on (input toggle)')
+      break
+    case 'input_toggle_off':
+      sendEvent(name: 'switch', value: 'off', descriptionText: 'Switch turned off (input toggle)')
+      logInfo('Switch state changed to: off (input toggle)')
+      break
+
+    // Legacy combined input toggle webhook — state is in params.state
+    case 'input_toggle':
+      if (params.state != null) {
+        String switchState = params.state == 'true' ? 'on' : 'off'
+        sendEvent(name: 'switch', value: switchState,
+          descriptionText: "Switch turned ${switchState} (input toggle)")
+        logInfo("Switch state changed to: ${switchState} (input toggle)")
+      }
+      break
+
+    default:
+      // powermon still arrives via script POST — handled by parsePowermon()
+      logDebug("routeWebhookParams: unhandled dst=${params.dst}")
   }
-  // powermon still arrives via script POST — handled by parsePowermon()
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

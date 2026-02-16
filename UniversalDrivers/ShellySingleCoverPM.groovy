@@ -215,37 +215,104 @@ private String mapCoverState(String coverState) {
 
 /**
  * Routes parsed webhook GET query parameters to appropriate event handlers.
+ * Supports both new discrete dst values (cover_open, cover_closed, cover_opening,
+ * cover_closing, cover_stopped, cover_calibrating, input_toggle_on, input_toggle_off)
+ * and legacy combined dst values (covermon, input_toggle).
  *
- * @param params The parsed query parameters
+ * @param params The parsed query parameters including dst and optional state/pos fields
  */
 private void routeWebhookParams(Map params) {
-  if (params.dst == 'covermon') {
-    if (params.state != null) {
-      String shadeState = mapCoverState(params.state as String)
-      sendEvent(name: 'windowShade', value: shadeState,
-        descriptionText: "Window shade is ${shadeState}")
-      logInfo("Cover state changed to: ${shadeState}")
-    }
-    if (params.pos != null) {
-      Integer position = params.pos as Integer
-      sendEvent(name: 'position', value: position, unit: '%',
-        descriptionText: "Position is ${position}%")
-    }
+  switch (params.dst) {
+    // New discrete cover webhooks — state is encoded in the dst name
+    case 'cover_open':
+      sendEvent(name: 'windowShade', value: 'open', descriptionText: 'Window shade is open')
+      logInfo('Cover state changed to: open')
+      if (params.pos != null) {
+        Integer position = params.pos as Integer
+        sendEvent(name: 'position', value: position, unit: '%',
+          descriptionText: "Position is ${position}%")
+      }
+      break
+    case 'cover_closed':
+      sendEvent(name: 'windowShade', value: 'closed', descriptionText: 'Window shade is closed')
+      logInfo('Cover state changed to: closed')
+      if (params.pos != null) {
+        Integer position = params.pos as Integer
+        sendEvent(name: 'position', value: position, unit: '%',
+          descriptionText: "Position is ${position}%")
+      }
+      break
+    case 'cover_opening':
+      sendEvent(name: 'windowShade', value: 'opening', descriptionText: 'Window shade is opening')
+      logInfo('Cover state changed to: opening')
+      break
+    case 'cover_closing':
+      sendEvent(name: 'windowShade', value: 'closing', descriptionText: 'Window shade is closing')
+      logInfo('Cover state changed to: closing')
+      break
+    case 'cover_stopped':
+      sendEvent(name: 'windowShade', value: 'partially open', descriptionText: 'Window shade is partially open')
+      logInfo('Cover state changed to: partially open')
+      if (params.pos != null) {
+        Integer position = params.pos as Integer
+        sendEvent(name: 'position', value: position, unit: '%',
+          descriptionText: "Position is ${position}%")
+      }
+      break
+    case 'cover_calibrating':
+      sendEvent(name: 'windowShade', value: 'unknown', descriptionText: 'Window shade is calibrating')
+      logInfo('Cover state changed to: unknown (calibrating)')
+      break
+
+    // Legacy combined cover webhook — state is in params.state
+    case 'covermon':
+      if (params.state != null) {
+        String shadeState = mapCoverState(params.state as String)
+        sendEvent(name: 'windowShade', value: shadeState,
+          descriptionText: "Window shade is ${shadeState}")
+        logInfo("Cover state changed to: ${shadeState}")
+      }
+      if (params.pos != null) {
+        Integer position = params.pos as Integer
+        sendEvent(name: 'position', value: position, unit: '%',
+          descriptionText: "Position is ${position}%")
+      }
+      break
+
+    // New discrete input toggle webhooks
+    case 'input_toggle_on':
+      logInfo('Input toggle on received')
+      break
+    case 'input_toggle_off':
+      logInfo('Input toggle off received')
+      break
+
+    // Legacy combined input toggle webhook — state is in params.state
+    case 'input_toggle':
+      if (params.state != null) {
+        logInfo("Input toggle state: ${params.state}")
+      }
+      break
+
+    // Temperature webhook (unchanged)
+    case 'temperature':
+      String scale = location.temperatureScale ?: 'F'
+      BigDecimal temp = null
+      if (scale == 'C' && params.tC) {
+        temp = params.tC as BigDecimal
+      } else if (params.tF) {
+        temp = params.tF as BigDecimal
+      }
+      if (temp != null) {
+        sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
+          descriptionText: "Temperature is ${temp}°${scale}")
+      }
+      break
+
+    default:
+      // powermon still arrives via script POST — handled by parsePowermon()
+      logDebug("routeWebhookParams: unhandled dst=${params.dst}")
   }
-  if (params.dst == 'temperature') {
-    String scale = location.temperatureScale ?: 'F'
-    BigDecimal temp = null
-    if (scale == 'C' && params.tC) {
-      temp = params.tC as BigDecimal
-    } else if (params.tF) {
-      temp = params.tF as BigDecimal
-    }
-    if (temp != null) {
-      sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
-        descriptionText: "Temperature is ${temp}°${scale}")
-    }
-  }
-  // powermon still arrives via script POST — handled by parsePowermon()
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

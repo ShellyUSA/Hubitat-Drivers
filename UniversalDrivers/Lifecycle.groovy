@@ -138,12 +138,27 @@ private Map parseWebhookQueryParams(Map msg) {
 /**
  * Routes parsed webhook GET query parameters to appropriate event handlers.
  * Handles all event types: switch, cover, temperature, humidity, battery,
- * smoke, illuminance, and input button events.
+ * smoke, illuminance, and input button/toggle events.
  *
- * @param params The parsed query parameters
+ * Supports both new discrete dst values (e.g., switch_on, cover_open,
+ * input_toggle_on, smoke_alarm) and legacy combined dst values (e.g.,
+ * switchmon, covermon, input_toggle, smoke) with parameter-based state.
+ *
+ * @param params The parsed query parameters including dst and optional state fields
  */
 private void routeWebhookParams(Map params) {
   switch (params.dst) {
+    // Discrete switch webhooks
+    case 'switch_on':
+      sendEvent(name: 'switch', value: 'on', descriptionText: 'Switch turned on')
+      logInfo('Switch state changed to: on')
+      break
+    case 'switch_off':
+      sendEvent(name: 'switch', value: 'off', descriptionText: 'Switch turned off')
+      logInfo('Switch state changed to: off')
+      break
+
+    // Legacy combined switch webhook -- state is in params.output
     case 'switchmon':
       if (params.output != null) {
         String switchState = params.output == 'true' ? 'on' : 'off'
@@ -153,6 +168,59 @@ private void routeWebhookParams(Map params) {
       }
       break
 
+    // Discrete cover webhooks
+    case 'cover_open':
+      sendEvent(name: 'windowShade', value: 'open',
+        descriptionText: 'Window shade is open')
+      logInfo('Cover state changed to: open')
+      if (params.pos != null) {
+        sendEvent(name: 'position', value: params.pos as Integer, unit: '%',
+          descriptionText: "Position is ${params.pos}%")
+      }
+      break
+    case 'cover_closed':
+      sendEvent(name: 'windowShade', value: 'closed',
+        descriptionText: 'Window shade is closed')
+      logInfo('Cover state changed to: closed')
+      if (params.pos != null) {
+        sendEvent(name: 'position', value: params.pos as Integer, unit: '%',
+          descriptionText: "Position is ${params.pos}%")
+      }
+      break
+    case 'cover_stopped':
+      sendEvent(name: 'windowShade', value: 'partially open',
+        descriptionText: 'Window shade is partially open')
+      logInfo('Cover state changed to: partially open')
+      if (params.pos != null) {
+        sendEvent(name: 'position', value: params.pos as Integer, unit: '%',
+          descriptionText: "Position is ${params.pos}%")
+      }
+      break
+    case 'cover_opening':
+      sendEvent(name: 'windowShade', value: 'opening',
+        descriptionText: 'Window shade is opening')
+      logInfo('Cover state changed to: opening')
+      if (params.pos != null) {
+        sendEvent(name: 'position', value: params.pos as Integer, unit: '%',
+          descriptionText: "Position is ${params.pos}%")
+      }
+      break
+    case 'cover_closing':
+      sendEvent(name: 'windowShade', value: 'closing',
+        descriptionText: 'Window shade is closing')
+      logInfo('Cover state changed to: closing')
+      if (params.pos != null) {
+        sendEvent(name: 'position', value: params.pos as Integer, unit: '%',
+          descriptionText: "Position is ${params.pos}%")
+      }
+      break
+    case 'cover_calibrating':
+      sendEvent(name: 'windowShade', value: 'unknown',
+        descriptionText: 'Window shade is calibrating')
+      logInfo('Cover state changed to: calibrating')
+      break
+
+    // Legacy combined cover webhook -- state is in params.state
     case 'covermon':
       if (params.state != null) {
         String shadeState
@@ -200,6 +268,14 @@ private void routeWebhookParams(Map params) {
       }
       break
 
+    // Discrete smoke webhook
+    case 'smoke_alarm':
+      sendEvent(name: 'smoke', value: 'detected',
+        descriptionText: 'Smoke detected')
+      logInfo('Smoke: detected')
+      break
+
+    // Legacy smoke webhook -- state is in params.alarm
     case 'smoke':
       if (params.alarm != null) {
         String smokeState = params.alarm == 'true' ? 'detected' : 'clear'
@@ -215,6 +291,28 @@ private void routeWebhookParams(Map params) {
         sendEvent(name: 'illuminance', value: lux, unit: 'lux',
           descriptionText: "Illuminance is ${lux} lux")
         logInfo("Illuminance: ${lux} lux")
+      }
+      break
+
+    // Discrete input toggle webhooks
+    case 'input_toggle_on':
+      sendEvent(name: 'switch', value: 'on',
+        descriptionText: 'Switch turned on (input toggle)')
+      logInfo('Switch state changed to: on (input toggle)')
+      break
+    case 'input_toggle_off':
+      sendEvent(name: 'switch', value: 'off',
+        descriptionText: 'Switch turned off (input toggle)')
+      logInfo('Switch state changed to: off (input toggle)')
+      break
+
+    // Legacy combined input toggle webhook -- state is in params.state
+    case 'input_toggle':
+      if (params.state != null) {
+        String inputState = params.state == 'true' ? 'on' : 'off'
+        sendEvent(name: 'switch', value: inputState,
+          descriptionText: "Switch turned ${inputState} (input toggle)")
+        logInfo("Switch state changed to: ${inputState} (input toggle)")
       }
       break
 

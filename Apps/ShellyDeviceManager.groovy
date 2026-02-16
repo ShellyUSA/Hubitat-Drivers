@@ -1235,9 +1235,10 @@ void refreshAllDeviceStatusAsync() {
 }
 
 /**
- * Fully reinitializes a created device: re-queries its physical state,
- * pushes all required scripts, starts them, installs all required webhooks,
- * and calls the driver's initialize() method.
+ * Fully reinitializes a created device: re-downloads and updates all drivers
+ * from GitHub, re-queries its physical state, pushes all required scripts,
+ * starts them, installs all required webhooks, and calls the driver's
+ * initialize() method.
  * Useful after firmware updates, factory resets, or architecture transitions.
  *
  * @param ipAddress The IP address of the Shelly device to reinitialize
@@ -1253,23 +1254,98 @@ void reinitializeDevice(String ipAddress) {
     logInfo("Reinitializing device at ${ipAddress}")
     appendLog('info', "Reinitializing device at ${ipAddress}...")
 
-    // Step 1: Re-query device info and status from physical device
+    // Step 1: Update parent and component drivers from GitHub
+    updateDriversForDevice(childDevice)
+
+    // Step 2: Re-query device info and status from physical device
     fetchAndStoreDeviceInfo(ipAddress)
 
-    // Step 2: Install any missing required scripts
+    // Step 3: Install any missing required scripts
     installRequiredScriptsForIp(ipAddress)
 
-    // Step 3: Enable and start all required scripts
+    // Step 4: Enable and start all required scripts
     enableAndStartRequiredScriptsForIp(ipAddress)
 
-    // Step 4: Install/update all required webhooks (also removes obsolete scripts)
+    // Step 5: Install/update all required webhooks (also removes obsolete scripts)
     installRequiredActionsForIp(ipAddress)
 
-    // Step 5: Call the driver's initialize() to reset driver state
+    // Step 6: Call the driver's initialize() to reset driver state
     childDevice.initialize()
 
     logInfo("Reinitialization complete for ${ipAddress}")
     appendLog('info', "Reinitialization complete for ${ipAddress}")
+}
+
+/**
+ * Downloads and installs the latest parent driver and component drivers
+ * from GitHub for a specific device. Uses the stored device config to
+ * determine which drivers are needed.
+ *
+ * @param childDevice The parent/standalone device to update drivers for
+ */
+private void updateDriversForDevice(def childDevice) {
+    String dni = childDevice.deviceNetworkId
+    Map config = state.deviceConfigs?.get(dni) as Map
+    String version = getAppVersion()
+
+    // Determine base driver name (strip version suffix)
+    String driverNameRaw = config?.driverName ?: childDevice.typeName ?: ''
+    String baseName = driverNameRaw.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+
+    if (!baseName) {
+        logWarn("updateDriversForDevice: cannot determine driver name for ${dni}")
+        return
+    }
+
+    // Update parent/standalone driver
+    if (PREBUILT_DRIVERS.containsKey(baseName)) {
+        logInfo("Updating parent driver '${baseName}' from GitHub...")
+        appendLog('info', "Updating driver: ${baseName}")
+        List<String> components = (config?.components ?: []) as List<String>
+        Map<String, Boolean> pmMap = (config?.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+        installPrebuiltDriver(baseName, components, pmMap, version)
+    } else {
+        logDebug("updateDriversForDevice: '${baseName}' not in PREBUILT_DRIVERS, skipping parent driver update")
+    }
+
+    // Update component (child) drivers if this is a parent-child device
+    if (config?.isParentChild) {
+        logInfo("Updating component drivers for ${childDevice.displayName}...")
+        updateComponentDriversForDevice(config)
+    }
+}
+
+/**
+ * Downloads and installs the latest component drivers from GitHub for a
+ * parent-child device. Always re-downloads to ensure latest code.
+ * Infers power monitoring from the parent driver name when per-component
+ * PM data is not available in the stored config.
+ *
+ * @param config The stored device config containing component information
+ */
+private void updateComponentDriversForDevice(Map config) {
+    List<String> componentTypes = (config?.componentTypes ?: []) as List<String>
+
+    // Infer PM from the parent driver name (e.g. "Shelly Autoconf 2x Switch PM Parent")
+    String driverName = (config?.driverName ?: '') as String
+    Boolean parentHasPM = driverName.contains(' PM ')
+
+    Set<String> updatedDrivers = [] as Set
+
+    componentTypes.each { String baseType ->
+        if (!['switch', 'cover', 'light', 'input'].contains(baseType)) { return }
+
+        String compDriverName = getComponentDriverName(baseType, parentHasPM)
+        if (!compDriverName || updatedDrivers.contains(compDriverName)) { return }
+
+        updatedDrivers.add(compDriverName)
+
+        String fileName = getComponentDriverFileName(baseType, parentHasPM)
+        if (fileName) {
+            logInfo("Updating component driver '${compDriverName}' from GitHub...")
+            fetchAndInstallComponentDriver(fileName, compDriverName)
+        }
+    }
 }
 
 /**
@@ -1470,10 +1546,11 @@ private void installRequiredActionsForIp(String ipAddress) {
         Integer cid = action.cid as Integer
         String urlParams = action.urlParams as String ?: ''
 
-        // Build webhook URL with routing info encoded in path segments
-        // Shelly firmware strips static query params; only template variables are preserved
-        // Format: /webhook/<dst>/<cid>
+        // Build webhook URL with routing info in path segments and template vars as query params
+        // Shelly firmware strips static query params but preserves template variables (${ev.*}, ${status[*]})
+        // Format: /webhook/<dst>/<cid>[?templateParams]
         String hookUrl = "${baseUrl}/webhook/${action.dst}/${cid}"
+        if (urlParams) { hookUrl += "?${urlParams}" }
 
         Map existing = existingHooks.find { Map h ->
             h.event == event && (h.cid as Integer) == cid
@@ -9307,7 +9384,14 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
     List<Map> events = []
 
     switch (dst) {
-        case 'switchmon':
+        // New discrete switch webhooks
+        case 'switch_on':
+            events.add([name: 'switch', value: 'on', descriptionText: 'Switch turned on'])
+            break
+        case 'switch_off':
+            events.add([name: 'switch', value: 'off', descriptionText: 'Switch turned off'])
+            break
+        case 'switchmon':  // legacy
             if (params.output != null) {
                 String switchState = params.output == 'true' ? 'on' : 'off'
                 events.add([name: 'switch', value: switchState,
@@ -9315,7 +9399,32 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             }
             break
 
-        case 'covermon':
+        // New discrete cover webhooks (pos still comes via template query param)
+        case 'cover_open':
+            events.add([name: 'windowShade', value: 'open', descriptionText: 'Window shade is open'])
+            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            break
+        case 'cover_closed':
+            events.add([name: 'windowShade', value: 'closed', descriptionText: 'Window shade is closed'])
+            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            break
+        case 'cover_stopped':
+            events.add([name: 'windowShade', value: 'partially open', descriptionText: 'Window shade is partially open'])
+            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            break
+        case 'cover_opening':
+            events.add([name: 'windowShade', value: 'opening', descriptionText: 'Window shade is opening'])
+            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            break
+        case 'cover_closing':
+            events.add([name: 'windowShade', value: 'closing', descriptionText: 'Window shade is closing'])
+            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            break
+        case 'cover_calibrating':
+            events.add([name: 'windowShade', value: 'unknown', descriptionText: 'Window shade is calibrating'])
+            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            break
+        case 'covermon':  // legacy
             if (params.state != null) {
                 String shadeState
                 switch (params.state) {
@@ -9369,8 +9478,33 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             events.add([name: 'held', value: 1, isStateChange: true,
                 descriptionText: 'Button 1 was held'])
             break
+        case 'input_triple':
+            events.add([name: 'pushed', value: 3, isStateChange: true,
+                descriptionText: 'Button 1 was triple-pushed'])
+            break
 
-        case 'smoke':
+        // New discrete input toggle webhooks
+        case 'input_toggle_on':
+            events.add([name: 'switch', value: 'on', isStateChange: true,
+                descriptionText: 'Input toggled on'])
+            break
+        case 'input_toggle_off':
+            events.add([name: 'switch', value: 'off', isStateChange: true,
+                descriptionText: 'Input toggled off'])
+            break
+        case 'input_toggle':  // legacy
+            if (params.state != null) {
+                String toggleState = params.state as String
+                events.add([name: 'switch', value: toggleState, isStateChange: true,
+                    descriptionText: "Input toggled ${toggleState}"])
+            }
+            break
+
+        // New discrete smoke webhook
+        case 'smoke_alarm':
+            events.add([name: 'smoke', value: 'detected', descriptionText: 'Smoke detected'])
+            break
+        case 'smoke':  // legacy
             if (params.alarm != null) {
                 String smokeState = params.alarm == 'true' ? 'detected' : 'clear'
                 events.add([name: 'smoke', value: smokeState,
@@ -9407,29 +9541,33 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
  */
 private String dstToComponentType(String dst) {
     if (dst.startsWith('input_')) { return 'input' }
+    if (dst.startsWith('switch_')) { return 'switch' }
+    if (dst.startsWith('cover_')) { return 'cover' }
+    if (dst.startsWith('smoke_')) { return 'smoke' }
     switch (dst) {
-        case 'switchmon': return 'switch'
-        case 'covermon': return 'cover'
+        case 'switchmon': return 'switch'  // legacy
+        case 'covermon': return 'cover'    // legacy
         default: return dst
     }
 }
 
 private String mapDstToComponentType(String dst, String baseType) {
-    // Most dst types directly correspond to their base types
+    // Prefix-based matching for new discrete dst values
+    if (dst.startsWith('switch_')) { return 'switch' }
+    if (dst.startsWith('cover_')) { return 'cover' }
+    if (dst.startsWith('input_')) { return 'input' }
+    if (dst.startsWith('smoke_')) { return 'smoke' }
+
+    // Legacy and passthrough dst types
     switch (dst) {
         case 'switchmon':
             return 'switch'
         case 'powermon':
-            // Power monitoring can apply to switch, cover, or light — use the baseType from the result key
             return baseType
         case 'covermon':
             return 'cover'
         case 'lightmon':
             return 'light'
-        case 'input_push':
-        case 'input_double':
-        case 'input_long':
-            return 'input'
         case 'temperature':
         case 'humidity':
         case 'battery':

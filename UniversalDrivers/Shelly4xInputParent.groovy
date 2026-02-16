@@ -382,12 +382,20 @@ private void routeWebhookParams(Map params) {
 
 /**
  * Maps a webhook dst parameter to its Shelly component type.
+ * Supports both prefix-based matching (e.g., input_push, switch_on)
+ * and legacy dst values (switchmon, covermon).
+ *
+ * @param dst The webhook destination string
+ * @return The Shelly component type (input, switch, cover, smoke, or the raw dst)
  */
 private String dstToComponentType(String dst) {
   if (dst.startsWith('input_')) { return 'input' }
+  if (dst.startsWith('switch_')) { return 'switch' }
+  if (dst.startsWith('cover_')) { return 'cover' }
+  if (dst.startsWith('smoke_')) { return 'smoke' }
   switch (dst) {
-    case 'switchmon': return 'switch'
-    case 'covermon': return 'cover'
+    case 'switchmon': return 'switch'  // legacy
+    case 'covermon': return 'cover'    // legacy
     default: return dst
   }
 }
@@ -453,7 +461,7 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
 /**
  * Builds events from webhook GET parameters.
  *
- * @param dst Destination type (input_push, input_double, input_long)
+ * @param dst Destination type (input_push, input_double, input_long, input_toggle_on, input_toggle_off, input_toggle)
  * @param params Query parameters from webhook
  * @return List of event maps to send to child
  */
@@ -473,6 +481,22 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
     case 'input_long':
       events.add([name: 'held', value: 1, isStateChange: true,
         descriptionText: 'Button 1 was held'])
+      break
+    case 'input_toggle_on':
+      events.add([name: 'switch', value: 'on', isStateChange: true,
+        descriptionText: 'Input toggled on'])
+      break
+    case 'input_toggle_off':
+      events.add([name: 'switch', value: 'off', isStateChange: true,
+        descriptionText: 'Input toggled off'])
+      break
+    case 'input_toggle':
+      // Legacy: determine state from params
+      String toggleState = params?.state as String
+      if (toggleState) {
+        events.add([name: 'switch', value: toggleState, isStateChange: true,
+          descriptionText: "Input toggled ${toggleState}"])
+      }
       break
   }
 

@@ -2529,51 +2529,51 @@
   "webhookDefinitions": {
     "events": {
       "switch.on": {
-        "dst": "switchmon",
+        "dst": "switch_on",
         "name": "hubitat_sdm_switch_on",
-        "urlParams": "output=true",
+        "urlParams": "",
         "shellyComponent": "switch"
       },
       "switch.off": {
-        "dst": "switchmon",
+        "dst": "switch_off",
         "name": "hubitat_sdm_switch_off",
-        "urlParams": "output=false",
+        "urlParams": "",
         "shellyComponent": "switch"
       },
       "cover.open": {
-        "dst": "covermon",
+        "dst": "cover_open",
         "name": "hubitat_sdm_cover_open",
-        "urlParams": "state=open&pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.closed": {
-        "dst": "covermon",
+        "dst": "cover_closed",
         "name": "hubitat_sdm_cover_closed",
-        "urlParams": "state=closed&pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.stopped": {
-        "dst": "covermon",
+        "dst": "cover_stopped",
         "name": "hubitat_sdm_cover_stopped",
-        "urlParams": "state=stopped&pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.opening": {
-        "dst": "covermon",
+        "dst": "cover_opening",
         "name": "hubitat_sdm_cover_opening",
-        "urlParams": "state=opening&pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.closing": {
-        "dst": "covermon",
+        "dst": "cover_closing",
         "name": "hubitat_sdm_cover_closing",
-        "urlParams": "state=closing&pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.calibrating": {
-        "dst": "covermon",
+        "dst": "cover_calibrating",
         "name": "hubitat_sdm_cover_calibrating",
-        "urlParams": "state=calibrating&pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "temperature.change": {
@@ -2607,9 +2607,9 @@
         "shellyComponent": "input"
       },
       "smoke.alarm": {
-        "dst": "smoke",
+        "dst": "smoke_alarm",
         "name": "hubitat_sdm_smoke",
-        "urlParams": "alarm=true",
+        "urlParams": "",
         "shellyComponent": "smoke"
       },
       "illuminance.change": {
@@ -2631,15 +2631,15 @@
         "shellyComponent": "switch"
       },
       "input.toggle_on": {
-        "dst": "input_toggle",
+        "dst": "input_toggle_on",
         "name": "hubitat_sdm_input_toggle_on",
-        "urlParams": "state=on",
+        "urlParams": "",
         "shellyComponent": "input"
       },
       "input.toggle_off": {
-        "dst": "input_toggle",
+        "dst": "input_toggle_off",
         "name": "hubitat_sdm_input_toggle_off",
-        "urlParams": "state=off",
+        "urlParams": "",
         "shellyComponent": "input"
       },
       "input.button_triplepush": {

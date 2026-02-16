@@ -415,12 +415,20 @@ private void routeWebhookParams(Map params) {
 
 /**
  * Maps a webhook dst parameter to its Shelly component type.
+ * Handles both prefix-based matching (e.g., switch_on, cover_open, smoke_alarm)
+ * and legacy monitor-style dst values (switchmon, covermon).
+ *
+ * @param dst The webhook destination string
+ * @return The Shelly component type (switch, cover, input, smoke, etc.)
  */
 private String dstToComponentType(String dst) {
   if (dst.startsWith('input_')) { return 'input' }
+  if (dst.startsWith('switch_')) { return 'switch' }
+  if (dst.startsWith('cover_')) { return 'cover' }
+  if (dst.startsWith('smoke_')) { return 'smoke' }
   switch (dst) {
-    case 'switchmon': return 'switch'
-    case 'covermon': return 'cover'
+    case 'switchmon': return 'switch'  // legacy
+    case 'covermon': return 'cover'    // legacy
     default: return dst
   }
 }
@@ -559,8 +567,10 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
 
 /**
  * Builds events from webhook GET parameters.
+ * Handles both new prefix-based dst values (switch_on, cover_open, etc.)
+ * and legacy monitor-style dst values (switchmon, covermon) for backwards compatibility.
  *
- * @param dst Destination type
+ * @param dst Destination type (e.g., switch_on, switch_off, switchmon, cover_open, covermon, etc.)
  * @param params Query parameters from webhook
  * @return List of event maps to send to child
  */
@@ -569,6 +579,17 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
   List<Map> events = []
 
   switch (dst) {
+    // New prefix-based switch events (no params.output check needed)
+    case 'switch_on':
+      events.add([name: 'switch', value: 'on',
+        descriptionText: 'Switch turned on'])
+      break
+    case 'switch_off':
+      events.add([name: 'switch', value: 'off',
+        descriptionText: 'Switch turned off'])
+      break
+
+    // Legacy switch monitor (uses params.output)
     case 'switchmon':
       if (params.output != null) {
         String switchState = params.output == 'true' ? 'on' : 'off'
@@ -577,6 +598,48 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       }
       break
 
+    // New prefix-based cover events (state derived from dst)
+    case 'cover_open':
+      events.add([name: 'windowShade', value: 'open',
+        descriptionText: 'Window shade is open'])
+      if (params.pos != null) {
+        events.add([name: 'position', value: params.pos as Integer, unit: '%'])
+      }
+      break
+    case 'cover_closed':
+      events.add([name: 'windowShade', value: 'closed',
+        descriptionText: 'Window shade is closed'])
+      if (params.pos != null) {
+        events.add([name: 'position', value: params.pos as Integer, unit: '%'])
+      }
+      break
+    case 'cover_stopped':
+      events.add([name: 'windowShade', value: 'partially open',
+        descriptionText: 'Window shade is partially open'])
+      if (params.pos != null) {
+        events.add([name: 'position', value: params.pos as Integer, unit: '%'])
+      }
+      break
+    case 'cover_opening':
+      events.add([name: 'windowShade', value: 'opening',
+        descriptionText: 'Window shade is opening'])
+      if (params.pos != null) {
+        events.add([name: 'position', value: params.pos as Integer, unit: '%'])
+      }
+      break
+    case 'cover_closing':
+      events.add([name: 'windowShade', value: 'closing',
+        descriptionText: 'Window shade is closing'])
+      if (params.pos != null) {
+        events.add([name: 'position', value: params.pos as Integer, unit: '%'])
+      }
+      break
+    case 'cover_calibrating':
+      events.add([name: 'windowShade', value: 'unknown',
+        descriptionText: 'Window shade is calibrating'])
+      break
+
+    // Legacy cover monitor (uses params.state)
     case 'covermon':
       if (params.state != null) {
         String shadeState = mapCoverState(params.state as String)
@@ -588,6 +651,26 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       }
       break
 
+    // New prefix-based input toggle events (state derived from dst)
+    case 'input_toggle_on':
+      events.add([name: 'switch', value: 'on',
+        descriptionText: 'Input toggled on'])
+      break
+    case 'input_toggle_off':
+      events.add([name: 'switch', value: 'off',
+        descriptionText: 'Input toggled off'])
+      break
+
+    // Legacy input toggle (uses params.state)
+    case 'input_toggle':
+      if (params.state != null) {
+        String inputState = params.state == 'true' ? 'on' : 'off'
+        events.add([name: 'switch', value: inputState,
+          descriptionText: "Input toggled ${inputState}"])
+      }
+      break
+
+    // Button events (unchanged)
     case 'input_push':
       events.add([name: 'pushed', value: 1, isStateChange: true,
         descriptionText: 'Button 1 was pushed'])
@@ -599,6 +682,18 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
     case 'input_long':
       events.add([name: 'held', value: 1, isStateChange: true,
         descriptionText: 'Button 1 was held'])
+      break
+
+    // New prefix-based smoke event
+    case 'smoke_alarm':
+      events.add([name: 'smoke', value: 'detected',
+        descriptionText: 'Smoke detected'])
+      break
+
+    // Legacy smoke (uses params for state)
+    case 'smoke':
+      events.add([name: 'smoke', value: 'detected',
+        descriptionText: 'Smoke detected'])
       break
   }
 

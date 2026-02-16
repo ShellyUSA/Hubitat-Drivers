@@ -352,9 +352,12 @@ private void routeWebhookNotification(Map params) {
  */
 private String dstToComponentType(String dst) {
   if (dst.startsWith('input_')) { return 'input' }
+  if (dst.startsWith('switch_')) { return 'switch' }
+  if (dst.startsWith('cover_')) { return 'cover' }
+  if (dst.startsWith('smoke_')) { return 'smoke' }
   switch (dst) {
-    case 'switchmon': return 'switch'
-    case 'covermon': return 'cover'
+    case 'switchmon': return 'switch'  // legacy
+    case 'covermon': return 'cover'    // legacy
     default: return dst
   }
 }
@@ -498,7 +501,13 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
   List<Map> events = []
 
   switch (dst) {
-    case 'switchmon':
+    case 'switch_on':
+      events.add([name: 'switch', value: 'on', descriptionText: 'Switch turned on'])
+      break
+    case 'switch_off':
+      events.add([name: 'switch', value: 'off', descriptionText: 'Switch turned off'])
+      break
+    case 'switchmon':  // legacy
       if (params.output != null) {
         String switchState = params.output == 'true' ? 'on' : 'off'
         events.add([name: 'switch', value: switchState, descriptionText: "Switch turned ${switchState}"])
@@ -517,7 +526,13 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
     case 'input_triple':
       events.add([name: 'pushed', value: 3, isStateChange: true, descriptionText: 'Button 1 was triple-pushed'])
       break
-    case 'input_toggle':
+    case 'input_toggle_on':
+      events.add([name: 'switch', value: 'on', isStateChange: true, descriptionText: 'Input toggled on'])
+      break
+    case 'input_toggle_off':
+      events.add([name: 'switch', value: 'off', isStateChange: true, descriptionText: 'Input toggled off'])
+      break
+    case 'input_toggle':  // legacy
       if (params.state) {
         String toggleState = params.state as String
         events.add([name: 'switch', value: toggleState, isStateChange: true, descriptionText: "Input toggled ${toggleState}"])
