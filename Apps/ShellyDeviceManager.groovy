@@ -15,12 +15,19 @@
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
 // New device types should be added here as prebuilt .groovy files.
 @Field static final Map<String, String> PREBUILT_DRIVERS = [
+    // Single-component standalone drivers
     'Shelly Autoconf Single Switch': 'UniversalDrivers/ShellySingleSwitch.groovy',
     'Shelly Autoconf Single Switch PM': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
+
+    // Multi-component parent drivers (create driver-level children)
     'Shelly Autoconf 2x Switch Parent': 'UniversalDrivers/Shelly2xSwitchParent.groovy',
     'Shelly Autoconf 2x Switch PM Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
-    'Shelly Autoconf Single Cover PM': 'UniversalDrivers/ShellySingleCoverPM.groovy',
+    'Shelly Autoconf Single Cover PM Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
+    'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
+
+    // Fallback parent driver for unknown/unsupported patterns
+    'Shelly Autoconf Parent': 'UniversalDrivers/ShellyAutoconfParent.groovy',
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -424,6 +431,9 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         childDevice.updateSetting('ipAddress', ipKey)
         childDevice.initialize()
 
+        // Write Hubitat IP to KVS so scripts can dynamically retrieve it
+        writeHubitatIpToKVS(ipKey)
+
         logInfo("✓ Device initialized successfully")
 
     } catch (Exception e) {
@@ -494,63 +504,48 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // Track parent device against its driver
         associateDeviceWithDriver(parentDriverName, 'ShellyUSA', parentDni)
 
-        // Step 3: Create child devices for each actuator and input component
-        List<String> childDnis = []
+        // Step 4: Set components and pmComponents data values on parent
+        // The parent driver will read these to create driver-level children
+        List<String> components = []
+        List<String> pmComponents = []
         Set<String> childComponentTypes = ['switch', 'cover', 'light', 'input'] as Set
 
         deviceStatus.each { k, v ->
             String key = k.toString()
             String baseType = key.contains(':') ? key.split(':')[0] : key
-            if (!childComponentTypes.contains(baseType)) { return }
-
-            Integer componentId = key.contains(':') ? (key.split(':')[1] as Integer) : 0
-            Boolean hasPM = componentPowerMonitoring[key] ?: false
-            String childDriverName = getComponentDriverName(baseType, hasPM)
-            String childDni = "${mac}-${baseType}-${componentId}"
-            String childLabel = "${baseLabel} ${baseType.capitalize()} ${componentId}"
-
-            if (!childDriverName) {
-                logWarn("No component driver name found for ${baseType}")
-                return
-            }
-
-            // Determine the data key for component ID (e.g., switchId, coverId)
-            String idDataKey = "${baseType}Id"
-
-            Map childProps = [
-                name: childLabel,
-                label: childLabel,
-                data: [
-                    ipAddress: ipKey,
-                    componentType: baseType,
-                    (idDataKey): componentId.toString(),
-                    parentDni: parentDni,
-                    shellyModel: deviceInfo.model ?: 'Unknown',
-                    shellyMac: deviceInfo.mac ?: ''
-                ]
-            ]
-
-            try {
-                def childDevice = addChildDevice('ShellyUSA', childDriverName, childDni, childProps)
-                logInfo("  Created child: ${childLabel} (${childDriverName}) DNI: ${childDni}")
-                childDnis.add(childDni)
-
-                // Track child device against its component driver
-                associateDeviceWithDriver(childDriverName, 'ShellyUSA', childDni)
-            } catch (Exception ce) {
-                logError("  Failed to create child ${childLabel}: ${ce.message}")
+            if (childComponentTypes.contains(baseType)) {
+                components.add(key)
+                if (componentPowerMonitoring[key]) {
+                    pmComponents.add(key)
+                }
             }
         }
 
-        // Store device config with parent-child metadata
-        storeDeviceConfig(parentDni, deviceInfo, parentDriverName, true, childDnis)
+        // Store component lists on parent device as data values
+        String componentStr = components.join(',')
+        String pmComponentStr = pmComponents.join(',')
+        parentDevice.updateDataValue('components', componentStr)
+        if (pmComponentStr) {
+            parentDevice.updateDataValue('pmComponents', pmComponentStr)
+        }
 
-        // Initialize parent (which will trigger script/webhook setup via app)
+        logInfo("  Components: ${componentStr}")
+        if (pmComponentStr) {
+            logInfo("  PM Components: ${pmComponentStr}")
+        }
+
+        // Store device config (no child DNIs — parent manages driver-level children)
+        storeDeviceConfig(parentDni, deviceInfo, parentDriverName, true, [])
+
+        // Initialize parent (triggers driver-level child creation and script/webhook setup)
         parentDevice.updateSetting('ipAddress', ipKey)
         parentDevice.initialize()
 
-        logInfo("✓ Multi-component device created: 1 parent + ${childDnis.size()} children")
-        appendLog('info', "Created ${childDnis.size()} child devices for ${baseLabel}")
+        // Write Hubitat IP to KVS so scripts can dynamically retrieve it
+        writeHubitatIpToKVS(ipKey)
+
+        logInfo("✓ Multi-component parent device created (driver-level children will be created by parent)")
+        appendLog('info', "Created parent device ${baseLabel} with ${components.size()} components")
 
     } catch (Exception e) {
         logError("Failed to create multi-component device: ${e.message}")
@@ -1105,6 +1100,13 @@ private Map buildDeviceStatusCacheEntry(String ip) {
         entry.hubDeviceName = childDevice.displayName
         entry.hubDeviceId = childDevice.id
         entry.isBatteryDevice = isSleepyBatteryDevice(childDevice)
+    } else {
+        // Device was deleted outside the app - clean up stale config entries
+        cleanupStaleDeviceConfig(ip)
+        entry.hubDeviceDni = null
+        entry.hubDeviceName = null
+        entry.hubDeviceId = null
+        entry.isBatteryDevice = false
     }
 
     // Check reachability
@@ -1222,7 +1224,7 @@ void refreshAllDeviceStatusAsync() {
  *
  * @param ipAddress The IP address of the Shelly device to reinitialize
  */
-private void reinitializeDevice(String ipAddress) {
+void reinitializeDevice(String ipAddress) {
     def childDevice = findChildDeviceByIp(ipAddress)
     if (!childDevice) {
         logError("reinitializeDevice: no child device found for ${ipAddress}")
@@ -1338,6 +1340,11 @@ private void installRequiredScriptsForIp(String ipAddress) {
 
     logInfo("Script installation complete: ${installed} script(s) installed on ${ipAddress}")
     appendLog('info', "Script installation complete: ${installed} installed on ${device.displayName}")
+
+    // Write Hubitat IP to KVS after installing scripts
+    if (installed > 0) {
+        writeHubitatIpToKVS(ipAddress)
+    }
 }
 
 /**
@@ -1402,6 +1409,11 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
 
     logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
     appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
+
+    // Write Hubitat IP to KVS after enabling/starting scripts
+    if (fixed > 0) {
+        writeHubitatIpToKVS(ipAddress)
+    }
 }
 
 /**
@@ -1520,6 +1532,9 @@ private void removeObsoleteScripts(String ipAddress, def device) {
             }
         }
     }
+
+    // Check if all managed scripts are now gone — if so, remove hubitat_ip from KVS
+    checkAndRemoveKvsIfNoScripts(ipAddress)
 }
 
 /**
@@ -1580,6 +1595,42 @@ private void removeDeviceByIp(String ip) {
         entry.lastRefreshed = null
         cache[ip] = entry
         state.deviceStatusCache = cache
+    }
+
+    // Remove hubitat_ip from KVS since device is being deleted
+    removeHubitatIpFromKVS(ip)
+}
+
+/**
+ * Cleans up stale device config entries for devices that were deleted outside the app.
+ * Scans state.deviceConfigs and removes any entries where the device no longer exists in Hubitat.
+ *
+ * @param ip The IP address of the device to check
+ */
+private void cleanupStaleDeviceConfig(String ip) {
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    if (deviceConfigs.isEmpty()) { return }
+
+    // Find all DNIs that reference this IP
+    List<String> staleDnis = []
+    List<com.hubitat.app.DeviceWrapper> allChildren = getChildDevices() ?: []
+    Set<String> existingDnis = allChildren.collect { it.deviceNetworkId } as Set
+
+    deviceConfigs.each { String dni, Map config ->
+        // If the DNI is in our config but not in Hubitat's device list, it's stale
+        if (!existingDnis.contains(dni)) {
+            staleDnis.add(dni)
+        }
+    }
+
+    // Remove stale entries
+    if (staleDnis.size() > 0) {
+        staleDnis.each { String dni ->
+            logInfo("Removing stale device config for ${dni} (device no longer exists in Hubitat)")
+            deviceConfigs.remove(dni)
+        }
+        state.deviceConfigs = deviceConfigs
+        logInfo("Cleaned up ${staleDnis.size()} stale device config(s)")
     }
 }
 
@@ -3248,6 +3299,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
     String parentSuffix = isParent ? " Parent" : ""
 
+    // Special case: Input-only devices (no actuators, only inputs)
+    Integer inputCount = componentCounts['input'] ?: 0
+    if (foundActuators.size() == 0 && inputCount > 1) {
+        return "Shelly Autoconf ${inputCount}x Input Parent"
+    }
+
     // When actuators are present, classify by actuator type
     // (sensor components like temperature are supplementary — handled by the driver)
     if (foundActuators.size() > 0) {
@@ -3264,13 +3321,23 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
                 'light': 'Dimmer'
             ]
             String typeName = typeNameMap[type] ?: type.capitalize()
+
+            // Covers always use Parent architecture (supports profile changes)
+            // Switches with count > 1 use Parent architecture
+            Boolean needsParent = (type == 'cover') || (count > 1) || isParent
+
             if (count == 1) {
-                return "Shelly Autoconf Single ${typeName}${pmSuffix}${parentSuffix}"
+                if (needsParent) {
+                    return "Shelly Autoconf Single ${typeName}${pmSuffix} Parent"
+                } else {
+                    return "Shelly Autoconf Single ${typeName}${pmSuffix}"
+                }
             } else {
-                return "Shelly Autoconf ${count}x ${typeName}${pmSuffix}${parentSuffix}"
+                return "Shelly Autoconf ${count}x ${typeName}${pmSuffix} Parent"
             }
         } else {
-            return "Shelly Autoconf Multi-Component Device${pmSuffix}${parentSuffix}"
+            // Multiple actuator types - use fallback parent
+            return "Shelly Autoconf Parent"
         }
     }
 
@@ -3303,7 +3370,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         return "Shelly Autoconf Battery Device${parentSuffix}"
     }
 
-    return "Shelly Autoconf Unknown Device${parentSuffix}"
+    // Fallback for unknown patterns - use generic parent if multi-component
+    if (isParent || components.size() > 1) {
+        return "Shelly Autoconf Parent"
+    }
+
+    return "Shelly Autoconf Unknown Device"
 }
 
 /**
@@ -4673,6 +4745,92 @@ LinkedHashMap kvsDeleteCommand(String key, String etag = null) {
   ]
   return command
 }
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  KVS Management for Hubitat IP                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Writes the Hubitat IP address to the Shelly device's KVS (Key-Value Store).
+ * This allows Shelly scripts to dynamically retrieve the Hubitat IP instead of
+ * hardcoding it in script source code.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void writeHubitatIpToKVS(String ipAddress) {
+    String hubitatIp = location.hub.localIP
+    if (!hubitatIp) {
+        logWarn("writeHubitatIpToKVS: could not determine Hubitat IP")
+        return
+    }
+
+    logDebug("Writing Hubitat IP (${hubitatIp}) to KVS on ${ipAddress}")
+    String uri = "http://${ipAddress}/rpc"
+
+    LinkedHashMap command = kvsSetCommand('hubitat_ip', hubitatIp)
+    if (authIsEnabled() == true && getAuth().size() > 0) {
+        command.auth = getAuth()
+    }
+
+    LinkedHashMap response = postCommandSync(command, uri)
+    if (response?.error) {
+        logError("Failed to write hubitat_ip to KVS on ${ipAddress}: ${response.error}")
+    } else {
+        logDebug("Successfully wrote hubitat_ip=${hubitatIp} to KVS on ${ipAddress}")
+    }
+}
+
+/**
+ * Removes the Hubitat IP address from the Shelly device's KVS.
+ * Called when all scripts are removed from the device or when the device is deleted.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void removeHubitatIpFromKVS(String ipAddress) {
+    logDebug("Removing hubitat_ip from KVS on ${ipAddress}")
+    String uri = "http://${ipAddress}/rpc"
+
+    LinkedHashMap command = kvsDeleteCommand('hubitat_ip')
+    if (authIsEnabled() == true && getAuth().size() > 0) {
+        command.auth = getAuth()
+    }
+
+    LinkedHashMap response = postCommandSync(command, uri)
+    if (response?.error) {
+        // Ignore "not found" errors — key might not exist
+        if (response.error.code != -113) {
+            logDebug("Could not remove hubitat_ip from KVS on ${ipAddress}: ${response.error}")
+        }
+    } else {
+        logDebug("Successfully removed hubitat_ip from KVS on ${ipAddress}")
+    }
+}
+
+/**
+ * Checks if all managed scripts have been removed from the device.
+ * If so, removes the hubitat_ip KVS entry since it's no longer needed.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void checkAndRemoveKvsIfNoScripts(String ipAddress) {
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) { return }
+
+    // Check if any managed scripts still exist
+    Boolean hasAnyManagedScript = installedScripts.any { Map script ->
+        String name = script.name as String
+        MANAGED_SCRIPT_NAMES.contains(name)
+    }
+
+    if (!hasAnyManagedScript) {
+        logDebug("No managed scripts remain on ${ipAddress} — removing hubitat_ip from KVS")
+        removeHubitatIpFromKVS(ipAddress)
+    }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END KVS Management for Hubitat IP                           ║
+// ╚══════════════════════════════════════════════════════════════╝
 
 @CompileStatic
 LinkedHashMap pm1GetConfigCommand(Integer pm1Id = 0, String src = 'pm1GetConfig') {
@@ -9044,6 +9202,98 @@ void componentConfigure(def parentDevice) {
     logDebug("componentConfigure() called from parent: ${parentDevice.displayName}")
     // Configuration is handled during device creation
 }
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Parent Driver Support Methods                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Sends a Shelly RPC command on behalf of a parent device.
+ * Called by parent drivers when child devices issue commands.
+ * Uses the app's centralized HTTP infrastructure with error handling and watchdog.
+ *
+ * @param parentDevice The parent device requesting the command
+ * @param method The Shelly RPC method name (e.g., 'Switch.Set', 'Cover.Open')
+ * @param params The RPC method parameters map
+ */
+void parentSendCommand(def parentDevice, String method, Map params) {
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("parentSendCommand: no IP for ${parentDevice.displayName}")
+        return
+    }
+
+    logDebug("parentSendCommand from ${parentDevice.displayName}: ${method} with params ${params}")
+
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = [
+        id: 0,
+        src: 'hubitat',
+        method: method,
+        params: params
+    ]
+
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+
+    if (response?.error) {
+        logError("parentSendCommand RPC error: ${response.error}")
+    } else {
+        logDebug("parentSendCommand success: ${method} → ${response}")
+    }
+}
+
+/**
+ * Refreshes device status on behalf of a parent device.
+ * Queries Shelly.GetStatus and sends the status back to the parent via distributeStatus().
+ *
+ * @param parentDevice The parent device requesting refresh
+ */
+void parentRefresh(def parentDevice) {
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("parentRefresh: no IP for ${parentDevice.displayName}")
+        return
+    }
+
+    logDebug("parentRefresh called for ${parentDevice.displayName} (${ipAddress})")
+
+    // Query device status
+    Map deviceStatus = queryDeviceStatus(ipAddress)
+    if (!deviceStatus) {
+        logWarn("parentRefresh: no status returned for ${ipAddress}")
+        return
+    }
+
+    // Send status to parent driver via distributeStatus() callback
+    try {
+        parentDevice.distributeStatus(deviceStatus)
+        logDebug("Sent status to ${parentDevice.displayName}")
+    } catch (Exception e) {
+        logError("Failed to distribute status to ${parentDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Reinitializes a parent device: re-queries physical state, reinstalls scripts/webhooks,
+ * and calls the device's initialize() method.
+ * Overload that accepts a device object (called by parent drivers via parent?.reinitializeDevice(device)).
+ *
+ * @param parentDevice The parent device to reinitialize
+ */
+void reinitializeDevice(def parentDevice) {
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("reinitializeDevice: no IP for ${parentDevice.displayName}")
+        return
+    }
+
+    logInfo("Reinitializing parent device ${parentDevice.displayName} via driver request")
+    reinitializeDevice(ipAddress)
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Parent Driver Support Methods                            ║
+// ╚══════════════════════════════════════════════════════════════╝
 
 /**
  * Distributes a full Shelly.GetStatus result to all child devices of a parent.

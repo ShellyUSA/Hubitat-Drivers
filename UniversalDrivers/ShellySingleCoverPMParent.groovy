@@ -1,0 +1,717 @@
+/**
+ * Shelly Autoconf Single Cover PM Parent
+ *
+ * Parent driver for single-cover Shelly devices with power monitoring.
+ * Examples: Shelly Plus 2PM (cover mode), Shelly Pro 2PM (cover mode)
+ *
+ * Architecture:
+ * - Creates zero children (single cover handled directly on parent device)
+ * - Parses LAN notifications locally and sends events to self
+ * - Delegates commands to parent app via parentSendCommand()
+ * - Supports profile changes (e.g., switching between cover and switch mode)
+ *
+ * Version: 1.0.0
+ */
+
+metadata {
+  definition(name: 'Shelly Autoconf Single Cover PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+    capability 'WindowShade'
+    //Attributes: windowShade - ENUM ["opening", "partially open", "closed", "open", "closing", "unknown"]
+    //            position - NUMBER, unit:%
+    //Commands: open(), close(), setPosition(position)
+
+    capability 'Initialize'
+    //Commands: initialize()
+
+    capability 'Configuration'
+    //Commands: configure()
+
+    capability 'Refresh'
+    //Commands: refresh()
+
+    capability 'CurrentMeter'
+    //Attributes: amperage - NUMBER, unit:A
+
+    capability 'PowerMeter'
+    //Attributes: power - NUMBER, unit:W
+
+    capability 'VoltageMeasurement'
+    //Attributes: voltage - NUMBER, unit:V
+
+    capability 'EnergyMeter'
+    //Attributes: energy - NUMBER, unit:kWh
+
+    capability 'TemperatureMeasurement'
+    //Attributes: temperature - NUMBER
+
+    command 'resetEnergyMonitors'
+    command 'stopPositionChange'
+    command 'reinitializeDevice'
+  }
+}
+
+preferences {
+  input name: 'logLevel', type: 'enum', title: 'Logging Level',
+    options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
+    defaultValue: 'debug', required: true
+}
+
+import groovy.transform.CompileStatic
+import groovy.json.JsonOutput
+import groovy.transform.Field
+
+@Field static Boolean NOCHILDCOVER = true
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Driver Lifecycle and Configuration                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Called when driver is first installed on a device.
+ * Delegates to initialize() for initial setup.
+ */
+void installed() {
+  logDebug('Parent device installed')
+  initialize()
+}
+
+/**
+ * Called when device settings are saved.
+ * Delegates to initialize() to apply updated configuration.
+ */
+void updated() {
+  logDebug('Parent device updated')
+  initialize()
+}
+
+/**
+ * Initializes the parent device driver.
+ * - Registers with parent app for management
+ * - Reconciles child devices (creates zero children for single cover)
+ */
+void initialize() {
+  logDebug('Parent device initialized')
+  parent?.componentInitialize(device)
+  reconcileChildDevices()
+}
+
+/**
+ * Configures the device driver settings.
+ * Sets default log level if not already configured.
+ */
+void configure() {
+  logDebug('Parent device configure() called')
+  parent?.componentConfigure(device)
+}
+
+/**
+ * Refreshes the device state by querying the parent app.
+ * App will call distributeStatus() with the latest device status.
+ */
+void refresh() {
+  logDebug('Parent device refresh() called')
+  parent?.parentRefresh(device)
+}
+
+/**
+ * Triggers device reinitialization via the parent app.
+ * Used when the device needs to be reconfigured (e.g., profile change, webhook reinstall).
+ */
+void reinitializeDevice() {
+  logDebug('reinitializeDevice() called')
+  parent?.reinitializeDevice(device)
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Driver Lifecycle and Configuration                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Child Device Management                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Reconciles child devices based on current component configuration.
+ * For single cover devices, creates zero children - all events handled on parent.
+ * Called from initialize() and when profile changes.
+ */
+@CompileStatic
+private void reconcileChildDevices() {
+  logDebug('reconcileChildDevices() called')
+
+  // Single cover device - no children needed
+  // All events sent directly to parent device
+
+  // Remove any obsolete children (e.g., from previous profile)
+  List<com.hubitat.app.DeviceWrapper> existingChildren = getChildDevicesHelper()
+  existingChildren.each { child ->
+    logDebug("Removing obsolete child device: ${child.displayName}")
+    deleteChildDeviceHelper(child.deviceNetworkId)
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Child Device Management                                 ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  LAN Message Parsing and Event Routing                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Parses incoming LAN messages from the Shelly device.
+ * Routes POST notifications (script) and GET notifications (webhook) to appropriate handlers.
+ * Sends events directly to parent device (no children for single cover).
+ *
+ * @param description Raw LAN message description string from Hubitat
+ */
+void parse(String description) {
+  logTrace('Parent parse() received message')
+
+  try {
+    Map msg = parseLanMessage(description)
+
+    // Skip HTTP responses (only process incoming requests)
+    if (msg?.status != null) { return }
+
+    // Try POST body first (script notifications with dst field)
+    if (msg?.body) {
+      try {
+        def json = new groovy.json.JsonSlurper().parseText(msg.body)
+        if (json?.dst && json?.result) {
+          routePostNotification(json.dst as String, json)
+          return
+        }
+      } catch (Exception e) {
+        // Body might be empty or not JSON — fall through to GET parsing
+      }
+    }
+
+    // Try GET query parameters (webhook notifications)
+    Map params = parseWebhookQueryParams(msg)
+    if (params?.dst) {
+      routeWebhookParams(params)
+    }
+  } catch (Exception e) {
+    logError("Error parsing LAN message: ${e.message}")
+  }
+}
+
+/**
+ * Parses query parameters from an incoming GET webhook request.
+ *
+ * @param msg The parsed LAN message map
+ * @return Map of query parameter key-value pairs, or null if not parseable
+ */
+@CompileStatic
+private Map parseWebhookQueryParams(Map msg) {
+  if (!msg?.headers) { return null }
+
+  String requestLine = msg.headers?.keySet()?.find { key ->
+    key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+  }
+
+  if (!requestLine) { return null }
+
+  String pathAndQuery = requestLine.toString().split(' ')[1]
+  int qIdx = pathAndQuery.indexOf('?')
+  if (qIdx < 0) { return null }
+
+  Map params = [:]
+  pathAndQuery.substring(qIdx + 1).split('&').each { String pair ->
+    String[] kv = pair.split('=', 2)
+    if (kv.length == 2) {
+      params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+    }
+  }
+  return params
+}
+
+/**
+ * Routes POST script notifications to appropriate parsers based on dst field.
+ * Sends events directly to parent device (no children for single cover).
+ *
+ * @param dst Destination type (covermon, powermon, temperature)
+ * @param json Full JSON payload from script notification
+ */
+private void routePostNotification(String dst, Map json) {
+  logDebug("routePostNotification: dst=${dst}")
+
+  switch (dst) {
+    case 'covermon':
+      parseCovermon(json)
+      break
+    case 'powermon':
+      parsePowermon(json)
+      break
+    case 'temperature':
+      parseTemperature(json)
+      break
+    default:
+      logDebug("Unknown dst type: ${dst}")
+  }
+}
+
+/**
+ * Routes webhook GET query parameters to appropriate event handlers.
+ * Sends events directly to parent device (no children for single cover).
+ *
+ * @param params The parsed query parameters
+ */
+private void routeWebhookParams(Map params) {
+  logDebug("routeWebhookParams: dst=${params.dst}")
+
+  if (params.dst == 'covermon') {
+    if (params.state != null) {
+      String shadeState = mapCoverState(params.state as String)
+      sendEvent(name: 'windowShade', value: shadeState,
+        descriptionText: "Window shade is ${shadeState}")
+      logInfo("Cover state changed to: ${shadeState}")
+    }
+    if (params.pos != null) {
+      Integer position = params.pos as Integer
+      sendEvent(name: 'position', value: position, unit: '%',
+        descriptionText: "Position is ${position}%")
+    }
+  }
+
+  if (params.dst == 'temperature') {
+    String scale = getLocationHelper()?.temperatureScale ?: 'F'
+    BigDecimal temp = null
+    if (scale == 'C' && params.tC) {
+      temp = params.tC as BigDecimal
+    } else if (params.tF) {
+      temp = params.tF as BigDecimal
+    }
+    if (temp != null) {
+      sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
+        descriptionText: "Temperature is ${temp}°${scale}")
+    }
+  }
+}
+
+/**
+ * Distributes status from Shelly.GetStatus query to parent device.
+ * Called by parent app after refresh() or during periodic status updates.
+ *
+ * @param status Map of component statuses from Shelly.GetStatus
+ */
+void distributeStatus(Map status) {
+  logDebug("distributeStatus() called with: ${status}")
+
+  // Send status as synthetic covermon notification
+  if (status) {
+    Map syntheticJson = [dst: 'covermon', result: status]
+    parseCovermon(syntheticJson)
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END LAN Message Parsing and Event Routing                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Cover Commands                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Opens the window shade / cover.
+ * Delegates to parent app's parentSendCommand with Cover.Open method.
+ */
+void open() {
+  logDebug('open() called')
+  parent?.parentSendCommand(device, 'Cover.Open', [id: 0])
+}
+
+/**
+ * Closes the window shade / cover.
+ * Delegates to parent app's parentSendCommand with Cover.Close method.
+ */
+void close() {
+  logDebug('close() called')
+  parent?.parentSendCommand(device, 'Cover.Close', [id: 0])
+}
+
+/**
+ * Sets the cover position to a specific value.
+ * Delegates to parent app's parentSendCommand with Cover.GoToPosition method.
+ *
+ * @param position Target position (0 = closed, 100 = open)
+ */
+void setPosition(BigDecimal position) {
+  logDebug("setPosition(${position}) called")
+  parent?.parentSendCommand(device, 'Cover.GoToPosition', [id: 0, pos: position as Integer])
+}
+
+/**
+ * Stops any in-progress cover movement.
+ * Delegates to parent app's parentSendCommand with Cover.Stop method.
+ */
+void stopPositionChange() {
+  logDebug('stopPositionChange() called')
+  parent?.parentSendCommand(device, 'Cover.Stop', [id: 0])
+}
+
+/**
+ * Maps a Shelly cover state string to a Hubitat windowShade value.
+ *
+ * @param coverState The Shelly cover state
+ * @return The Hubitat windowShade state string
+ */
+@CompileStatic
+private String mapCoverState(String coverState) {
+  switch (coverState) {
+    case 'open': return 'open'
+    case 'closed': return 'closed'
+    case 'opening': return 'opening'
+    case 'closing': return 'closing'
+    case 'stopped': return 'partially open'
+    case 'calibrating': return 'unknown'
+    default: return 'unknown'
+  }
+}
+
+/**
+ * Parses cover monitoring notifications from Shelly device.
+ * Processes JSON with dst:"covermon" and updates windowShade, position, and
+ * inline power monitoring attributes (voltage, current, power, energy).
+ * JSON format: [dst:covermon, result:[cover:0:[id:0, state:open, current_pos:100, apower:0, voltage:120.8, current:0, aenergy:[total:1234]]]]
+ *
+ * @param json The parsed JSON notification from the Shelly device
+ */
+void parseCovermon(Map json) {
+  logDebug("parseCovermon() called with: ${json}")
+
+  try {
+    Map result = json?.result
+    if (!result) {
+      logWarn('parseCovermon: No result data in JSON')
+      return
+    }
+
+    result.each { key, value ->
+      if (key.toString().startsWith('cover:')) {
+        if (value instanceof Map) {
+          Integer coverId = value.id
+          String shellyState = value.state
+
+          // Map Shelly cover state to Hubitat WindowShade values
+          if (shellyState != null) {
+            String shadeState = mapCoverState(shellyState)
+            logInfo("Cover ${coverId} state changed to: ${shadeState}")
+            sendEvent(name: 'windowShade', value: shadeState,
+              descriptionText: "Window shade is ${shadeState}")
+          }
+
+          // Update position attribute
+          if (value.current_pos != null) {
+            Integer position = value.current_pos as Integer
+            sendEvent(name: 'position', value: position, unit: '%',
+              descriptionText: "Position is ${position}%")
+            logDebug("Cover ${coverId} position: ${position}%")
+          }
+
+          // Extract inline power monitoring values
+          if (value.voltage != null) {
+            BigDecimal voltage = value.voltage as BigDecimal
+            sendEvent(name: 'voltage', value: voltage, unit: 'V',
+              descriptionText: "Voltage is ${voltage}V")
+            logDebug("Voltage: ${voltage}V")
+          }
+
+          if (value.current != null) {
+            BigDecimal current = value.current as BigDecimal
+            sendEvent(name: 'amperage', value: current, unit: 'A',
+              descriptionText: "Current is ${current}A")
+            logDebug("Current: ${current}A")
+          }
+
+          if (value.apower != null) {
+            BigDecimal power = value.apower as BigDecimal
+            sendEvent(name: 'power', value: power, unit: 'W',
+              descriptionText: "Power is ${power}W")
+            logDebug("Power: ${power}W")
+          }
+
+          if (value.aenergy?.total != null) {
+            BigDecimal energyWh = value.aenergy.total as BigDecimal
+            BigDecimal energyKwh = energyWh / 1000
+            sendEvent(name: 'energy', value: energyKwh, unit: 'kWh',
+              descriptionText: "Energy is ${energyKwh}kWh")
+            logDebug("Energy: ${energyKwh}kWh (${energyWh}Wh from device)")
+          }
+
+          logInfo("Cover ${coverId} updated: state=${shellyState}, pos=${value.current_pos}, power=${value.apower}W")
+        }
+      }
+    }
+  } catch (Exception e) {
+    logError("parseCovermon exception: ${e.message}")
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Cover Commands                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Power Monitoring Commands and Parsing                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Parses power monitoring notifications from Shelly device.
+ * Processes JSON with dst:"powermon" and updates power/energy attributes.
+ * JSON format: [dst:powermon, result:[cover:0:[aenergy:[total:76207], apower:0, current:0, id:0, voltage:120.8]]]
+ *
+ * @param json The parsed JSON notification from the Shelly device
+ */
+void parsePowermon(Map json) {
+  logDebug("parsePowermon() called with: ${json}")
+
+  try {
+    Map result = json?.result
+    if (!result) {
+      logWarn('parsePowermon: No result data in JSON')
+      return
+    }
+
+    // Iterate over component entries (e.g., "cover:0")
+    result.each { key, value ->
+      if (value instanceof Map) {
+        Integer componentId = value.id
+
+        // Extract power monitoring values
+        if (value.voltage != null) {
+          BigDecimal voltage = value.voltage as BigDecimal
+          sendEvent(name: 'voltage', value: voltage, unit: 'V',
+            descriptionText: "Voltage is ${voltage}V")
+          logDebug("Voltage: ${voltage}V")
+        }
+
+        if (value.current != null) {
+          BigDecimal current = value.current as BigDecimal
+          sendEvent(name: 'amperage', value: current, unit: 'A',
+            descriptionText: "Current is ${current}A")
+          logDebug("Current: ${current}A")
+        }
+
+        if (value.apower != null) {
+          BigDecimal power = value.apower as BigDecimal
+          sendEvent(name: 'power', value: power, unit: 'W',
+            descriptionText: "Power is ${power}W")
+          logDebug("Power: ${power}W")
+        }
+
+        if (value.aenergy?.total != null) {
+          BigDecimal energyWh = value.aenergy.total as BigDecimal
+          BigDecimal energyKwh = energyWh / 1000
+          sendEvent(name: 'energy', value: energyKwh, unit: 'kWh',
+            descriptionText: "Energy is ${energyKwh}kWh")
+          logDebug("Energy: ${energyKwh}kWh (${energyWh}Wh from device)")
+        }
+
+        logInfo("Component ${key} power monitoring updated: ${value.apower}W, ${value.voltage}V, ${value.current}A")
+      }
+    }
+  } catch (Exception e) {
+    logError("parsePowermon exception: ${e.message}")
+  }
+}
+
+/**
+ * Resets energy monitoring counters by delegating to the parent app.
+ */
+void resetEnergyMonitors() {
+  logDebug('resetEnergyMonitors() called')
+  parent?.parentSendCommand(device, 'Switch.ResetCounters', [id: 0, type: ['aenergy']])
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Power Monitoring Commands and Parsing                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Temperature Monitoring                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Parses temperature notifications from Shelly device.
+ * Handles internal device temperature sensors (temperature:100, temperature:101).
+ * JSON format: [dst:temperature, result:[temperature:100:[id:100, tC:42.3, tF:108.1]]]
+ *
+ * @param json The parsed JSON notification from the Shelly device
+ */
+void parseTemperature(Map json) {
+  logDebug("parseTemperature() called with: ${json}")
+
+  try {
+    Map result = json?.result
+    if (!result) {
+      logWarn('parseTemperature: No result data in JSON')
+      return
+    }
+
+    result.each { key, value ->
+      if (value instanceof Map) {
+        BigDecimal tempC = value.tC != null ? value.tC as BigDecimal : null
+        BigDecimal tempF = value.tF != null ? value.tF as BigDecimal : null
+
+        if (tempC != null || tempF != null) {
+          // Use hub's temperature scale preference
+          String scale = getLocationHelper()?.temperatureScale ?: 'F'
+          BigDecimal temp = (scale == 'C') ? tempC : (tempF ?: tempC)
+          String unit = "\u00B0${scale}"
+
+          if (temp != null) {
+            def currentTemp = device.currentValue('temperature')
+            if (currentTemp == null || (currentTemp as BigDecimal) != temp) {
+              sendEvent(name: 'temperature', value: temp, unit: unit,
+                descriptionText: "Temperature is ${temp}${unit}")
+              logInfo("Temperature: ${temp}${unit}")
+            } else {
+              logDebug("Temperature unchanged: ${temp}${unit}")
+            }
+          }
+        }
+      }
+    }
+  } catch (Exception e) {
+    logError("parseTemperature exception: ${e.message}")
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Temperature Monitoring                                  ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Helper Functions (Non-Static Wrappers)                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Non-static helper to get child devices.
+ * Required because getChildDevices() is a dynamic Hubitat method.
+ *
+ * @return List of child device wrappers
+ */
+private List<com.hubitat.app.DeviceWrapper> getChildDevicesHelper() {
+  return getChildDevices()
+}
+
+/**
+ * Non-static helper to delete a child device.
+ * Required because deleteChildDevice() is a dynamic Hubitat method.
+ *
+ * @param dni Device network ID of child to delete
+ */
+private void deleteChildDeviceHelper(String dni) {
+  deleteChildDevice(dni)
+}
+
+/**
+ * Non-static helper to get location.
+ * Required because location is a dynamic Hubitat property.
+ *
+ * @return Location object
+ */
+private Object getLocationHelper() {
+  return location
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Helper Functions                                        ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Logging Helpers                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Returns the display label used in log messages.
+ *
+ * @return The device display name
+ */
+@CompileStatic
+String loggingLabel() {
+  return "${device.displayName}"
+}
+
+/**
+ * Determines whether a log message at the given level should be emitted.
+ *
+ * @param messageLevel The level of the log message (error, warn, info, debug, trace)
+ * @return true if the message should be logged
+ */
+@CompileStatic
+private Boolean shouldLogLevel(String messageLevel) {
+  if (messageLevel == 'error') {
+    return true
+  } else if (messageLevel == 'warn') {
+    return settings.logLevel == 'warn'
+  } else if (messageLevel == 'info') {
+    return ['warn', 'info'].contains(settings.logLevel)
+  } else if (messageLevel == 'debug') {
+    return ['warn', 'info', 'debug'].contains(settings.logLevel)
+  } else if (messageLevel == 'trace') {
+    return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel)
+  }
+  return false
+}
+
+void logError(message) { log.error "${loggingLabel()}: ${message}" }
+void logWarn(message) { log.warn "${loggingLabel()}: ${message}" }
+void logInfo(message) { if (shouldLogLevel('info')) { log.info "${loggingLabel()}: ${message}" } }
+void logDebug(message) { if (shouldLogLevel('debug')) { log.debug "${loggingLabel()}: ${message}" } }
+void logTrace(message) { if (shouldLogLevel('trace')) { log.trace "${loggingLabel()}: ${message}" } }
+
+void logClass(obj) {
+  logInfo("Object Class Name: ${obj?.getClass()?.name}")
+}
+
+@CompileStatic
+void logJson(Map message) {
+  if (shouldLogLevel('trace')) {
+    String prettyJson = prettyJson(message)
+    logTrace(prettyJson)
+  }
+}
+
+@CompileStatic
+void logErrorJson(Map message) {
+  logError(prettyJson(message))
+}
+
+@CompileStatic
+void logInfoJson(Map message) {
+  String prettyJson = prettyJson(message)
+  logInfo(prettyJson)
+}
+
+/**
+ * Formats a Map as pretty-printed JSON.
+ *
+ * @param jsonInput The map to format
+ * @return Pretty-printed JSON string
+ */
+@CompileStatic
+String prettyJson(Map jsonInput) {
+  return JsonOutput.prettyPrint(JsonOutput.toJson(jsonInput))
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Logging Helpers                                         ║
+// ╚══════════════════════════════════════════════════════════════╝

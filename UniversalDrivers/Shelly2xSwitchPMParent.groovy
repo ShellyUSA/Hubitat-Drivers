@@ -1,23 +1,15 @@
 /**
  * Shelly Autoconf 2x Switch PM Parent
  *
- * Pre-built parent driver for dual-switch Shelly devices with power monitoring.
+ * Parent driver for dual-switch Shelly devices with power monitoring.
  * Examples: Shelly 2PM, Shelly Plus 2PM
  *
- * This is a parent device in a parent-child architecture. It receives all LAN
- * traffic (webhooks, script notifications) and forwards them to the parent app
- * for routing to child devices. It also processes notifications locally to
- * maintain an aggregate switch state and fire aggregate input button events.
- *
- * Child devices handle the per-component capabilities:
- *   - Shelly Autoconf Switch PM (for switch:0, switch:1)
- *   - Shelly Autoconf Input Button (for input:0, input:1)
- *
- * The parent provides aggregate on/off control (turns all switches on or off)
- * and configurable aggregation logic for switch state and input events.
- *
- * This driver is installed directly by ShellyDeviceManager, bypassing the modular
- * assembly pipeline.
+ * Architecture:
+ *   - App creates parent device with component data values
+ *   - Parent creates 2 switch PM children as driver-level children in initialize()
+ *   - Parent receives LAN traffic, parses locally, routes to children
+ *   - Parent aggregates switch state (anyOn/allOn) and power values (sum)
+ *   - Commands: child → parent componentOn() → app parentSendCommand() → Shelly RPC
  *
  * Version: 1.0.0
  */
@@ -25,27 +17,18 @@
 metadata {
   definition(name: 'Shelly Autoconf 2x Switch PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
-    //Attributes: switch - ENUM ["on", "off"]
-    //Commands: on(), off()
-
+    capability 'PowerMeter'
+    capability 'EnergyMeter'
+    capability 'CurrentMeter'
+    capability 'VoltageMeasurement'
     capability 'PushableButton'
-    //Attributes: pushed - NUMBER, numberOfButtons - NUMBER
-
     capability 'DoubleTapableButton'
-    //Attributes: doubleTapped - NUMBER
-
     capability 'HoldableButton'
-    //Attributes: held - NUMBER
-
     capability 'Initialize'
-    //Commands: initialize()
-
     capability 'Configuration'
-    //Commands: configure()
-
     capability 'Refresh'
-    //Commands: refresh()
 
+    command 'reinitialize'
     attribute 'lastUpdated', 'string'
   }
 }
@@ -65,126 +48,488 @@ preferences {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Parent Device Lifecycle                                     ║
-// ║  Receives LAN traffic and forwards to the parent app for     ║
-// ║  child routing. Also processes locally for aggregate state.   ║
+// ║  Lifecycle                                                    ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-/**
- * Called when driver is first installed on a device.
- * Delegates to initialize() for initial setup.
- */
 void installed() {
   logDebug('Parent device installed')
   initialize()
 }
 
-/**
- * Called when device settings are saved.
- * Delegates to initialize() to apply updated configuration.
- */
 void updated() {
   logDebug('Parent device updated')
   initialize()
 }
 
 /**
- * Initializes the parent device by delegating to the parent app.
- * Also recomputes aggregate switch state in case the aggregation
- * preference was changed.
+ * Initializes the parent device: creates/reconciles children, updates aggregate state.
  */
 void initialize() {
   logDebug('Parent device initialized')
-  parent?.componentInitialize(device)
+  reconcileChildDevices()
   updateParentSwitchState()
 }
 
-/**
- * Configures the parent device by delegating to the parent app.
- */
 void configure() {
-  logDebug('Parent device configure() called')
+  logDebug('configure() called')
   parent?.componentConfigure(device)
 }
 
-/**
- * Refreshes the parent device state by delegating to the parent app.
- */
 void refresh() {
-  logDebug('Parent device refresh() called')
-  parent?.componentRefresh(device)
+  logDebug('refresh() called')
+  parent?.parentRefresh(device)
 }
 
 /**
- * Receives all LAN messages (webhooks, script notifications).
- * Forwards the raw description to the parent app for routing to children,
- * then processes locally for parent-level aggregate state updates.
- *
- * @param description The raw LAN message description
+ * Triggers full reinitialization through the app (handles profile changes).
  */
-void parse(String description) {
-  logTrace("Parent parse() received message")
+void reinitialize() {
+  logDebug('reinitialize() called')
+  parent?.reinitializeDevice(device)
+}
 
-  // Forward to app for child device routing
-  parent?.componentParse(device, description)
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Lifecycle                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
 
-  // Process locally for parent-level aggregation
-  try {
-    Map msg = parseLanMessage(description)
-    if (msg?.status != null) { return }
-    if (!msg?.body) { return }
 
-    def json = new groovy.json.JsonSlurper().parseText(msg.body)
-    String dst = json?.dst
 
-    if (dst == 'switchmon') { parseSwitchmon(json) }
-    else if (dst == 'input_push') { handleInputEvent(json, 'pushed') }
-    else if (dst == 'input_double') { handleInputEvent(json, 'doubleTapped') }
-    else if (dst == 'input_long') { handleInputEvent(json, 'held') }
-  } catch (Exception e) {
-    logDebug("Parent parse local processing error: ${e.message}")
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Child Device Management                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Creates/reconciles driver-level child devices based on components data value.
+ * Expected: 2 switch PM children, 0-2 input children.
+ */
+void reconcileChildDevices() {
+  String componentStr = device.getDataValue('components')
+  if (!componentStr) {
+    logWarn('No components data value found')
+    getChildDevices()?.each { child ->
+      logInfo("Removing orphaned child: ${child.displayName}")
+      deleteChildDevice(child.deviceNetworkId)
+    }
+    return
+  }
+
+  String pmStr = device.getDataValue('pmComponents') ?: ''
+  Set<String> pmSet = pmStr ? pmStr.split(',').collect { it.trim() }.toSet() : ([] as Set)
+
+  List<String> components = componentStr.split(',').collect { it.trim() }
+
+  // Build desired children: switches only (inputs handled by count check)
+  Map<String, Integer> componentCounts = [:]
+  components.each { String comp ->
+    if (!comp.contains(':')) { return }
+    String baseType = comp.split(':')[0]
+    componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
+  }
+
+  Set<String> desiredChildDnis = [] as Set
+
+  // Switches: always create children (this is a 2x switch parent)
+  components.findAll { it.startsWith('switch:') }.each { String comp ->
+    Integer compId = comp.split(':')[1] as Integer
+    desiredChildDnis.add("${device.deviceNetworkId}-switch-${compId}")
+  }
+
+  // Inputs: create children only if count > 1
+  Integer inputCount = componentCounts['input'] ?: 0
+  if (inputCount > 1) {
+    components.findAll { it.startsWith('input:') }.each { String comp ->
+      Integer compId = comp.split(':')[1] as Integer
+      desiredChildDnis.add("${device.deviceNetworkId}-input-${compId}")
+    }
+  }
+
+  // Remove children that shouldn't exist
+  getChildDevices()?.each { child ->
+    if (!desiredChildDnis.contains(child.deviceNetworkId)) {
+      logInfo("Removing child: ${child.displayName}")
+      deleteChildDevice(child.deviceNetworkId)
+    }
+  }
+
+  // Create missing children
+  components.each { String comp ->
+    if (!comp.contains(':')) { return }
+    String baseType = comp.split(':')[0]
+    Integer compId = comp.split(':')[1] as Integer
+
+    // Skip inputs if single input (handled on parent)
+    if (baseType == 'input' && inputCount <= 1) { return }
+
+    // Only handle switches and inputs
+    if (!['switch', 'input'].contains(baseType)) { return }
+
+    String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
+    if (getChildDevice(childDni)) { return } // exists
+
+    String driverName
+    if (baseType == 'switch') {
+      driverName = pmSet.contains(comp) ? 'Shelly Autoconf Switch PM' : 'Shelly Autoconf Switch'
+    } else if (baseType == 'input') {
+      driverName = 'Shelly Autoconf Input Button'
+    } else {
+      return
+    }
+
+    String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
+    try {
+      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      child.updateDataValue('componentType', baseType)
+      child.updateDataValue("${baseType}Id", compId.toString())
+      if (baseType == 'input') {
+        child.sendEvent(name: 'numberOfButtons', value: 1)
+      }
+      child.initialize()
+      logInfo("Created child: ${label} (${driverName})")
+    } catch (Exception e) {
+      logError("Failed to create child ${label}: ${e.message}")
+    }
   }
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Parent Device Lifecycle                                 ║
+// ║  END Child Device Management                                  ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Switch Commands and Aggregation                             ║
+// ║  Event Routing (parse)                                        ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Turns ON all child switch devices by delegating to the parent app.
+ * Receives LAN messages, parses locally, routes to children, updates aggregates.
+ */
+void parse(String description) {
+  logTrace('parse() received message')
+
+  try {
+    Map msg = parseLanMessage(description)
+    if (msg?.status != null) { return } // skip HTTP responses
+
+    // Try POST body (script notifications)
+    if (msg?.body) {
+      try {
+        def json = new groovy.json.JsonSlurper().parseText(msg.body)
+        String dst = json?.dst
+        Map result = json?.result as Map
+
+        if (result && dst) {
+          logDebug("POST notification dst=${dst}")
+          routePostNotification(dst, result)
+          processAggregation(dst, json)
+          return
+        }
+      } catch (Exception jsonEx) {
+        logDebug('Body not JSON, trying GET params')
+      }
+    }
+
+    // Try GET query params (webhooks)
+    Map params = parseWebhookQueryParams(msg)
+    if (params?.dst) {
+      logDebug("GET webhook dst=${params.dst}, comp=${params.comp}")
+      routeWebhookNotification(params)
+      processWebhookAggregation(params)
+    }
+  } catch (Exception e) {
+    logDebug("parse() error: ${e.message}")
+  }
+}
+
+/**
+ * Routes POST notification to children and updates aggregates.
+ */
+private void routePostNotification(String dst, Map result) {
+  result.each { key, value ->
+    if (!(value instanceof Map)) { return }
+    String keyStr = key.toString()
+    if (!keyStr.contains(':')) { return }
+
+    String baseType = keyStr.split(':')[0]
+    Integer componentId = keyStr.split(':')[1] as Integer
+
+    List<Map> events = buildComponentEvents(dst, baseType, value as Map)
+    if (!events) { return }
+
+    // Determine if this should route to a child
+    boolean routeToChild = false
+    if (baseType == 'switch') {
+      routeToChild = true // switches always have children
+    } else if (baseType == 'input') {
+      // Check input count
+      String componentStr = device.getDataValue('components') ?: ''
+      Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
+      routeToChild = (inputCount > 1)
+    }
+
+    if (routeToChild) {
+      String childDni = "${device.deviceNetworkId}-${baseType}-${componentId}"
+      def child = getChildDevice(childDni)
+      if (child) {
+        events.each { Map evt -> child.sendEvent(evt) }
+        child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+        logDebug("Routed ${events.size()} events to ${child.displayName}")
+      }
+    } else {
+      // Handle on parent (single input case)
+      events.each { Map evt -> sendEvent(evt) }
+    }
+  }
+}
+
+/**
+ * Routes webhook notification to children.
+ */
+private void routeWebhookNotification(Map params) {
+  String dst = params.dst
+  String comp = params.comp
+  if (!comp || !comp.contains(':')) { return }
+
+  String baseType = comp.split(':')[0]
+  Integer componentId = comp.split(':')[1] as Integer
+
+  List<Map> events = buildWebhookEvents(dst, params)
+  if (!events) { return }
+
+  boolean routeToChild = false
+  if (baseType == 'switch') {
+    routeToChild = true
+  } else if (baseType == 'input') {
+    String componentStr = device.getDataValue('components') ?: ''
+    Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
+    routeToChild = (inputCount > 1)
+  }
+
+  if (routeToChild) {
+    String childDni = "${device.deviceNetworkId}-${baseType}-${componentId}"
+    def child = getChildDevice(childDni)
+    if (child) {
+      events.each { Map evt -> child.sendEvent(evt) }
+      child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+      logDebug("Routed ${events.size()} webhook events to ${child.displayName}")
+    }
+  } else {
+    events.each { Map evt -> sendEvent(evt) }
+  }
+}
+
+/**
+ * Parses webhook GET query parameters.
+ */
+private Map parseWebhookQueryParams(Map msg) {
+  if (!msg?.headers) { return null }
+
+  String requestLine = null
+  msg.headers.each { key, value ->
+    String keyStr = key.toString()
+    if (keyStr.startsWith('GET ') || keyStr.startsWith('POST ')) {
+      requestLine = keyStr
+    }
+  }
+  if (!requestLine) { return null }
+
+  String pathAndQuery = requestLine.split(' ')[1]
+  int qIdx = pathAndQuery.indexOf('?')
+  if (qIdx < 0) { return null }
+
+  String queryString = pathAndQuery.substring(qIdx + 1)
+  Map params = [:]
+  queryString.split('&').each { String pair ->
+    String[] kv = pair.split('=', 2)
+    if (kv.length == 2) {
+      params[URLDecoder.decode(kv[0], 'UTF-8')] = URLDecoder.decode(kv[1], 'UTF-8')
+    }
+  }
+  return params
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Event Routing                                            ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Event Building                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Builds events from POST notification data.
+ */
+private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
+  List<Map> events = []
+
+  switch (dst) {
+    case 'switchmon':
+      if (data.output != null) {
+        String switchState = data.output ? 'on' : 'off'
+        events.add([name: 'switch', value: switchState, descriptionText: "Switch turned ${switchState}"])
+      }
+      break
+
+    case 'powermon':
+      if (data.voltage != null) {
+        events.add([name: 'voltage', value: data.voltage as BigDecimal, unit: 'V'])
+      }
+      if (data.current != null) {
+        events.add([name: 'amperage', value: data.current as BigDecimal, unit: 'A'])
+      }
+      if (data.apower != null) {
+        events.add([name: 'power', value: data.apower as BigDecimal, unit: 'W'])
+      }
+      if (data.aenergy?.total != null) {
+        BigDecimal energyWh = data.aenergy.total as BigDecimal
+        BigDecimal energyKwh = energyWh / 1000
+        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+      }
+      break
+
+    case 'input_push':
+      events.add([name: 'pushed', value: 1, isStateChange: true, descriptionText: 'Button 1 was pushed'])
+      break
+    case 'input_double':
+      events.add([name: 'doubleTapped', value: 1, isStateChange: true, descriptionText: 'Button 1 was double-tapped'])
+      break
+    case 'input_long':
+      events.add([name: 'held', value: 1, isStateChange: true, descriptionText: 'Button 1 was held'])
+      break
+  }
+
+  return events
+}
+
+/**
+ * Builds events from webhook GET parameters.
+ */
+private List<Map> buildWebhookEvents(String dst, Map params) {
+  List<Map> events = []
+
+  switch (dst) {
+    case 'switchmon':
+      if (params.output != null) {
+        String switchState = params.output == 'true' ? 'on' : 'off'
+        events.add([name: 'switch', value: switchState, descriptionText: "Switch turned ${switchState}"])
+      }
+      break
+
+    case 'input_push':
+      events.add([name: 'pushed', value: 1, isStateChange: true, descriptionText: 'Button 1 was pushed'])
+      break
+    case 'input_double':
+      events.add([name: 'doubleTapped', value: 1, isStateChange: true, descriptionText: 'Button 1 was double-tapped'])
+      break
+    case 'input_long':
+      events.add([name: 'held', value: 1, isStateChange: true, descriptionText: 'Button 1 was held'])
+      break
+  }
+
+  if (params.battPct != null) {
+    events.add([name: 'battery', value: params.battPct as Integer, unit: '%'])
+  }
+
+  return events
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Event Building                                           ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Component Commands (called by children)                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Handles on() command from child switch.
+ */
+void componentOn(def childDevice) {
+  Integer switchId = childDevice.getDataValue('switchId') as Integer
+  logDebug("componentOn() from switch ${switchId}")
+  parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: true])
+}
+
+/**
+ * Handles off() command from child switch.
+ */
+void componentOff(def childDevice) {
+  Integer switchId = childDevice.getDataValue('switchId') as Integer
+  logDebug("componentOff() from switch ${switchId}")
+  parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: false])
+}
+
+/**
+ * Handles refresh() command from child.
+ */
+void componentRefresh(def childDevice) {
+  logDebug("componentRefresh() from ${childDevice.displayName}")
+  parent?.parentRefresh(device)
+}
+
+/**
+ * Handles resetEnergyMonitors() command from child.
+ */
+void componentResetEnergyMonitors(def childDevice) {
+  Integer switchId = childDevice.getDataValue('switchId') as Integer
+  logDebug("componentResetEnergyMonitors() from switch ${switchId}")
+  parent?.parentSendCommand(device, 'Switch.ResetCounters', [id: switchId, type: ['aenergy']])
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Component Commands                                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Parent Switch Commands and Aggregation                       ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Turns on all switches.
  */
 void on() {
-  logDebug('Parent on() called — turning on all child switches')
-  parent?.componentOnAll(device)
+  logDebug('Parent on() — turning on all switches')
+  getChildDevices()?.findAll { it.deviceNetworkId.contains('-switch-') }.each { child ->
+    Integer switchId = child.getDataValue('switchId') as Integer
+    parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: true])
+  }
 }
 
 /**
- * Turns OFF all child switch devices by delegating to the parent app.
+ * Turns off all switches.
  */
 void off() {
-  logDebug('Parent off() called — turning off all child switches')
-  parent?.componentOffAll(device)
+  logDebug('Parent off() — turning off all switches')
+  getChildDevices()?.findAll { it.deviceNetworkId.contains('-switch-') }.each { child ->
+    Integer switchId = child.getDataValue('switchId') as Integer
+    parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: false])
+  }
 }
 
 /**
- * Parses switch monitoring notifications and updates the aggregate
- * parent switch state based on the switchAggregation preference.
- *
- * @param json The parsed JSON notification with dst:"switchmon"
+ * Processes aggregation from POST notifications.
+ */
+private void processAggregation(String dst, Map json) {
+  if (dst == 'switchmon') { parseSwitchmon(json) }
+  else if (dst == 'powermon') { parsePowermon(json) }
+  else if (dst == 'input_push') { handleInputEvent(json, 'pushed') }
+  else if (dst == 'input_double') { handleInputEvent(json, 'doubleTapped') }
+  else if (dst == 'input_long') { handleInputEvent(json, 'held') }
+}
+
+/**
+ * Parses switchmon notification and updates aggregate switch state.
  */
 void parseSwitchmon(Map json) {
-  logDebug("parseSwitchmon() called with: ${json}")
-
   Map result = json?.result
   if (!result) { return }
 
-  // Update tracked switch states from the notification
   Map switchStates = state.switchStates ?: [:]
   result.each { key, value ->
     if (key.toString().startsWith('switch:') && value instanceof Map && value.output != null) {
@@ -192,164 +537,263 @@ void parseSwitchmon(Map json) {
     }
   }
   state.switchStates = switchStates
-
   updateParentSwitchState()
 }
 
 /**
- * Computes and sends the aggregate parent switch state based on
- * tracked child switch states and the switchAggregation preference.
- * <ul>
- *   <li>anyOn: parent is "on" if any child switch is on</li>
- *   <li>allOn: parent is "on" only when all child switches are on</li>
- * </ul>
+ * Updates aggregate switch state based on preference.
  */
 private void updateParentSwitchState() {
   Map switchStates = state.switchStates ?: [:]
   if (switchStates.isEmpty()) { return }
 
   String mode = settings.switchAggregation ?: 'anyOn'
-  Boolean parentOn
-  if (mode == 'allOn') {
-    parentOn = switchStates.values().every { it == true }
-  } else {
-    parentOn = switchStates.values().any { it == true }
-  }
+  Boolean parentOn = (mode == 'allOn') ?
+    switchStates.values().every { it == true } :
+    switchStates.values().any { it == true }
 
   String newState = parentOn ? 'on' : 'off'
-  String currentState = device.currentValue('switch')
-  if (currentState != newState) {
+  if (device.currentValue('switch') != newState) {
     sendEvent(name: 'switch', value: newState, descriptionText: "Parent switch is ${newState}")
-    logInfo("Parent switch state: ${newState} (mode: ${mode})")
+    logInfo("Parent switch: ${newState} (mode: ${mode})")
+  }
+}
+
+/**
+ * Parses powermon notification and updates aggregate power values.
+ */
+void parsePowermon(Map json) {
+  Map result = json?.result
+  if (!result) { return }
+
+  BigDecimal totalPower = 0
+  BigDecimal totalEnergy = 0
+  BigDecimal totalCurrent = 0
+  BigDecimal maxVoltage = 0
+  Integer count = 0
+
+  result.each { key, value ->
+    if (key.toString().startsWith('switch:') && value instanceof Map) {
+      if (value.apower != null) {
+        totalPower += value.apower as BigDecimal
+        count++
+      }
+      if (value.aenergy?.total != null) {
+        totalEnergy += (value.aenergy.total as BigDecimal) / 1000
+      }
+      if (value.current != null) {
+        totalCurrent += value.current as BigDecimal
+      }
+      if (value.voltage != null) {
+        BigDecimal v = value.voltage as BigDecimal
+        if (v > maxVoltage) { maxVoltage = v }
+      }
+    }
+  }
+
+  if (count > 0) {
+    sendEvent(name: 'power', value: totalPower, unit: 'W', descriptionText: "Total power: ${totalPower}W")
+    sendEvent(name: 'energy', value: totalEnergy, unit: 'kWh', descriptionText: "Total energy: ${totalEnergy}kWh")
+    sendEvent(name: 'amperage', value: totalCurrent, unit: 'A', descriptionText: "Total current: ${totalCurrent}A")
+    sendEvent(name: 'voltage', value: maxVoltage, unit: 'V', descriptionText: "Voltage: ${maxVoltage}V")
+    logDebug("Aggregate power: ${totalPower}W, energy: ${totalEnergy}kWh, current: ${totalCurrent}A, voltage: ${maxVoltage}V")
   }
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Switch Commands and Aggregation                         ║
+// ║  END Parent Switch Commands and Aggregation                   ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Input Button Event Aggregation                              ║
+// ║  Input Button Event Aggregation                               ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Processes an input button event and fires on the parent based on
- * the inputAggregation preference.
- * <ul>
- *   <li>any: fires immediately when any child input fires, with the
- *       input's button number (input:0 → button 1, input:1 → button 2)</li>
- *   <li>all: fires only when all known inputs have fired the same event
- *       type within a 2-second window, with button number 1</li>
- * </ul>
- *
- * @param json The parsed JSON notification
- * @param eventName The Hubitat event name: "pushed", "doubleTapped", or "held"
+ * Processes input event aggregation (for single input handled on parent).
  */
 void handleInputEvent(Map json, String eventName) {
+  String componentStr = device.getDataValue('components') ?: ''
+  Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
+
+  // If multiple inputs, they have children - no parent aggregation needed
+  if (inputCount > 1) { return }
+
+  // Single input: fire event on parent
   Map result = json?.result
   if (!result) { return }
 
-  String mode = settings.inputAggregation ?: 'any'
-
   result.each { key, value ->
     if (key.toString().startsWith('input:') && value instanceof Map) {
-      Integer inputId = value.id != null ? (value.id as Integer) : 0
-
-      // Track known input count and update numberOfButtons
-      Integer knownInputs = state.knownInputCount ?: 0
-      if (inputId + 1 > knownInputs) {
-        state.knownInputCount = inputId + 1
-        sendEvent(name: 'numberOfButtons', value: inputId + 1)
-      }
-
-      if (mode == 'any') {
-        Integer buttonNumber = inputId + 1
-        sendEvent(name: eventName, value: buttonNumber, isStateChange: true,
-          descriptionText: "Button ${buttonNumber} was ${eventName}")
-        logInfo("Parent ${eventName}: button ${buttonNumber}")
-      } else {
-        trackAndFireIfAllInputs(eventName, key.toString())
-      }
+      sendEvent(name: 'numberOfButtons', value: 1)
+      sendEvent(name: eventName, value: 1, isStateChange: true, descriptionText: "Button was ${eventName}")
+      logInfo("Parent button ${eventName}")
     }
   }
 }
 
 /**
- * Tracks an input event for "all" aggregation mode. Records the event
- * with a timestamp, then checks if all known inputs have fired the same
- * event type within a 2-second window. Fires on the parent only when
- * the threshold is met.
- *
- * @param eventName The event type ("pushed", "doubleTapped", "held")
- * @param inputKey The input component key (e.g., "input:0")
+ * Processes webhook input aggregation.
  */
-private void trackAndFireIfAllInputs(String eventName, String inputKey) {
-  Map pending = state.pendingInputEvents ?: [:]
-  Map eventPending = (pending[eventName] ?: [:]) as Map
-  eventPending[inputKey] = now()
-  pending[eventName] = eventPending
-  state.pendingInputEvents = pending
+private void processWebhookAggregation(Map params) {
+  String dst = params.dst
+  if (!['input_push', 'input_double', 'input_long'].contains(dst)) { return }
 
-  // Check if all known inputs have fired within the time window
-  Integer knownInputs = state.knownInputCount ?: 0
-  if (knownInputs < 2) { return }
+  String componentStr = device.getDataValue('components') ?: ''
+  Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
+  if (inputCount > 1) { return } // children handle it
 
-  Long cutoff = now() - 2000
-  Integer recentCount = 0
-  eventPending.each { k, v ->
-    if (v instanceof Number && ((Number)v).toLong() > cutoff) { recentCount++ }
-  }
-
-  if (recentCount >= knownInputs) {
-    sendEvent(name: eventName, value: 1, isStateChange: true,
-      descriptionText: "All inputs ${eventName}")
-    logInfo("Parent ${eventName}: all ${knownInputs} inputs fired")
-
-    // Clear tracking for this event type
-    pending.remove(eventName)
-    state.pendingInputEvents = pending
-  }
+  String eventName = dst == 'input_push' ? 'pushed' : (dst == 'input_double' ? 'doubleTapped' : 'held')
+  sendEvent(name: 'numberOfButtons', value: 1)
+  sendEvent(name: eventName, value: 1, isStateChange: true, descriptionText: "Button was ${eventName}")
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Input Button Event Aggregation                          ║
+// ║  END Input Button Event Aggregation                           ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Logging Helpers                                             ║
+// ║  Status Distribution (Refresh)                                ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Returns the display label used in log messages.
- *
- * @return The device display name
+ * Distributes Shelly.GetStatus response to children and parent.
+ * Called by app's parentRefresh() after querying device.
  */
+void distributeStatus(Map deviceStatus) {
+  if (!deviceStatus) { return }
+
+  deviceStatus.each { k, v ->
+    String key = k.toString()
+    if (!key.contains(':') || !(v instanceof Map)) { return }
+
+    String baseType = key.split(':')[0]
+    Integer componentId = key.split(':')[1] as Integer
+
+    List<Map> events = buildStatusEvents(baseType, v as Map)
+    if (!events) { return }
+
+    // Determine routing
+    boolean routeToChild = false
+    if (baseType == 'switch') {
+      routeToChild = true
+    } else if (baseType == 'input') {
+      String componentStr = device.getDataValue('components') ?: ''
+      Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
+      routeToChild = (inputCount > 1)
+    }
+
+    if (routeToChild) {
+      String childDni = "${device.deviceNetworkId}-${baseType}-${componentId}"
+      def child = getChildDevice(childDni)
+      if (child) {
+        events.each { Map evt -> child.sendEvent(evt) }
+        child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+      }
+    } else {
+      events.each { Map evt -> sendEvent(evt) }
+    }
+  }
+
+  // Update aggregates
+  updateAggregatesFromStatus(deviceStatus)
+  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+}
+
+/**
+ * Builds events from Shelly.GetStatus component data.
+ */
+private List<Map> buildStatusEvents(String componentType, Map statusData) {
+  List<Map> events = []
+
+  if (componentType == 'switch') {
+    if (statusData.output != null) {
+      String switchState = statusData.output ? 'on' : 'off'
+      events.add([name: 'switch', value: switchState])
+    }
+    if (statusData.voltage != null) {
+      events.add([name: 'voltage', value: statusData.voltage as BigDecimal, unit: 'V'])
+    }
+    if (statusData.current != null) {
+      events.add([name: 'amperage', value: statusData.current as BigDecimal, unit: 'A'])
+    }
+    if (statusData.apower != null) {
+      events.add([name: 'power', value: statusData.apower as BigDecimal, unit: 'W'])
+    }
+    if (statusData.aenergy?.total != null) {
+      BigDecimal energyKwh = (statusData.aenergy.total as BigDecimal) / 1000
+      events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+    }
+  }
+
+  return events
+}
+
+/**
+ * Updates parent aggregates from status data.
+ */
+private void updateAggregatesFromStatus(Map deviceStatus) {
+  Map switchStates = [:]
+  BigDecimal totalPower = 0
+  BigDecimal totalEnergy = 0
+  BigDecimal totalCurrent = 0
+  BigDecimal maxVoltage = 0
+
+  deviceStatus.each { k, v ->
+    String key = k.toString()
+    if (key.startsWith('switch:') && v instanceof Map) {
+      if (v.output != null) {
+        switchStates[key] = v.output
+      }
+      if (v.apower != null) {
+        totalPower += v.apower as BigDecimal
+      }
+      if (v.aenergy?.total != null) {
+        totalEnergy += (v.aenergy.total as BigDecimal) / 1000
+      }
+      if (v.current != null) {
+        totalCurrent += v.current as BigDecimal
+      }
+      if (v.voltage != null) {
+        BigDecimal volt = v.voltage as BigDecimal
+        if (volt > maxVoltage) { maxVoltage = volt }
+      }
+    }
+  }
+
+  state.switchStates = switchStates
+  updateParentSwitchState()
+
+  sendEvent(name: 'power', value: totalPower, unit: 'W')
+  sendEvent(name: 'energy', value: totalEnergy, unit: 'kWh')
+  sendEvent(name: 'amperage', value: totalCurrent, unit: 'A')
+  sendEvent(name: 'voltage', value: maxVoltage, unit: 'V')
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Status Distribution                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Logging Helpers                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+
 String loggingLabel() {
   return "${device.displayName}"
 }
 
-/**
- * Determines whether a log message at the given level should be emitted.
- *
- * @param messageLevel The level of the log message (error, warn, info, debug, trace)
- * @return true if the message should be logged
- */
 private Boolean shouldLogLevel(String messageLevel) {
-  if (messageLevel == 'error') {
-    return true
-  } else if (messageLevel == 'warn') {
-    return settings.logLevel == 'warn'
-  } else if (messageLevel == 'info') {
-    return ['warn', 'info'].contains(settings.logLevel)
-  } else if (messageLevel == 'debug') {
-    return ['warn', 'info', 'debug'].contains(settings.logLevel)
-  } else if (messageLevel == 'trace') {
-    return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel)
-  }
+  if (messageLevel == 'error') { return true }
+  else if (messageLevel == 'warn') { return settings.logLevel == 'warn' }
+  else if (messageLevel == 'info') { return ['warn', 'info'].contains(settings.logLevel) }
+  else if (messageLevel == 'debug') { return ['warn', 'info', 'debug'].contains(settings.logLevel) }
+  else if (messageLevel == 'trace') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
+  return false
 }
 
 void logError(message) { log.error "${loggingLabel()}: ${message}" }
@@ -381,28 +825,22 @@ void logInfoJson(Map message) {
   logInfo(prettyJson)
 }
 
-/**
- * Formats a Map as pretty-printed JSON.
- *
- * @param jsonInput The map to format
- * @return Pretty-printed JSON string
- */
 String prettyJson(Map jsonInput) {
   return JsonOutput.prettyPrint(JsonOutput.toJson(jsonInput))
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Logging Helpers                                         ║
+// ║  END Logging Helpers                                          ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Imports And Fields                                          ║
+// ║  Imports And Fields                                           ║
 // ╚══════════════════════════════════════════════════════════════╝
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
 import groovy.transform.Field
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Imports And Fields                                      ║
+// ║  END Imports And Fields                                       ║
 // ╚══════════════════════════════════════════════════════════════╝
