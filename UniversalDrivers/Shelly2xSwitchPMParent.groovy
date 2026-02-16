@@ -99,17 +99,15 @@ void reinitialize() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Creates/reconciles driver-level child devices based on components data value.
+ * Reconciles driver-level child devices against the components data value.
+ * Creates children that should exist but don't, and removes orphaned children
+ * that exist but shouldn't. Children that already exist correctly are left untouched.
  * Expected: 2 switch PM children, 0-2 input children.
  */
 void reconcileChildDevices() {
   String componentStr = device.getDataValue('components')
   if (!componentStr) {
-    logWarn('No components data value found')
-    getChildDevices()?.each { child ->
-      logInfo("Removing orphaned child: ${child.displayName}")
-      deleteChildDevice(child.deviceNetworkId)
-    }
+    logWarn('No components data value found — skipping child reconciliation')
     return
   }
 
@@ -118,7 +116,7 @@ void reconcileChildDevices() {
 
   List<String> components = componentStr.split(',').collect { it.trim() }
 
-  // Build desired children: switches only (inputs handled by count check)
+  // Count component types to determine input handling
   Map<String, Integer> componentCounts = [:]
   components.each { String comp ->
     if (!comp.contains(':')) { return }
@@ -126,45 +124,47 @@ void reconcileChildDevices() {
     componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
   }
 
-  Set<String> desiredChildDnis = [] as Set
-
-  // Switches: always create children (this is a 2x switch parent)
-  components.findAll { it.startsWith('switch:') }.each { String comp ->
-    Integer compId = comp.split(':')[1] as Integer
-    desiredChildDnis.add("${device.deviceNetworkId}-switch-${compId}")
-  }
-
-  // Inputs: create children only if count > 1
   Integer inputCount = componentCounts['input'] ?: 0
-  if (inputCount > 1) {
-    components.findAll { it.startsWith('input:') }.each { String comp ->
-      Integer compId = comp.split(':')[1] as Integer
-      desiredChildDnis.add("${device.deviceNetworkId}-input-${compId}")
+
+  // Build set of DNIs that SHOULD exist
+  Set<String> desiredDnis = [] as Set
+  components.each { String comp ->
+    if (!comp.contains(':')) { return }
+    String baseType = comp.split(':')[0]
+    Integer compId = comp.split(':')[1] as Integer
+    if (baseType == 'input' && inputCount <= 1) { return }
+    if (!['switch', 'input'].contains(baseType)) { return }
+    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}")
+  }
+
+  // Build set of DNIs that currently exist
+  Set<String> existingDnis = [] as Set
+  getChildDevices()?.each { child -> existingDnis.add(child.deviceNetworkId) }
+
+  logDebug("Child reconciliation: desired=${desiredDnis}, existing=${existingDnis}")
+
+  // Remove orphaned children (exist but shouldn't)
+  existingDnis.each { String dni ->
+    if (!desiredDnis.contains(dni)) {
+      def child = getChildDevice(dni)
+      if (child) {
+        logInfo("Removing orphaned child: ${child.displayName} (${dni})")
+        deleteChildDevice(dni)
+      }
     }
   }
 
-  // Remove children that shouldn't exist
-  getChildDevices()?.each { child ->
-    if (!desiredChildDnis.contains(child.deviceNetworkId)) {
-      logInfo("Removing child: ${child.displayName}")
-      deleteChildDevice(child.deviceNetworkId)
-    }
-  }
-
-  // Create missing children
+  // Create missing children (should exist but don't)
   components.each { String comp ->
     if (!comp.contains(':')) { return }
     String baseType = comp.split(':')[0]
     Integer compId = comp.split(':')[1] as Integer
 
-    // Skip inputs if single input (handled on parent)
     if (baseType == 'input' && inputCount <= 1) { return }
-
-    // Only handle switches and inputs
     if (!['switch', 'input'].contains(baseType)) { return }
 
     String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
-    if (getChildDevice(childDni)) { return } // exists
+    if (getChildDevice(childDni)) { return } // already exists, leave it alone
 
     String driverName
     if (baseType == 'switch') {
@@ -209,7 +209,11 @@ void parse(String description) {
 
   try {
     Map msg = parseLanMessage(description)
-    if (msg?.status != null) { return } // skip HTTP responses
+    logTrace("parse() msg keys: ${msg?.keySet()}, status=${msg?.status}, body=${msg?.body ? 'present' : 'null'}, headers=${msg?.headers ? 'present' : 'null'}")
+    if (msg?.status != null) {
+      logTrace("parse() skipping HTTP response (status=${msg.status})")
+      return
+    }
 
     // Try POST body (script notifications)
     if (msg?.body) {
@@ -220,10 +224,12 @@ void parse(String description) {
 
         if (result && dst) {
           logDebug("POST notification dst=${dst}")
+          logTrace("POST result keys: ${result.keySet()}, data: ${result}")
           routePostNotification(dst, result)
           processAggregation(dst, json)
           return
         }
+        logTrace("POST body parsed but no dst/result: dst=${dst}, result=${result}")
       } catch (Exception jsonEx) {
         logDebug('Body not JSON, trying GET params')
       }
@@ -233,8 +239,11 @@ void parse(String description) {
     Map params = parseWebhookQueryParams(msg)
     if (params?.dst) {
       logDebug("GET webhook dst=${params.dst}, comp=${params.comp}")
+      logTrace("Webhook params: ${params}")
       routeWebhookNotification(params)
       processWebhookAggregation(params)
+    } else {
+      logTrace("parse() no dst found in message, unable to route")
     }
   } catch (Exception e) {
     logDebug("parse() error: ${e.message}")
@@ -254,6 +263,7 @@ private void routePostNotification(String dst, Map result) {
     Integer componentId = keyStr.split(':')[1] as Integer
 
     List<Map> events = buildComponentEvents(dst, baseType, value as Map)
+    logTrace("buildComponentEvents(dst=${dst}, type=${baseType}) → ${events.size()} events: ${events}")
     if (!events) { return }
 
     // Determine if this should route to a child
@@ -271,9 +281,14 @@ private void routePostNotification(String dst, Map result) {
       String childDni = "${device.deviceNetworkId}-${baseType}-${componentId}"
       def child = getChildDevice(childDni)
       if (child) {
-        events.each { Map evt -> child.sendEvent(evt) }
+        events.each { Map evt ->
+          logTrace("Sending event to ${child.displayName}: ${evt}")
+          child.sendEvent(evt)
+        }
         child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
         logDebug("Routed ${events.size()} events to ${child.displayName}")
+      } else {
+        logDebug("No child device found for DNI: ${childDni}")
       }
     } else {
       // Handle on parent (single input case)
@@ -288,12 +303,16 @@ private void routePostNotification(String dst, Map result) {
 private void routeWebhookNotification(Map params) {
   String dst = params.dst
   String comp = params.comp
-  if (!comp || !comp.contains(':')) { return }
+  if (!comp || !comp.contains(':')) {
+    logTrace("routeWebhookNotification: no valid comp param (comp=${comp})")
+    return
+  }
 
   String baseType = comp.split(':')[0]
   Integer componentId = comp.split(':')[1] as Integer
 
   List<Map> events = buildWebhookEvents(dst, params)
+  logTrace("buildWebhookEvents(dst=${dst}) → ${events.size()} events: ${events}")
   if (!events) { return }
 
   boolean routeToChild = false
@@ -309,9 +328,14 @@ private void routeWebhookNotification(Map params) {
     String childDni = "${device.deviceNetworkId}-${baseType}-${componentId}"
     def child = getChildDevice(childDni)
     if (child) {
-      events.each { Map evt -> child.sendEvent(evt) }
+      events.each { Map evt ->
+        logTrace("Sending webhook event to ${child.displayName}: ${evt}")
+        child.sendEvent(evt)
+      }
       child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
       logDebug("Routed ${events.size()} webhook events to ${child.displayName}")
+    } else {
+      logDebug("No child device found for DNI: ${childDni}")
     }
   } else {
     events.each { Map evt -> sendEvent(evt) }
@@ -398,6 +422,15 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
     case 'input_long':
       events.add([name: 'held', value: 1, isStateChange: true, descriptionText: 'Button 1 was held'])
       break
+    case 'input_triple':
+      events.add([name: 'pushed', value: 3, isStateChange: true, descriptionText: 'Button 1 was triple-pushed'])
+      break
+    case 'input_toggle':
+      if (data.state != null) {
+        String toggleState = data.state ? 'on' : 'off'
+        events.add([name: 'switch', value: toggleState, isStateChange: true, descriptionText: "Input toggled ${toggleState}"])
+      }
+      break
   }
 
   return events
@@ -425,6 +458,15 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       break
     case 'input_long':
       events.add([name: 'held', value: 1, isStateChange: true, descriptionText: 'Button 1 was held'])
+      break
+    case 'input_triple':
+      events.add([name: 'pushed', value: 3, isStateChange: true, descriptionText: 'Button 1 was triple-pushed'])
+      break
+    case 'input_toggle':
+      if (params.state) {
+        String toggleState = params.state as String
+        events.add([name: 'switch', value: toggleState, isStateChange: true, descriptionText: "Input toggled ${toggleState}"])
+      }
       break
   }
 

@@ -133,22 +133,30 @@ void reinitializeDevice() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Reconciles child devices based on current component configuration.
- * For single cover devices, creates zero children - all events handled on parent.
+ * Reconciles driver-level child devices for single cover device.
+ * Creates missing children and removes orphaned children that exist but shouldn't.
+ * Children that already exist correctly are left untouched.
+ * For single cover devices, no children are desired — all events handled on parent.
  * Called from initialize() and when profile changes.
  */
 @CompileStatic
 private void reconcileChildDevices() {
   logDebug('reconcileChildDevices() called')
 
-  // Single cover device - no children needed
-  // All events sent directly to parent device
+  // Single cover device - no children needed; desired set is empty
+  Set<String> desiredDnis = [] as Set
 
-  // Remove any obsolete children (e.g., from previous profile)
+  // Build set of DNIs that currently exist
+  Set<String> existingDnis = [] as Set
   List<com.hubitat.app.DeviceWrapper> existingChildren = getChildDevicesHelper()
-  existingChildren.each { child ->
-    logDebug("Removing obsolete child device: ${child.displayName}")
-    deleteChildDeviceHelper(child.deviceNetworkId)
+  existingChildren?.each { child -> existingDnis.add(child.deviceNetworkId) }
+
+  logDebug("Child reconciliation: desired=${desiredDnis}, existing=${existingDnis}")
+
+  // Remove orphaned children (exist but shouldn't)
+  existingDnis.each { String dni ->
+    logInfo("Removing orphaned child: ${dni}")
+    deleteChildDeviceHelper(dni)
   }
 }
 

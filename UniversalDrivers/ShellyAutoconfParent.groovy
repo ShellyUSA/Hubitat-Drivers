@@ -113,7 +113,9 @@ void reinitializeDevice() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Reconciles child devices based on current component configuration.
+ * Reconciles driver-level child devices against the components data value.
+ * Creates missing children and removes orphaned children that exist but shouldn't.
+ * Children that already exist correctly are left untouched.
  * Creates driver-level children for all components found in components data value.
  * Called from initialize() and when profile changes.
  */
@@ -124,88 +126,89 @@ private void reconcileChildDevices() {
   String pmStr = device.getDataValue('pmComponents') ?: ''
 
   if (!componentStr) {
-    logWarn('No components data value found - cannot reconcile children')
+    logWarn('No components data value found — skipping child reconciliation')
     return
   }
 
   Set<String> pmComponents = pmStr ? pmStr.split(',').toSet() : [] as Set
-
-  // Build component lists
   List<String> components = componentStr.split(',').toList()
-  logDebug("Components: ${components}")
-  logDebug("PM Components: ${pmComponents}")
 
-  // Track existing children
+  // Build set of DNIs that SHOULD exist
+  Set<String> desiredDnis = [] as Set
+  components.each { String comp ->
+    String baseType = comp.contains(':') ? comp.split(':')[0] : comp
+    Integer compId = comp.contains(':') ? (comp.split(':')[1] as Integer) : 0
+    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}")
+  }
+
+  // Build set of DNIs that currently exist
   List<com.hubitat.app.DeviceWrapper> existingChildren = getChildDevicesHelper()
   Set<String> existingDnis = existingChildren.collect { it.deviceNetworkId } as Set
 
-  // Expected children
-  Set<String> expectedDnis = [] as Set
+  logDebug("Child reconciliation: desired=${desiredDnis}, existing=${existingDnis}")
 
-  // Create children for each component
+  // Remove orphaned children (exist but shouldn't)
+  existingDnis.each { String dni ->
+    if (!desiredDnis.contains(dni)) {
+      logInfo("Removing orphaned child: ${dni}")
+      deleteChildDeviceHelper(dni)
+    }
+  }
+
+  // Create missing children (should exist but don't)
   components.each { String comp ->
     String baseType = comp.contains(':') ? comp.split(':')[0] : comp
     Integer compId = comp.contains(':') ? (comp.split(':')[1] as Integer) : 0
 
     String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
-    expectedDnis.add(childDni)
+    if (existingDnis.contains(childDni)) { return } // already exists, leave it alone
 
-    if (!existingDnis.contains(childDni)) {
-      // Determine driver name
-      String driverName = null
-      Map childData = [componentType: baseType]
+    // Determine driver name
+    String driverName = null
+    Map childData = [componentType: baseType]
 
-      switch (baseType) {
-        case 'switch':
-          Boolean hasPM = pmComponents.contains(comp)
-          driverName = hasPM ? 'Shelly Autoconf Switch PM' : 'Shelly Autoconf Switch'
-          childData.switchId = compId.toString()
-          break
+    switch (baseType) {
+      case 'switch':
+        Boolean hasPM = pmComponents.contains(comp)
+        driverName = hasPM ? 'Shelly Autoconf Switch PM' : 'Shelly Autoconf Switch'
+        childData.switchId = compId.toString()
+        break
 
-        case 'cover':
-          Boolean hasPM = pmComponents.contains(comp)
-          driverName = hasPM ? 'Shelly Autoconf Cover PM' : 'Shelly Autoconf Cover'
-          childData.coverId = compId.toString()
-          break
+      case 'cover':
+        Boolean hasPM = pmComponents.contains(comp)
+        driverName = hasPM ? 'Shelly Autoconf Cover PM' : 'Shelly Autoconf Cover'
+        childData.coverId = compId.toString()
+        break
 
-        case 'light':
-          driverName = 'Shelly Autoconf Light'
-          childData.lightId = compId.toString()
-          break
+      case 'light':
+        driverName = 'Shelly Autoconf Light'
+        childData.lightId = compId.toString()
+        break
 
-        case 'input':
-          driverName = 'Shelly Autoconf Input Button'
-          childData.inputId = compId.toString()
-          break
+      case 'input':
+        driverName = 'Shelly Autoconf Input Button'
+        childData.inputId = compId.toString()
+        break
 
-        default:
-          logWarn("Unknown component type: ${baseType}")
-      }
-
-      if (driverName) {
-        String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
-
-        try {
-          addChildDeviceHelper('ShellyUSA', driverName, childDni,
-            [name: label, label: label])
-          def child = getChildDeviceHelper(childDni)
-          if (child) {
-            childData.each { k, v -> childUpdateDataValueHelper(child, k, v) }
-            childInitializeHelper(child)
-            logDebug("Created child: ${label}")
-          }
-        } catch (Exception e) {
-          logError("Failed to create child ${label}: ${e.message}")
-        }
-      }
+      default:
+        logWarn("Unknown component type: ${baseType}")
     }
-  }
 
-  // Remove obsolete children (e.g., from profile change)
-  existingChildren.each { child ->
-    if (!expectedDnis.contains(child.deviceNetworkId)) {
-      logDebug("Removing obsolete child device: ${child.displayName}")
-      deleteChildDeviceHelper(child.deviceNetworkId)
+    if (driverName) {
+      String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
+
+      try {
+        addChildDeviceHelper('ShellyUSA', driverName, childDni,
+          [name: label, label: label])
+        def child = getChildDeviceHelper(childDni)
+        if (child) {
+          childData.each { k, v -> childUpdateDataValueHelper(child, k, v) }
+          childInitializeHelper(child)
+          logInfo("Created child: ${label}")
+        }
+      } catch (Exception e) {
+        logError("Failed to create child ${label}: ${e.message}")
+      }
     }
   }
 }

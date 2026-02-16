@@ -431,8 +431,8 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         childDevice.updateSetting('ipAddress', ipKey)
         childDevice.initialize()
 
-        // Write Hubitat IP to KVS so scripts can dynamically retrieve it
-        writeHubitatIpToKVS(ipKey)
+        // Install scripts and webhooks on the Shelly device
+        reinitializeDevice(ipKey)
 
         logInfo("✓ Device initialized successfully")
 
@@ -537,12 +537,12 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // Store device config (no child DNIs — parent manages driver-level children)
         storeDeviceConfig(parentDni, deviceInfo, parentDriverName, true, [])
 
-        // Initialize parent (triggers driver-level child creation and script/webhook setup)
+        // Initialize parent driver (triggers driver-level child creation)
         parentDevice.updateSetting('ipAddress', ipKey)
         parentDevice.initialize()
 
-        // Write Hubitat IP to KVS so scripts can dynamically retrieve it
-        writeHubitatIpToKVS(ipKey)
+        // Install scripts and webhooks on the Shelly device
+        reinitializeDevice(ipKey)
 
         logInfo("✓ Multi-component parent device created (driver-level children will be created by parent)")
         appendLog('info', "Created parent device ${baseLabel} with ${components.size()} components")
@@ -1504,8 +1504,65 @@ private void installRequiredActionsForIp(String ipAddress) {
     logInfo("Action provisioning complete: ${installed} webhook(s) installed/updated on ${ipAddress}")
     appendLog('info', "Action provisioning: ${installed} webhook(s) on ${device.displayName}")
 
+    // Clean up obsolete webhooks that shouldn't exist
+    removeObsoleteWebhooks(ipAddress, device, requiredActions)
+
     // Clean up obsolete scripts that are now replaced by webhooks
     removeObsoleteScripts(ipAddress, device)
+}
+
+/**
+ * Removes webhooks that shouldn't exist on the device. Only removes webhooks
+ * that start with 'hubitat_sdm_' and are not in the required actions list.
+ * This cleans up webhooks from old configurations (e.g., power monitoring
+ * webhooks when the device now uses powermonitoring.js script).
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @param device The Hubitat device object for logging
+ * @param requiredActions List of webhook actions that should exist
+ */
+private void removeObsoleteWebhooks(String ipAddress, def device, List<Map> requiredActions) {
+    List<Map> installedHooks = listDeviceWebhooks(ipAddress)
+    if (installedHooks == null) { return }
+
+    String uri = "http://${ipAddress}/rpc"
+    Integer removed = 0
+
+    // Build set of required webhook identifiers (event + cid)
+    Set<String> requiredHookIds = [] as Set
+    requiredActions.each { Map action ->
+        String hookId = "${action.event}:${action.cid}"
+        requiredHookIds.add(hookId)
+    }
+
+    installedHooks.each { Map hook ->
+        String name = hook.name as String
+        String event = hook.event as String
+        Integer cid = hook.cid as Integer
+        Integer hookId = hook.id as Integer
+
+        // Only remove webhooks that start with 'hubitat_sdm_' (our managed webhooks)
+        if (!name?.startsWith('hubitat_sdm_')) { return }
+
+        // Check if this webhook should exist
+        String identifier = "${event}:${cid}"
+        if (!requiredHookIds.contains(identifier)) {
+            logInfo("Removing obsolete webhook '${name}' (${event} cid=${cid}) from ${device.displayName}")
+            appendLog('info', "Removing obsolete webhook ${name} from ${device.displayName}")
+            try {
+                LinkedHashMap deleteCmd = webhookDeleteCommand(hookId)
+                if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
+                postCommandSync(deleteCmd, uri)
+                removed++
+            } catch (Exception ex) {
+                logDebug("Could not remove obsolete webhook '${name}': ${ex.message}")
+            }
+        }
+    }
+
+    if (removed > 0) {
+        logInfo("Removed ${removed} obsolete webhook(s) from ${ipAddress}")
+    }
 }
 
 /**
@@ -1545,8 +1602,113 @@ private void removeObsoleteScripts(String ipAddress, def device) {
 }
 
 /**
+ * Performs comprehensive cleanup of all Hubitat-managed resources on a Shelly device.
+ * Removes all webhooks, scripts, and KVS entries that were created by this app.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @param deviceName The device name for logging
+ */
+private void cleanupShellyDevice(String ipAddress, String deviceName) {
+    logInfo("Starting comprehensive cleanup of ${deviceName} at ${ipAddress}")
+    appendLog('info', "Cleaning up ${deviceName}")
+
+    String uri = "http://${ipAddress}/rpc"
+    Integer totalRemoved = 0
+
+    // Step 1: Remove all Hubitat-managed webhooks
+    try {
+        List<Map> installedHooks = listDeviceWebhooks(ipAddress)
+        if (installedHooks) {
+            Integer webhooksRemoved = 0
+            installedHooks.each { Map hook ->
+                String hookName = hook.name as String
+                Integer hookId = hook.id as Integer
+                if (hookName?.startsWith('hubitat_sdm_') && hookId != null) {
+                    try {
+                        LinkedHashMap deleteCmd = webhookDeleteCommand(hookId)
+                        if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
+                        postCommandSync(deleteCmd, uri)
+                        webhooksRemoved++
+                        logDebug("Removed webhook '${hookName}' (id: ${hookId})")
+                    } catch (Exception ex) {
+                        logDebug("Could not remove webhook '${hookName}': ${ex.message}")
+                    }
+                }
+            }
+            if (webhooksRemoved > 0) {
+                logInfo("Removed ${webhooksRemoved} webhook(s) from ${deviceName}")
+                totalRemoved += webhooksRemoved
+            }
+        }
+    } catch (Exception ex) {
+        logDebug("Could not list webhooks for cleanup: ${ex.message}")
+    }
+
+    // Step 2: Remove all managed scripts
+    try {
+        List<Map> installedScripts = listDeviceScripts(ipAddress)
+        if (installedScripts) {
+            Integer scriptsRemoved = 0
+            installedScripts.each { Map script ->
+                String scriptName = script.name as String
+                Integer scriptId = script.id as Integer
+                if (MANAGED_SCRIPT_NAMES.contains(scriptName) && scriptId != null) {
+                    try {
+                        LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
+                        if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
+                        postCommandSync(deleteCmd, uri)
+                        scriptsRemoved++
+                        logDebug("Removed script '${scriptName}' (id: ${scriptId})")
+                    } catch (Exception ex) {
+                        logDebug("Could not remove script '${scriptName}': ${ex.message}")
+                    }
+                }
+            }
+            if (scriptsRemoved > 0) {
+                logInfo("Removed ${scriptsRemoved} script(s) from ${deviceName}")
+                totalRemoved += scriptsRemoved
+            }
+        }
+    } catch (Exception ex) {
+        logDebug("Could not list scripts for cleanup: ${ex.message}")
+    }
+
+    // Step 3: Remove all Hubitat KVS entries (currently just 'hubitat_ip', but iterate in case we add more)
+    try {
+        List<String> hubitatKvsKeys = ['hubitat_ip']
+        Integer kvsRemoved = 0
+        hubitatKvsKeys.each { String key ->
+            try {
+                LinkedHashMap deleteCmd = kvsDeleteCommand(key)
+                if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
+                LinkedHashMap response = postCommandSync(deleteCmd, uri)
+                // KVS.Delete succeeds even if key doesn't exist, so we count it
+                kvsRemoved++
+                logDebug("Removed KVS entry '${key}'")
+            } catch (Exception ex) {
+                logDebug("Could not remove KVS entry '${key}': ${ex.message}")
+            }
+        }
+        if (kvsRemoved > 0) {
+            logInfo("Removed ${kvsRemoved} KVS entry(ies) from ${deviceName}")
+            totalRemoved += kvsRemoved
+        }
+    } catch (Exception ex) {
+        logDebug("Could not remove KVS entries: ${ex.message}")
+    }
+
+    if (totalRemoved > 0) {
+        logInfo("✓ Cleanup complete: removed ${totalRemoved} resource(s) from ${deviceName}")
+        appendLog('info', "Cleanup complete: ${totalRemoved} resource(s) removed")
+    } else {
+        logInfo("No Hubitat resources found on ${deviceName} to clean up")
+    }
+}
+
+/**
  * Removes a created Shelly device and its children (if parent-child).
  * Cleans up device configs and updates the status cache.
+ * Performs comprehensive cleanup of all Hubitat-managed resources on the Shelly device.
  *
  * @param ip The IP address of the device to remove
  */
@@ -1562,7 +1724,10 @@ private void removeDeviceByIp(String ip) {
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Map config = deviceConfigs[dni] as Map
 
-    // Remove children first if parent-child device
+    // Step 1: Clean up all Hubitat resources on the Shelly device before removing from Hubitat
+    cleanupShellyDevice(ip, name)
+
+    // Step 2: Remove child devices (if parent-child architecture)
     if (config?.isParentChild && config?.childDnis) {
         List<String> childDnis = config.childDnis as List<String>
         childDnis.each { String childDni ->
@@ -1576,16 +1741,16 @@ private void removeDeviceByIp(String ip) {
         }
     }
 
-    // Remove the device itself
+    // Step 3: Remove the device from Hubitat
     deleteChildDevice(dni)
     logInfo("Removed device: ${name} (${dni})")
     appendLog('info', "Removed: ${name}")
 
-    // Clean up device config
+    // Step 4: Clean up device config from state
     deviceConfigs.remove(dni)
     state.deviceConfigs = deviceConfigs
 
-    // Update status cache
+    // Step 5: Update status cache to reflect device removal
     Map cache = state.deviceStatusCache ?: [:]
     if (cache[ip]) {
         Map entry = cache[ip] as Map
@@ -1603,9 +1768,6 @@ private void removeDeviceByIp(String ip) {
         cache[ip] = entry
         state.deviceStatusCache = cache
     }
-
-    // Remove hubitat_ip from KVS since device is being deleted
-    removeHubitatIpFromKVS(ip)
 }
 
 /**
@@ -2136,6 +2298,64 @@ List<String> listSupportedWebhookEvents(String ipAddress) {
 }
 
 /**
+ * Queries input configurations for a device to determine their types.
+ * Returns a map of input CID to input type (e.g., "button", "switch", "analog").
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @param inputCids List of input component IDs to query
+ * @return Map of CID to input type, or empty map if query fails
+ */
+private Map<Integer, String> getInputTypes(String ipAddress, List<Integer> inputCids) {
+    Map<Integer, String> inputTypes = [:]
+    if (!inputCids) { return inputTypes }
+
+    String uri = "http://${ipAddress}/rpc"
+    inputCids.each { Integer cid ->
+        try {
+            LinkedHashMap command = inputGetConfigCommand(cid)
+            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+            LinkedHashMap json = postCommandSync(command, uri)
+            if (json?.result?.type) {
+                inputTypes[cid] = json.result.type as String
+                logDebug("Input ${cid} type: ${inputTypes[cid]}")
+            }
+        } catch (Exception ex) {
+            logDebug("Failed to get input ${cid} config: ${ex.message}")
+        }
+    }
+    return inputTypes
+}
+
+/**
+ * Determines if an input webhook event is applicable to a given input type.
+ *
+ * @param event The webhook event name (e.g., "input.button_push")
+ * @param inputType The input type (e.g., "button", "switch", "analog")
+ * @return true if the event is applicable to this input type
+ */
+@CompileStatic
+private Boolean isInputEventApplicable(String event, String inputType) {
+    if (!event.startsWith('input.')) { return true }
+
+    // Button events require button-type inputs
+    if (event.contains('button_')) {
+        return inputType == 'button'
+    }
+
+    // Toggle events require switch-type inputs
+    if (event.contains('toggle_')) {
+        return inputType == 'switch'
+    }
+
+    // Analog events require analog-type inputs
+    if (event.contains('analog_')) {
+        return inputType == 'analog'
+    }
+
+    return true
+}
+
+/**
  * Determines which webhook actions are required for a device by querying its
  * status and cross-referencing with component_driver.json capability definitions.
  * When the device is known to be unreachable (e.g., sleeping battery device),
@@ -2243,9 +2463,32 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
 
     // Determine which component types the device has
     Set<String> deviceComponentTypes = [] as Set
+    List<Integer> inputCids = []
     deviceStatus.each { k, v ->
         String baseType = k.toString().split(':')[0]
         deviceComponentTypes.add(baseType)
+        if (baseType == 'input' && k.toString().contains(':')) {
+            try {
+                Integer cid = k.toString().split(':')[1] as Integer
+                inputCids.add(cid)
+            } catch (Exception ignored) {}
+        }
+    }
+
+    // Check if device uses powermonitoring.js script (if so, don't create power webhooks)
+    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    Boolean usesPowerScript = requiredScripts.any { it.toLowerCase().contains('powermonitoring') }
+    if (usesPowerScript) {
+        logDebug("Device uses powermonitoring.js script - will skip power webhook events")
+    }
+
+    // Query input configurations to determine their types (button, switch, analog)
+    Map<Integer, String> inputTypes = [:]
+    if (inputCids) {
+        String ip = device.getDataValue('ipAddress')
+        if (ip) {
+            inputTypes = getInputTypes(ip, inputCids)
+        }
     }
 
     // Build supplemental URL params (e.g., battery tokens for devices with devicepower)
@@ -2273,23 +2516,40 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
                 try { cid = key.split(':')[1] as Integer } catch (Exception ignored) {}
             }
 
-            // Only include actions the device actually supports
-            if (supportedEvents == null || supportedEvents.contains(event)) {
-                String urlParams = (eventDef.urlParams as String).replace('__CID__', cid.toString())
-                if (supplementalParams) {
-                    urlParams += supplementalParams
-                }
-
-                requiredActions.add([
-                    event    : event,
-                    name     : eventDef.name,
-                    dst      : eventDef.dst,
-                    cid      : cid,
-                    urlParams: urlParams
-                ])
-            } else {
+            // Filter 1: Only include events the device firmware supports
+            if (supportedEvents != null && !supportedEvents.contains(event)) {
                 logDebug("Skipping unsupported webhook event '${event}' for ${device.displayName}")
+                return
             }
+
+            // Filter 2: Skip power monitoring events if device uses powermonitoring.js script
+            if (usesPowerScript && (event.contains('active_power_change') || event.contains('active_power_measurement'))) {
+                logDebug("Skipping power event '${event}' - device uses powermonitoring.js script")
+                return
+            }
+
+            // Filter 3: For input events, check if the event is applicable to this input's type
+            if (shellyComponent == 'input' && inputTypes.containsKey(cid)) {
+                String inputType = inputTypes[cid]
+                if (!isInputEventApplicable(event, inputType)) {
+                    logDebug("Skipping input event '${event}' for input ${cid} (type: ${inputType})")
+                    return
+                }
+            }
+
+            // Event passed all filters - add it to required actions
+            String urlParams = (eventDef.urlParams as String).replace('__CID__', cid.toString())
+            if (supplementalParams) {
+                urlParams += supplementalParams
+            }
+
+            requiredActions.add([
+                event    : event,
+                name     : eventDef.name,
+                dst      : eventDef.dst,
+                cid      : cid,
+                urlParams: urlParams
+            ])
         }
     }
 
@@ -4564,7 +4824,7 @@ LinkedHashMap webhookDeleteCommand(Integer id, String src = 'webhookDelete') {
  *
  * @param cid Component ID (e.g., 0)
  * @param event Event name (e.g., "temperature.change")
- * @param name Webhook name (e.g., "hubitat_temperature")
+ * @param name Webhook name (e.g., "hubitat_sdm_temperature")
  * @param urls List of URLs to call when the event fires
  * @param src Source identifier for the RPC call
  * @return LinkedHashMap containing the Webhook.Create RPC command

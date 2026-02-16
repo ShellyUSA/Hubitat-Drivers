@@ -88,22 +88,21 @@ void reinitialize() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Creates/reconciles driver-level child devices based on components data value.
+ * Reconciles driver-level child devices against the components data value.
+ * Creates missing children and removes orphaned children that exist but shouldn't.
+ * Children that already exist correctly are left untouched.
  * Expected: 2 switch children (no PM), 0-2 input children.
  */
 void reconcileChildDevices() {
   String componentStr = device.getDataValue('components')
   if (!componentStr) {
-    logWarn('No components data value found')
-    getChildDevices()?.each { child ->
-      logInfo("Removing orphaned child: ${child.displayName}")
-      deleteChildDevice(child.deviceNetworkId)
-    }
+    logWarn('No components data value found — skipping child reconciliation')
     return
   }
 
   List<String> components = componentStr.split(',').collect { it.trim() }
 
+  // Count component types to determine input handling
   Map<String, Integer> componentCounts = [:]
   components.each { String comp ->
     if (!comp.contains(':')) { return }
@@ -111,32 +110,37 @@ void reconcileChildDevices() {
     componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
   }
 
-  Set<String> desiredChildDnis = [] as Set
-
-  // Switches: always create children
-  components.findAll { it.startsWith('switch:') }.each { String comp ->
-    Integer compId = comp.split(':')[1] as Integer
-    desiredChildDnis.add("${device.deviceNetworkId}-switch-${compId}")
-  }
-
-  // Inputs: create children only if count > 1
   Integer inputCount = componentCounts['input'] ?: 0
-  if (inputCount > 1) {
-    components.findAll { it.startsWith('input:') }.each { String comp ->
-      Integer compId = comp.split(':')[1] as Integer
-      desiredChildDnis.add("${device.deviceNetworkId}-input-${compId}")
+
+  // Build set of DNIs that SHOULD exist
+  Set<String> desiredDnis = [] as Set
+  components.each { String comp ->
+    if (!comp.contains(':')) { return }
+    String baseType = comp.split(':')[0]
+    Integer compId = comp.split(':')[1] as Integer
+    if (baseType == 'input' && inputCount <= 1) { return }
+    if (!['switch', 'input'].contains(baseType)) { return }
+    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}")
+  }
+
+  // Build set of DNIs that currently exist
+  Set<String> existingDnis = [] as Set
+  getChildDevices()?.each { child -> existingDnis.add(child.deviceNetworkId) }
+
+  logDebug("Child reconciliation: desired=${desiredDnis}, existing=${existingDnis}")
+
+  // Remove orphaned children (exist but shouldn't)
+  existingDnis.each { String dni ->
+    if (!desiredDnis.contains(dni)) {
+      def child = getChildDevice(dni)
+      if (child) {
+        logInfo("Removing orphaned child: ${child.displayName} (${dni})")
+        deleteChildDevice(dni)
+      }
     }
   }
 
-  // Remove children that shouldn't exist
-  getChildDevices()?.each { child ->
-    if (!desiredChildDnis.contains(child.deviceNetworkId)) {
-      logInfo("Removing child: ${child.displayName}")
-      deleteChildDevice(child.deviceNetworkId)
-    }
-  }
-
-  // Create missing children
+  // Create missing children (should exist but don't)
   components.each { String comp ->
     if (!comp.contains(':')) { return }
     String baseType = comp.split(':')[0]
@@ -146,7 +150,7 @@ void reconcileChildDevices() {
     if (!['switch', 'input'].contains(baseType)) { return }
 
     String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
-    if (getChildDevice(childDni)) { return }
+    if (getChildDevice(childDni)) { return } // already exists, leave it alone
 
     String driverName = (baseType == 'switch') ? 'Shelly Autoconf Switch' : 'Shelly Autoconf Input Button'
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"

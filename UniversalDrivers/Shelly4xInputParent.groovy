@@ -111,8 +111,10 @@ void reinitializeDevice() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Reconciles child devices based on current component configuration.
- * Creates 4 input button children for input:0, input:1, input:2, input:3.
+ * Reconciles driver-level child devices against the components data value.
+ * Creates missing children and removes orphaned children that exist but shouldn't.
+ * Children that already exist correctly are left untouched.
+ * Creates input button children for each input component found.
  * Called from initialize() and when profile changes.
  */
 private void reconcileChildDevices() {
@@ -120,7 +122,7 @@ private void reconcileChildDevices() {
 
   String componentStr = device.getDataValue('components') ?: ''
   if (!componentStr) {
-    logWarn('No components data value found - cannot reconcile children')
+    logWarn('No components data value found — skipping child reconciliation')
     return
   }
 
@@ -132,44 +134,46 @@ private void reconcileChildDevices() {
   }
 
   Integer inputCount = componentCounts['input'] ?: 0
-  logDebug("Component counts: ${componentCounts}")
 
-  // Track existing children
+  // Build set of DNIs that SHOULD exist
+  Set<String> desiredDnis = [] as Set
+  for (int i = 0; i < inputCount; i++) {
+    desiredDnis.add("${device.deviceNetworkId}-input-${i}")
+  }
+
+  // Build set of DNIs that currently exist
   List<com.hubitat.app.DeviceWrapper> existingChildren = getChildDevicesHelper()
   Set<String> existingDnis = existingChildren.collect { it.deviceNetworkId } as Set
 
-  // Expected children
-  Set<String> expectedDnis = [] as Set
+  logDebug("Child reconciliation: desired=${desiredDnis}, existing=${existingDnis}")
 
-  // Create input button children (always create children for 4x input devices)
-  for (int i = 0; i < inputCount; i++) {
-    String childDni = "${device.deviceNetworkId}-input-${i}"
-    expectedDnis.add(childDni)
-
-    if (!existingDnis.contains(childDni)) {
-      String label = "${device.displayName} Input ${i}"
-      Map childData = [componentType: 'input', inputId: i.toString()]
-
-      try {
-        addChildDeviceHelper('ShellyUSA', 'Shelly Autoconf Input Button', childDni,
-          [name: label, label: label])
-        def child = getChildDeviceHelper(childDni)
-        if (child) {
-          childData.each { k, v -> childUpdateDataValueHelper(child, k, v) }
-          childInitializeHelper(child)
-          logDebug("Created input child: ${label}")
-        }
-      } catch (Exception e) {
-        logError("Failed to create input child ${label}: ${e.message}")
-      }
+  // Remove orphaned children (exist but shouldn't)
+  existingDnis.each { String dni ->
+    if (!desiredDnis.contains(dni)) {
+      logInfo("Removing orphaned child: ${dni}")
+      deleteChildDeviceHelper(dni)
     }
   }
 
-  // Remove obsolete children (e.g., from profile change)
-  existingChildren.each { child ->
-    if (!expectedDnis.contains(child.deviceNetworkId)) {
-      logDebug("Removing obsolete child device: ${child.displayName}")
-      deleteChildDeviceHelper(child.deviceNetworkId)
+  // Create missing children (should exist but don't)
+  for (int i = 0; i < inputCount; i++) {
+    String childDni = "${device.deviceNetworkId}-input-${i}"
+    if (existingDnis.contains(childDni)) { continue } // already exists, leave it alone
+
+    String label = "${device.displayName} Input ${i}"
+    Map childData = [componentType: 'input', inputId: i.toString()]
+
+    try {
+      addChildDeviceHelper('ShellyUSA', 'Shelly Autoconf Input Button', childDni,
+        [name: label, label: label])
+      def child = getChildDeviceHelper(childDni)
+      if (child) {
+        childData.each { k, v -> childUpdateDataValueHelper(child, k, v) }
+        childInitializeHelper(child)
+        logInfo("Created input child: ${label}")
+      }
+    } catch (Exception e) {
+      logError("Failed to create input child ${label}: ${e.message}")
     }
   }
 }
