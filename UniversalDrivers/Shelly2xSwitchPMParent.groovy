@@ -43,6 +43,8 @@ preferences {
   input name: 'inputAggregation', type: 'enum', title: 'Parent Button Events',
     options: ['any':'Any Input → Fire Event', 'all':'All Inputs → Fire Event'],
     defaultValue: 'any', required: true
+  input name: 'pmReportingInterval', type: 'number', title: 'Power Monitoring Reporting Interval (seconds)',
+    required: false, defaultValue: 60, range: '5..3600'
 }
 
 
@@ -73,6 +75,8 @@ void initialize() {
 void configure() {
   logDebug('configure() called')
   parent?.componentConfigure(device)
+  Integer interval = settings?.pmReportingInterval != null ? settings.pmReportingInterval as Integer : 60
+  parent?.componentWriteKvsToDevice(device, 'pm_ri', interval)
 }
 
 void refresh() {

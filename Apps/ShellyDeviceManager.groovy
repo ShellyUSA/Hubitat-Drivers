@@ -1784,7 +1784,7 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
 
     // Step 3: Remove all Hubitat KVS entries (currently just 'hubitat_ip', but iterate in case we add more)
     try {
-        List<String> hubitatKvsKeys = ['hubitat_ip']
+        List<String> hubitatKvsKeys = ['hubitat_ip', 'pm_ri']
         Integer kvsRemoved = 0
         hubitatKvsKeys.each { String key ->
             try {
@@ -5277,7 +5277,7 @@ LinkedHashMap kvsDeleteCommand(String key, String etag = null) {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  KVS Management for Hubitat IP                               ║
+// ║  KVS Management                                               ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
@@ -5311,16 +5311,43 @@ private void writeHubitatIpToKVS(String ipAddress) {
 }
 
 /**
- * Removes the Hubitat IP address from the Shelly device's KVS.
- * Called when all scripts are removed from the device or when the device is deleted.
+ * Writes a KVS key-value pair to the Shelly device on behalf of a driver.
+ * Called by UniversalDrivers that don't have direct RPC access.
+ *
+ * @param parentDevice The parent device requesting the KVS write
+ * @param key The KVS key to set
+ * @param value The value to store
+ */
+void componentWriteKvsToDevice(def parentDevice, String key, Object value) {
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("componentWriteKvsToDevice: no IP for ${parentDevice.displayName}")
+        return
+    }
+    logDebug("Writing KVS key '${key}'=${value} to ${ipAddress}")
+    String uri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = kvsSetCommand(key, value)
+    if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+    LinkedHashMap response = postCommandSync(command, uri)
+    if (response?.error) {
+        logError("Failed to write KVS key '${key}' on ${ipAddress}: ${response.error}")
+    } else {
+        logDebug("Successfully wrote KVS '${key}'=${value} on ${ipAddress}")
+    }
+}
+
+/**
+ * Removes a KVS entry from the Shelly device.
+ * Ignores "not found" errors (code -113) since the key may not exist.
  *
  * @param ipAddress The IP address of the Shelly device
+ * @param key The KVS key to remove
  */
-private void removeHubitatIpFromKVS(String ipAddress) {
-    logDebug("Removing hubitat_ip from KVS on ${ipAddress}")
+private void removeKvsEntry(String ipAddress, String key) {
+    logDebug("Removing '${key}' from KVS on ${ipAddress}")
     String uri = "http://${ipAddress}/rpc"
 
-    LinkedHashMap command = kvsDeleteCommand('hubitat_ip')
+    LinkedHashMap command = kvsDeleteCommand(key)
     if (authIsEnabled() == true && getAuth().size() > 0) {
         command.auth = getAuth()
     }
@@ -5329,16 +5356,26 @@ private void removeHubitatIpFromKVS(String ipAddress) {
     if (response?.error) {
         // Ignore "not found" errors — key might not exist
         if (response.error.code != -113) {
-            logDebug("Could not remove hubitat_ip from KVS on ${ipAddress}: ${response.error}")
+            logDebug("Could not remove '${key}' from KVS on ${ipAddress}: ${response.error}")
         }
     } else {
-        logDebug("Successfully removed hubitat_ip from KVS on ${ipAddress}")
+        logDebug("Successfully removed '${key}' from KVS on ${ipAddress}")
     }
 }
 
 /**
+ * Removes the Hubitat IP address from the Shelly device's KVS.
+ * Called when all scripts are removed from the device or when the device is deleted.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ */
+private void removeHubitatIpFromKVS(String ipAddress) {
+    removeKvsEntry(ipAddress, 'hubitat_ip')
+}
+
+/**
  * Checks if all managed scripts have been removed from the device.
- * If so, removes the hubitat_ip KVS entry since it's no longer needed.
+ * If so, removes all Hubitat KVS entries since they are no longer needed.
  *
  * @param ipAddress The IP address of the Shelly device
  */
@@ -5353,13 +5390,14 @@ private void checkAndRemoveKvsIfNoScripts(String ipAddress) {
     }
 
     if (!hasAnyManagedScript) {
-        logDebug("No managed scripts remain on ${ipAddress} — removing hubitat_ip from KVS")
-        removeHubitatIpFromKVS(ipAddress)
+        logDebug("No managed scripts remain on ${ipAddress} — removing Hubitat KVS entries")
+        removeKvsEntry(ipAddress, 'hubitat_ip')
+        removeKvsEntry(ipAddress, 'pm_ri')
     }
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END KVS Management for Hubitat IP                           ║
+// ║  END KVS Management                                           ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 @CompileStatic

@@ -43,6 +43,8 @@ metadata {
 
 preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level', options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'], defaultValue: 'debug', required: true
+  input name: 'pmReportingInterval', type: 'number', title: 'Power Monitoring Reporting Interval (seconds)',
+    required: false, defaultValue: 60, range: '5..3600'
 }
 
 
@@ -293,6 +295,8 @@ void configure() {
     logWarn("No log level set, defaulting to 'debug'")
     device.updateSetting('logLevel', 'debug')
   }
+  Integer interval = settings?.pmReportingInterval != null ? settings.pmReportingInterval as Integer : 60
+  parent?.componentWriteKvsToDevice(device, 'pm_ri', interval)
 }
 
 /**
