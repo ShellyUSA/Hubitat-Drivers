@@ -9256,8 +9256,8 @@ void componentParse(def parentDevice, String description) {
                 Map result = json?.result as Map
 
                 if (result && dst) {
-                    logDebug("componentParse: POST dst=${dst}, result keys=${result.keySet()}")
-                    routePostNotification(parentDni, dst, result)
+                    logDebug("componentParse: script notification dst=${dst}, result keys=${result.keySet()}")
+                    routeScriptNotification(parentDni, dst, result)
                     return
                 }
             } catch (Exception jsonEx) {
@@ -9410,7 +9410,7 @@ void componentLogParsedMessage(DeviceWrapper device, Map msg) {
             logTrace("[${deviceLabel}] ${key}: ${value}")
         }
     } else if (hasBody) {
-        logTrace("[${deviceLabel}] [none - POST body present]")
+        logTrace("[${deviceLabel}] [none - JSON body present]")
     } else {
         logTrace("[${deviceLabel}] [none]")
     }
@@ -9429,14 +9429,14 @@ void componentLogParsedMessage(DeviceWrapper device, Map msg) {
 }
 
 /**
- * Routes a POST notification (from scripts like powermonitoring.js) to child devices.
+ * Routes a script notification to child devices.
  * Iterates result entries and sends events to the matching child device.
  *
  * @param parentDni The parent device network ID
  * @param dst The notification destination type
  * @param result The result map from the script notification
  */
-private void routePostNotification(String parentDni, String dst, Map result) {
+private void routeScriptNotification(String parentDni, String dst, Map result) {
     result.each { String key, Object value ->
         if (!(value instanceof Map)) { return }
 
@@ -9455,9 +9455,9 @@ private void routePostNotification(String parentDni, String dst, Map result) {
                 childSendEventHelper(child, evt)
             }
             childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
-            logDebug("routePostNotification: sent ${events.size()} events to ${child.displayName}")
+            logDebug("routeScriptNotification: sent ${events.size()} events to ${child.displayName}")
         } else {
-            logDebug("routePostNotification: no child device found for DNI ${childDni}")
+            logDebug("routeScriptNotification: no child device found for DNI ${childDni}")
         }
     }
 }

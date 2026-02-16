@@ -91,21 +91,18 @@ function getSwitchId(comp, fallbackId) {
   return 0;
 }
 
-// Send switch state for a single component
-function postSwitchState(comp, id, output) {
-  let update = { id: id, output: output };
-  let result = {};
-  result[comp] = update;
+// Send switch state for a single component via GET
+function sendSwitchReport(id, output) {
+  let url =
+    REMOTE_URL +
+    "/webhook/switchmon/" +
+    JSON.stringify(id) +
+    "?output=" +
+    JSON.stringify(output);
 
-  let body = JSON.stringify({ dst: "switchmon", result: result });
+  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
 
-  Shelly.call(
-    "HTTP.POST",
-    { url: REMOTE_URL, body: body, content_type: "application/json" },
-    onHTTPResponse,
-  );
-
-  print("Reported:", body);
+  print("Reported:", url);
 }
 
 // Reset the heartbeat timer with a new random interval
@@ -133,7 +130,7 @@ function sendHeartbeat() {
         let sw = res[k];
         if (sw !== undefined && sw !== null && typeof sw.output === "boolean") {
           let id = getSwitchId(k, sw.id);
-          postSwitchState(k, id, sw.output);
+          sendSwitchReport(id, sw.output);
           found = true;
         }
       }
@@ -158,7 +155,7 @@ Shelly.addStatusHandler(function (status) {
   if (typeof delta.output !== "boolean") return;
 
   let id = getSwitchId(comp, status.id);
-  postSwitchState(comp, id, delta.output);
+  sendSwitchReport(id, delta.output);
   resetTimer();
 });
 
@@ -176,7 +173,7 @@ Shelly.addEventHandler(function (event) {
       ? event.component
       : "switch:" + JSON.stringify(getSwitchId(null, event.id));
   let id = getSwitchId(comp, event.id);
-  postSwitchState(comp, id, event.info.output);
+  sendSwitchReport(id, event.info.output);
   resetTimer();
 });
 

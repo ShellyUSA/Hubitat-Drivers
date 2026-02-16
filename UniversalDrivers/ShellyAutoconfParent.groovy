@@ -263,7 +263,7 @@ private void reconcileChildDevices() {
 
 /**
  * Parses incoming LAN messages from the Shelly device.
- * Routes POST notifications (script) and GET notifications (webhook) to children.
+ * Routes script notifications and webhook notifications to children.
  *
  * @param description Raw LAN message description string from Hubitat
  */
@@ -281,17 +281,17 @@ void parse(String description) {
       return
     }
 
-    // Try POST body first (script notifications with dst field)
+    // Try JSON body first (legacy script notifications with dst field)
     if (msg?.body) {
       try {
         def json = new groovy.json.JsonSlurper().parseText(msg.body)
         if (json?.dst && json?.result) {
-          logDebug("POST notification dst=${json.dst}")
-          logTrace("POST result: ${json.result}")
-          routePostNotification(json.dst as String, json)
+          logDebug("Script notification dst=${json.dst}")
+          logTrace("Script result: ${json.result}")
+          routeScriptNotification(json.dst as String, json)
           return
         }
-        logTrace("POST body parsed but no dst/result")
+        logTrace("Body parsed but no dst/result")
       } catch (Exception e) {
         // Body might be empty or not JSON — fall through to GET parsing
       }
@@ -398,17 +398,17 @@ private Map parseWebhookQueryParams(Map msg) {
 }
 
 /**
- * Routes POST script notifications to appropriate children based on component ID.
+ * Routes script notifications to appropriate children based on component ID.
  *
  * @param dst Destination type (switchmon, powermon, covermon, input_push, etc.)
  * @param json Full JSON payload from script notification
  */
-private void routePostNotification(String dst, Map json) {
-  logDebug("routePostNotification: dst=${dst}")
+private void routeScriptNotification(String dst, Map json) {
+  logDebug("routeScriptNotification: dst=${dst}")
 
   Map result = json?.result
   if (!result) {
-    logWarn('routePostNotification: No result data in JSON')
+    logWarn('routeScriptNotification: No result data in JSON')
     return
   }
 
@@ -492,8 +492,9 @@ private String dstToComponentType(String dst) {
   if (dst.startsWith('cover_')) { return 'cover' }
   if (dst.startsWith('smoke_')) { return 'smoke' }
   switch (dst) {
-    case 'switchmon': return 'switch'  // legacy
-    case 'covermon': return 'cover'    // legacy
+    case 'switchmon': return 'switch'
+    case 'covermon': return 'cover'
+    case 'lightmon': return 'light'
     default: return dst
   }
 }
@@ -545,7 +546,7 @@ void distributeStatus(Map status) {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Builds events from POST notification or status data.
+ * Builds events from script notification or status data.
  *
  * @param dst Destination type (switchmon, powermon, covermon, input_push, etc.)
  * @param baseType Component base type (switch, cover, light, input)
@@ -602,6 +603,18 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
     case 'input_long':
       events.add([name: 'held', value: 1, isStateChange: true,
         descriptionText: 'Button 1 was held'])
+      break
+
+    case 'lightmon':
+      if (data.output != null) {
+        String switchState = data.output ? 'on' : 'off'
+        events.add([name: 'switch', value: switchState,
+          descriptionText: "Switch turned ${switchState}"])
+      }
+      if (data.brightness != null) {
+        events.add([name: 'level', value: data.brightness as Integer, unit: '%',
+          descriptionText: "Level is ${data.brightness}%"])
+      }
       break
   }
 
@@ -696,6 +709,19 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       }
       if (params.pos != null) {
         events.add([name: 'position', value: params.pos as Integer, unit: '%'])
+      }
+      break
+
+    // Light monitor (uses params.output and params.brightness)
+    case 'lightmon':
+      if (params.output != null) {
+        String switchState = params.output == 'true' ? 'on' : 'off'
+        events.add([name: 'switch', value: switchState,
+          descriptionText: "Switch turned ${switchState}"])
+      }
+      if (params.brightness != null) {
+        events.add([name: 'level', value: params.brightness as Integer, unit: '%',
+          descriptionText: "Level is ${params.brightness}%"])
       }
       break
 

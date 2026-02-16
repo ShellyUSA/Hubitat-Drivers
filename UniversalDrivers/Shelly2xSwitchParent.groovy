@@ -200,13 +200,13 @@ void parse(String description) {
         Map result = json?.result as Map
 
         if (result && dst) {
-          logDebug("POST notification dst=${dst}")
-          logTrace("POST result keys: ${result.keySet()}, data: ${result}")
-          routePostNotification(dst, result)
+          logDebug("Script notification dst=${dst}")
+          logTrace("Script result keys: ${result.keySet()}, data: ${result}")
+          routeScriptNotification(dst, result)
           processAggregation(dst, json)
           return
         }
-        logTrace("POST body parsed but no dst/result: dst=${dst}, result=${result}")
+        logTrace("Body parsed but no dst/result: dst=${dst}, result=${result}")
       } catch (Exception jsonEx) {
         logDebug('Body not JSON, trying GET params')
       }
@@ -226,7 +226,7 @@ void parse(String description) {
   }
 }
 
-private void routePostNotification(String dst, Map result) {
+private void routeScriptNotification(String dst, Map result) {
   result.each { key, value ->
     if (!(value instanceof Map)) { return }
     String keyStr = key.toString()

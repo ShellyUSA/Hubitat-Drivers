@@ -93,13 +93,13 @@ void parse(String description) {
       return
     }
 
-    // Try POST JSON body first (script notifications like powermonitoring.js)
+    // Try JSON body first (legacy script notifications)
     if (msg?.body) {
       try {
         def json = new groovy.json.JsonSlurper().parseText(msg.body)
         String dst = json?.dst as String
-        logDebug("POST notification dst=${dst}")
-        logTrace("POST body: ${json}")
+        logDebug("Script notification dst=${dst}")
+        logTrace("Script notification body: ${json}")
 
         if (dst == 'covermon') { parseCovermon(json) }
         else if (dst == 'temperature') { parseTemperature(json) }

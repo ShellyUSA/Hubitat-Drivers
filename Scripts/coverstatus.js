@@ -91,28 +91,20 @@ function getCoverId(comp, fallbackId) {
   return 0;
 }
 
-// Send cover state for a single component
-function postCoverState(comp, id, state, currentPos, apower, voltage, current, aenergy) {
-  let update = { id: id };
-  if (state !== undefined && state !== null) update.state = state;
-  if (currentPos !== undefined && currentPos !== null) update.current_pos = currentPos;
-  if (apower !== undefined && apower !== null) update.apower = apower;
-  if (voltage !== undefined && voltage !== null) update.voltage = voltage;
-  if (current !== undefined && current !== null) update.current = current;
-  if (aenergy !== undefined && aenergy !== null) update.aenergy = aenergy;
+// Send cover state for a single component via GET
+function sendCoverReport(id, state, currentPos) {
+  let url =
+    REMOTE_URL +
+    "/webhook/covermon/" +
+    JSON.stringify(id) +
+    "?comp=cover";
+  if (state !== undefined && state !== null) url += "&state=" + state;
+  if (currentPos !== undefined && currentPos !== null)
+    url += "&pos=" + JSON.stringify(currentPos);
 
-  let result = {};
-  result[comp] = update;
+  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
 
-  let body = JSON.stringify({ dst: "covermon", result: result });
-
-  Shelly.call(
-    "HTTP.POST",
-    { url: REMOTE_URL, body: body, content_type: "application/json" },
-    onHTTPResponse,
-  );
-
-  print("Reported:", body);
+  print("Reported:", url);
 }
 
 // Reset the heartbeat timer with a new random interval
@@ -140,8 +132,7 @@ function sendHeartbeat() {
         let cv = res[k];
         if (cv !== undefined && cv !== null) {
           let id = getCoverId(k, cv.id);
-          let ae = cv.aenergy !== undefined ? cv.aenergy : null;
-          postCoverState(k, id, cv.state, cv.current_pos, cv.apower, cv.voltage, cv.current, ae);
+          sendCoverReport(id, cv.state, cv.current_pos);
           found = true;
         }
       }
@@ -167,7 +158,7 @@ Shelly.addStatusHandler(function (status) {
   // Report on state change or position change
   if (delta.state !== undefined || delta.current_pos !== undefined) {
     let id = getCoverId(comp, status.id);
-    postCoverState(comp, id, delta.state, delta.current_pos, delta.apower, delta.voltage, delta.current, delta.aenergy);
+    sendCoverReport(id, delta.state, delta.current_pos);
     resetTimer();
   }
 });

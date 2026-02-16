@@ -172,7 +172,7 @@ private void reconcileChildDevices() {
 
 /**
  * Parses incoming LAN messages from the Shelly device.
- * Routes POST notifications (script) and GET notifications (webhook) to appropriate handlers.
+ * Routes script notifications and webhook notifications to appropriate handlers.
  * Sends events directly to parent device (no children for single cover).
  *
  * @param description Raw LAN message description string from Hubitat
@@ -191,17 +191,17 @@ void parse(String description) {
       return
     }
 
-    // Try POST body first (script notifications with dst field)
+    // Try JSON body first (legacy script notifications with dst field)
     if (msg?.body) {
       try {
         def json = new groovy.json.JsonSlurper().parseText(msg.body)
         if (json?.dst && json?.result) {
-          logDebug("POST notification dst=${json.dst}")
-          logTrace("POST result: ${json.result}")
-          routePostNotification(json.dst as String, json)
+          logDebug("Script notification dst=${json.dst}")
+          logTrace("Script notification result: ${json.result}")
+          routeScriptNotification(json.dst as String, json)
           return
         }
-        logTrace("POST body parsed but no dst/result")
+        logTrace("JSON body parsed but no dst/result")
       } catch (Exception e) {
         // Body might be empty or not JSON — fall through to GET parsing
       }
@@ -308,14 +308,14 @@ private Map parseWebhookQueryParams(Map msg) {
 }
 
 /**
- * Routes POST script notifications to appropriate parsers based on dst field.
+ * Routes script notifications to appropriate parsers based on dst field.
  * Sends events directly to parent device (no children for single cover).
  *
  * @param dst Destination type (covermon, powermon, temperature)
  * @param json Full JSON payload from script notification
  */
-private void routePostNotification(String dst, Map json) {
-  logDebug("routePostNotification: dst=${dst}")
+private void routeScriptNotification(String dst, Map json) {
+  logDebug("routeScriptNotification: dst=${dst}")
 
   switch (dst) {
     case 'covermon':

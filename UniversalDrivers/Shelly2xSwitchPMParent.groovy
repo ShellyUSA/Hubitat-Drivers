@@ -217,7 +217,7 @@ void parse(String description) {
       return
     }
 
-    // Try POST body (script notifications)
+    // Try JSON body (legacy script notifications)
     if (msg?.body) {
       try {
         def json = new groovy.json.JsonSlurper().parseText(msg.body)
@@ -225,13 +225,13 @@ void parse(String description) {
         Map result = json?.result as Map
 
         if (result && dst) {
-          logDebug("POST notification dst=${dst}")
-          logTrace("POST result keys: ${result.keySet()}, data: ${result}")
-          routePostNotification(dst, result)
+          logDebug("Script notification dst=${dst}")
+          logTrace("Script notification result keys: ${result.keySet()}, data: ${result}")
+          routeScriptNotification(dst, result)
           processAggregation(dst, json)
           return
         }
-        logTrace("POST body parsed but no dst/result: dst=${dst}, result=${result}")
+        logTrace("Script notification body parsed but no dst/result: dst=${dst}, result=${result}")
       } catch (Exception jsonEx) {
         logDebug('Body not JSON, trying GET params')
       }
@@ -254,9 +254,9 @@ void parse(String description) {
 }
 
 /**
- * Routes POST notification to children and updates aggregates.
+ * Routes script notification to children and updates aggregates.
  */
-private void routePostNotification(String dst, Map result) {
+private void routeScriptNotification(String dst, Map result) {
   result.each { key, value ->
     if (!(value instanceof Map)) { return }
     String keyStr = key.toString()
@@ -459,7 +459,7 @@ private Map parseWebhookQueryParams(Map msg) {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Builds events from POST notification data.
+ * Builds events from script notification data.
  */
 private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
   List<Map> events = []
@@ -652,7 +652,7 @@ void off() {
 }
 
 /**
- * Processes aggregation from POST notifications.
+ * Processes aggregation from script notifications.
  */
 private void processAggregation(String dst, Map json) {
   if (dst == 'switchmon') { parseSwitchmon(json) }

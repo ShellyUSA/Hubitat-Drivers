@@ -92,24 +92,21 @@ function getLightId(comp, fallbackId) {
   return 0;
 }
 
-// Send light state for a single component
-function postLightState(comp, id, output, brightness) {
-  let update = { id: id };
-  if (output !== undefined && output !== null) update.output = output;
-  if (brightness !== undefined && brightness !== null) update.brightness = brightness;
+// Send light state for a single component via GET
+function sendLightReport(id, output, brightness) {
+  let url =
+    REMOTE_URL +
+    "/webhook/lightmon/" +
+    JSON.stringify(id) +
+    "?comp=light";
+  if (output !== undefined && output !== null)
+    url += "&output=" + JSON.stringify(output);
+  if (brightness !== undefined && brightness !== null)
+    url += "&brightness=" + JSON.stringify(brightness);
 
-  let result = {};
-  result[comp] = update;
+  Shelly.call("HTTP.GET", { url: url }, onHTTPResponse);
 
-  let body = JSON.stringify({ dst: "lightmon", result: result });
-
-  Shelly.call(
-    "HTTP.POST",
-    { url: REMOTE_URL, body: body, content_type: "application/json" },
-    onHTTPResponse,
-  );
-
-  print("Reported:", body);
+  print("Reported:", url);
 }
 
 // Reset the heartbeat timer with a new random interval
@@ -137,7 +134,7 @@ function sendHeartbeat() {
         let lt = res[k];
         if (lt !== undefined && lt !== null && typeof lt.output === "boolean") {
           let id = getLightId(k, lt.id);
-          postLightState(k, id, lt.output, lt.brightness);
+          sendLightReport(id, lt.output, lt.brightness);
           found = true;
         }
       }
@@ -163,7 +160,7 @@ Shelly.addStatusHandler(function (status) {
   // Report on output change or brightness change
   if (typeof delta.output === "boolean" || typeof delta.brightness === "number") {
     let id = getLightId(comp, status.id);
-    postLightState(comp, id, delta.output, delta.brightness);
+    sendLightReport(id, delta.output, delta.brightness);
     resetTimer();
   }
 });
@@ -182,7 +179,7 @@ Shelly.addEventHandler(function (event) {
       ? event.component
       : "light:" + JSON.stringify(getLightId(null, event.id));
   let id = getLightId(comp, event.id);
-  postLightState(comp, id, event.info.output, event.info.brightness);
+  sendLightReport(id, event.info.output, event.info.brightness);
   resetTimer();
 });
 

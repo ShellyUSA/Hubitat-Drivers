@@ -24,13 +24,13 @@ void parse(String description) {
       return
     }
 
-    // Try POST JSON body first (script notifications like powermonitoring.js)
+    // Try JSON body first (legacy script notifications)
     if (msg?.body) {
       try {
         def json = new groovy.json.JsonSlurper().parseText(msg.body)
         String dst = json?.dst as String
-        logDebug("POST notification dst=${dst}")
-        logTrace("POST body: ${json}")
+        logDebug("Script notification dst=${dst}")
+        logTrace("Script notification body: ${json}")
 
         if (dst == 'switchmon') { parseSwitchmon(json) }
         else if (dst == 'covermon') { parseCovermon(json) }
@@ -344,7 +344,23 @@ private void routeWebhookParams(Map params) {
         descriptionText: 'Button 1 was held')
       break
 
-    // Power monitoring via GET (from powermonitoring.js)
+    // Light monitoring (from lightstatus.js)
+    case 'lightmon':
+      if (params.output != null) {
+        String switchState = params.output == 'true' ? 'on' : 'off'
+        sendEvent(name: 'switch', value: switchState,
+          descriptionText: "Switch turned ${switchState}")
+        logInfo("Light state changed to: ${switchState}")
+      }
+      if (params.brightness != null) {
+        Integer brightness = params.brightness as Integer
+        sendEvent(name: 'level', value: brightness, unit: '%',
+          descriptionText: "Level is ${brightness}%")
+        logDebug("Light brightness: ${brightness}%")
+      }
+      break
+
+    // Power monitoring (from powermonitoring.js)
     case 'powermon':
       if (params.voltage != null) {
         BigDecimal voltage = params.voltage as BigDecimal
