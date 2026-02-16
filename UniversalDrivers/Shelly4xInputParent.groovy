@@ -138,7 +138,7 @@ private void reconcileChildDevices() {
   // Build set of DNIs that SHOULD exist
   Set<String> desiredDnis = [] as Set
   for (int i = 0; i < inputCount; i++) {
-    desiredDnis.add("${device.deviceNetworkId}-input-${i}")
+    desiredDnis.add("${device.deviceNetworkId}-input-${i}".toString())
   }
 
   // Build set of DNIs that currently exist

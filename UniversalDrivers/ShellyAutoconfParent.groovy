@@ -138,7 +138,7 @@ private void reconcileChildDevices() {
   components.each { String comp ->
     String baseType = comp.contains(':') ? comp.split(':')[0] : comp
     Integer compId = comp.contains(':') ? (comp.split(':')[1] as Integer) : 0
-    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}")
+    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
   }
 
   // Build set of DNIs that currently exist

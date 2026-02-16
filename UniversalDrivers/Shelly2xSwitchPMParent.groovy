@@ -134,7 +134,7 @@ void reconcileChildDevices() {
     Integer compId = comp.split(':')[1] as Integer
     if (baseType == 'input' && inputCount <= 1) { return }
     if (!['switch', 'input'].contains(baseType)) { return }
-    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}")
+    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
   }
 
   // Build set of DNIs that currently exist
