@@ -205,7 +205,8 @@ void reconcileChildDevices() {
  * Receives LAN messages, parses locally, routes to children, updates aggregates.
  */
 void parse(String description) {
-  logTrace('parse() received message')
+  logTrace('parse() received message', ['description': description])
+  logTrace('parse() decoded', ['decoded': parseLanMessage(description)])
 
   // Diagnostic: log raw description to see if query params survive at this level
   if (shouldLogLevel('trace') && description?.contains('powermon')) {
