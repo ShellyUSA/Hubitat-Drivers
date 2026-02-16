@@ -9,6 +9,16 @@ Purpose: a concise set of rules for Claude-style agents working on this repo.
 
 If you can't validate automatically, create a draft PR and request a human with access to a Hubitat test hub.
 
+## Active Codebase Scope - CRITICAL
+
+All future development work is scoped to:
+
+- **App:** `Apps/ShellyDeviceManager.groovy`
+- **Drivers:** `UniversalDrivers/` folder (all `.groovy` files and `component_driver.json`)
+- **Scripts:** `Scripts/` folder (JavaScript files for Hubitat dashboard tiles)
+
+**DO NOT modify or reference** `ShellyDriverLibrary/ShellyUSA.ShellyUSA_Driver_Library.groovy`. This is **legacy code** that is no longer maintained. Do not use it as a reference for new work, do not update it, and do not port patterns from it into the active codebase.
+
 ## Hubitat App UI Pages
 
 - Use `section()` without a title string for most sections. The `input` `title:` already labels the control — adding a section title like `section("Select Device")` creates redundant, cluttered text.
