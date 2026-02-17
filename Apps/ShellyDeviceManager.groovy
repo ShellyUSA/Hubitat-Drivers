@@ -37,6 +37,7 @@
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
     'Shelly Gen1 DW Sensor': 'UniversalDrivers/ShellyGen1DWSensor.groovy',
     'Shelly Gen1 Button': 'UniversalDrivers/ShellyGen1Button.groovy',
+    'Shelly Gen1 Motion Sensor': 'UniversalDrivers/ShellyGen1MotionSensor.groovy',
 
     // Gen 1 multi-component parent drivers
     'Shelly Gen1 2x Switch PM Parent': 'UniversalDrivers/ShellyGen1_2xSwitchPMParent.groovy',
@@ -2188,8 +2189,8 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
         case 'SHMOS-02':  // Motion v2
             actions.add([endpoint: 'settings/actions', param: 'report_url',
                 dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'motion_url',
-                dst: 'motion', cid: 0, name: 'Motion Detected', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings', param: 'motion_url',
+                dst: 'motion', cid: 0, name: 'Motion Detected', configType: 'component'])
             break
 
         default:
@@ -4763,11 +4764,12 @@ static Map inferGen1BatteryComponents(String typeCode) {
                 'input:0': [:],
                 'devicepower:0': [:]
             ]
-        case 'SHMOS-01':
+        case 'SHMOS-01':  // Motion sensors also report temperature from internal sensor
         case 'SHMOS-02':
             return [
                 'input:0': [:],
                 'lux:0': [:],
+                'temperature:0': [:],
                 'devicepower:0': [:]
             ]
         default:
@@ -4962,6 +4964,14 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
         normalized['contact:0'] = [open: sensorData.state == 'open']
     }
 
+    // Motion sensor (Shelly Motion, Motion 2)
+    if (sensorData?.containsKey('motion')) {
+        normalized['motion:0'] = [
+            motion: sensorData.motion,
+            active: sensorData.active
+        ]
+    }
+
     // Tilt sensor (DW2)
     if (sensorData?.containsKey('tilt')) {
         normalized['tilt:0'] = [value: sensorData.tilt]
@@ -5017,7 +5027,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Comprehensive set of recognized Shelly component types
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'input', 'pm1', 'em', 'em1',
         'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
-        'flood', 'contact', 'lux', 'tilt'] as Set
+        'flood', 'contact', 'lux', 'tilt', 'motion'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -5175,6 +5185,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
 
     // Input count needed by multiple checks below
     Integer inputCount = componentCounts['input'] ?: 0
+
+    // Gen 1 special types: Motion sensor (lux + battery, no actuators)
+    Boolean hasLux = componentCounts.containsKey('lux')
+    if (isGen1 && hasLux && hasBattery && foundActuators.size() == 0) {
+        return "${prefix} Motion Sensor"
+    }
 
     // Gen 1 special types: Button (single input + battery, no actuators)
     if (isGen1 && inputCount == 1 && hasBattery && foundActuators.size() == 0) {
