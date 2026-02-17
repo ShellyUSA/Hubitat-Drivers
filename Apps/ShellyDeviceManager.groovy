@@ -8148,6 +8148,25 @@ private static Map<String, String> resolveBleDriverInfo(Integer modelId, String 
     return null
 }
 
+/**
+ * Infers a Shelly BLE model ID from the BTHome data fields when explicit identification
+ * (manufacturer data, device_type_id, local_name) is unavailable.
+ * Some devices (e.g., RC Button 4) never include identification metadata in their
+ * advertisements, but their BTHome data structure is a reliable fingerprint.
+ *
+ * @param bleData Decoded BTHome data map (e.g., [battery: 100, button: [0,0,0,1]])
+ * @return Inferred numeric model ID, or null if data shape is unrecognizable
+ */
+private static Integer inferBleModelFromData(Map bleData) {
+    def buttonData = bleData?.button
+    if (buttonData instanceof List && ((List) buttonData).size() == 4) { return 0x0007 }
+    if (buttonData != null) { return 0x0001 }
+    if (bleData?.temperature != null && bleData?.humidity != null) { return 0x0003 }
+    if (bleData?.containsKey('motion')) { return 0x0005 }
+    if (bleData?.containsKey('window')) { return 0x0002 }
+    return null
+}
+
 // ─────────────────────────────────────────────────────────────
 // BLE Discovery State Management
 // ─────────────────────────────────────────────────────────────
@@ -8179,6 +8198,20 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
     Integer effectiveModelId = (entry.modelId != null) ? entry.modelId as Integer : null
     String effectiveModel = (entry.model ?: '') as String
     Map<String, String> driverInfo = resolveBleDriverInfo(effectiveModelId, effectiveModel)
+
+    // Layer 4: Infer model from BTHome data shape when explicit identification is unavailable.
+    // Some devices (e.g., RC Button 4) never include model metadata in advertisements.
+    if (!driverInfo) {
+        Integer inferredId = inferBleModelFromData(bleData)
+        if (inferredId != null) {
+            driverInfo = resolveBleDriverInfo(inferredId, null)
+            if (driverInfo) {
+                logDebug("BLE discovery: inferred model ID 0x${String.format('%04X', inferredId)} (${driverInfo.friendlyModel}) for ${mac} from BTHome data shape")
+                entry.modelId = inferredId
+            }
+        }
+    }
+
     if (driverInfo) {
         entry.friendlyModel = driverInfo.friendlyModel
         entry.driverName = driverInfo.driverName
