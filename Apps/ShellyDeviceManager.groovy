@@ -3712,8 +3712,8 @@ void processMdnsDiscovery() {
         List<Map<String,Object>> shellyEntries = getMDNSEntries('_shelly._tcp')
         List<Map<String,Object>> httpEntries = getMDNSEntries('_http._tcp')
 
-        logTrace("processMdnsDiscovery: _shelly._tcp raw=${shellyEntries}, _http._tcp raw=${httpEntries}")
-        logTrace("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries?.size() ?: 0} entries, _http._tcp returned ${httpEntries?.size() ?: 0} entries")
+        // logTrace("processMdnsDiscovery: _shelly._tcp raw=${shellyEntries}, _http._tcp raw=${httpEntries}")
+        // logTrace("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries?.size() ?: 0} entries, _http._tcp returned ${httpEntries?.size() ?: 0} entries")
 
         List allEntries = []
         if (shellyEntries) { allEntries.addAll(shellyEntries) }
@@ -6409,8 +6409,9 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
 
 /**
  * Uploads script code to a Shelly device in chunks to avoid 413 Payload Too Large errors.
- * Shelly Script.PutCode has a per-request size limit; this sends the code in 1024-byte chunks.
+ * Shelly Script.PutCode has a per-request size limit; this sends the code in 768-byte chunks.
  * First chunk uses append=false to overwrite, subsequent chunks use append=true.
+ * Includes inter-chunk delay and response validation for reliable transfers.
  *
  * @param scriptId The script ID on the device
  * @param code The full script source code
@@ -6418,21 +6419,35 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
  * @param hasAuth Whether authentication is required
  */
 private void uploadScriptInChunks(Integer scriptId, String code, String uri, Boolean hasAuth) {
-  Integer chunkSize = 1024
+  Integer chunkSize = 768
   Integer offset = 0
   Integer total = code.length()
   Boolean first = true
+  Integer chunkNum = 0
 
   while (offset < total) {
     Integer end = Math.min(offset + chunkSize, total) as Integer
     String chunk = code.substring(offset, end)
     LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, chunk, !first)
     if (hasAuth) { putCmd.auth = getAuth() }
-    postCommandSync(putCmd, uri)
+
+    LinkedHashMap result = postCommandSync(putCmd, uri)
+
+    // Check for Shelly RPC-level error in the response
+    if (result?.error) {
+      String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${result.error}"
+      logError(errMsg)
+      throw new Exception(errMsg)
+    }
+
+    chunkNum++
     first = false
     offset = end
+
+    // Brief pause between chunks to let the device flush writes
+    if (offset < total) { pauseExecution(150) }
   }
-  logDebug("Uploaded script id=${scriptId} in ${(int) Math.ceil(total / (double) chunkSize)} chunks (${total} bytes)")
+  logDebug("Uploaded script id=${scriptId} in ${chunkNum} chunks (${total} bytes)")
 }
 
 /**
@@ -8350,8 +8365,13 @@ private Boolean enableBleGateway(String ip) {
     }
 
     // Step 4: Upload script code (chunked)
-    Boolean hasAuthForUpload = hasAuth
-    uploadScriptInChunks(scriptId, scriptCode, uri, hasAuthForUpload)
+    try {
+        uploadScriptInChunks(scriptId, scriptCode, uri, hasAuth)
+    } catch (Exception e) {
+        logError("enableBleGateway: script upload failed on ${ip} — ${e.message}")
+        appendLog('error', "Failed to upload BLE script to ${ip}: ${e.message}")
+        return false
+    }
 
     // Step 5: Enable and start
     LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
