@@ -60,12 +60,16 @@
  * Used to auto-detect device type from BLE advertisements and select the correct driver.
  */
 @Field static final Map<String, Map<String, String>> BLE_MODEL_TO_DRIVER = [
-    'SBBT-002C': [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',      modelCode: 'SBBT-002C'],
-    'SBBT-004C': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Button 4',       modelCode: 'SBBT-004C'],
-    'SBDW-002C': [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
-    'SBHT-003C': [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
-    'SBMO-003Z': [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
-    'SBWS-002X': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBWS-002X'],
+    'SBBT-002C':   [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',       modelCode: 'SBBT-002C'],
+    'SBBT-004CEU': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBBT-004CEU'],
+    'SBBT-004CUS': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
+    'SBDW-002C':   [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
+    'SBHT-003C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
+    'SBHT-103C':   [driverName: null,                      friendlyModel: 'Shelly BLU H&T Display ZB', modelCode: 'SBHT-103C'],
+    'SBMO-003Z':   [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
+    'SBRC-005B':   [driverName: null,                      friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    'SBTR-001AEU': [driverName: null,                      friendlyModel: 'Shelly BLU TRV',            modelCode: 'SBTR-001AEU'],
+    'SBWS-90CM':   [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
 ]
 
 /**
@@ -73,13 +77,16 @@
  * to driver information. These numeric IDs are more reliable than local_name strings for identification.
  */
 @Field static final Map<Integer, Map<String, String>> BLE_MODEL_ID_TO_DRIVER = [
-    0x0001: [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',      modelCode: 'SBBT-002C'],
+    0x0001: [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',       modelCode: 'SBBT-002C'],
     0x0002: [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
     0x0003: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
     0x0005: [driverName: 'Shelly BLU Motion',       friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
-    // NOTE: 0x0006 and 0x0007 need hardware verification — not confirmed in public Shelly BTHome spec
-    0x0006: [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBWS-002X'],
-    0x0007: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Button 4',       modelCode: 'SBBT-004C'],
+    0x0006: [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBBT-004CEU'],
+    0x0007: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
+    0x0008: [driverName: null,                      friendlyModel: 'Shelly BLU TRV',            modelCode: 'SBTR-001AEU'],
+    0x0009: [driverName: null,                      friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    0x000B: [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
+    0x000C: [driverName: null,                      friendlyModel: 'Shelly BLU H&T Display ZB', modelCode: 'SBHT-103C'],
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -7905,6 +7912,13 @@ private static Map<String, String> resolveBleDriverInfo(Integer modelId, String 
     if (modelId != null) {
         Map<String, String> info = BLE_MODEL_ID_TO_DRIVER[modelId]
         if (info) { return info }
+        // BTHome device_type_id uses format (version << 8) | model_id (e.g., 0x0206 = v2 + model 6)
+        // Strip version byte and retry with base model ID
+        Integer baseId = modelId & 0xFF
+        if (baseId != modelId) {
+            info = BLE_MODEL_ID_TO_DRIVER[baseId]
+            if (info) { return info }
+        }
     }
     if (model) {
         Map<String, String> info = BLE_MODEL_TO_DRIVER[model]
@@ -8523,7 +8537,6 @@ private String renderBleTableMarkup() {
     str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
     str.append("<thead><tr>")
     str.append("<th>Bluetooth Device</th>")
-    str.append("<th>Model</th>")
     str.append("<th>MAC</th>")
     str.append("<th>RSSI</th>")
     str.append("<th>Battery</th>")
@@ -8535,8 +8548,9 @@ private String renderBleTableMarkup() {
     deviceList.each { Map entry ->
         String mac = entry.mac as String
         String model = (entry.modelCode ?: entry.model ?: '') as String
-        String modelDisplay = model ?: (entry.modelId != null ? "ID:0x${String.format('%04X', entry.modelId as Integer)}" : '—')
-        String friendlyModel = (entry.friendlyModel ?: modelDisplay) as String
+        String friendlyModel = (entry.friendlyModel as String) ?:
+            model ?:
+            (entry.modelId != null ? "ID:0x${String.format('%04X', entry.modelId as Integer)}" : mac)
         Integer rssi = entry.rssi as Integer
         Integer battery = entry.battery as Integer
         Long lastSeen = entry.lastSeen as Long ?: 0L
@@ -8598,7 +8612,6 @@ private String renderBleTableMarkup() {
 
         str.append("<tr>")
         str.append(deviceCell)
-        str.append("<td>${modelDisplay}</td>")
         str.append("<td style='font-family:monospace;font-size:12px'>${mac}</td>")
         str.append(rssiCell)
         str.append(batteryCell)

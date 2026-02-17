@@ -1,7 +1,7 @@
 /**
  * Shelly BLU Button 4
  *
- * Standalone driver for Shelly BLU Button 4 (SBBT-004C) Bluetooth 4-button remote.
+ * Standalone driver for Shelly BLU RC Button 4 (SBBT-004CUS) Bluetooth 4-button remote.
  * Four buttons with push, double-tap, triple-tap, hold, and release events.
  * Receives events from the Shelly Device Manager app via BLE gateway relay.
  *

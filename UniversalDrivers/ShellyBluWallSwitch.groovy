@@ -1,7 +1,7 @@
 /**
  * Shelly BLU Wall Switch 4
  *
- * Standalone driver for Shelly BLU Wall Switch 4 (SBWS-002X) Bluetooth
+ * Standalone driver for Shelly BLU Wall Switch 4 (SBBT-004CEU) Bluetooth
  * wall switch. Four buttons with push, double-tap, triple-tap, hold, and
  * release events. Receives events from the Shelly Device Manager app
  * via BLE gateway relay.

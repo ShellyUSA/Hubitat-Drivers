@@ -310,13 +310,6 @@ function BLEScanCallback(event, result) {
     modelId = decoded.device_type_id;
   }
 
-  // Diagnostic: log identification layer results for first packet per MAC
-  print("BLE ID:", mac,
-    "advData=" + (hasAdvData ? "yes(" + result.advData.length + "b)" : "no"),
-    "dtid=" + (hasDTID ? decoded.device_type_id : "no"),
-    "mfId=" + modelId,
-    "ln=" + (typeof result.local_name === "string" ? result.local_name : ""));
-
   // Send numeric model ID if found
   if (modelId >= 0) {
     body.modelId = modelId;
