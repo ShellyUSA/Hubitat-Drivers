@@ -42,6 +42,7 @@ BTH[0x2e] = ["humidity", DT_U8, 0];
 BTH[0x3a] = ["button", DT_U8, 0];
 BTH[0x3f] = ["rotation", DT_I16, 0.1];
 BTH[0x45] = ["temperature", DT_I16, 0.1];
+BTH[0xF0] = ["device_type_id", DT_U16, 0];
 
 // === Internal state ===
 // Per-MAC last packet ID for deduplication
@@ -193,6 +194,45 @@ function decodeBTHome(buffer) {
   return result;
 }
 
+// === Shelly Manufacturer Data Parser ===
+let SHELLY_MFID = 0x0BA9;
+
+// Block type → payload size (bytes)
+let SHELLY_TLV_SIZES = {};
+SHELLY_TLV_SIZES[0x01] = 2;   // flags
+SHELLY_TLV_SIZES[0x0A] = 6;   // MAC address
+SHELLY_TLV_SIZES[0x0B] = 2;   // model ID (uint16 LE)
+
+/**
+ * Extract Shelly numeric model ID from BLE manufacturer-specific data.
+ * Parses TLV blocks for type 0x0B (model ID).
+ * Returns -1 if not found or API not available.
+ */
+function getShellyModelId(advData) {
+  if (typeof advData !== "string" || advData.length === 0) return -1;
+  if (typeof BLE === "undefined" || typeof BLE.GAP === "undefined") return -1;
+  if (typeof BLE.GAP.parseManufacturerDataByVendor !== "function") return -1;
+
+  let mfData = BLE.GAP.parseManufacturerDataByVendor(advData, SHELLY_MFID);
+  if (typeof mfData !== "string" || mfData.length === 0) return -1;
+
+  let pos = 0;
+  while (pos < mfData.length) {
+    let blockType = mfData.at(pos);
+    pos = pos + 1;
+    let blockSize = SHELLY_TLV_SIZES[blockType];
+    // Break on unknown type: without knowing its size we cannot safely skip it.
+    // Falls back to BTHome device_type_id or local_name identification layers.
+    if (typeof blockSize === "undefined") break;
+    if (pos + blockSize > mfData.length) break;
+    if (blockType === 0x0B && blockSize === 2) {
+      return 0xFFFF & ((mfData.at(pos + 1) << 8) | mfData.at(pos));
+    }
+    pos = pos + blockSize;
+  }
+  return -1;
+}
+
 // === Dedup: check if pid is new for this MAC ===
 function isNewPid(mac, pid) {
   if (typeof lastPids[mac] === "undefined") {
@@ -255,7 +295,25 @@ function BLEScanCallback(event, result) {
     mac: mac,
   };
 
-  // Add model from local_name if available
+  // === Model identification (priority: mfData > BTHome device_type_id > local_name) ===
+  let modelId = -1;
+
+  // Layer 1: Manufacturer data (most reliable)
+  if (typeof result.advData === "string" && result.advData.length > 0) {
+    modelId = getShellyModelId(result.advData);
+  }
+
+  // Layer 2: BTHome device_type_id
+  if (modelId < 0 && typeof decoded.device_type_id !== "undefined") {
+    modelId = decoded.device_type_id;
+  }
+
+  // Send numeric model ID if found
+  if (modelId >= 0) {
+    body.modelId = modelId;
+  }
+
+  // Also send local_name as string model (backward compat)
   if (typeof result.local_name === "string" && result.local_name.length > 0) {
     body.model = result.local_name;
   }
@@ -265,9 +323,9 @@ function BLEScanCallback(event, result) {
     body.rssi = result.rssi;
   }
 
-  // Copy all decoded BTHome fields (except pid which is already in body)
+  // Copy all decoded BTHome fields (except pid and device_type_id which are metadata)
   for (let key in decoded) {
-    if (key !== "pid") {
+    if (key !== "pid" && key !== "device_type_id") {
       body[key] = decoded[key];
     }
   }

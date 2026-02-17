@@ -60,12 +60,26 @@
  * Used to auto-detect device type from BLE advertisements and select the correct driver.
  */
 @Field static final Map<String, Map<String, String>> BLE_MODEL_TO_DRIVER = [
-    'SBBT-002C': [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1'],
-    'SBBT-004C': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Button 4'],
-    'SBDW-002C': [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window'],
-    'SBHT-003C': [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T'],
-    'SBMO-003Z': [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion'],
-    'SBWS-002X': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4'],
+    'SBBT-002C': [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',      modelCode: 'SBBT-002C'],
+    'SBBT-004C': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Button 4',       modelCode: 'SBBT-004C'],
+    'SBDW-002C': [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
+    'SBHT-003C': [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
+    'SBMO-003Z': [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
+    'SBWS-002X': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBWS-002X'],
+]
+
+/**
+ * Maps Shelly BLE numeric model IDs (from manufacturer data block type 0x0B or BTHome device_type_id 0xF0)
+ * to driver information. These numeric IDs are more reliable than local_name strings for identification.
+ */
+@Field static final Map<Integer, Map<String, String>> BLE_MODEL_ID_TO_DRIVER = [
+    0x0001: [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',      modelCode: 'SBBT-002C'],
+    0x0002: [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
+    0x0003: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
+    0x0005: [driverName: 'Shelly BLU Motion',       friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
+    // NOTE: 0x0006 and 0x0007 need hardware verification — not confirmed in public Shelly BTHome spec
+    0x0006: [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBWS-002X'],
+    0x0007: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Button 4',       modelCode: 'SBBT-004C'],
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -199,7 +213,7 @@ Map mainPage() {
     // Requirement: scanning should start (or restart) when app page is opened.
     Integer remainingSecs = getRemainingDiscoverySeconds()
     if (!state.discoveryRunning || remainingSecs <= 0) {
-        startDiscovery(true)
+        startDiscovery(false)
         remainingSecs = getRemainingDiscoverySeconds()
     }
 
@@ -274,7 +288,7 @@ Map mainPage() {
             }
         }
 
-        section("Bluetooth Devices", hideable: true) {
+        section() {
             paragraph displayBleDeviceTable()
         }
 
@@ -282,9 +296,6 @@ Map mainPage() {
             input name: 'enableAutoUpdate', type: 'bool', title: 'Enable auto-update',
                 description: 'Automatically checks for and installs app updates from GitHub daily at 3AM.',
                 defaultValue: true, submitOnChange: true
-            input name: 'enableAggressiveUpdate', type: 'bool', title: 'Aggressive auto-update (dev)',
-                description: 'Checks GitHub every minute for code changes on the current branch and auto-updates. For development use.',
-                defaultValue: false, submitOnChange: true
             input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
                 description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
                 defaultValue: true, submitOnChange: true
@@ -911,7 +922,7 @@ private String renderDeviceConfigTableMarkup() {
     StringBuilder str = new StringBuilder()
     str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
     str.append("<thead><tr>")
-    str.append("<th>Device</th>")
+    str.append("<th>WiFi Device</th>")
     str.append("<th>Label</th>")
     str.append("<th>IP</th>")
     str.append("<th>Created</th>")
@@ -3526,14 +3537,6 @@ void initialize() {
 
     // Schedule Gen 1 device polling if any Gen 1 devices exist
     scheduleGen1Polling()
-
-    // Aggressive auto-update: check every minute for branch changes
-    if (settings?.enableAggressiveUpdate == true) {
-        schedule('0 * * ? * *', 'aggressiveUpdateCheck')
-        logInfo("Aggressive auto-update enabled (every 60s from branch)")
-    } else {
-        unschedule('aggressiveUpdateCheck')
-    }
 
     // Schedule BLE presence check every 5 minutes (only when BLE is active)
     if (state.bleGateways || state.discoveredBleDevices) {
@@ -7835,10 +7838,11 @@ void handleBleRelay(def gatewayDevice, Map bleData) {
 
     Integer pid = bleData.pid != null ? bleData.pid as Integer : -1
     String model = bleData.model?.toString() ?: ''
+    Integer modelId = bleData.modelId != null ? bleData.modelId as Integer : null
     Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
     String gatewayName = gatewayDevice?.displayName ?: 'Unknown gateway'
 
-    logTrace("handleBleRelay: mac=${mac} pid=${pid} model=${model} rssi=${rssi} gateway=${gatewayName}")
+    logTrace("handleBleRelay: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName}")
 
     // Dedup by pid per MAC
     if (isBlePidDuplicate(mac, pid)) {
@@ -7847,7 +7851,7 @@ void handleBleRelay(def gatewayDevice, Map bleData) {
     }
 
     // Update discovery state
-    updateBleDiscoveryState(mac, model, rssi, gatewayName, bleData)
+    updateBleDiscoveryState(mac, model, modelId, rssi, gatewayName, bleData)
 
     // Route events to child device (if created)
     routeBleEventToChild(mac, bleData)
@@ -7885,6 +7889,31 @@ private Boolean isBlePidDuplicate(String mac, Integer pid) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// BLE Model Resolution
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Resolves BLE driver information using multiple identification layers.
+ * Priority: numeric model ID (from manufacturer data / BTHome) → string model code (from local_name).
+ *
+ * @param modelId Numeric model ID from manufacturer data or BTHome device_type_id (may be null)
+ * @param model String model code from BLE local_name (e.g., 'SBHT-003C', may be null/empty)
+ * @return Map with driverName, friendlyModel, and modelCode keys, or null if unresolved
+ */
+@CompileStatic
+private static Map<String, String> resolveBleDriverInfo(Integer modelId, String model) {
+    if (modelId != null) {
+        Map<String, String> info = BLE_MODEL_ID_TO_DRIVER[modelId]
+        if (info) { return info }
+    }
+    if (model) {
+        Map<String, String> info = BLE_MODEL_TO_DRIVER[model]
+        if (info) { return info }
+    }
+    return null
+}
+
+// ─────────────────────────────────────────────────────────────
 // BLE Discovery State Management
 // ─────────────────────────────────────────────────────────────
 
@@ -7892,27 +7921,35 @@ private Boolean isBlePidDuplicate(String mac, Integer pid) {
  * Updates the BLE discovery state for a device.
  * Tracks discovered BLE devices with their model, RSSI, last seen time,
  * gateway info, and whether a Hubitat child device has been created.
+ * Uses multi-layer model resolution: numeric model ID → string model code → existing entry data.
  *
  * @param mac BLE device MAC address (uppercase, no colons)
- * @param model BLE device model code (e.g., 'SBHT-003C')
+ * @param model BLE device model code from local_name (e.g., 'SBHT-003C')
+ * @param modelId Numeric model ID from manufacturer data or BTHome device_type_id (may be null)
  * @param rssi Signal strength in dBm
  * @param gatewayName Display name of the WiFi gateway device
  * @param bleData Full BLE data map (for extracting battery, etc.)
  */
-private void updateBleDiscoveryState(String mac, String model, Integer rssi, String gatewayName, Map bleData) {
+private void updateBleDiscoveryState(String mac, String model, Integer modelId, Integer rssi, String gatewayName, Map bleData) {
     Map discoveredBle = state.discoveredBleDevices ?: [:]
     String macKey = mac.toString()
 
     Map entry = (discoveredBle[macKey] ?: [:]) as Map
     entry.mac = mac
-    if (model) {
-        entry.model = model
-        Map driverInfo = BLE_MODEL_TO_DRIVER[model]
-        if (driverInfo) {
-            entry.friendlyModel = driverInfo.friendlyModel
-            entry.driverName = driverInfo.driverName
-        }
+    if (model) { entry.model = model }
+    if (modelId != null) { entry.modelId = modelId }
+
+    // Resolve driver info using accumulated entry data (sticky — persists across packets)
+    // Cast needed: state round-trips through JSON serialization, so types are not preserved
+    Integer effectiveModelId = (entry.modelId != null) ? entry.modelId as Integer : null
+    String effectiveModel = (entry.model ?: '') as String
+    Map<String, String> driverInfo = resolveBleDriverInfo(effectiveModelId, effectiveModel)
+    if (driverInfo) {
+        entry.friendlyModel = driverInfo.friendlyModel
+        entry.driverName = driverInfo.driverName
+        if (driverInfo.modelCode) { entry.modelCode = driverInfo.modelCode }
     }
+
     if (rssi != null) { entry.rssi = rssi }
     if (bleData.battery != null) { entry.battery = bleData.battery as Integer }
     entry.lastSeen = now()
@@ -7951,16 +7988,19 @@ private void createBleDevice(String mac) {
         return
     }
 
-    String model = bleInfo.model as String
-    if (!model || !BLE_MODEL_TO_DRIVER.containsKey(model)) {
-        logError("createBleDevice: unknown model '${model}' for MAC ${mac}")
+    Integer modelId = bleInfo.modelId != null ? bleInfo.modelId as Integer : null
+    String model = (bleInfo.model ?: '') as String
+    Map<String, String> driverInfo = resolveBleDriverInfo(modelId, model)
+
+    if (!driverInfo) {
+        logError("createBleDevice: unknown model '${model}' (modelId=${modelId}) for MAC ${mac}")
         appendLog('error', "Failed to create BLE device: unknown model for ${mac}")
         return
     }
 
-    Map driverInfo = BLE_MODEL_TO_DRIVER[model]
     String driverName = driverInfo.driverName
     String friendlyModel = driverInfo.friendlyModel
+    String bleModel = (driverInfo.modelCode ?: model) as String
     String driverNameWithVersion = "${driverName} v${APP_VERSION}".toString()
 
     // Check if device already exists
@@ -7987,7 +8027,7 @@ private void createBleDevice(String mac) {
         label: deviceLabel,
         data: [
             bleMac: mac,
-            bleModel: model,
+            bleModel: bleModel,
             shellyGen: 'ble'
         ]
     ]
@@ -8004,11 +8044,11 @@ private void createBleDevice(String mac) {
         Map deviceConfigs = state.deviceConfigs ?: [:]
         deviceConfigs[macKey] = [
             driverName: driverNameWithVersion,
-            model: model,
+            model: bleModel,
             friendlyModel: friendlyModel,
             gen: 'ble',
             isBleDevice: true,
-            storedAt: now()
+            storedAt: now(),
         ]
         state.deviceConfigs = deviceConfigs
 
@@ -8482,7 +8522,7 @@ private String renderBleTableMarkup() {
     StringBuilder str = new StringBuilder()
     str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
     str.append("<thead><tr>")
-    str.append("<th>Device</th>")
+    str.append("<th>Bluetooth Device</th>")
     str.append("<th>Model</th>")
     str.append("<th>MAC</th>")
     str.append("<th>RSSI</th>")
@@ -8494,8 +8534,9 @@ private String renderBleTableMarkup() {
 
     deviceList.each { Map entry ->
         String mac = entry.mac as String
-        String model = entry.model ?: '—'
-        String friendlyModel = entry.friendlyModel ?: model
+        String model = (entry.modelCode ?: entry.model ?: '') as String
+        String modelDisplay = model ?: (entry.modelId != null ? "ID:0x${String.format('%04X', entry.modelId as Integer)}" : '—')
+        String friendlyModel = (entry.friendlyModel ?: modelDisplay) as String
         Integer rssi = entry.rssi as Integer
         Integer battery = entry.battery as Integer
         Long lastSeen = entry.lastSeen as Long ?: 0L
@@ -8557,7 +8598,7 @@ private String renderBleTableMarkup() {
 
         str.append("<tr>")
         str.append(deviceCell)
-        str.append("<td>${model}</td>")
+        str.append("<td>${modelDisplay}</td>")
         str.append("<td style='font-family:monospace;font-size:12px'>${mac}</td>")
         str.append(rssiCell)
         str.append(batteryCell)
@@ -10543,37 +10584,6 @@ private String getAppVersion() { return APP_VERSION }
 // ═══════════════════════════════════════════════════════════════
 // ║  App Auto-Update                                            ║
 // ╚═══════════════════════════════════════════════════════════════╝
-
-/**
- * Aggressive dev-mode auto-update. Downloads the app source from the current
- * branch every minute, compares a SHA-256 hash to the last applied update,
- * and installs the new code if it changed.
- */
-void aggressiveUpdateCheck() {
-    String branch = GITHUB_BRANCH
-    String url = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Apps/ShellyDeviceManager.groovy"
-
-    String source = downloadFile(url)
-    if (!source) {
-        logDebug("Aggressive update: failed to download source from ${branch}")
-        return
-    }
-
-    String hash = java.security.MessageDigest.getInstance('SHA-256').digest(source.getBytes('UTF-8')).encodeHex().toString()
-    if (hash == state.lastAggressiveHash) {
-        return // no change
-    }
-
-    logInfo("Aggressive update: source changed on ${branch}, updating app code...")
-    Boolean success = updateAppCode(source)
-    if (success) {
-        state.lastAggressiveHash = hash
-        logInfo("Aggressive update: app code updated from ${branch}")
-        appendLog('info', "Dev auto-update applied from ${branch}")
-    } else {
-        logError("Aggressive update: failed to apply update")
-    }
-}
 
 /**
  * Checks for a newer version of this app on GitHub Releases and updates
