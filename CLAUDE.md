@@ -27,6 +27,30 @@ This applies to ALL Gen 1 sensor types that support `report_url`: H&T (`SHHT-1`)
 
 Use other action URLs (e.g., `flood_detected_url`, `open_url`, `motion_on`) that send simple HTTP requests without query parameters. For periodic sensor data, use polling via `GET /status`.
 
+## Webhook URL Format — Path Segments (No Query Parameters)
+
+**NEVER use query parameters (`?key=val&key2=val2`) in webhook URLs.** Hubitat silently strips everything after `?` on incoming HTTP requests to port 39501, so query parameter data is lost.
+
+Instead, encode all data as path segments in `/key/value` pairs:
+
+**Format:** `http://<hubIp>:39501/<dst>/<cid>[/<key1>/<val1>/<key2>/<val2>...]`
+
+**Examples:**
+- Switch (no data): `http://192.168.1.4:39501/switch_on/0`
+- Temperature: `http://192.168.1.4:39501/temperature/0/tC/${ev.tC}/tF/${ev.tF}`
+- With battery: `.../humidity/0/rh/${ev.rh}/battPct/${status["devicepower:0"].battery.percent}/battV/${status["devicepower:0"].battery.V}`
+
+**component_driver.json `urlParams` format:** Use `/` as both key-value and pair separators:
+- `"tC/${ev.tC}/tF/${ev.tF}"` (NOT `"tC=${ev.tC}&tF=${ev.tF}"`)
+- `"pos/${status[\"cover:__CID__\"].current_pos}"` (NOT `"pos=${status[...]}"`)
+
+**Parsing:** Drivers parse path segments in pairs starting after `dst`/`cid`:
+- `segments[0]` = dst, `segments[1]` = cid
+- `segments[2]` = key1, `segments[3]` = value1
+- `segments[4]` = key2, `segments[5]` = value2
+
+**Constraint:** All template values must be numeric (no `/` characters). This holds for all current values: temperature, humidity, battery %, voltage, power, position, lux, percent.
+
 ## Hubitat App UI Pages
 
 - Use `section()` without a title string for most sections. The `input` `title:` already labels the control — adding a section title like `section("Select Device")` creates redundant, cluttered text.

@@ -1914,11 +1914,11 @@ private void installRequiredActionsForIp(String ipAddress) {
         Integer cid = action.cid as Integer
         String urlParams = action.urlParams as String ?: ''
 
-        // Build webhook URL with routing info in path segments and template vars as query params
-        // Shelly firmware strips static query params but preserves template variables (${ev.*}, ${status[*]})
-        // Format: /<dst>/<cid>[?templateParams]
+        // Build webhook URL with all data encoded as path segments (no query params)
+        // Hubitat strips everything after ? on port 39501, so we use /key/value path pairs
+        // Format: /<dst>/<cid>[/<key>/<value>...]
         String hookUrl = "${baseUrl}/${action.dst}/${cid}"
-        if (urlParams) { hookUrl += "?${urlParams}" }
+        if (urlParams) { hookUrl += "/${urlParams}" }
 
         Map existing = existingHooks.find { Map h ->
             h.event == event && (h.cid as Integer) == cid
@@ -1931,8 +1931,8 @@ private void installRequiredActionsForIp(String ipAddress) {
             Boolean nameNeedsUpdate = !existingName?.startsWith('hubitat_sdm_')
             logDebug("Existing webhook check: name='${existingName}', urls=${urls}, enabled=${isEnabled}, nameNeedsUpdate=${nameNeedsUpdate}")
             if (urls?.any { it?.contains(hubIp) } && isEnabled && !nameNeedsUpdate) {
-                // Check if URL needs updating (must have /<dst>/<cid> path format)
-                Boolean urlNeedsUpdate = !urls?.any { String u -> u ==~ /.*:\d+\/[^\/]+\/\d+.*/ }
+                // Check if URL needs updating (must exactly match the expected hookUrl)
+                Boolean urlNeedsUpdate = !urls?.any { String u -> u == hookUrl }
                 logDebug("URL format check: urlNeedsUpdate=${urlNeedsUpdate}, target hookUrl=${hookUrl}")
                 if (!urlNeedsUpdate) {
                     logDebug("Webhook '${name}' already configured for ${event} cid=${cid}")
@@ -3334,12 +3334,12 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
         }
     }
 
-    // Build supplemental URL params (e.g., battery tokens for devices with devicepower)
-    String supplementalParams = ''
+    // Build supplemental URL path segments (e.g., battery tokens for devices with devicepower)
+    List<String> supplementalParts = []
     if (webhookDefs.supplementalTokenGroups) {
         (webhookDefs.supplementalTokenGroups as Map).each { String groupName, Map group ->
             if (deviceComponentTypes.contains(group.requiredComponent as String)) {
-                supplementalParams += '&' + group.urlParams
+                supplementalParts.add(group.urlParams as String)
             }
         }
     }
@@ -3382,9 +3382,10 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
 
             // Event passed all filters - add it to required actions
             String urlParams = (eventDef.urlParams as String).replace('__CID__', cid.toString())
-            if (supplementalParams) {
-                urlParams += supplementalParams
-            }
+            List<String> allParts = []
+            if (urlParams) { allParts.add(urlParams) }
+            allParts.addAll(supplementalParts)
+            urlParams = allParts.join('/')
 
             requiredActions.add([
                 event    : event,
@@ -11835,7 +11836,7 @@ private void handlePostWebhook(String parentDni, Map msg) {
  * @param msg The parsed LAN message map (no body)
  */
 private void handleGetWebhook(String parentDni, Map msg) {
-    Map params = parseWebhookQueryParams(msg)
+    Map params = parseWebhookPath(msg)
     if (params?.dst) {
         logDebug("componentParse: GET webhook dst=${params.dst}, cid=${params.cid}")
         processWebhookParams(parentDni, params)
@@ -12029,14 +12030,14 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
 }
 
 /**
- * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /switch_on/0).
+ * Parses webhook GET request path to extract routing and data from URL path segments.
+ * All data is encoded as path segments: /dst/cid[/key1/val1/key2/val2...].
  *
  * @param msg The parsed LAN message map from parseLanMessage()
- * @return Map with dst and cid keys, or null if not parseable
+ * @return Map with dst, cid, and any parsed data keys, or null if not parseable
  */
 @CompileStatic
-private Map parseWebhookQueryParams(Map msg) {
+private Map parseWebhookPath(Map msg) {
     String requestLine = null
 
     // Primary: search parsed headers Map for request line
@@ -12065,17 +12066,25 @@ private Map parseWebhookQueryParams(Map msg) {
     if (requestParts.length < 2) { return null }
     String pathAndQuery = requestParts[1]
 
-    // Strip leading slash and parse /<dst>/<cid>[?queryParams]
+    // Strip leading slash
     String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
     if (!webhookPath) { return null }
+
+    // Defensive: strip query string if somehow present
     int qMarkIdx = webhookPath.indexOf('?')
     if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
+
     String[] segments = webhookPath.split('/')
-    if (segments.length >= 2) {
-        return [dst: segments[0], cid: segments[1]]
+    if (segments.length < 2) { return null }
+
+    Map result = [dst: segments[0], cid: segments[1]]
+
+    // Parse key/value pairs from remaining path segments
+    for (int i = 2; i + 1 < segments.length; i += 2) {
+        result[segments[i]] = segments[i + 1]
     }
 
-    return null
+    return result
 }
 
 /**

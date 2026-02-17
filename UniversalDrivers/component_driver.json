@@ -2573,49 +2573,49 @@
       "cover.open": {
         "dst": "cover_open",
         "name": "hubitat_sdm_cover_open",
-        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos/${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.closed": {
         "dst": "cover_closed",
         "name": "hubitat_sdm_cover_closed",
-        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos/${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.stopped": {
         "dst": "cover_stopped",
         "name": "hubitat_sdm_cover_stopped",
-        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos/${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.opening": {
         "dst": "cover_opening",
         "name": "hubitat_sdm_cover_opening",
-        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos/${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.closing": {
         "dst": "cover_closing",
         "name": "hubitat_sdm_cover_closing",
-        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos/${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "cover.calibrating": {
         "dst": "cover_calibrating",
         "name": "hubitat_sdm_cover_calibrating",
-        "urlParams": "pos=${status[\"cover:__CID__\"].current_pos}",
+        "urlParams": "pos/${status[\"cover:__CID__\"].current_pos}",
         "shellyComponent": "cover"
       },
       "temperature.change": {
         "dst": "temperature",
         "name": "hubitat_sdm_temperature",
-        "urlParams": "tC=${ev.tC}&tF=${ev.tF}",
+        "urlParams": "tC/${ev.tC}/tF/${ev.tF}",
         "shellyComponent": "temperature"
       },
       "humidity.change": {
         "dst": "humidity",
         "name": "hubitat_sdm_humidity",
-        "urlParams": "rh=${ev.rh}",
+        "urlParams": "rh/${ev.rh}",
         "shellyComponent": "humidity"
       },
       "input.button_push": {
@@ -2645,19 +2645,19 @@
       "illuminance.change": {
         "dst": "illuminance",
         "name": "hubitat_sdm_illuminance",
-        "urlParams": "lux=${ev.lux}",
+        "urlParams": "lux/${ev.lux}",
         "shellyComponent": "illuminance"
       },
       "switch.active_power_change": {
         "dst": "powermon",
         "name": "hubitat_sdm_power_change",
-        "urlParams": "apower=${ev.apower}",
+        "urlParams": "apower/${ev.apower}",
         "shellyComponent": "switch"
       },
       "switch.active_power_measurement": {
         "dst": "powermon",
         "name": "hubitat_sdm_power_measurement",
-        "urlParams": "apower=${ev.apower}",
+        "urlParams": "apower/${ev.apower}",
         "shellyComponent": "switch"
       },
       "input.toggle_on": {
@@ -2681,20 +2681,20 @@
       "input.analog_measurement": {
         "dst": "input_analog",
         "name": "hubitat_sdm_input_analog_measurement",
-        "urlParams": "percent=${ev.percent}",
+        "urlParams": "percent/${ev.percent}",
         "shellyComponent": "input"
       },
       "input.analog_change": {
         "dst": "input_analog",
         "name": "hubitat_sdm_input_analog_change",
-        "urlParams": "percent=${ev.percent}",
+        "urlParams": "percent/${ev.percent}",
         "shellyComponent": "input"
       }
     },
     "supplementalTokenGroups": {
       "battery": {
         "requiredComponent": "devicepower",
-        "urlParams": "battPct=${status[\"devicepower:0\"].battery.percent}&battV=${status[\"devicepower:0\"].battery.V}"
+        "urlParams": "battPct/${status[\"devicepower:0\"].battery.percent}/battV/${status[\"devicepower:0\"].battery.V}"
       }
     },
     "skippedEvents": [

@@ -327,7 +327,7 @@ private void handlePostWebhook(Map msg) {
  * @param msg The parsed LAN message map (no body)
  */
 private void handleGetWebhook(Map msg) {
-  Map params = parseWebhookQueryParams(msg)
+  Map params = parseWebhookPath(msg)
   if (params?.dst) {
     logDebug("GET webhook dst=${params.dst}, cid=${params.cid}")
     logTrace("GET webhook params: ${params}")
@@ -347,7 +347,7 @@ private void handleGetWebhook(Map msg) {
  * @return Map with dst, cid, and any parsed query parameter keys, or null if not parseable
  */
 @CompileStatic
-private Map parseWebhookQueryParams(Map msg) {
+private Map parseWebhookPath(Map msg) {
   String requestLine = null
 
   // Primary: search parsed headers Map for request line
@@ -376,31 +376,22 @@ private Map parseWebhookQueryParams(Map msg) {
   if (requestParts.length < 2) { return null }
   String pathAndQuery = requestParts[1]
 
-  // Strip leading slash and separate path from query string
+  // Strip leading slash
   String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
   if (!webhookPath) { return null }
 
-  String queryString = null
+  // Defensive: strip query string if somehow present
   int qMarkIdx = webhookPath.indexOf('?')
-  if (qMarkIdx >= 0) {
-    queryString = webhookPath.substring(qMarkIdx + 1)
-    webhookPath = webhookPath.substring(0, qMarkIdx)
-  }
+  if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
 
   String[] segments = webhookPath.split('/')
   if (segments.length < 2) { return null }
 
   Map result = [dst: segments[0], cid: segments[1]]
 
-  // Parse query parameters (e.g., apower=150.5&comp=switch&battPct=85)
-  if (queryString) {
-    String[] pairs = queryString.split('&')
-    for (String pair : pairs) {
-      int eqIdx = pair.indexOf('=')
-      if (eqIdx > 0) {
-        result[pair.substring(0, eqIdx)] = pair.substring(eqIdx + 1)
-      }
-    }
+  // Parse key/value pairs from remaining path segments
+  for (int i = 2; i + 1 < segments.length; i += 2) {
+    result[segments[i]] = segments[i + 1]
   }
 
   return result
