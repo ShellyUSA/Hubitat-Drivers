@@ -13,7 +13,9 @@
 // ==========================================
 
 // === USER CONFIGURATION ===
-let REPORT_INTERVAL = 60; // Seconds between reports to Hubitat
+let DEFAULT_REPORT_INTERVAL = 60; // Fallback if KVS lookup fails
+let REPORT_INTERVAL = DEFAULT_REPORT_INTERVAL;
+let REPORT_INTERVAL_KVS_KEY = "hubitat_sdm_pm_ri"; // KVS key for dynamic report interval (seconds)
 
 // Hubitat KVS configuration
 let HUBITAT_KVS_KEY = "hubitat_sdm_ip"; // store only the IP (no protocol/port) in Shelly KVS
@@ -83,6 +85,38 @@ function fetchRemoteUrlFromKVS() {
         ")",
     );
   }
+}
+
+// Read report interval from Shelly KVS; update REPORT_INTERVAL then invoke optional callback.
+function fetchReportIntervalFromKVS(cb) {
+  try {
+    Shelly.call("KVS.Get", { key: REPORT_INTERVAL_KVS_KEY }, function (res, err, msg) {
+      if (err === 0 && res) {
+        let raw = null;
+        if (typeof res.value === "string") raw = res.value;
+        else if (typeof res.value === "number") raw = res.value;
+        else if (res.result && res.result.value !== undefined) raw = res.result.value;
+        if (raw !== null) {
+          let parsed = parseInt(raw, 10);
+          if (parsed > 0) {
+            if (parsed !== REPORT_INTERVAL) {
+              print("Report interval changed: " + JSON.stringify(REPORT_INTERVAL) + "s -> " + JSON.stringify(parsed) + "s");
+            }
+            REPORT_INTERVAL = parsed;
+          }
+        }
+      }
+      if (typeof cb === "function") cb();
+    });
+  } catch (e) {
+    print("KVS report interval fetch failed: " + e);
+    if (typeof cb === "function") cb();
+  }
+}
+
+// Schedule the next one-shot report timer using the current REPORT_INTERVAL
+function scheduleNextReport() {
+  Timer.set(REPORT_INTERVAL * 1000, false, sendReport);
 }
 
 // Compute average of a numeric array, rounded to 2 decimal places
@@ -314,10 +348,11 @@ function sendAllReports() {
   }
 }
 
-// Timer callback: fetch fresh status, merge with accumulated deltas, then report
+// Timer callback: fetch fresh status, merge with accumulated deltas, report, then reschedule
 function sendReport() {
   if (compKeys.length === 0) {
     print("No power events received yet");
+    fetchReportIntervalFromKVS(scheduleNextReport);
     return;
   }
 
@@ -329,6 +364,8 @@ function sendReport() {
     }
     // Send reports even if GetStatus failed — deltas may exist
     sendAllReports();
+    // Re-read interval from KVS (picks up user changes), then schedule next cycle
+    fetchReportIntervalFromKVS(scheduleNextReport);
   });
 }
 
@@ -407,15 +444,16 @@ function seedFromStatus() {
   });
 }
 
-// Initialize REMOTE_URL from KVS (async), seed from status, then start handlers/timer
+// Initialize REMOTE_URL and REPORT_INTERVAL from KVS (async), seed from status, then start
 fetchRemoteUrlFromKVS();
 seedFromStatus();
 Shelly.addStatusHandler(onStatus);
-Timer.set(REPORT_INTERVAL * 1000, true, sendReport);
+// Read interval from KVS, then schedule the first one-shot report timer
+fetchReportIntervalFromKVS(scheduleNextReport);
 
 print(
-  "Power monitor started: interval=" +
-    JSON.stringify(REPORT_INTERVAL) +
+  "Power monitor started: default_interval=" +
+    JSON.stringify(DEFAULT_REPORT_INTERVAL) +
     "s url=" +
     REMOTE_URL,
 );

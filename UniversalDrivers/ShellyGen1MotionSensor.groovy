@@ -24,6 +24,9 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER, unit:%
 
+    capability 'TamperAlert'
+    //Attributes: tamper - ENUM ["clear", "detected"]
+
     capability 'Initialize'
     //Commands: initialize()
 
@@ -38,9 +41,38 @@ metadata {
 }
 
 preferences {
+  // ── Hubitat-Side Settings ──
   input name: 'motionTimeout', type: 'number', title: 'Motion inactive timeout (seconds)',
-    description: 'Seconds after motion detected before setting inactive (0 = use device timeout)',
+    description: 'Hubitat-side timer. Seconds after motion before setting inactive (0 = use device timeout)',
     defaultValue: 60, range: '0..3600', required: true
+
+  // ── Motion Detection (synced to device) ──
+  input name: 'motionSensitivity', type: 'number',
+    title: 'Motion sensitivity (1\u2013256)',
+    description: 'PIR sensitivity \u2014 lower = more sensitive. Synced to/from device.',
+    range: '1..256', required: false
+  input name: 'motionBlindTimeMinutes', type: 'number',
+    title: 'Motion blind time (minutes)',
+    description: 'Cool-down between motion triggers. Synced to/from device.',
+    range: '0..60', required: false
+
+  // ── Tamper / Vibration (synced to device) ──
+  input name: 'tamperSensitivity', type: 'number',
+    title: 'Tamper/vibration sensitivity (0\u2013127)',
+    description: '0 = disabled, lower = more sensitive. Synced to/from device.',
+    range: '0..127', required: false
+
+  // ── Device Configuration (synced to device) ──
+  input name: 'ledStatusDisable', type: 'bool',
+    title: 'Disable LED status indicator',
+    description: 'Turn off the device status LED. Synced to/from device.',
+    defaultValue: false, required: false
+  input name: 'sleepTime', type: 'number',
+    title: 'Sleep/wake-up interval (seconds)',
+    description: 'How often device wakes to report. 0 = always awake. Synced to/from device.',
+    range: '0..86400', required: false
+
+  // ── Logging ──
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
@@ -60,6 +92,7 @@ void installed() {
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   initialize()
+  relayDeviceSettings()
 }
 
 /**
@@ -164,6 +197,19 @@ private void routeActionUrlCallback(Map params) {
       setMotionInactive()
       break
 
+    case 'tamper_alarm_on':
+      sendEvent(name: 'tamper', value: 'detected', isStateChange: true,
+        descriptionText: 'Tamper/vibration detected')
+      logInfo('Tamper/vibration detected')
+      parent?.componentRefresh(device)
+      break
+
+    case 'tamper_alarm_off':
+      sendEvent(name: 'tamper', value: 'clear', isStateChange: true,
+        descriptionText: 'Tamper/vibration cleared')
+      logInfo('Tamper/vibration cleared')
+      break
+
     case 'sensor_report':
       logInfo('Sensor wake-up report received — requesting status poll')
       parent?.componentRefresh(device)
@@ -190,6 +236,7 @@ void initialize() {
   logDebug('initialize() called')
   unschedule('setMotionInactive')
   sendEvent(name: 'motion', value: 'inactive', descriptionText: 'Initialized as inactive')
+  sendEvent(name: 'tamper', value: 'clear', descriptionText: 'Initialized as clear')
 }
 
 void configure() {
@@ -200,6 +247,37 @@ void configure() {
   }
   if (settings.motionTimeout == null) {
     device.updateSetting('motionTimeout', 60)
+  }
+  // Clear sync flag so next refresh re-reads settings from device
+  device.removeDataValue('gen1SettingsSynced')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Gathers device-side settings and sends them to the parent app for
+ * relay to the Shelly device via GET /settings.
+ * Only sends settings that have been configured (non-null).
+ */
+private void relayDeviceSettings() {
+  Map settingsMap = [:]
+  if (settings.motionSensitivity != null) {
+    settingsMap.motion_sensitivity = (settings.motionSensitivity as Integer).toString()
+  }
+  if (settings.motionBlindTimeMinutes != null) {
+    settingsMap.motion_blind_time_minutes = (settings.motionBlindTimeMinutes as Integer).toString()
+  }
+  if (settings.tamperSensitivity != null) {
+    settingsMap.tamper_sensitivity = (settings.tamperSensitivity as Integer).toString()
+  }
+  if (settings.ledStatusDisable != null) {
+    settingsMap.led_status_disable = settings.ledStatusDisable ? 'true' : 'false'
+  }
+  if (settings.sleepTime != null) {
+    settingsMap.sleep_time = (settings.sleepTime as Integer).toString()
+  }
+  if (settingsMap) {
+    logDebug("Relaying device settings to parent: ${settingsMap}")
+    parent?.componentUpdateGen1Settings(device, settingsMap)
   }
 }
 
@@ -297,6 +375,15 @@ void distributeStatus(Map status) {
         sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
           descriptionText: "Temperature is ${temp}°${scale}")
         logInfo("Temperature: ${temp}°${scale}")
+      }
+    } else if (key.startsWith('tamper:')) {
+      if (data.vibration == true) {
+        sendEvent(name: 'tamper', value: 'detected', isStateChange: true,
+          descriptionText: 'Tamper/vibration detected')
+        logInfo('Tamper/vibration detected')
+      } else if (data.vibration == false) {
+        sendEvent(name: 'tamper', value: 'clear',
+          descriptionText: 'Tamper/vibration cleared')
       }
     } else if (key.startsWith('devicepower:')) {
       if (data.battery != null) {

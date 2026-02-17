@@ -670,16 +670,20 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
 
     // Prepare device properties
     String shellyGen = (deviceInfo.gen ?: '2').toString()
-    Map deviceProps = [
-        name: deviceLabel,
-        label: deviceLabel,
-        data: [
+    Map dataMap = [
             ipAddress: ipKey,
             shellyModel: deviceInfo.model ?: 'Unknown',
             shellyId: deviceInfo.id ?: dni,
             shellyMac: deviceInfo.mac ?: '',
             shellyGen: shellyGen
-        ]
+    ]
+    if (deviceInfo.gen1Type) {
+        dataMap.gen1Type = deviceInfo.gen1Type.toString()
+    }
+    Map deviceProps = [
+        name: deviceLabel,
+        label: deviceLabel,
+        data: dataMap
     ]
 
     logInfo("════════════════════════════════════════════════════════════")
@@ -776,17 +780,21 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
 
     // Step 3: Create parent device
     String shellyGen = (deviceInfo.gen ?: '2').toString()
-    Map parentProps = [
-        name: baseLabel,
-        label: baseLabel,
-        data: [
+    Map dataMap = [
             ipAddress: ipKey,
             shellyModel: deviceInfo.model ?: 'Unknown',
             shellyId: deviceInfo.id ?: parentDni,
             shellyMac: deviceInfo.mac ?: '',
             shellyGen: shellyGen,
             isParentDevice: 'true'
-        ]
+    ]
+    if (deviceInfo.gen1Type) {
+        dataMap.gen1Type = deviceInfo.gen1Type.toString()
+    }
+    Map parentProps = [
+        name: baseLabel,
+        label: baseLabel,
+        data: dataMap
     ]
 
     try {
@@ -1288,18 +1296,23 @@ private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
     Integer created = entry.createdWebhookCount as Integer
     Integer enabled = entry.enabledWebhookCount as Integer
 
-    // Gen 1 devices: show required action URL count with install button
-    // (Gen 1 action URLs are installed but not individually verifiable without
-    // reading /settings from the device, so we show "reinit to install" style)
+    // Gen 1 devices: show action URL status from pre-computed created/enabled counts
     if (isGen1) {
         if (required == null || required == 0) {
             str.append("<td class='status-na'>n/a</td>")
             str.append("<td class='status-na'>n/a</td>")
         } else {
-            String installBtn = buttonLink("installActionUrls|${ip}",
-                "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
-            str.append("<td>${required} req'd ${installBtn}</td>")
-            str.append("<td class='status-na'>n/a</td>")
+            if (created == null) { created = 0 }
+            if (enabled == null) { enabled = 0 }
+            if (created >= required) {
+                str.append("<td class='status-ok'>${created}/${required}</td>")
+                str.append("<td class='status-ok'>${enabled}/${required}</td>")
+            } else {
+                String installBtn = buttonLink("installActionUrls|${ip}",
+                    "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+                str.append("<td class='status-error'>${created}/${required} ${installBtn}</td>")
+                str.append("<td class='status-error'>${enabled}/${required}</td>")
+            }
         }
         return str.toString()
     }
@@ -1497,14 +1510,20 @@ private Map buildDeviceStatusCacheEntry(String ip) {
     }
 
     // Webhook / action URL status (skip for uncreated devices)
-    if (childDevice && reachable && isGen1) {
-        // Gen 1: count required action URLs
+    if (childDevice && isGen1) {
+        // Gen 1: count required action URLs (uses state.discoveredShellys, no network call)
         List<Map> gen1Actions = getGen1RequiredActionUrls(ip)
         entry.requiredWebhookCount = gen1Actions.size()
-        // Gen 1 action URL verification requires reading /settings from the device,
-        // which is expensive for battery devices. For now, show required count only.
-        entry.createdWebhookCount = null
-        entry.enabledWebhookCount = null
+        // Check gen1ActionUrlsInstalled flag from device config
+        String dni = childDevice.deviceNetworkId
+        Map config = state.deviceConfigs?.get(dni) as Map
+        if (config?.gen1ActionUrlsInstalled == true) {
+            entry.createdWebhookCount = gen1Actions.size()
+            entry.enabledWebhookCount = gen1Actions.size()
+        } else {
+            entry.createdWebhookCount = 0
+            entry.enabledWebhookCount = 0
+        }
     } else if (childDevice && reachable) {
         // Gen 2/3: use RPC webhook list
         List<Map> requiredActions = getRequiredActionsForDevice(childDevice, reachable)
@@ -2331,6 +2350,10 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'motion_on', cid: 0, name: 'Motion On', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'motion_off',
                 dst: 'motion_off', cid: 0, name: 'Motion Off', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'tamper_alarm_on',
+                dst: 'tamper_alarm_on', cid: 0, name: 'Tamper On', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'tamper_alarm_off',
+                dst: 'tamper_alarm_off', cid: 0, name: 'Tamper Off', configType: 'actions', actionIndex: 0])
             break
 
         default:
@@ -2684,8 +2707,8 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
         config.childDnis = childDnis
     }
 
-    // Gen 1 battery devices: track action URL installation state
-    if (deviceInfo.gen?.toString() == '1' && config.hasBattery) {
+    // Gen 1 devices: track action URL installation state
+    if (deviceInfo.gen?.toString() == '1') {
         config.gen1ActionUrlsInstalled = false
     }
 
@@ -4374,6 +4397,55 @@ private void pollGen1DeviceStatus(String ipAddress) {
 }
 
 /**
+ * Reads /settings from a Gen 1 Motion sensor and updates driver preferences
+ * to reflect the actual device configuration. Sets {@code gen1SettingsSynced}
+ * data value on success so subsequent refreshes skip the extra HTTP call.
+ * Only applies to SHMOS-01 and SHMOS-02 devices.
+ *
+ * @param ipAddress The device IP address
+ * @param childDevice The child device whose preferences to sync
+ * @param gen1Type The resolved Gen 1 type code (avoids race with backfill)
+ */
+private void syncGen1MotionSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice) { return }
+    if (gen1Type != 'SHMOS-01' && gen1Type != 'SHMOS-02') { return }
+
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) { return }
+
+    try {
+        // Motion settings are nested under 'motion' object in the response
+        Map motionSettings = gen1Settings.motion as Map ?: [:]
+
+        if (motionSettings.sensitivity != null) {
+            childDevice.updateSetting('motionSensitivity',
+                [type: 'number', value: motionSettings.sensitivity as Integer])
+        }
+        if (motionSettings.blind_time_minutes != null) {
+            childDevice.updateSetting('motionBlindTimeMinutes',
+                [type: 'number', value: motionSettings.blind_time_minutes as Integer])
+        }
+        if (gen1Settings.tamper_sensitivity != null) {
+            childDevice.updateSetting('tamperSensitivity',
+                [type: 'number', value: gen1Settings.tamper_sensitivity as Integer])
+        }
+        if (gen1Settings.led_status_disable != null) {
+            childDevice.updateSetting('ledStatusDisable',
+                [type: 'bool', value: gen1Settings.led_status_disable as Boolean])
+        }
+        if (gen1Settings.sleep_time != null) {
+            childDevice.updateSetting('sleepTime',
+                [type: 'number', value: gen1Settings.sleep_time as Integer])
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 Motion settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1MotionSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
  * Polls all non-battery Gen 1 devices for current status.
  * Called on a schedule based on the user-configured Gen 1 polling interval.
  * Battery devices are skipped (they sleep and are polled on wake-up via action URL callbacks).
@@ -4908,8 +4980,9 @@ static Map inferGen1BatteryComponents(String typeCode) {
         case 'SHMOS-01':  // Motion sensors also report temperature from internal sensor
         case 'SHMOS-02':
             return [
-                'input:0': [:],
+                'motion:0': [:],
                 'lux:0': [:],
+                'tamper:0': [:],
                 'temperature:0': [:],
                 'devicepower:0': [:]
             ]
@@ -5111,6 +5184,11 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
             motion: sensorData.motion,
             active: sensorData.active
         ]
+    }
+
+    // Vibration / tamper sensor (Motion sensors)
+    if (sensorData?.containsKey('vibration')) {
+        normalized['tamper:0'] = [vibration: sensorData.vibration]
     }
 
     // Tilt sensor (DW2)
@@ -12464,11 +12542,24 @@ void componentRefresh(def childDevice) {
 
         // Gen 1 devices use REST polling instead of RPC status query
         if (isGen1Device(childDevice)) {
+            // Backfill gen1Type data value for devices created before this field was stored
+            String resolvedGen1Type = childDevice.getDataValue('gen1Type') ?: ''
+            if (!resolvedGen1Type) {
+                Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+                if (deviceInfo?.gen1Type) {
+                    resolvedGen1Type = deviceInfo.gen1Type.toString()
+                    childDevice.updateDataValue('gen1Type', resolvedGen1Type)
+                }
+            }
             // For battery devices: attempt pending action URL installation on wake-up
             if (isSleepyBatteryDevice(childDevice)) {
                 attemptGen1ActionUrlInstallOnWake(ipAddress)
             }
             pollGen1DeviceStatus(ipAddress)
+            // Sync device-side settings to driver preferences (once after creation)
+            if (!childDevice.getDataValue('gen1SettingsSynced')) {
+                syncGen1MotionSettings(ipAddress, childDevice, resolvedGen1Type)
+            }
             return
         }
 
@@ -12523,7 +12614,32 @@ void componentInitialize(def parentDevice) {
  */
 void componentConfigure(def parentDevice) {
     logDebug("componentConfigure() called from parent: ${parentDevice.displayName}")
-    // Configuration is handled during device creation
+    // Configuration is handled during device creation.
+    // Gen 1 Motion settings sync is triggered via componentRefresh
+    // when the gen1SettingsSynced flag is absent (cleared by driver configure()).
+}
+
+/**
+ * Receives device configuration settings from a Gen 1 driver and sends
+ * them to the physical device via GET /settings?key=value.
+ *
+ * @param childDevice The child device relaying its settings
+ * @param settingsMap Map of Gen 1 /settings query parameters
+ */
+void componentUpdateGen1Settings(def childDevice, Map settingsMap) {
+    if (!childDevice || !settingsMap) { return }
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("componentUpdateGen1Settings: no IP for ${childDevice.displayName}")
+        return
+    }
+    logInfo("Sending Gen 1 settings to ${childDevice.displayName} at ${ipAddress}: ${settingsMap}")
+    Map result = sendGen1Setting(ipAddress, 'settings', settingsMap)
+    if (result != null) {
+        logInfo("Gen 1 settings applied to ${childDevice.displayName}")
+    } else {
+        logWarn("Failed to apply Gen 1 settings to ${childDevice.displayName} — device may be unreachable")
+    }
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
