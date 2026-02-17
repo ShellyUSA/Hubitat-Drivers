@@ -20,15 +20,6 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER, unit:%
 
-    capability 'Initialize'
-    //Commands: initialize()
-
-    capability 'Configuration'
-    //Commands: configure()
-
-    capability 'Refresh'
-    //Commands: refresh()
-
     attribute 'lastUpdated', 'string'
   }
 }
@@ -45,14 +36,26 @@ preferences {
 // ║  Driver Lifecycle and Configuration                          ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+/**
+ * Called when driver is first installed on a device.
+ * Sets default log level if not already configured.
+ */
 void installed() {
   logDebug('installed() called')
-  initialize()
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
+/**
+ * Called when device settings are saved.
+ * Sets default log level if not already configured.
+ */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
 void parse(String description) {
@@ -167,30 +170,6 @@ private void routeActionUrlCallback(Map params) {
 
 
 
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  Initialize / Configure / Refresh Commands                   ║
-// ╚══════════════════════════════════════════════════════════════╝
-
-void initialize() {
-  logDebug('initialize() called')
-}
-
-void configure() {
-  logDebug('configure() called')
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-}
-
-void refresh() {
-  logDebug('refresh() called — note: battery device may be asleep')
-  parent?.componentRefresh(device)
-}
-
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  END Initialize / Configure / Refresh Commands               ║
-// ╚══════════════════════════════════════════════════════════════╝
 
 
 

@@ -26,15 +26,6 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER
 
-    capability 'Initialize'
-    //Commands: initialize()
-
-    capability 'Configuration'
-    //Commands: configure()
-
-    capability 'Refresh'
-    //Commands: refresh()
-
     attribute 'lastUpdated', 'string'
   }
 }
@@ -51,26 +42,30 @@ preferences {
 
 /**
  * Called when driver is first installed on a device.
- * Delegates to initialize() for initial setup.
+ * Sets default log level if not already configured.
  */
 void installed() {
-  logDebug("installed() called")
-  initialize()
+  logDebug('installed() called')
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
 /**
  * Called when device settings are saved.
- * Delegates to initialize() to apply updated configuration.
+ * Sets default log level if not already configured.
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
 /**
  * Parses incoming LAN messages from the Shelly device.
  * POST requests (from Shelly scripts) carry data in the JSON body.
- * GET requests (from Shelly Action Webhooks) carry sensor data in URL query params.
+ * GET requests (from Shelly Action Webhooks) carry sensor data as /key/value path segments.
  *
  * @param description Raw LAN message description string from Hubitat
  */
@@ -138,13 +133,13 @@ private void handleGetWebhook(Map msg) {
 }
 
 /**
- * Parses webhook GET request path and query string to extract routing and sensor data.
- * GET Action Webhooks carry routing in the path (e.g., /temperature/0) and
- * sensor values in query parameters (e.g., ?tC=22.5&tF=72.5&battPct=85).
+ * Parses webhook GET request path to extract routing and sensor data from path segments.
+ * GET Action Webhooks encode all data in path segments
+ * (e.g., /temperature/0/tC/22.5/tF/72.5/battPct/85).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
- * @return Map with dst, cid, and any parsed query parameter keys, or null if not parseable
+ * @return Map with dst, cid, and any parsed path segment key/value pairs, or null if not parseable
  */
 @CompileStatic
 private Map parseWebhookPath(Map msg) {
@@ -198,12 +193,12 @@ private Map parseWebhookPath(Map msg) {
 }
 
 /**
- * Routes parsed webhook GET query parameters to appropriate event handlers.
+ * Routes parsed webhook path segment parameters to appropriate event handlers.
  * Handles temperature, humidity, and piggybacked battery data.
  * TH sensor dst values (temperature, humidity) did not change between legacy and new
  * webhook formats, so the same cases handle both.
  *
- * @param params The parsed query parameters including dst and sensor value fields
+ * @param params The parsed path segment parameters including dst and sensor value fields
  */
 private void routeWebhookParams(Map params) {
   switch (params.dst) {
@@ -261,43 +256,6 @@ private void routeWebhookParams(Map params) {
 
 
 
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  Initialize / Configure / Refresh Commands                   ║
-// ╚══════════════════════════════════════════════════════════════╝
-
-/**
- * Initializes the device driver. Called on install, settings update, and hub startup.
- * This is a battery-powered device — initialization only resets hub-side state.
- */
-void initialize() {
-  logDebug('initialize() called — battery device, hub-side reset only')
-}
-
-/**
- * Configures the device driver settings.
- * Sets default log level if not already configured.
- * This runs on the hub side and does not require the device to be awake.
- */
-void configure() {
-  logDebug('configure() called')
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-}
-
-/**
- * Refresh is a no-op for battery-powered devices.
- * The device sleeps most of the time and cannot be polled on demand.
- * Data updates automatically when the device wakes to send sensor reports.
- */
-void refresh() {
-  logDebug('refresh() called — battery device is asleep, data updates on next wake')
-}
-
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  END Initialize / Configure / Refresh Commands               ║
-// ╚══════════════════════════════════════════════════════════════╝
 
 
 

@@ -23,15 +23,6 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER, unit:%
 
-    capability 'Initialize'
-    //Commands: initialize()
-
-    capability 'Configuration'
-    //Commands: configure()
-
-    capability 'Refresh'
-    //Commands: refresh()
-
     attribute 'lastUpdated', 'string'
   }
 }
@@ -48,14 +39,28 @@ preferences {
 // ║  Driver Lifecycle and Configuration                          ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+/**
+ * Called when driver is first installed on a device.
+ * Sets button count and default log level.
+ */
 void installed() {
   logDebug('installed() called')
-  initialize()
+  sendEvent(name: 'numberOfButtons', value: 1)
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
+/**
+ * Called when device settings are saved.
+ * Sets button count and default log level.
+ */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
+  sendEvent(name: 'numberOfButtons', value: 1)
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
 void parse(String description) {
@@ -181,21 +186,8 @@ private void routeActionUrlCallback(Map params) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Initialize / Configure / Refresh Commands                   ║
+// ║  Button Commands                                              ║
 // ╚══════════════════════════════════════════════════════════════╝
-
-void initialize() {
-  logDebug('initialize() called')
-  sendEvent(name: 'numberOfButtons', value: 1)
-}
-
-void configure() {
-  logDebug('configure() called')
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-}
 
 /**
  * Sends push command programmatically.
@@ -207,13 +199,8 @@ void push(BigDecimal buttonNumber) {
     descriptionText: "Button ${buttonNumber} was pushed")
 }
 
-void refresh() {
-  logDebug('refresh() called — note: battery device may be asleep')
-  parent?.componentRefresh(device)
-}
-
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Initialize / Configure / Refresh Commands               ║
+// ║  END Button Commands                                          ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
@@ -298,6 +285,6 @@ void logJson(Map message) {
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
 import groovy.transform.Field
-// ╔══════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════════════════════╗
 // ║  END Imports And Fields                                      ║
 // ╚══════════════════════════════════════════════════════════════╝

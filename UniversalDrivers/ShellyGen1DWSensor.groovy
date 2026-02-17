@@ -26,15 +26,6 @@ metadata {
     capability 'IlluminanceMeasurement'
     //Attributes: illuminance - NUMBER, unit:lux
 
-    capability 'Initialize'
-    //Commands: initialize()
-
-    capability 'Configuration'
-    //Commands: configure()
-
-    capability 'Refresh'
-    //Commands: refresh()
-
     attribute 'lastUpdated', 'string'
     attribute 'tilt', 'number'
   }
@@ -52,14 +43,26 @@ preferences {
 // ║  Driver Lifecycle and Configuration                          ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+/**
+ * Called when driver is first installed on a device.
+ * Sets default log level if not already configured.
+ */
 void installed() {
   logDebug('installed() called')
-  initialize()
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
+/**
+ * Called when device settings are saved.
+ * Sets default log level if not already configured.
+ */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
 }
 
 void parse(String description) {
@@ -191,30 +194,6 @@ void clearAcceleration() {
 
 
 
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  Initialize / Configure / Refresh Commands                   ║
-// ╚══════════════════════════════════════════════════════════════╝
-
-void initialize() {
-  logDebug('initialize() called')
-}
-
-void configure() {
-  logDebug('configure() called')
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-}
-
-void refresh() {
-  logDebug('refresh() called — note: battery device may be asleep')
-  parent?.componentRefresh(device)
-}
-
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  END Initialize / Configure / Refresh Commands               ║
-// ╚══════════════════════════════════════════════════════════════╝
 
 
 
