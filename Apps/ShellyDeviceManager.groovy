@@ -2031,16 +2031,18 @@ private void clearGen1ActionUrls(String ipAddress) {
     }
 
     // ── Step 2: Clear /settings/actions entries (sensors, buttons) ──
+    // Response format: {"actions": {"report_url": [{"index": 0, "urls": [...], ...}], ...}}
     Map actionsResponse = sendGen1Get(ipAddress, 'settings/actions')
-    if (actionsResponse) {
-        actionsResponse.each { actionName, actionData ->
+    Map actionsMap = actionsResponse?.get('actions') as Map
+    if (actionsMap) {
+        actionsMap.each { actionName, actionData ->
             // Each action type maps to a list of URL arrays (one per index)
             if (actionData instanceof List) {
                 ((List) actionData).eachWithIndex { entry, idx ->
                     if (entry instanceof Map) {
                         Map actionEntry = (Map) entry
                         List urls = actionEntry.urls as List
-                        if (urls && urls.any { it?.toString()?.trim() }) {
+                        if (urls && urls.any { url -> url?.toString()?.trim() }) {
                             sendGen1Setting(ipAddress, 'settings/actions', [
                                 index: idx.toString(),
                                 name: actionName.toString(),
@@ -2056,20 +2058,23 @@ private void clearGen1ActionUrls(String ipAddress) {
     }
 
     // ── Step 3: Clear direct /settings URL properties ──
+    // motion_url lives on /settings (not in the /settings/actions array) for motion sensors
     switch (typeCode) {
         case 'SHHT-1':
-            sendGen1Setting(ipAddress, 'settings', [report_url: ''])
-            cleared++
+            Map rHt = sendGen1Setting(ipAddress, 'settings', [report_url: ''])
+            if (rHt != null) { cleared++ }
             break
         case 'SHMOS-01':
         case 'SHMOS-02':
-            sendGen1Setting(ipAddress, 'settings', [motion_url: ''])
-            cleared++
+            Map rMos = sendGen1Setting(ipAddress, 'settings', [motion_url: ''])
+            if (rMos != null) { cleared++ }
             break
     }
 
-    logInfo("Cleared ${cleared} Gen 1 action URL group(s) on ${ipAddress}")
-    appendLog('info', "Cleared ${cleared} Gen 1 action URL group(s) on ${ipAddress}")
+    def childDevice = findChildDeviceByIp(ipAddress)
+    String deviceName = childDevice?.displayName ?: ipAddress
+    logInfo("Cleared ${cleared} Gen 1 action URL group(s) on ${deviceName}")
+    appendLog('info', "Cleared ${cleared} Gen 1 action URL group(s) on ${deviceName}")
 }
 
 /**
@@ -2094,9 +2099,6 @@ private void installGen1ActionUrls(String ipAddress) {
         return
     }
 
-    // Clear all existing action URLs before reinstalling to remove stale entries
-    clearGen1ActionUrls(ipAddress)
-
     String hubIp = location.hub.localIP
     String baseCallbackUrl = "http://${hubIp}:39501/webhook"
 
@@ -2105,6 +2107,9 @@ private void installGen1ActionUrls(String ipAddress) {
         logDebug("installGen1ActionUrls: no action URLs required for ${ipAddress}")
         return
     }
+
+    // Clear all existing action URLs before reinstalling to remove stale entries
+    clearGen1ActionUrls(ipAddress)
 
     def childDevice = findChildDeviceByIp(ipAddress)
     Integer installed = 0
