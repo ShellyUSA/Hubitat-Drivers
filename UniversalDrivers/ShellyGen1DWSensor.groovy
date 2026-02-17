@@ -83,7 +83,7 @@ void parse(String description) {
 
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /webhook/sensor/0).
+ * GET Action Webhooks encode state in the path (e.g., /sensor/0).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
@@ -119,14 +119,14 @@ private Map parseWebhookQueryParams(Map msg) {
   if (requestParts.length < 2) { return null }
   String pathAndQuery = requestParts[1]
 
-  if (pathAndQuery.startsWith('/webhook/')) {
-    String webhookPath = pathAndQuery.substring('/webhook/'.length())
-    int qMarkIdx = webhookPath.indexOf('?')
-    if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
-    String[] segments = webhookPath.split('/')
-    if (segments.length >= 2) {
-      return [dst: segments[0], cid: segments[1]]
-    }
+  // Strip leading slash and parse /<dst>/<cid>[?queryParams]
+  String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
+  if (!webhookPath) { return null }
+  int qMarkIdx = webhookPath.indexOf('?')
+  if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
+  String[] segments = webhookPath.split('/')
+  if (segments.length >= 2) {
+    return [dst: segments[0], cid: segments[1]]
   }
 
   return null

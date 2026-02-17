@@ -1896,8 +1896,8 @@ private void installRequiredActionsForIp(String ipAddress) {
 
         // Build webhook URL with routing info in path segments and template vars as query params
         // Shelly firmware strips static query params but preserves template variables (${ev.*}, ${status[*]})
-        // Format: /webhook/<dst>/<cid>[?templateParams]
-        String hookUrl = "${baseUrl}/webhook/${action.dst}/${cid}"
+        // Format: /<dst>/<cid>[?templateParams]
+        String hookUrl = "${baseUrl}/${action.dst}/${cid}"
         if (urlParams) { hookUrl += "?${urlParams}" }
 
         Map existing = existingHooks.find { Map h ->
@@ -1911,8 +1911,8 @@ private void installRequiredActionsForIp(String ipAddress) {
             Boolean nameNeedsUpdate = !existingName?.startsWith('hubitat_sdm_')
             logDebug("Existing webhook check: name='${existingName}', urls=${urls}, enabled=${isEnabled}, nameNeedsUpdate=${nameNeedsUpdate}")
             if (urls?.any { it?.contains(hubIp) } && isEnabled && !nameNeedsUpdate) {
-                // Check if URL needs updating (must have /webhook/<dst>/<cid> path format)
-                Boolean urlNeedsUpdate = !urls?.any { String u -> u ==~ /.*\/webhook\/[^\/]+\/\d+.*/ }
+                // Check if URL needs updating (must have /<dst>/<cid> path format)
+                Boolean urlNeedsUpdate = !urls?.any { String u -> u ==~ /.*:\d+\/[^\/]+\/\d+.*/ }
                 logDebug("URL format check: urlNeedsUpdate=${urlNeedsUpdate}, target hookUrl=${hookUrl}")
                 if (!urlNeedsUpdate) {
                     logDebug("Webhook '${name}' already configured for ${event} cid=${cid}")
@@ -2095,7 +2095,7 @@ private void installGen1ActionUrls(String ipAddress) {
     }
 
     String hubIp = location.hub.localIP
-    String baseCallbackUrl = "http://${hubIp}:39501/webhook"
+    String baseCallbackUrl = "http://${hubIp}:39501"
 
     List<Map> requiredActions = getGen1RequiredActionUrls(ipAddress)
     if (!requiredActions) {
@@ -11836,12 +11836,12 @@ void componentLogParsedMessage(DeviceWrapper device, Map msg) {
     // Parse path components
     List<String> pathComponents = path.tokenize('/')
 
-    // Parse URL parameters from path (for /webhook/dst/cid pattern)
+    // Parse URL parameters from path (for /dst/cid pattern)
     Map params = [:]
-    if (path.startsWith('/webhook/') && pathComponents.size() >= 2) {
-        // pathComponents = ['webhook', 'dst', 'cid', ...]
-        if (pathComponents.size() >= 2) params.dst = pathComponents[1]
-        if (pathComponents.size() >= 3) params.cid = pathComponents[2]
+    if (pathComponents.size() >= 1) {
+        // pathComponents = ['dst', 'cid', ...]
+        params.dst = pathComponents[0]
+        if (pathComponents.size() >= 2) params.cid = pathComponents[1]
     }
 
     // Check for query string parameters
@@ -11952,7 +11952,7 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
 
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /webhook/switch_on/0).
+ * GET Action Webhooks encode state in the path (e.g., /switch_on/0).
  *
  * @param msg The parsed LAN message map from parseLanMessage()
  * @return Map with dst and cid keys, or null if not parseable
@@ -11987,14 +11987,14 @@ private Map parseWebhookQueryParams(Map msg) {
     if (requestParts.length < 2) { return null }
     String pathAndQuery = requestParts[1]
 
-    if (pathAndQuery.startsWith('/webhook/')) {
-        String webhookPath = pathAndQuery.substring('/webhook/'.length())
-        int qMarkIdx = webhookPath.indexOf('?')
-        if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
-        String[] segments = webhookPath.split('/')
-        if (segments.length >= 2) {
-            return [dst: segments[0], cid: segments[1]]
-        }
+    // Strip leading slash and parse /<dst>/<cid>[?queryParams]
+    String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
+    if (!webhookPath) { return null }
+    int qMarkIdx = webhookPath.indexOf('?')
+    if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
+    String[] segments = webhookPath.split('/')
+    if (segments.length >= 2) {
+        return [dst: segments[0], cid: segments[1]]
     }
 
     return null

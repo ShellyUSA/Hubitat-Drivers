@@ -150,7 +150,7 @@ private void handleGetWebhook(Map msg) {
 
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /webhook/switch_on/0).
+ * GET Action Webhooks encode state in the path (e.g., /switch_on/0).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
