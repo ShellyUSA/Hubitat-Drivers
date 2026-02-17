@@ -114,6 +114,13 @@ private void handlePostWebhook(Map msg) {
     String dst = json?.dst?.toString()
     if (!dst) { logTrace('POST webhook: no dst in body'); return }
 
+    // BLE relay: forward to app for BLE device processing
+    if (dst == 'ble') {
+      logDebug('BLE relay received, forwarding to app')
+      parent?.handleBleRelay(device, json)
+      return
+    }
+
     Map params = [:]
     json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
 

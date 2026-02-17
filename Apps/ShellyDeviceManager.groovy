@@ -28,6 +28,44 @@
 
     // Fallback parent driver for unknown/unsupported patterns
     'Shelly Autoconf Parent': 'UniversalDrivers/ShellyAutoconfParent.groovy',
+
+    // Gen 1 single-component standalone drivers
+    'Shelly Gen1 Single Switch': 'UniversalDrivers/ShellyGen1SingleSwitch.groovy',
+    'Shelly Gen1 Single Switch PM': 'UniversalDrivers/ShellyGen1SingleSwitchPM.groovy',
+    'Shelly Gen1 Single Dimmer': 'UniversalDrivers/ShellyGen1SingleDimmer.groovy',
+    'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
+    'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
+    'Shelly Gen1 DW Sensor': 'UniversalDrivers/ShellyGen1DWSensor.groovy',
+    'Shelly Gen1 Button': 'UniversalDrivers/ShellyGen1Button.groovy',
+
+    // Gen 1 multi-component parent drivers
+    'Shelly Gen1 2x Switch PM Parent': 'UniversalDrivers/ShellyGen1_2xSwitchPMParent.groovy',
+    'Shelly Gen1 Single Cover PM Parent': 'UniversalDrivers/ShellyGen1SingleCoverPMParent.groovy',
+    'Shelly Gen1 3x Input Parent': 'UniversalDrivers/ShellyGen1_3xInputParent.groovy',
+    'Shelly Gen1 EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
+    'Shelly Gen1 2x EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
+    'Shelly Gen1 3x EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
+
+    // BLE device drivers
+    'Shelly BLU Button1': 'UniversalDrivers/ShellyBluButton1.groovy',
+    'Shelly BLU Button4': 'UniversalDrivers/ShellyBluButton4.groovy',
+    'Shelly BLU DoorWindow': 'UniversalDrivers/ShellyBluDoorWindow.groovy',
+    'Shelly BLU HT': 'UniversalDrivers/ShellyBluHT.groovy',
+    'Shelly BLU Motion': 'UniversalDrivers/ShellyBluMotion.groovy',
+    'Shelly BLU WallSwitch4': 'UniversalDrivers/ShellyBluWallSwitch.groovy',
+]
+
+/**
+ * Maps Shelly BLU device model codes (from BLE local_name) to driver information.
+ * Used to auto-detect device type from BLE advertisements and select the correct driver.
+ */
+@Field static final Map<String, Map<String, String>> BLE_MODEL_TO_DRIVER = [
+    'SBBT-002C': [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1'],
+    'SBBT-004C': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Button 4'],
+    'SBDW-002C': [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window'],
+    'SBHT-003C': [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T'],
+    'SBMO-003Z': [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion'],
+    'SBWS-002X': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4'],
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -189,6 +227,9 @@ Map mainPage() {
                 paragraph "<b>Discovery has stopped.</b>"
             }
             input 'btnExtendScan', 'button', title: 'Extend Scan (120s)', submitOnChange: true
+            if (!state.discoveryRunning && !(state.discoveredShellys as Map)?.findAll { String k, v -> v }) {
+                paragraph "<b style='color:#FF9800'>No devices discovered.</b> If this is a new installation, a hub reboot is required before mDNS discovery will find devices. Go to <i>Settings > Reboot Hub</i>, then reopen this app."
+            }
         }
 
         // Delete confirmation (shown when user clicks delete on a device)
@@ -221,6 +262,22 @@ Map mainPage() {
             paragraph displayDeviceConfigTable()
         }
 
+        // BLE device delete confirmation
+        if (state.pendingBleDeleteMac) {
+            String deleteMac = state.pendingBleDeleteMac as String
+            Map bleInfo = (state.discoveredBleDevices ?: [:])[deleteMac] as Map
+            String deleteName = bleInfo?.hubDeviceName ?: bleInfo?.friendlyModel ?: deleteMac
+            section() {
+                paragraph "<b style='color:#F44336'>Are you sure you want to remove BLE device '${deleteName}' (${deleteMac})?</b>"
+                input 'btnConfirmBleDelete', 'button', title: 'Yes, Remove BLE Device', submitOnChange: true
+                input 'btnCancelBleDelete', 'button', title: 'Cancel', submitOnChange: true
+            }
+        }
+
+        section("Bluetooth Devices", hideable: true) {
+            paragraph displayBleDeviceTable()
+        }
+
         section("Options", hideable: true) {
             input name: 'enableAutoUpdate', type: 'bool', title: 'Enable auto-update',
                 description: 'Automatically checks for and installs app updates from GitHub daily at 3AM.',
@@ -231,6 +288,13 @@ Map mainPage() {
             input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
                 description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
                 defaultValue: true, submitOnChange: true
+            input name: 'gen1PollInterval', type: 'enum', title: 'Gen 1 device poll interval',
+                description: 'How often to poll Gen 1 devices for power monitoring and state updates. Gen 1 devices do not support real-time power/energy reporting.',
+                options: ['30':'30 seconds', '60':'1 minute', '120':'2 minutes', '300':'5 minutes', '600':'10 minutes'],
+                defaultValue: '60', submitOnChange: true
+            input name: 'devicePassword', type: 'password', title: 'Device password',
+                description: 'Password for Shelly devices with authentication enabled. Used for Gen 2/3 digest auth and Gen 1 Basic Auth (username is always "admin").',
+                required: false
         }
 
         section("Driver Management", hideable: true, hidden: true) {
@@ -376,6 +440,14 @@ void appButtonHandler(String buttonName) {
         runInMillis(500, 'fireConfigTableSSR')
     }
 
+    if (buttonName.startsWith('installActionUrls|')) {
+        String targetIp = buttonName.minus('installActionUrls|')
+        logInfo("Installing Gen 1 action URLs for ${targetIp} via config table")
+        installGen1ActionUrls(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
+    }
+
     if (buttonName.startsWith('reinitDev|')) {
         String targetIp = buttonName.minus('reinitDev|')
         reinitializeDevice(targetIp)
@@ -392,6 +464,42 @@ void appButtonHandler(String buttonName) {
     if (buttonName == 'btnCancelLabelEdit') {
         state.remove('pendingLabelEdit')
         app.removeSetting('editLabelValue')
+    }
+
+    // === BLE Device Table Buttons ===
+
+    if (buttonName.startsWith('createBle|')) {
+        String mac = buttonName.minus('createBle|')
+        logInfo("Creating BLE device for MAC ${mac} via BLE table")
+        createBleDevice(mac)
+        runInMillis(500, 'fireBleTableSSR')
+    }
+
+    if (buttonName.startsWith('removeBle|')) {
+        String mac = buttonName.minus('removeBle|')
+        state.pendingBleDeleteMac = mac
+    }
+
+    if (buttonName == 'btnConfirmBleDelete') {
+        String mac = state.pendingBleDeleteMac as String
+        if (mac) {
+            logInfo("Removing BLE device for MAC ${mac}")
+            removeBleDevice(mac)
+            runInMillis(500, 'fireBleTableSSR')
+        }
+        state.remove('pendingBleDeleteMac')
+    }
+
+    if (buttonName == 'btnCancelBleDelete') {
+        state.remove('pendingBleDeleteMac')
+    }
+
+    if (buttonName.startsWith('toggleBleGw|')) {
+        String targetIp = buttonName.minus('toggleBleGw|')
+        logInfo("Toggling BLE gateway for ${targetIp}")
+        toggleBleGateway(targetIp)
+        buildDeviceStatusCacheEntry(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
     }
 }
 
@@ -425,7 +533,7 @@ private void createShellyDevice(String ipKey) {
         deviceStatus = deviceInfo?.deviceStatus
         if (!deviceStatus) {
             logError("Could not retrieve device status for ${ipKey}. Device may be offline.")
-            appendLog('error', "Failed to create device for ${ipKey}: device may be offline or not Gen2+")
+            appendLog('error', "Failed to create device for ${ipKey}: device may be offline")
             return
         }
     }
@@ -473,6 +581,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     }
 
     // Prepare device properties
+    String shellyGen = (deviceInfo.gen ?: '2').toString()
     Map deviceProps = [
         name: deviceLabel,
         label: deviceLabel,
@@ -480,7 +589,8 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
             ipAddress: ipKey,
             shellyModel: deviceInfo.model ?: 'Unknown',
             shellyId: deviceInfo.id ?: dni,
-            shellyMac: deviceInfo.mac ?: ''
+            shellyMac: deviceInfo.mac ?: '',
+            shellyGen: shellyGen
         ]
     ]
 
@@ -492,6 +602,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     logInfo("  IP: ${ipKey}")
     logInfo("  Model: ${deviceInfo.model}")
     logInfo("  MAC: ${deviceInfo.mac}")
+    logInfo("  Generation: ${shellyGen}")
 
     // Ensure the driver is installed on the hub before attempting to create the device
     if (!ensureDriverInstalled(driverName, deviceInfo)) {
@@ -576,6 +687,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     }
 
     // Step 3: Create parent device
+    String shellyGen = (deviceInfo.gen ?: '2').toString()
     Map parentProps = [
         name: baseLabel,
         label: baseLabel,
@@ -584,6 +696,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
             shellyModel: deviceInfo.model ?: 'Unknown',
             shellyId: deviceInfo.id ?: parentDni,
             shellyMac: deviceInfo.mac ?: '',
+            shellyGen: shellyGen,
             isParentDevice: 'true'
         ]
     ]
@@ -806,6 +919,7 @@ private String renderDeviceConfigTableMarkup() {
     str.append("<th>Scripts Active</th>")
     str.append("<th>Webhooks Created</th>")
     str.append("<th>Webhooks Enabled</th>")
+    str.append("<th>BLE GW</th>")
     str.append("<th>Reinit</th>")
     str.append("</tr></thead><tbody>")
 
@@ -918,6 +1032,7 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
         mac: (info?.mac ?: '') as String,
         model: (info?.model ?: 'Unknown') as String,
         isCreated: false,
+        isGen1: (info?.gen?.toString() == '1') as Boolean,
         hubDeviceDni: null,
         hubDeviceName: null,
         hubDeviceId: null,
@@ -949,12 +1064,13 @@ private String buildDeviceRow(Map entry) {
     Long lastRefreshed = entry.lastRefreshed as Long
     Boolean isStale = lastRefreshed == null
 
-    // Column 1: Device name (linked if created)
+    // Column 1: Device name (linked if created) with Gen 1 badge
+    String gen1Badge = (entry.isGen1 as Boolean) ? " <span style='font-size:10px;background:#FF9800;color:white;padding:1px 4px;border-radius:3px;vertical-align:middle'>Gen 1</span>" : ''
     if (isCreated && entry.hubDeviceId) {
         String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${entry.hubDeviceName}'>${entry.hubDeviceName}</a>"
-        str.append("<td class='device-link' style='text-align:left'>${devLink}</td>")
+        str.append("<td class='device-link' style='text-align:left'>${devLink}${gen1Badge}</td>")
     } else {
-        str.append("<td style='text-align:left'>${entry.shellyName ?: 'Unknown'}</td>")
+        str.append("<td style='text-align:left'>${entry.shellyName ?: 'Unknown'}${gen1Badge}</td>")
     }
 
     // Column 2: Device label (click to edit for created devices)
@@ -980,14 +1096,15 @@ private String buildDeviceRow(Map entry) {
     }
 
     // Columns 5-8: Script and webhook status
+    Boolean isGen1 = entry.isGen1 as Boolean
     if (!isCreated) {
         // Not created — show dashes for all status columns
         str.append("<td class='status-na'>&ndash;</td>")
         str.append("<td class='status-na'>&ndash;</td>")
         str.append("<td class='status-na'>&ndash;</td>")
         str.append("<td class='status-na'>&ndash;</td>")
-    } else if (isBattery) {
-        // Battery device — no scripts, show webhooks
+    } else if (isGen1 || isBattery) {
+        // Gen 1 and battery devices have no scripts — show n/a
         str.append("<td class='status-na'>n/a</td>")
         str.append("<td class='status-na'>n/a</td>")
         str.append(buildWebhookCells(entry, isStale, ip))
@@ -996,7 +1113,15 @@ private String buildDeviceRow(Map entry) {
         str.append(buildWebhookCells(entry, isStale, ip))
     }
 
-    // Column 9: Reinit button
+    // Column 9: BLE Gateway toggle
+    String gen = (entry.isGen1 as Boolean) ? '1' : '2'
+    if (isCreated) {
+        str.append("<td>${renderBleGatewayCell(ip, gen, isBattery)}</td>")
+    } else {
+        str.append("<td class='status-na'>&ndash;</td>")
+    }
+
+    // Column 10: Reinit button
     if (isCreated) {
         String reinitIcon = "<iconify-icon icon='material-symbols:refresh' style='font-size:18px'></iconify-icon>"
         str.append("<td>${buttonLink("reinitDev|${ip}", reinitIcon, '#1A77C9', '18px')}</td>")
@@ -1065,9 +1190,26 @@ private String buildScriptCells(Map entry, Boolean isStale, String ip) {
 @CompileStatic
 private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
     StringBuilder str = new StringBuilder()
+    Boolean isGen1 = entry.isGen1 as Boolean
     Integer required = entry.requiredWebhookCount as Integer
     Integer created = entry.createdWebhookCount as Integer
     Integer enabled = entry.enabledWebhookCount as Integer
+
+    // Gen 1 devices: show required action URL count with install button
+    // (Gen 1 action URLs are installed but not individually verifiable without
+    // reading /settings from the device, so we show "reinit to install" style)
+    if (isGen1) {
+        if (required == null || required == 0) {
+            str.append("<td class='status-na'>n/a</td>")
+            str.append("<td class='status-na'>n/a</td>")
+        } else {
+            String installBtn = buttonLink("installActionUrls|${ip}",
+                "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+            str.append("<td>${required} req'd ${installBtn}</td>")
+            str.append("<td class='status-na'>n/a</td>")
+        }
+        return str.toString()
+    }
 
     if (required == null || created == null) {
         String prefix = isStale ? '?' : ''
@@ -1214,8 +1356,14 @@ private Map buildDeviceStatusCacheEntry(String ip) {
 
     // Check reachability
     Boolean isBattery = entry.isBatteryDevice as Boolean
+    Boolean isGen1 = isGen1DeviceByIp(ip)
+    entry.isGen1 = isGen1
+
     if (isBattery) {
-        entry.isReachable = isDeviceReachable(ip)
+        entry.isReachable = isGen1 ? isGen1DeviceReachable(ip) : isDeviceReachable(ip)
+    } else if (isGen1) {
+        // Gen 1 non-battery: check reachability via /shelly endpoint
+        entry.isReachable = isGen1DeviceReachable(ip)
     } else {
         Map deviceStatus = queryDeviceStatus(ip)
         entry.isReachable = (deviceStatus != null)
@@ -1223,8 +1371,12 @@ private Map buildDeviceStatusCacheEntry(String ip) {
 
     Boolean reachable = entry.isReachable as Boolean
 
-    // Script status (skip for battery devices and uncreated devices)
-    if (childDevice && !isBattery && reachable) {
+    // Script status — Gen 1 devices have no scripts
+    if (isGen1) {
+        entry.requiredScriptCount = -1
+        entry.installedScriptCount = -1
+        entry.activeScriptCount = -1
+    } else if (childDevice && !isBattery && reachable) {
         Set<String> requiredScripts = getRequiredScriptsForDevice(childDevice)
         Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it as String) } as Set<String>
         List<Map> installedScripts = listDeviceScripts(ip)
@@ -1250,8 +1402,17 @@ private Map buildDeviceStatusCacheEntry(String ip) {
         entry.activeScriptCount = -1
     }
 
-    // Webhook status (skip for uncreated devices)
-    if (childDevice && reachable) {
+    // Webhook / action URL status (skip for uncreated devices)
+    if (childDevice && reachable && isGen1) {
+        // Gen 1: count required action URLs
+        List<Map> gen1Actions = getGen1RequiredActionUrls(ip)
+        entry.requiredWebhookCount = gen1Actions.size()
+        // Gen 1 action URL verification requires reading /settings from the device,
+        // which is expensive for battery devices. For now, show required count only.
+        entry.createdWebhookCount = null
+        entry.enabledWebhookCount = null
+    } else if (childDevice && reachable) {
+        // Gen 2/3: use RPC webhook list
         List<Map> requiredActions = getRequiredActionsForDevice(childDevice, reachable)
         entry.requiredWebhookCount = requiredActions.size()
 
@@ -1345,14 +1506,21 @@ void reinitializeDevice(String ipAddress) {
     // Step 2: Re-query device info and status from physical device
     fetchAndStoreDeviceInfo(ipAddress)
 
-    // Step 3: Install any missing required scripts
-    installRequiredScriptsForIp(ipAddress)
+    if (isGen1Device(childDevice)) {
+        // Gen 1: no scripts, configure action URLs instead of webhooks
+        logInfo("Gen 1 device — skipping scripts, configuring action URLs")
+        installGen1ActionUrls(ipAddress)
+    } else {
+        // Gen 2/3: install scripts and webhooks
+        // Step 3: Install any missing required scripts
+        installRequiredScriptsForIp(ipAddress)
 
-    // Step 4: Enable and start all required scripts
-    enableAndStartRequiredScriptsForIp(ipAddress)
+        // Step 4: Enable and start all required scripts
+        enableAndStartRequiredScriptsForIp(ipAddress)
 
-    // Step 5: Install/update all required webhooks (also removes obsolete scripts)
-    installRequiredActionsForIp(ipAddress)
+        // Step 5: Install/update all required webhooks (also removes obsolete scripts)
+        installRequiredActionsForIp(ipAddress)
+    }
 
     // Step 6: Call the driver's initialize() to reset driver state
     childDevice.initialize()
@@ -1618,6 +1786,11 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
  * @param ipAddress The IP address of the Shelly device
  */
 private void installRequiredActionsForIp(String ipAddress) {
+    // Gen 1 devices use action URLs — delegate to Gen 1-specific function
+    if (isGen1DeviceByIp(ipAddress)) {
+        installGen1ActionUrls(ipAddress)
+        return
+    }
     def device = findChildDeviceByIp(ipAddress)
     if (!device) {
         logError("installRequiredActionsForIp: no child device found for ${ipAddress}")
@@ -1702,6 +1875,261 @@ private void installRequiredActionsForIp(String ipAddress) {
 
     // Clean up obsolete scripts that are now replaced by webhooks
     removeObsoleteScripts(ipAddress, device)
+}
+
+/**
+ * Configures Gen 1 action URLs on a device to point to the Hubitat hub for event delivery.
+ * Gen 1 devices use HTTP GET "action URLs" instead of Gen 2/3 webhooks.
+ * Each action URL fires a GET request to the hub when the corresponding event occurs.
+ * <p>
+ * For relay/roller/light devices, action URLs are set via component settings endpoints
+ * (e.g., {@code /settings/relay/0?out_on_url=http://...}).
+ * For sensor devices, action URLs are set via the {@code /settings/actions} endpoint
+ * or direct properties on {@code /settings}.
+ *
+ * @param ipAddress The IP address of the Gen 1 Shelly device
+ */
+private void installGen1ActionUrls(String ipAddress) {
+    Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+    if (!deviceInfo) {
+        logError("installGen1ActionUrls: no device info found for ${ipAddress}")
+        return
+    }
+
+    String hubIp = location.hub.localIP
+    String baseCallbackUrl = "http://${hubIp}:39501/webhook"
+
+    List<Map> requiredActions = getGen1RequiredActionUrls(ipAddress)
+    if (!requiredActions) {
+        logDebug("installGen1ActionUrls: no action URLs required for ${ipAddress}")
+        return
+    }
+
+    def childDevice = findChildDeviceByIp(ipAddress)
+    Integer installed = 0
+    Integer failed = 0
+
+    requiredActions.each { Map action ->
+        String callbackUrl = "${baseCallbackUrl}/${action.dst}/${action.cid}"
+        Map result = null
+
+        if (action.configType == 'actions') {
+            // Sensor/input action URLs via /settings/actions endpoint (array-based)
+            result = sendGen1Setting(ipAddress, 'settings/actions', [
+                index: (action.actionIndex ?: 0).toString(),
+                name: action.param.toString(),
+                enabled: 'true',
+                'urls[]': callbackUrl
+            ])
+        } else {
+            // Component action URLs: set directly on settings endpoint
+            result = sendGen1Setting(ipAddress, action.endpoint.toString(),
+                [(action.param.toString()): callbackUrl])
+        }
+
+        if (result != null) {
+            installed++
+            logDebug("Configured ${action.name} on ${ipAddress}: ${callbackUrl}")
+        } else {
+            failed++
+            logWarn("Failed to configure ${action.name} on ${ipAddress}")
+        }
+    }
+
+    String deviceName = childDevice?.displayName ?: ipAddress
+    logInfo("Gen 1 action URL provisioning: ${installed}/${requiredActions.size()} configured on ${deviceName}" +
+            (failed > 0 ? " (${failed} failed)" : ''))
+    appendLog('info', "Gen 1 action URLs: ${installed}/${requiredActions.size()} on ${deviceName}")
+
+    // Track provisioning state for battery devices
+    if (childDevice) {
+        String dni = childDevice.deviceNetworkId
+        Map config = state.deviceConfigs?.get(dni) as Map
+        if (config) {
+            config.gen1ActionUrlsInstalled = (failed == 0)
+            state.deviceConfigs[dni] = config
+        }
+    }
+}
+
+/**
+ * Attempts to install Gen 1 action URLs on a battery device when it wakes up.
+ * Battery devices are normally asleep, so action URLs can only be configured during
+ * the brief wake-up window when the device fires a report/event callback.
+ * Checks if action URLs were previously installed; if not, attempts installation now.
+ *
+ * @param ipAddress The IP address of the Gen 1 battery device
+ */
+private void attemptGen1ActionUrlInstallOnWake(String ipAddress) {
+    def childDevice = findChildDeviceByIp(ipAddress)
+    if (!childDevice) { return }
+
+    String dni = childDevice.deviceNetworkId
+    Map config = state.deviceConfigs?.get(dni) as Map
+    if (!config) { return }
+
+    // Skip if action URLs were already successfully installed
+    if (config.gen1ActionUrlsInstalled == true) { return }
+
+    logInfo("Battery device ${childDevice.displayName} is awake — attempting action URL installation")
+    installGen1ActionUrls(ipAddress)
+}
+
+/**
+ * Returns the list of required Gen 1 action URLs for a device based on its type and components.
+ * Each action URL definition includes:
+ * <ul>
+ *   <li>{@code endpoint} — The settings endpoint path (e.g., {@code settings/relay/0})</li>
+ *   <li>{@code param} — The parameter name (e.g., {@code out_on_url})</li>
+ *   <li>{@code dst} — Destination identifier in the webhook URL path</li>
+ *   <li>{@code cid} — Component ID</li>
+ *   <li>{@code name} — Human-readable name for logging</li>
+ *   <li>{@code configType} — {@code 'component'} for direct settings or {@code 'actions'} for /settings/actions</li>
+ * </ul>
+ *
+ * @param ipAddress The IP address of the Gen 1 Shelly device
+ * @return List of action URL definition maps, or empty list if device info not found
+ */
+private List<Map> getGen1RequiredActionUrls(String ipAddress) {
+    Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+    if (!deviceInfo) { return [] }
+
+    String typeCode = deviceInfo.gen1Type?.toString() ?: ''
+    Map deviceStatus = deviceInfo.deviceStatus as Map ?: [:]
+    List<Map> actions = []
+
+    // Relay switch action URLs (component settings endpoint)
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('switch:')) {
+            Integer cid = key.split(':')[1] as Integer
+            actions.add([endpoint: "settings/relay/${cid}", param: 'out_on_url',
+                dst: 'switch_on', cid: cid, name: "Relay ${cid} On", configType: 'component'])
+            actions.add([endpoint: "settings/relay/${cid}", param: 'out_off_url',
+                dst: 'switch_off', cid: cid, name: "Relay ${cid} Off", configType: 'component'])
+        }
+    }
+
+    // Cover/roller action URLs (component settings endpoint)
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('cover:')) {
+            Integer cid = key.split(':')[1] as Integer
+            actions.add([endpoint: "settings/roller/${cid}", param: 'roller_open_url',
+                dst: 'cover_open', cid: cid, name: "Roller ${cid} Open", configType: 'component'])
+            actions.add([endpoint: "settings/roller/${cid}", param: 'roller_close_url',
+                dst: 'cover_close', cid: cid, name: "Roller ${cid} Close", configType: 'component'])
+            actions.add([endpoint: "settings/roller/${cid}", param: 'roller_stop_url',
+                dst: 'cover_stop', cid: cid, name: "Roller ${cid} Stop", configType: 'component'])
+        }
+    }
+
+    // Light/dimmer action URLs (component settings endpoint)
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('light:')) {
+            Integer cid = key.split(':')[1] as Integer
+            actions.add([endpoint: "settings/light/${cid}", param: 'out_on_url',
+                dst: 'light_on', cid: cid, name: "Light ${cid} On", configType: 'component'])
+            actions.add([endpoint: "settings/light/${cid}", param: 'out_off_url',
+                dst: 'light_off', cid: cid, name: "Light ${cid} Off", configType: 'component'])
+        }
+    }
+
+    // Shelly i3 input action URLs (component settings endpoint)
+    if (typeCode == 'SHIX3-1') {
+        deviceStatus.each { k, v ->
+            String key = k.toString()
+            if (key.startsWith('input:')) {
+                Integer cid = key.split(':')[1] as Integer
+                actions.add([endpoint: "settings/input/${cid}", param: 'shortpush_url',
+                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push", configType: 'component'])
+                actions.add([endpoint: "settings/input/${cid}", param: 'longpush_url',
+                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push", configType: 'component'])
+            }
+        }
+    }
+
+    // Battery sensor action URLs
+    if (GEN1_BATTERY_TYPES.contains(typeCode)) {
+        actions.addAll(getGen1SensorActionUrls(typeCode))
+    }
+
+    return actions
+}
+
+/**
+ * Returns sensor-specific action URL definitions for Gen 1 battery-powered devices.
+ * H&T uses direct properties on /settings; other sensors use the /settings/actions endpoint.
+ *
+ * @param typeCode The Gen 1 device type code (e.g., {@code SHHT-1}, {@code SHWT-1})
+ * @return List of action URL definition maps for the sensor type
+ */
+private List<Map> getGen1SensorActionUrls(String typeCode) {
+    List<Map> actions = []
+
+    switch (typeCode) {
+        case 'SHHT-1':  // H&T temperature/humidity sensor — report_url is a direct property
+            actions.add([endpoint: 'settings', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'component'])
+            break
+
+        case 'SHWT-1':  // Flood sensor — actions array
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'flood_detected_url',
+                dst: 'flood_detected', cid: 0, name: 'Flood Detected', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'flood_gone_url',
+                dst: 'flood_gone', cid: 0, name: 'Flood Gone', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHDW-1':  // Door/Window v1 — actions array
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'open_url',
+                dst: 'contact_open', cid: 0, name: 'Contact Open', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'close_url',
+                dst: 'contact_close', cid: 0, name: 'Contact Close', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHDW-2':  // Door/Window v2 — actions array, plus vibration
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'open_url',
+                dst: 'contact_open', cid: 0, name: 'Contact Open', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'close_url',
+                dst: 'contact_close', cid: 0, name: 'Contact Close', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'vibration_url',
+                dst: 'vibration', cid: 0, name: 'Vibration', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHBTN-1':  // Button v1
+        case 'SHBTN-2':  // Button v2
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'shortpush_url',
+                dst: 'input_short', cid: 0, name: 'Short Push', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'longpush_url',
+                dst: 'input_long', cid: 0, name: 'Long Push', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'double_shortpush_url',
+                dst: 'input_double', cid: 0, name: 'Double Push', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'triple_shortpush_url',
+                dst: 'input_triple', cid: 0, name: 'Triple Push', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHMOS-01':  // Motion v1
+        case 'SHMOS-02':  // Motion v2
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'motion_url',
+                dst: 'motion', cid: 0, name: 'Motion Detected', configType: 'actions', actionIndex: 0])
+            break
+
+        default:
+            logDebug("getGen1SensorActionUrls: no action URL definitions for sensor type ${typeCode}")
+    }
+
+    return actions
 }
 
 /**
@@ -2036,6 +2464,8 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
         hasInput: componentTypes.contains('input'),
         hasTemperature: componentTypes.contains('temperature'),
         hasHumidity: componentTypes.contains('humidity'),
+        hasFlood: componentTypes.contains('flood'),
+        hasContact: componentTypes.contains('contact'),
         supportedWebhookEvents: (deviceInfo.supportedWebhookEvents ?: []) as List<String>,
         storedAt: now()
     ]
@@ -2044,6 +2474,11 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
     if (isParentChild) {
         config.isParentChild = true
         config.childDnis = childDnis
+    }
+
+    // Gen 1 battery devices: track action URL installation state
+    if (deviceInfo.gen?.toString() == '1' && config.hasBattery) {
+        config.gen1ActionUrlsInstalled = false
     }
 
     deviceConfigs[dni] = config
@@ -2070,10 +2505,12 @@ private Boolean isSleepyBatteryDevice(def childDevice) {
         return config.hasBattery && !config.hasBthome && !config.hasScript
     }
 
-    // Fallback: check driver name for "TH Sensor" or similar battery-only patterns
+    // Fallback: check driver name for battery-only patterns (Gen 1 and Gen 2)
     String typeName = childDevice.typeName ?: ''
     return typeName.contains('TH Sensor') || typeName.contains('Temperature Sensor') ||
-           typeName.contains('Humidity Sensor') || typeName.contains('Battery Device')
+           typeName.contains('Humidity Sensor') || typeName.contains('Battery Device') ||
+           typeName.contains('Flood Sensor') || typeName.contains('DW Sensor') ||
+           typeName.contains('Gen1 Button')
 }
 
 /**
@@ -2407,6 +2844,10 @@ String processServerSideRender(Map event) {
 
     if (eventName == 'driverRebuildStatus') {
         return renderDriverManagementHtml()
+    }
+
+    if (eventName == 'bleTable') {
+        return "<div id='ble-table-wrapper'>${renderBleTableMarkup()}</div>"
     }
 
     // Device-level events
@@ -2947,6 +3388,24 @@ private Boolean isDeviceReachable(String ipAddress) {
 }
 
 /**
+ * Checks if a Gen 1 Shelly device is reachable by querying its {@code /shelly} endpoint.
+ *
+ * @param ipAddress The device IP address
+ * @return true if the device responds to HTTP GET /shelly
+ */
+private Boolean isGen1DeviceReachable(String ipAddress) {
+    try {
+        Boolean reachable = false
+        httpGetHelper([uri: "http://${ipAddress}/shelly", timeout: 2, contentType: 'application/json']) { resp ->
+            if (resp?.status == 200) { reachable = true }
+        }
+        return reachable
+    } catch (Exception ex) {
+        return false
+    }
+}
+
+/**
  * Fetches and parses the component_driver.json capability definitions from GitHub.
  *
  * @return List of capability maps, or null on failure
@@ -2996,6 +3455,11 @@ void initialize() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
     if (state.discoveryRunning == null) { state.discoveryRunning = false }
+
+    // BLE state initialization
+    if (!state.discoveredBleDevices) { state.discoveredBleDevices = [:] }
+    if (!state.recentBlePids) { state.recentBlePids = [:] }
+    if (!state.bleGateways) { state.bleGateways = [] }
 
     // Ensure state mirrors current settings for logging
     state.logLevel = settings?.logLevel ?: (state.logLevel ?: 'debug')
@@ -3060,12 +3524,22 @@ void initialize() {
         unschedule('checkForAppUpdate')
     }
 
+    // Schedule Gen 1 device polling if any Gen 1 devices exist
+    scheduleGen1Polling()
+
     // Aggressive auto-update: check every minute for branch changes
     if (settings?.enableAggressiveUpdate == true) {
         schedule('0 * * ? * *', 'aggressiveUpdateCheck')
         logInfo("Aggressive auto-update enabled (every 60s from branch)")
     } else {
         unschedule('aggressiveUpdateCheck')
+    }
+
+    // Schedule BLE presence check every 5 minutes (only when BLE is active)
+    if (state.bleGateways || state.discoveredBleDevices) {
+        schedule('0 */5 * ? * *', 'checkBlePresence')
+    } else {
+        unschedule('checkBlePresence')
     }
 }
 
@@ -3260,7 +3734,7 @@ void processMdnsDiscovery() {
 
                 // Defensive parsing: ip4Addresses may be String or List<String> depending on service type
                 Object rawIp4 = entry?.ip4Addresses
-                logTrace("mDNS ip4Addresses isList=${rawIp4 instanceof List}, value=${rawIp4}")
+                // logTrace("mDNS ip4Addresses isList=${rawIp4 instanceof List}, value=${rawIp4}")
                 String ip4 = ''
                 if (rawIp4 instanceof List) {
                     ip4 = rawIp4.find { it && !it.toString().contains(':') }?.toString() ?: ''
@@ -3268,7 +3742,7 @@ void processMdnsDiscovery() {
                     ip4 = rawIp4.toString().replaceAll(/[\[\]]/, '').trim()
                 }
 
-                logTrace("mDNS entry: server=${server}, ip=${ip4}, port=${port}, gen=${gen}, app=${deviceApp}, ver=${ver}")
+                // logTrace("mDNS entry: server=${server}, ip=${ip4}, port=${port}, gen=${gen}, app=${deviceApp}, ver=${ver}")
 
                 // All entries from _shelly._tcp are Shelly devices
                 // For _http._tcp entries, check if server name contains 'shelly'
@@ -3583,6 +4057,208 @@ private LinkedHashMap postCommandSyncWithRetry(LinkedHashMap command, String uri
     return null
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Gen 1 REST HTTP Communication
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Sends an HTTP GET request to a Gen 1 Shelly device and returns the parsed JSON response.
+ * Handles HTTP Basic Auth when the device has authentication enabled.
+ * Includes retry logic with increasing delays between attempts.
+ *
+ * @param ipAddress The device IP address
+ * @param path The URL path (e.g. {@code "relay/0"}, {@code "settings"}, {@code "status"})
+ * @param queryParams Optional query parameters (e.g. {@code [turn: "on"]})
+ * @param maxRetries Maximum number of attempts (default 2)
+ * @return The parsed JSON response map, or null if all attempts failed
+ */
+private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], int maxRetries = 2) {
+    String queryString = queryParams.collect { k, v -> "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}" }.join('&')
+    String uri = "http://${ipAddress}/${path}"
+    if (queryString) { uri += "?${queryString}" }
+
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            Map result = null
+            Map params = [uri: uri, timeout: 10, contentType: 'application/json']
+
+            // Add Basic Auth if device password is configured
+            // Gen 1 devices always use username 'admin'
+            if (authIsEnabledGen1()) {
+                String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
+                String encoded = credentials.bytes.encodeBase64().toString()
+                params.headers = ['Authorization': "Basic ${encoded}"]
+            }
+
+            httpGetHelper(params) { resp ->
+                if (resp?.status == 200 && resp.data) {
+                    result = resp.data as Map
+                }
+            }
+            if (attempt > 1) {
+                logDebug("Gen 1 GET ${path} succeeded on attempt ${attempt} for ${ipAddress}")
+            }
+            return result
+        } catch (Exception e) {
+            if (attempt < maxRetries) {
+                int delaySecs = attempt * 2
+                logDebug("Gen 1 GET ${path} attempt ${attempt}/${maxRetries} failed for ${ipAddress}: ${e.message} — retrying in ${delaySecs}s")
+                pauseExecution(delaySecs * 1000)
+            } else {
+                logError("Gen 1 GET ${path} failed after ${maxRetries} attempts for ${ipAddress}: ${e.message}")
+            }
+        }
+    }
+    return null
+}
+
+/**
+ * Sends an HTTP GET request to configure a Gen 1 Shelly device setting.
+ * Gen 1 settings are configured via GET requests with query parameters
+ * (e.g. {@code /settings/relay/0?out_on_url=http://...}).
+ *
+ * @param ipAddress The device IP address
+ * @param path The settings URL path (e.g. {@code "settings/relay/0"})
+ * @param params Settings parameters as key-value pairs
+ * @return The parsed JSON response map, or null on failure
+ */
+private Map sendGen1Setting(String ipAddress, String path, Map params = [:]) {
+    return sendGen1Get(ipAddress, path, params, 2)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Gen 1 Status Polling
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Polls a single Gen 1 device for current status and distributes data to its driver.
+ * Queries {@code GET /status} on the device, normalizes the response to the internal
+ * component format, and calls {@code distributeStatus()} on the driver.
+ *
+ * @param ipAddress The IP address of the Gen 1 Shelly device
+ */
+private void pollGen1DeviceStatus(String ipAddress) {
+    Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+    if (!deviceInfo) {
+        logDebug("pollGen1DeviceStatus: no device info for ${ipAddress}")
+        return
+    }
+
+    String typeCode = deviceInfo.gen1Type?.toString() ?: ''
+    Map gen1Settings = deviceInfo.gen1Settings as Map ?: [:]
+
+    // Query device status
+    Map gen1Status = sendGen1Get(ipAddress, 'status', [:], 1)
+    if (!gen1Status) {
+        logDebug("pollGen1DeviceStatus: device at ${ipAddress} did not respond")
+        return
+    }
+
+    // Normalize to internal component format
+    Map normalizedStatus = normalizeGen1Status(gen1Status, gen1Settings, typeCode)
+    if (!normalizedStatus) {
+        logDebug("pollGen1DeviceStatus: empty normalized status for ${ipAddress}")
+        return
+    }
+
+    // Find the child device and distribute status
+    def childDevice = findChildDeviceByIp(ipAddress)
+    if (childDevice) {
+        try {
+            childDevice.distributeStatus(normalizedStatus)
+        } catch (Exception e) {
+            logError("pollGen1DeviceStatus: error distributing status to ${childDevice.displayName}: ${e.message}")
+        }
+    }
+}
+
+/**
+ * Polls all non-battery Gen 1 devices for current status.
+ * Called on a schedule based on the user-configured Gen 1 polling interval.
+ * Battery devices are skipped (they sleep and are polled on wake-up via action URL callbacks).
+ */
+void pollGen1Devices() {
+    List childDevices = getChildDevices() ?: []
+    List gen1Devices = childDevices.findAll { isGen1Device(it) }
+
+    if (!gen1Devices) { return }
+
+    Integer polled = 0
+    gen1Devices.each { def dev ->
+        String ip = dev.getDataValue('ipAddress')
+        if (!ip) { return }
+
+        // Skip battery devices — they are polled on wake-up callback
+        if (isSleepyBatteryDevice(dev)) { return }
+
+        pollGen1DeviceStatus(ip)
+        polled++
+    }
+
+    if (polled > 0) {
+        logDebug("pollGen1Devices: polled ${polled} Gen 1 device(s)")
+    }
+}
+
+/**
+ * Schedules periodic Gen 1 device polling based on user-configured interval.
+ * Only schedules if Gen 1 non-battery devices exist. Unschedules if no Gen 1 devices found.
+ */
+private void scheduleGen1Polling() {
+    List childDevices = getChildDevices() ?: []
+    Boolean hasGen1NonBattery = childDevices.any { isGen1Device(it) && !isSleepyBatteryDevice(it) }
+
+    if (hasGen1NonBattery) {
+        Integer intervalSec = (settings?.gen1PollInterval ?: '60') as Integer
+        String cronExpr
+        if (intervalSec < 60) {
+            cronExpr = "0/${intervalSec} * * ? * *"
+        } else {
+            Integer intervalMin = intervalSec / 60 as Integer
+            cronExpr = "0 0/${intervalMin} * ? * *"
+        }
+        schedule(cronExpr, 'pollGen1Devices')
+        logDebug("Gen 1 polling scheduled every ${intervalSec}s")
+    } else {
+        unschedule('pollGen1Devices')
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Generation Detection Helpers
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Checks if a child device is a Gen 1 Shelly based on its stored data value.
+ *
+ * @param childDevice The Hubitat child device to check
+ * @return true if the device is Gen 1
+ */
+private Boolean isGen1Device(def childDevice) {
+    return childDevice?.getDataValue('shellyGen') == '1'
+}
+
+/**
+ * Checks if a device at a given IP address is Gen 1 based on discovery data.
+ *
+ * @param ipAddress The device IP address
+ * @return true if the device at this IP is Gen 1
+ */
+private Boolean isGen1DeviceByIp(String ipAddress) {
+    Map device = state.discoveredShellys?.get(ipAddress)
+    return device?.gen?.toString() == '1'
+}
+
+/**
+ * Returns the Shelly generation string for a child device.
+ *
+ * @param childDevice The Hubitat child device
+ * @return The generation string ({@code "1"}, {@code "2"}, {@code "3"}), or {@code "2"} as default
+ */
+private String getDeviceGen(def childDevice) {
+    return childDevice?.getDataValue('shellyGen') ?: '2'
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  Async Device Info Fetching                                   ║
 // ╚══════════════════════════════════════════════════════════════╝
@@ -3731,6 +4407,17 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
     String ip = (device.ipAddress ?: ipKey).toString()
     Integer port = (device.port ?: 80) as Integer
+
+    // If already identified as Gen 1 during mDNS processing, go directly to REST API
+    if (device.gen?.toString() == '1') {
+        logDebug("fetchAndStoreDeviceInfo: Gen 1 device at ${ip}, using REST API")
+        appendLog('debug', "Getting Gen 1 device info from ${ip}")
+        if (fetchGen1DeviceInfo(ipKey, device)) {
+            sendFoundShellyEvents()
+        }
+        return
+    }
+
     String rpcUri = (port == 80) ? "http://${ip}/rpc" : "http://${ip}:${port}/rpc"
 
     logDebug("fetchAndStoreDeviceInfo: fetching from ${rpcUri}")
@@ -3829,8 +4516,22 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
             device.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
             String hostnameMac = extractMacFromMdnsName(deviceName)
             if (hostnameMac && !device.mac) { device.mac = hostnameMac }
+
+            // Infer components for battery devices so driver can be determined
+            if (device.isBatteryDevice) {
+                Map syntheticStatus = inferGen1BatteryComponents(typeKey)
+                if (syntheticStatus) {
+                    device.deviceStatus = syntheticStatus
+                }
+            }
+
             state.discoveredShellys[ipKey] = device
             appendLog('info', "Gen 1 identified from hostname (device unreachable): ${deviceName} -> ${device.model}")
+
+            if (device.deviceStatus) {
+                determineDeviceDriver(device.deviceStatus as Map, ipKey)
+            }
+
             sendFoundShellyEvents()
             return
         }
@@ -3841,8 +4542,14 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
 /**
  * Fetches device information from a Gen 1 Shelly device via its REST API.
- * Gen 1 devices expose a {@code /shelly} endpoint that returns device identity
- * without requiring authentication. Response includes type, MAC, auth status, and firmware.
+ * Queries three endpoints in sequence:
+ * <ol>
+ *   <li>{@code /shelly} — device identity (no auth required)</li>
+ *   <li>{@code /settings} — device configuration including mode (relay/roller)</li>
+ *   <li>{@code /status} — current component states, power, temperature</li>
+ * </ol>
+ * After fetching, normalizes the Gen 1 status into internal component format
+ * and calls {@link #determineDeviceDriver} to select the appropriate driver.
  *
  * @param ipKey The IP address key in discoveredShellys
  * @param device The mutable device map from discoveredShellys
@@ -3850,12 +4557,12 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
  */
 private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
     String ip = (device.ipAddress ?: ipKey).toString()
-    String uri = "http://${ip}/shelly"
-    logDebug("fetchGen1DeviceInfo: querying ${uri}")
+    logDebug("fetchGen1DeviceInfo: querying http://${ip}/shelly")
 
     try {
+        // Step 1: /shelly — device identity (always unauthenticated)
         Map shellyInfo = null
-        httpGetHelper([uri: uri, timeout: 5, contentType: 'application/json']) { resp ->
+        httpGetHelper([uri: "http://${ip}/shelly", timeout: 5, contentType: 'application/json']) { resp ->
             if (resp?.status == 200 && resp.data) {
                 shellyInfo = resp.data as Map
             }
@@ -3887,10 +4594,48 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
         if (shellyInfo.fw) { device.ver = shellyInfo.fw.toString() }
         if (shellyInfo.auth != null) { device.auth_en = shellyInfo.auth }
 
+        // Step 2: /settings — device configuration (may require auth)
+        Map gen1Settings = sendGen1Get(ip, 'settings', [:], 1)
+        if (!gen1Settings) {
+            logDebug("fetchGen1DeviceInfo: /settings query returned no data for ${ip}")
+        }
+
+        // Step 3: /status — current device state (may require auth)
+        Map gen1Status = null
+        if (!device.isBatteryDevice) {
+            // Battery devices are usually asleep — skip /status to avoid timeout
+            gen1Status = sendGen1Get(ip, 'status', [:], 1)
+            if (!gen1Status) {
+                logDebug("fetchGen1DeviceInfo: /status query returned no data for ${ip}")
+            }
+        }
+
+        // Store raw Gen 1 data for downstream use
+        if (gen1Settings) { device.gen1Settings = gen1Settings }
+        if (gen1Status) { device.gen1Status = gen1Status }
+
+        // Normalize Gen 1 status into internal component format (switch:0, cover:0, etc.)
+        if (gen1Status || gen1Settings) {
+            Map normalizedStatus = normalizeGen1Status(gen1Status ?: [:], gen1Settings ?: [:], typeCode)
+            if (normalizedStatus) {
+                device.deviceStatus = normalizedStatus
+                logDebug("fetchGen1DeviceInfo: normalized status for ${ip}: ${normalizedStatus.keySet()}")
+            }
+        }
+
+        // Battery devices may have been asleep during discovery — infer components from type code
+        if (!device.deviceStatus && device.isBatteryDevice) {
+            Map syntheticStatus = inferGen1BatteryComponents(typeCode)
+            if (syntheticStatus) {
+                device.deviceStatus = syntheticStatus
+                logDebug("fetchGen1DeviceInfo: inferred battery components for ${ip}: ${syntheticStatus.keySet()}")
+            }
+        }
+
         device.ts = now()
         state.discoveredShellys[ipKey] = device
 
-        // Also update the cache entry
+        // Update the cache entry
         Map cache = state.deviceStatusCache ?: [:]
         if (cache.containsKey(ip)) {
             Map cacheEntry = cache[ip] as Map
@@ -3902,12 +4647,274 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
         }
 
         appendLog('info', "Gen 1 device info from ${ip}: ${device.model} (${typeCode}), mac=${device.mac ?: 'n/a'}, fw=${device.ver ?: 'n/a'}")
-        logDebug("fetchGen1DeviceInfo: success for ${ip}: ${shellyInfo}")
+        logDebug("fetchGen1DeviceInfo: success for ${ip}: shellyInfo=${shellyInfo}, settings=${gen1Settings != null}, status=${gen1Status != null}")
+
+        // Determine driver from normalized status
+        if (device.deviceStatus) {
+            determineDeviceDriver(device.deviceStatus, ipKey)
+        }
+
         return true
     } catch (Exception e) {
         logDebug("fetchGen1DeviceInfo: failed for ${ip}: ${e.message}")
         return false
     }
+}
+
+/**
+ * Infers the expected components for a Gen 1 battery device from its type code.
+ * Battery devices are usually asleep during discovery, so we can't query their
+ * actual status. Instead, we create a synthetic component map based on the known
+ * capabilities of each device type.
+ *
+ * @param typeCode The Gen 1 device type code (e.g., "SHHT-1", "SHWT-1")
+ * @return Synthetic normalized status map with expected component keys, or null if unknown
+ */
+@CompileStatic
+static Map inferGen1BatteryComponents(String typeCode) {
+    switch (typeCode) {
+        case 'SHHT-1':
+            return [
+                'temperature:0': [:],
+                'humidity:0': [:],
+                'devicepower:0': [:]
+            ]
+        case 'SHWT-1':  // Shelly Flood (type code is SHWT-1, not SHFLOOD)
+            return [
+                'flood:0': [:],
+                'temperature:0': [:],
+                'devicepower:0': [:]
+            ]
+        case 'SHDW-1':
+            return [
+                'contact:0': [:],
+                'devicepower:0': [:]
+            ]
+        case 'SHDW-2':
+            return [
+                'contact:0': [:],
+                'lux:0': [:],
+                'tilt:0': [:],
+                'temperature:0': [:],
+                'devicepower:0': [:]
+            ]
+        case 'SHBTN-1':
+        case 'SHBTN-2':
+            return [
+                'input:0': [:],
+                'devicepower:0': [:]
+            ]
+        case 'SHMOS-01':
+        case 'SHMOS-02':
+            return [
+                'input:0': [:],
+                'lux:0': [:],
+                'devicepower:0': [:]
+            ]
+        default:
+            return null
+    }
+}
+
+/**
+ * Normalizes a Gen 1 device status into the internal component format used by Gen 2+.
+ * Converts Gen 1 array-based status keys ({@code relays[]}, {@code rollers[]}, etc.)
+ * into colon-delimited component keys ({@code switch:0}, {@code cover:0}, etc.) that
+ * {@link #determineDeviceDriver} expects.
+ * <p>
+ * Also injects power monitoring flags when {@code meters[]} or {@code emeters[]} are present.
+ *
+ * @param gen1Status The raw Gen 1 {@code /status} response
+ * @param gen1Settings The raw Gen 1 {@code /settings} response (used for mode detection)
+ * @param typeCode The Gen 1 device type code (e.g. {@code SHSW-25})
+ * @return A map with Gen 2-style component keys, or empty map if no components found
+ */
+static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode) {
+    Map normalized = [:]
+
+    // Detect relay vs roller mode (Shelly 2, 2.5)
+    String mode = gen1Settings?.mode?.toString() ?: 'relay'
+
+    // Relays → switch:N (only if not in roller mode)
+    List relays = gen1Status?.relays as List
+    if (relays && mode != 'roller') {
+        for (int i = 0; i < relays.size(); i++) {
+            Map relayData = relays[i] as Map ?: [:]
+            Map switchStatus = [output: relayData.ison ?: false]
+            // Check for inline power data
+            if (relayData.containsKey('power')) {
+                switchStatus.apower = relayData.power
+            }
+            normalized["switch:${i}".toString()] = switchStatus
+        }
+    }
+
+    // Rollers → cover:N (only if in roller mode)
+    List rollers = gen1Status?.rollers as List
+    if (rollers && mode == 'roller') {
+        for (int i = 0; i < rollers.size(); i++) {
+            Map rollerData = rollers[i] as Map ?: [:]
+            normalized["cover:${i}".toString()] = [
+                state: rollerData.state ?: 'stop',
+                current_pos: rollerData.current_pos
+            ]
+        }
+    }
+
+    // Lights → light:N (dimmers, bulbs)
+    List lights = gen1Status?.lights as List
+    if (lights) {
+        for (int i = 0; i < lights.size(); i++) {
+            Map lightData = lights[i] as Map ?: [:]
+            normalized["light:${i}".toString()] = [
+                output: lightData.ison ?: false,
+                brightness: lightData.brightness ?: 0
+            ]
+        }
+    }
+
+    // Inputs → input:N
+    List inputs = gen1Status?.inputs as List
+    if (inputs) {
+        for (int i = 0; i < inputs.size(); i++) {
+            Map inputData = inputs[i] as Map ?: [:]
+            normalized["input:${i}".toString()] = [
+                state: inputData.input ?: false
+            ]
+        }
+    }
+
+    // Meters → inject power monitoring data onto associated components
+    List meters = gen1Status?.meters as List
+    if (meters) {
+        for (int i = 0; i < meters.size(); i++) {
+            Map meterData = meters[i] as Map ?: [:]
+            // Associate with switch or cover component at same index
+            String switchKey = "switch:${i}".toString()
+            String coverKey = "cover:${i}".toString()
+            String lightKey = "light:${i}".toString()
+            // Gen 1 meter.total is in Watt-minutes; convert to Wh for consistency with Gen 2
+            BigDecimal totalWh = meterData.total != null ? (meterData.total as BigDecimal) / 60.0 : null
+            if (normalized.containsKey(switchKey)) {
+                Map switchMap = normalized[switchKey] as Map
+                switchMap.apower = meterData.power
+                if (totalWh != null) { switchMap.aenergy = [total: totalWh] }
+                switchMap.voltage = meterData.voltage
+            } else if (normalized.containsKey(coverKey)) {
+                Map coverMap = normalized[coverKey] as Map
+                coverMap.apower = meterData.power
+                if (totalWh != null) { coverMap.aenergy = [total: totalWh] }
+            } else if (normalized.containsKey(lightKey)) {
+                Map lightMap = normalized[lightKey] as Map
+                lightMap.apower = meterData.power
+                if (totalWh != null) { lightMap.aenergy = [total: totalWh] }
+            }
+        }
+    }
+
+    // Energy meters → em:N (Shelly EM, 3EM)
+    List emeters = gen1Status?.emeters as List
+    if (emeters) {
+        for (int i = 0; i < emeters.size(); i++) {
+            Map emData = emeters[i] as Map ?: [:]
+            normalized["em:${i}".toString()] = [
+                act_power: emData.power,
+                voltage: emData.voltage,
+                current: emData.current,
+                total_act_energy: emData.total,
+                total_act_ret_energy: emData.total_returned
+            ]
+        }
+    }
+
+    // External temperature sensors (add-ons)
+    Map extTemp = gen1Status?.ext_temperature as Map
+    if (extTemp) {
+        extTemp.each { key, value ->
+            Map sensorData = value as Map ?: [:]
+            Integer sensorIndex = 100 + (key.toString().isInteger() ? key.toString().toInteger() : 0)
+            BigDecimal tC = sensorData.tC as BigDecimal
+            BigDecimal tF = sensorData.tF != null ? sensorData.tF as BigDecimal : (tC != null ? (tC * 9.0 / 5.0) + 32.0 : null)
+            normalized["temperature:${sensorIndex}".toString()] = [tC: tC, tF: tF]
+        }
+    }
+
+    // External humidity sensors (add-ons)
+    Map extHum = gen1Status?.ext_humidity as Map
+    if (extHum) {
+        extHum.each { key, value ->
+            Map sensorData = value as Map ?: [:]
+            Integer sensorIndex = 100 + (key.toString().isInteger() ? key.toString().toInteger() : 0)
+            normalized["humidity:${sensorIndex}".toString()] = [value: sensorData.hum]
+        }
+    }
+
+    // Internal device temperature (Shelly 1PM, 2.5, H&T, etc.)
+    // Gen 1 tmp field: {value: X, units: "C"/"F", tC: X, tF: X}
+    if (gen1Status?.containsKey('temperature') || gen1Status?.containsKey('tmp')) {
+        Map tmpData = gen1Status?.tmp as Map
+        Map tempMap = [:]
+        if (tmpData?.tC != null) {
+            tempMap.tC = tmpData.tC
+        } else if (tmpData?.value != null && tmpData?.units == 'C') {
+            tempMap.tC = tmpData.value
+        } else if (gen1Status?.temperature != null) {
+            tempMap.tC = gen1Status.temperature
+        }
+        if (tmpData?.tF != null) {
+            tempMap.tF = tmpData.tF
+        } else if (tmpData?.value != null && tmpData?.units == 'F') {
+            tempMap.tF = tmpData.value
+        } else if (tempMap.tC != null) {
+            // Compute tF from tC for driver compatibility
+            tempMap.tF = ((tempMap.tC as BigDecimal) * 9.0 / 5.0) + 32.0
+        }
+        if (tempMap) {
+            normalized['temperature:0'] = tempMap
+        }
+    }
+
+    // Humidity (Shelly H&T)
+    if (gen1Status?.containsKey('hum')) {
+        Map humData = gen1Status?.hum as Map
+        if (humData?.value != null) {
+            normalized['humidity:0'] = [value: humData.value]
+        }
+    }
+
+    // Battery → devicepower:0
+    if (gen1Status?.containsKey('bat')) {
+        Map batData = gen1Status?.bat as Map
+        if (batData?.value != null) {
+            normalized['devicepower:0'] = [
+                battery: batData.value
+            ]
+        }
+    }
+
+    // Flood sensor
+    if (gen1Status?.containsKey('flood')) {
+        normalized['flood:0'] = [flood: gen1Status.flood]
+    }
+
+    // Door/Window sensor — 'sensor' field contains state: "open" or "close"
+    Map sensorData = gen1Status?.sensor as Map
+    if (sensorData?.containsKey('state')) {
+        normalized['contact:0'] = [open: sensorData.state == 'open']
+    }
+
+    // Tilt sensor (DW2)
+    if (sensorData?.containsKey('tilt')) {
+        normalized['tilt:0'] = [value: sensorData.tilt]
+    }
+
+    // Illuminance sensor (DW2)
+    Map luxData = gen1Status?.lux as Map
+    if (luxData?.containsKey('value')) {
+        normalized['lux:0'] = [value: luxData.value]
+    }
+
+    return normalized
 }
 
 /**
@@ -3950,7 +4957,8 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
 
     // Comprehensive set of recognized Shelly component types
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'input', 'pm1', 'em', 'em1',
-        'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter'] as Set
+        'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
+        'flood', 'contact', 'lux', 'tilt'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -4004,7 +5012,8 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Determine driver name for discovered components and install prebuilt driver
     if (components.size() > 0) {
         Boolean isParent = needsParentChild
-        String driverName = generateDriverName(components, componentPowerMonitoring, isParent)
+        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.gen?.toString() == '1') : false
+        String driverName = generateDriverName(components, componentPowerMonitoring, isParent, isGen1)
         String version = getAppVersion()
         String driverNameWithVersion = "${driverName} v${version}"
 
@@ -4059,16 +5068,22 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
  * @param components List of Shelly components (e.g., ["switch:0", "temperature:0"])
  * @param componentPowerMonitoring Map of component names to power monitoring flags
  * @param isParent Whether this device needs a parent driver (multi-component with children)
+ * @param isGen1 Whether this is a Gen 1 device (uses "Shelly Gen1" prefix instead of "Shelly Autoconf")
  * @return Generated driver name
  */
-private String generateDriverName(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:], Boolean isParent = false) {
+private String generateDriverName(List<String> components, Map<String, Boolean> componentPowerMonitoring = [:], Boolean isParent = false, Boolean isGen1 = false) {
     Map<String, Integer> componentCounts = [:]
     Boolean hasPowerMonitoring = false
+
+    // Gen 1 vs Gen 2+ prefix
+    String prefix = isGen1 ? "Shelly Gen1" : "Shelly Autoconf"
 
     // Sensor and actuator type sets
     Set<String> sensorTypes = ['temperature', 'humidity', 'illuminance', 'smoke', 'voltmeter'] as Set
     Set<String> supportTypes = ['devicepower', 'input', 'pm1'] as Set
     Set<String> actuatorTypes = ['switch', 'cover', 'light'] as Set
+    // Gen 1 additional component types
+    Set<String> gen1SensorTypes = ['flood', 'em', 'contact', 'lux'] as Set
 
     components.each { component ->
         String baseType = component.contains(':') ? component.split(':')[0] : component
@@ -4083,13 +5098,42 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     Set<String> foundActuators = componentCounts.keySet().findAll { actuatorTypes.contains(it) } as Set
     Set<String> foundSensors = componentCounts.keySet().findAll { sensorTypes.contains(it) } as Set
     Boolean hasBattery = componentCounts.containsKey('devicepower')
+    Boolean hasFlood = componentCounts.containsKey('flood')
+    Boolean hasEM = componentCounts.containsKey('em')
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
     String parentSuffix = isParent ? " Parent" : ""
 
-    // Special case: Input-only devices (no actuators, only inputs)
+    // Gen 1 special types: Flood sensor
+    if (isGen1 && hasFlood) {
+        return "${prefix} Flood Sensor"
+    }
+
+    // Gen 1 special types: Door/Window sensor
+    Boolean hasContact = componentCounts.containsKey('contact')
+    if (isGen1 && hasContact) {
+        return "${prefix} DW Sensor"
+    }
+
+    // Input count needed by multiple checks below
     Integer inputCount = componentCounts['input'] ?: 0
+
+    // Gen 1 special types: Button (single input + battery, no actuators)
+    if (isGen1 && inputCount == 1 && hasBattery && foundActuators.size() == 0) {
+        return "${prefix} Button"
+    }
+
+    // Gen 1 special types: Energy meter (EM, 3EM)
+    if (isGen1 && hasEM) {
+        Integer emCount = componentCounts['em'] ?: 0
+        if (emCount > 1) {
+            return "${prefix} ${emCount}x EM Parent"
+        }
+        return "${prefix} EM Parent"
+    }
+
+    // Special case: Input-only devices (no actuators, only inputs)
     if (foundActuators.size() == 0 && inputCount > 1) {
-        return "Shelly Autoconf ${inputCount}x Input Parent"
+        return "${prefix} ${inputCount}x Input Parent"
     }
 
     // When actuators are present, classify by actuator type
@@ -4115,16 +5159,16 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
 
             if (count == 1) {
                 if (needsParent) {
-                    return "Shelly Autoconf Single ${typeName}${pmSuffix} Parent"
+                    return "${prefix} Single ${typeName}${pmSuffix} Parent"
                 } else {
-                    return "Shelly Autoconf Single ${typeName}${pmSuffix}"
+                    return "${prefix} Single ${typeName}${pmSuffix}"
                 }
             } else {
-                return "Shelly Autoconf ${count}x ${typeName}${pmSuffix} Parent"
+                return "${prefix} ${count}x ${typeName}${pmSuffix} Parent"
             }
         } else {
             // Multiple actuator types - use fallback parent
-            return "Shelly Autoconf Parent"
+            return "${prefix} Parent"
         }
     }
 
@@ -4134,35 +5178,35 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         Boolean hasHumidity = foundSensors.contains('humidity')
 
         if (hasTemp && hasHumidity) {
-            return "Shelly Autoconf TH Sensor${parentSuffix}"
+            return "${prefix} TH Sensor${parentSuffix}"
         } else if (hasTemp) {
-            return "Shelly Autoconf Temperature Sensor${parentSuffix}"
+            return "${prefix} Temperature Sensor${parentSuffix}"
         } else if (hasHumidity) {
-            return "Shelly Autoconf Humidity Sensor${parentSuffix}"
+            return "${prefix} Humidity Sensor${parentSuffix}"
         } else if (foundSensors.contains('smoke')) {
-            return "Shelly Autoconf Smoke Sensor${parentSuffix}"
+            return "${prefix} Smoke Sensor${parentSuffix}"
         } else if (foundSensors.contains('illuminance')) {
-            return "Shelly Autoconf Illuminance Sensor${parentSuffix}"
+            return "${prefix} Illuminance Sensor${parentSuffix}"
         } else if (foundSensors.contains('voltmeter')) {
-            return "Shelly Autoconf Voltmeter${parentSuffix}"
+            return "${prefix} Voltmeter${parentSuffix}"
         } else {
             // Other sensor types
             String sensorName = foundSensors.first().capitalize()
-            return "Shelly Autoconf ${sensorName} Sensor${parentSuffix}"
+            return "${prefix} ${sensorName} Sensor${parentSuffix}"
         }
     }
 
     // Only support components (devicepower only, no sensors or actuators)
     if (hasBattery) {
-        return "Shelly Autoconf Battery Device${parentSuffix}"
+        return "${prefix} Battery Device${parentSuffix}"
     }
 
     // Fallback for unknown patterns - use generic parent if multi-component
     if (isParent || components.size() > 1) {
-        return "Shelly Autoconf Parent"
+        return "${prefix} Parent"
     }
 
-    return "Shelly Autoconf Unknown Device"
+    return "${prefix} Unknown Device"
 }
 
 /**
@@ -6751,82 +7795,802 @@ void shellyCommandCallback(AsyncResponse response, Map data = null) {
   logJson(response.getJson() as LinkedHashMap)
 }
 
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  Bluetooth                                                   ║
-// ╚══════════════════════════════════════════════════════════════╝
-/* #region Bluetooth */
-// MARK: Bluetooth
-void enableBluReportingToHE() {
-  enableBluetooth()
-  LinkedHashMap s = getBleShellyBluId()
-  if(s == null) {
-    logDebug('HubitatBLEHelper script not found on device, creating script...')
-    postCommandSync(scriptCreateCommand('HubitatBLEHelper'))
-    s = getBleShellyBluId()
-  }
-  Integer id = s?.id as Integer
-  if(id != null) {
-    postCommandSync(scriptStopCommand(id))
-    logDebug('Getting latest Shelly Bluetooth Helper script...')
-    String js = getBleShellyBluJs()
-    logDebug('Sending latest Shelly Bluetooth Helper to device...')
-    postCommandSync(scriptPutCodeCommand(id, js, false))
-    logDebug('Enabling Shelly Bluetooth HelperShelly Bluetooth Helper on device...')
-    postCommandSync(scriptEnableCommand(id))
-    logDebug('Starting Shelly Bluetooth Helper on device...')
-    postCommandSync(scriptStartCommand(id))
-    logDebug('Validating sucessful installation of Shelly Bluetooth Helper...')
-    s = getBleShellyBluId()
-    logDebug("Bluetooth Helper is ${s?.name == 'HubitatBLEHelper' ? 'installed' : 'not installed'}, ${s?.enable ? 'enabled' : 'disabled'}, and ${s?.running ? 'running' : 'not running'}")
-    if(s?.name == 'HubitatBLEHelper' && s?.enable && s?.running) {
-      logDebug('Sucessfully installed Shelly Bluetooth Helper on device...')
+// ═══════════════════════════════════════════════════════════════
+// ║  Bluetooth (BLE) Device Support                              ║
+// ═══════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// BLE Data Reception & Deduplication
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Receives BLE relay data from a WiFi gateway driver.
+ * Called by Gen 2+ drivers when they receive a POST with dst='ble'.
+ * Deduplicates by pid+mac, updates discovery state, and routes events to child devices.
+ *
+ * @param gatewayDevice The gateway device that received the BLE advertisement
+ * @param bleData Map of decoded BTHome fields (mac, pid, model, battery, temperature, etc.)
+ */
+void handleBleRelay(def gatewayDevice, Map bleData) {
+    String mac = bleData?.mac?.toString()?.toUpperCase()
+    if (!mac) {
+        logDebug('handleBleRelay: no MAC in BLE data')
+        return
+    }
+
+    Integer pid = bleData.pid != null ? bleData.pid as Integer : -1
+    String model = bleData.model?.toString() ?: ''
+    Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
+    String gatewayName = gatewayDevice?.displayName ?: 'Unknown gateway'
+
+    logTrace("handleBleRelay: mac=${mac} pid=${pid} model=${model} rssi=${rssi} gateway=${gatewayName}")
+
+    // Dedup by pid per MAC
+    if (isBlePidDuplicate(mac, pid)) {
+        logTrace("handleBleRelay: duplicate pid ${pid} for ${mac}, skipping")
+        return
+    }
+
+    // Update discovery state
+    updateBleDiscoveryState(mac, model, rssi, gatewayName, bleData)
+
+    // Route events to child device (if created)
+    routeBleEventToChild(mac, bleData)
+
+    // Fire SSR update for BLE table
+    sendEvent(name: 'bleTable', value: 'update')
+}
+
+/**
+ * Checks if a BLE packet ID has already been processed for a given MAC.
+ * Maintains a ring buffer of the last 10 pids per MAC in state.recentBlePids.
+ *
+ * @param mac The BLE device MAC address
+ * @param pid The packet ID to check
+ * @return true if this pid was already seen for this MAC
+ */
+private Boolean isBlePidDuplicate(String mac, Integer pid) {
+    Map recentPids = state.recentBlePids ?: [:]
+    String macKey = mac.toString()
+    List<Integer> pids = (recentPids[macKey] ?: []) as List<Integer>
+
+    if (pids.contains(pid)) {
+        return true
+    }
+
+    // Add to ring buffer (keep last 10)
+    pids.add(pid)
+    if (pids.size() > 10) {
+        pids = pids[-10..-1]
+    }
+
+    recentPids[macKey] = pids
+    state.recentBlePids = recentPids
+    return false
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE Discovery State Management
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Updates the BLE discovery state for a device.
+ * Tracks discovered BLE devices with their model, RSSI, last seen time,
+ * gateway info, and whether a Hubitat child device has been created.
+ *
+ * @param mac BLE device MAC address (uppercase, no colons)
+ * @param model BLE device model code (e.g., 'SBHT-003C')
+ * @param rssi Signal strength in dBm
+ * @param gatewayName Display name of the WiFi gateway device
+ * @param bleData Full BLE data map (for extracting battery, etc.)
+ */
+private void updateBleDiscoveryState(String mac, String model, Integer rssi, String gatewayName, Map bleData) {
+    Map discoveredBle = state.discoveredBleDevices ?: [:]
+    String macKey = mac.toString()
+
+    Map entry = (discoveredBle[macKey] ?: [:]) as Map
+    entry.mac = mac
+    if (model) {
+        entry.model = model
+        Map driverInfo = BLE_MODEL_TO_DRIVER[model]
+        if (driverInfo) {
+            entry.friendlyModel = driverInfo.friendlyModel
+            entry.driverName = driverInfo.driverName
+        }
+    }
+    if (rssi != null) { entry.rssi = rssi }
+    if (bleData.battery != null) { entry.battery = bleData.battery as Integer }
+    entry.lastSeen = now()
+    entry.lastGateway = gatewayName
+
+    // Check if child device exists
+    def child = getChildDevice(mac)
+    entry.isCreated = (child != null)
+    if (child) {
+        entry.hubDeviceId = child.id
+        entry.hubDeviceName = child.displayName
+    }
+
+    discoveredBle[macKey] = entry
+    state.discoveredBleDevices = discoveredBle
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE Device Creation & Removal
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Creates a Hubitat child device for a discovered BLE device.
+ * Installs the appropriate prebuilt driver and creates the child with DNI = MAC.
+ *
+ * @param mac BLE device MAC address (used as DNI)
+ */
+private void createBleDevice(String mac) {
+    String macKey = mac.toString()
+    Map discoveredBle = state.discoveredBleDevices ?: [:]
+    Map bleInfo = discoveredBle[macKey] as Map
+
+    if (!bleInfo) {
+        logError("createBleDevice: no BLE info found for MAC ${mac}")
+        appendLog('error', "Failed to create BLE device: no info for ${mac}")
+        return
+    }
+
+    String model = bleInfo.model as String
+    if (!model || !BLE_MODEL_TO_DRIVER.containsKey(model)) {
+        logError("createBleDevice: unknown model '${model}' for MAC ${mac}")
+        appendLog('error', "Failed to create BLE device: unknown model for ${mac}")
+        return
+    }
+
+    Map driverInfo = BLE_MODEL_TO_DRIVER[model]
+    String driverName = driverInfo.driverName
+    String friendlyModel = driverInfo.friendlyModel
+    String driverNameWithVersion = "${driverName} v${APP_VERSION}".toString()
+
+    // Check if device already exists
+    def existing = getChildDevice(mac)
+    if (existing) {
+        logWarn("BLE device already exists: ${existing.displayName} (${mac})")
+        appendLog('warn', "BLE device already exists: ${existing.displayName}")
+        return
+    }
+
+    // Install the driver
+    if (!installPrebuiltDriver(driverName, [], [:], APP_VERSION)) {
+        logError("createBleDevice: failed to install driver '${driverName}'")
+        appendLog('error', "Failed to install BLE driver: ${driverName}")
+        return
+    }
+
+    // Brief pause for driver registration
+    pauseExecution(2000)
+
+    String deviceLabel = "${friendlyModel} ${mac[-4..-1]}"
+    Map deviceProps = [
+        name: deviceLabel,
+        label: deviceLabel,
+        data: [
+            bleMac: mac,
+            bleModel: model,
+            shellyGen: 'ble'
+        ]
+    ]
+
+    try {
+        def childDevice = addChildDevice('ShellyUSA', driverNameWithVersion, mac, deviceProps)
+        logInfo("Created BLE device: ${deviceLabel} using driver ${driverNameWithVersion}")
+        appendLog('info', "Created BLE device: ${deviceLabel}")
+
+        // Track driver
+        associateDeviceWithDriver(driverNameWithVersion, 'ShellyUSA', mac)
+
+        // Store config
+        Map deviceConfigs = state.deviceConfigs ?: [:]
+        deviceConfigs[macKey] = [
+            driverName: driverNameWithVersion,
+            model: model,
+            friendlyModel: friendlyModel,
+            gen: 'ble',
+            isBleDevice: true,
+            storedAt: now()
+        ]
+        state.deviceConfigs = deviceConfigs
+
+        // Update discovery state
+        bleInfo.isCreated = true
+        bleInfo.hubDeviceId = childDevice.id
+        bleInfo.hubDeviceName = deviceLabel
+        discoveredBle[macKey] = bleInfo
+        state.discoveredBleDevices = discoveredBle
+
+        childDevice.initialize()
+
+    } catch (Exception e) {
+        logError("createBleDevice: failed to create ${deviceLabel} — ${e.message}")
+        appendLog('error', "Failed to create BLE device ${deviceLabel}: ${e.message}")
+    }
+}
+
+/**
+ * Removes a Hubitat child device for a BLE device.
+ *
+ * @param mac BLE device MAC address (the DNI)
+ */
+private void removeBleDevice(String mac) {
+    String macKey = mac.toString()
+
+    try {
+        deleteChildDevice(mac)
+        logInfo("Removed BLE device: ${mac}")
+        appendLog('info', "Removed BLE device: ${mac}")
+
+        // Clean up driver tracking only after successful delete
+        Map deviceConfigs = state.deviceConfigs ?: [:]
+        Map config = deviceConfigs[macKey] as Map
+        if (config?.driverName) {
+            String driverKey = "ShellyUSA.${config.driverName}".toString()
+            Map allDrivers = state.autoDrivers ?: [:]
+            Map driverEntry = allDrivers[driverKey] as Map
+            if (driverEntry?.devicesUsing instanceof List) {
+                (driverEntry.devicesUsing as List).remove(macKey)
+                allDrivers[driverKey] = driverEntry
+                state.autoDrivers = allDrivers
+            }
+        }
+
+        // Clean up device config
+        deviceConfigs.remove(macKey)
+        state.deviceConfigs = deviceConfigs
+
+        // Update discovery state
+        Map discoveredBle = state.discoveredBleDevices ?: [:]
+        Map bleInfo = discoveredBle[macKey] as Map
+        if (bleInfo) {
+            bleInfo.isCreated = false
+            bleInfo.hubDeviceId = null
+            bleInfo.hubDeviceName = null
+            discoveredBle[macKey] = bleInfo
+            state.discoveredBleDevices = discoveredBle
+        }
+    } catch (Exception e) {
+        logError("removeBleDevice: failed to delete ${mac} — ${e.message}")
+        appendLog('error', "Failed to remove BLE device ${mac}: ${e.message}")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE Event Routing to Child Devices
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Routes decoded BLE data to a Hubitat child device as events.
+ * Converts BTHome fields to standard Hubitat attributes.
+ *
+ * @param mac BLE device MAC address (the child DNI)
+ * @param bleData Map of decoded BTHome fields
+ */
+private void routeBleEventToChild(String mac, Map bleData) {
+    def child = getChildDevice(mac)
+    if (!child) { return }
+
+    List<Map> events = buildBleEvents(bleData)
+
+    events.each { Map evt ->
+        childSendEventHelper(child, evt)
+    }
+
+    // Always send presence and timestamp
+    childSendEventHelper(child, [name: 'presence', value: 'present', descriptionText: 'BLE advertisement received'])
+    childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+
+    // Track last contact time for presence management
+    String macKey = mac.toString()
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Map config = (deviceConfigs[macKey] ?: [:]) as Map
+    config.lastBleContact = now()
+    deviceConfigs[macKey] = config
+    state.deviceConfigs = deviceConfigs
+
+    logDebug("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}")
+}
+
+/**
+ * Converts BLE data fields to Hubitat event maps.
+ * Handles temperature unit conversion, motion/contact states,
+ * and multi-button BTHome encoding.
+ *
+ * @param bleData Map of decoded BTHome fields
+ * @return List of event maps suitable for sendEvent()
+ */
+private List<Map> buildBleEvents(Map bleData) {
+    List<Map> events = []
+
+    // Battery
+    if (bleData.battery != null) {
+        Integer battery = bleData.battery as Integer
+        events.add([name: 'battery', value: battery, unit: '%',
+            descriptionText: "Battery is ${battery}%"])
+    }
+
+    // Temperature (BTHome sends Celsius; convert if hub uses Fahrenheit)
+    if (bleData.temperature != null) {
+        BigDecimal tempC = bleData.temperature as BigDecimal
+        String scale = getTemperatureScale()
+        BigDecimal temp = (scale == 'F') ? cToF(tempC) : tempC
+        temp = temp.setScale(1, BigDecimal.ROUND_HALF_UP)
+        events.add([name: 'temperature', value: temp, unit: "°${scale}",
+            descriptionText: "Temperature is ${temp}°${scale}"])
+    }
+
+    // Humidity
+    if (bleData.humidity != null) {
+        Integer humidity = Math.round(bleData.humidity as BigDecimal) as Integer
+        events.add([name: 'humidity', value: humidity, unit: '%rh',
+            descriptionText: "Humidity is ${humidity}%"])
+    }
+
+    // Illuminance
+    if (bleData.illuminance != null) {
+        Integer lux = Math.round(bleData.illuminance as BigDecimal) as Integer
+        events.add([name: 'illuminance', value: lux, unit: 'lux',
+            descriptionText: "Illuminance is ${lux} lux"])
+    }
+
+    // Motion (0=inactive, 1=active)
+    if (bleData.motion != null) {
+        String motionVal = (bleData.motion as Integer) == 1 ? 'active' : 'inactive'
+        events.add([name: 'motion', value: motionVal,
+            descriptionText: "Motion is ${motionVal}"])
+    }
+
+    // Window/Door contact (0=closed, 1=open)
+    if (bleData.window != null) {
+        String contactVal = (bleData.window as Integer) == 1 ? 'open' : 'closed'
+        events.add([name: 'contact', value: contactVal,
+            descriptionText: "Contact is ${contactVal}"])
+    }
+
+    // Rotation (tilt angle)
+    if (bleData.rotation != null) {
+        BigDecimal tilt = bleData.rotation as BigDecimal
+        events.add([name: 'tilt', value: tilt, unit: '°',
+            descriptionText: "Tilt is ${tilt}°"])
+    }
+
+    // Button events (BTHome: 1=push, 2=double, 3=triple, 4+=held, 254=released)
+    if (bleData.button != null) {
+        if (bleData.button instanceof List) {
+            // Multi-button device: array index = button number (0-based → 1-based)
+            List buttonList = bleData.button as List
+            buttonList.eachWithIndex { btnVal, Integer idx ->
+                Integer buttonNum = idx + 1
+                Integer action = btnVal as Integer
+                Map buttonEvent = buildButtonEvent(action, buttonNum)
+                if (buttonEvent) { events.add(buttonEvent) }
+            }
+        } else {
+            // Single button device
+            Integer action = bleData.button as Integer
+            Map buttonEvent = buildButtonEvent(action, 1)
+            if (buttonEvent) { events.add(buttonEvent) }
+        }
+    }
+
+    return events
+}
+
+/**
+ * Converts a BTHome button action code to a Hubitat button event.
+ * BTHome codes: 1=push, 2=double-tap, 3=triple-tap, 4/32+=held, 254=released, 0=none.
+ *
+ * @param action The BTHome button action code
+ * @param buttonNum The button number (1-based)
+ * @return Event map or null if no action (action == 0)
+ */
+private Map buildButtonEvent(Integer action, Integer buttonNum) {
+    switch (action) {
+        case 0:
+            return null // No action
+        case 1:
+            return [name: 'pushed', value: buttonNum, isStateChange: true,
+                descriptionText: "Button ${buttonNum} pushed"]
+        case 2:
+            return [name: 'doubleTapped', value: buttonNum, isStateChange: true,
+                descriptionText: "Button ${buttonNum} double-tapped"]
+        case 3:
+            return [name: 'tripleTapped', value: buttonNum, isStateChange: true,
+                descriptionText: "Button ${buttonNum} triple-tapped"]
+        case 254:
+            return [name: 'released', value: buttonNum, isStateChange: true,
+                descriptionText: "Button ${buttonNum} released"]
+        default:
+            // 4+ = long press / held
+            return [name: 'held', value: buttonNum, isStateChange: true,
+                descriptionText: "Button ${buttonNum} held"]
+    }
+}
+
+/**
+ * Helper to get the hub's temperature scale.
+ * Non-static because getLocation() is dynamic.
+ *
+ * @return 'F' or 'C'
+ */
+private String getTemperatureScale() {
+    return getLocationHelper()?.temperatureScale ?: 'F'
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE Presence Management
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Checks all BLE devices for presence timeout.
+ * Called on a 5-minute schedule. If a device hasn't been heard from
+ * within its presenceTimeout setting, marks it as 'not present'.
+ */
+void checkBlePresence() {
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Boolean anyChanged = false
+
+    deviceConfigs.each { String key, configVal ->
+        Map config = configVal as Map
+        if (config?.isBleDevice != true) { return }
+
+        Long lastContact = config.lastBleContact as Long ?: 0L
+        if (lastContact == 0L) { return }
+
+        def child = getChildDevice(key)
+        if (!child) { return }
+
+        // Get presenceTimeout from device settings (default 60 minutes)
+        Integer timeoutMinutes = 60
+        try {
+            def deviceTimeout = child.getSetting('presenceTimeout')
+            if (deviceTimeout != null) { timeoutMinutes = deviceTimeout as Integer }
+        } catch (Exception e) {
+            logDebug("checkBlePresence: getSetting failed for ${child.displayName}, using default ${timeoutMinutes}min")
+        }
+
+        Long timeoutMs = timeoutMinutes * 60L * 1000L
+        Long elapsed = now() - lastContact
+
+        if (elapsed > timeoutMs) {
+            String currentPresence = child.currentValue('presence')
+            if (currentPresence != 'not present') {
+                childSendEventHelper(child, [name: 'presence', value: 'not present',
+                    descriptionText: "No BLE data for ${timeoutMinutes} minutes"])
+                logInfo("BLE device ${child.displayName} marked as not present (no data for ${timeoutMinutes} min)")
+                anyChanged = true
+            }
+        }
+    }
+
+    if (anyChanged) {
+        sendEvent(name: 'bleTable', value: 'presence')
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE Gateway Toggle
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Toggles BLE gateway mode on a WiFi Shelly device.
+ * Enables or disables the HubitatBLEHelper script and BLE scanning.
+ *
+ * @param ip The IP address of the WiFi gateway device
+ */
+private void toggleBleGateway(String ip) {
+    List bleGateways = (state.bleGateways ?: []) as List
+    if (bleGateways.contains(ip)) {
+        disableBleGateway(ip)
+        bleGateways.remove(ip)
+        appendLog('info', "BLE gateway disabled on ${ip}")
     } else {
-      logWarn('Shelly Bluetooth Helper was not sucessfully installed on device!')
+        if (enableBleGateway(ip)) {
+            bleGateways.add(ip)
+            appendLog('info', "BLE gateway enabled on ${ip}")
+        }
     }
-  }
+    state.bleGateways = bleGateways
 }
 
-@CompileStatic
-void disableBluReportingToHE() {
-  LinkedHashMap s = getBleShellyBluId()
-  Integer id = s?.id as Integer
-  if(id != null) {
-    logDebug('Removing HubitatBLEHelper from Shelly device...')
-    postCommandSync(scriptDeleteCommand(id))
-    logDebug('Disabling BLE Observer...')
-    postCommandSync(bleSetConfigCommand(true, true, false))
-  }
-}
+/**
+ * Enables BLE gateway mode on a device.
+ * Enables Bluetooth, downloads and installs the HubitatBLEHelper script,
+ * and writes the hub IP to device KVS.
+ *
+ * @param ip The IP address of the Shelly device
+ */
+private Boolean enableBleGateway(String ip) {
+    String uri = "http://${ip}/rpc"
+    Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
-@CompileStatic
-LinkedHashMap getBleShellyBluId() {
-  logDebug('Getting index of HubitatBLEHelper script, if it exists on Shelly device...')
-  LinkedHashMap json = postCommandSync(scriptListCommand())
-  List<LinkedHashMap> scripts = (List<LinkedHashMap>)((LinkedHashMap)json?.result)?.scripts
-  scripts.each{logDebug("Script found: ${prettyJson(it)}")}
-  return scripts.find{it?.name == 'HubitatBLEHelper'}
-}
+    // Step 1: Enable Bluetooth with observer
+    logInfo("Enabling Bluetooth on ${ip}...")
+    LinkedHashMap bleCmd = bleSetConfigCommand(true, true, true)
+    if (hasAuth) { bleCmd.auth = getAuth() }
+    postCommandSync(bleCmd, uri)
 
-String getBleShellyBluJs() {
-  Map params = [uri: BLE_SHELLY_BLU]
-  params.contentType = 'text/plain'
-  params.requestContentType = 'text/plain'
-  params.textParser = true
-  httpGet(params) { resp ->
-    if (resp && resp.data && resp.success) {
-      StringWriter sw = new StringWriter()
-      ((StringReader)resp.data).transferTo(sw);
-      return sw.toString()
+    // Step 2: Download BLE helper script from GitHub
+    String branch = GITHUB_BRANCH
+    String scriptUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts/HubitatBLEHelper.js"
+    String scriptCode = downloadFile(scriptUrl)
+    if (!scriptCode) {
+        logError("enableBleGateway: failed to download HubitatBLEHelper.js from GitHub")
+        appendLog('error', "Failed to download BLE script for ${ip}")
+        return false
     }
-    else { logError(resp.data) }
-  }
+
+    // Step 3: Check if script exists, create or update
+    List<Map> installedScripts = listDeviceScripts(ip)
+    Map existingScript = installedScripts?.find { (it.name ?: '') == 'HubitatBLEHelper' }
+
+    Integer scriptId
+    if (existingScript) {
+        scriptId = existingScript.id as Integer
+        logInfo("Updating HubitatBLEHelper script (id: ${scriptId}) on ${ip}...")
+
+        LinkedHashMap stopCmd = scriptStopCommand(scriptId)
+        if (hasAuth) { stopCmd.auth = getAuth() }
+        postCommandSync(stopCmd, uri)
+    } else {
+        logInfo("Creating HubitatBLEHelper script on ${ip}...")
+        LinkedHashMap createCmd = scriptCreateCommand('HubitatBLEHelper')
+        if (hasAuth) { createCmd.auth = getAuth() }
+        LinkedHashMap createResult = postCommandSync(createCmd, uri)
+        scriptId = ((createResult?.result as Map)?.id ?: (createResult?.id)) as Integer
+        if (scriptId == null) {
+            logError("enableBleGateway: failed to create script on ${ip}")
+            appendLog('error', "Failed to create BLE script on ${ip}")
+            return false
+        }
+    }
+
+    // Step 4: Upload script code (chunked)
+    Boolean hasAuthForUpload = hasAuth
+    uploadScriptInChunks(scriptId, scriptCode, uri, hasAuthForUpload)
+
+    // Step 5: Enable and start
+    LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+    if (hasAuth) { enableCmd.auth = getAuth() }
+    postCommandSync(enableCmd, uri)
+
+    LinkedHashMap startCmd = scriptStartCommand(scriptId)
+    if (hasAuth) { startCmd.auth = getAuth() }
+    postCommandSync(startCmd, uri)
+
+    // Step 6: Write hub IP to KVS
+    writeHubitatIpToKVS(ip)
+
+    logInfo("BLE gateway enabled on ${ip}")
+    return true
 }
 
+/**
+ * Disables BLE gateway mode on a device.
+ * Removes the HubitatBLEHelper script and disables the BLE observer.
+ *
+ * @param ip The IP address of the Shelly device
+ */
+private void disableBleGateway(String ip) {
+    String uri = "http://${ip}/rpc"
+    Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
+
+    List<Map> installedScripts = listDeviceScripts(ip)
+    Map existingScript = installedScripts?.find { (it.name ?: '') == 'HubitatBLEHelper' }
+
+    if (existingScript) {
+        Integer scriptId = existingScript.id as Integer
+        logInfo("Removing HubitatBLEHelper (id: ${scriptId}) from ${ip}...")
+
+        LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
+        if (hasAuth) { deleteCmd.auth = getAuth() }
+        postCommandSync(deleteCmd, uri)
+    }
+
+    // Disable BLE observer but keep BLE enabled for RPC
+    logInfo("Disabling BLE observer on ${ip}...")
+    LinkedHashMap bleCmd = bleSetConfigCommand(true, true, false)
+    if (hasAuth) { bleCmd.auth = getAuth() }
+    postCommandSync(bleCmd, uri)
+
+    logInfo("BLE gateway disabled on ${ip}")
+}
+
+/**
+ * Checks if a device IP has BLE gateway mode enabled.
+ *
+ * @param ip The device IP address
+ * @return true if BLE gateway is enabled
+ */
+private Boolean isBleGatewayEnabled(String ip) {
+    List bleGateways = (state.bleGateways ?: []) as List
+    return bleGateways.contains(ip)
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE Device Table UI
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Renders the BLE device discovery/management table.
+ * Uses SSR for live updates when new BLE advertisements arrive.
+ *
+ * @return HTML string with SSR wrapper, CSS, and table markup
+ */
+private String displayBleDeviceTable() {
+    String tableMarkup = renderBleTableMarkup()
+    return "<span class='ssr-app-state-${getAppIdHelper()}-bleTable' id='ble-table'>" +
+        "<div id='ble-table-wrapper'>${tableMarkup}</div></span>"
+}
+
+/**
+ * Fires an SSR update for the BLE device table.
+ */
+void fireBleTableSSR() {
+    sendEvent(name: 'bleTable', value: 'update')
+}
+
+/**
+ * Renders the BLE device table markup.
+ * Shows discovered and created BLE devices with status, battery, RSSI, and actions.
+ *
+ * @return HTML table markup string
+ */
+private String renderBleTableMarkup() {
+    Map discoveredBle = state.discoveredBleDevices ?: [:]
+    if (discoveredBle.size() == 0) {
+        return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
+    }
+
+    // Sort: created devices first, then by friendly model, then by MAC
+    List<Map> deviceList = []
+    discoveredBle.each { String macKey, bleVal ->
+        Map entry = bleVal as Map
+        deviceList.add(entry)
+    }
+    deviceList.sort { Map a, Map b ->
+        if (a.isCreated != b.isCreated) { return a.isCreated ? -1 : 1 }
+        String nameA = ((a.friendlyModel ?: a.mac) as String).toLowerCase()
+        String nameB = ((b.friendlyModel ?: b.mac) as String).toLowerCase()
+        return nameA <=> nameB
+    }
+
+    StringBuilder str = new StringBuilder()
+    str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
+    str.append("<thead><tr>")
+    str.append("<th>Device</th>")
+    str.append("<th>Model</th>")
+    str.append("<th>MAC</th>")
+    str.append("<th>RSSI</th>")
+    str.append("<th>Battery</th>")
+    str.append("<th>Last Seen</th>")
+    str.append("<th>Gateway</th>")
+    str.append("<th>Action</th>")
+    str.append("</tr></thead><tbody>")
+
+    deviceList.each { Map entry ->
+        String mac = entry.mac as String
+        String model = entry.model ?: '—'
+        String friendlyModel = entry.friendlyModel ?: model
+        Integer rssi = entry.rssi as Integer
+        Integer battery = entry.battery as Integer
+        Long lastSeen = entry.lastSeen as Long ?: 0L
+        String gateway = entry.lastGateway ?: '—'
+        Boolean isCreated = entry.isCreated ?: false
+
+        // Device name column
+        String deviceCell
+        if (isCreated && entry.hubDeviceId) {
+            String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank'>${entry.hubDeviceName ?: friendlyModel}</a>"
+            deviceCell = "<td class='device-link'>${devLink}</td>"
+        } else {
+            deviceCell = "<td>${friendlyModel}</td>"
+        }
+
+        // RSSI color
+        String rssiCell
+        if (rssi != null) {
+            String rssiColor = rssi > -60 ? '#4CAF50' : (rssi > -80 ? '#FF9800' : '#F44336')
+            rssiCell = "<td style='color:${rssiColor}'>${rssi} dBm</td>"
+        } else {
+            rssiCell = "<td class='status-na'>—</td>"
+        }
+
+        // Battery color
+        String batteryCell
+        if (battery != null) {
+            String battColor = battery > 20 ? '#4CAF50' : (battery > 10 ? '#FF9800' : '#F44336')
+            batteryCell = "<td style='color:${battColor}'>${battery}%</td>"
+        } else {
+            batteryCell = "<td class='status-na'>—</td>"
+        }
+
+        // Last seen
+        String lastSeenStr = '—'
+        if (lastSeen > 0) {
+            Long elapsedMs = now() - lastSeen
+            Long elapsedMin = (Long)(elapsedMs / 60000L)
+            if (elapsedMin < 1) { lastSeenStr = 'just now' }
+            else if (elapsedMin < 60) { lastSeenStr = "${elapsedMin}m ago" }
+            else {
+                Long hours = (Long)(elapsedMin / 60L)
+                if (hours < 24) { lastSeenStr = "${hours}h ago" }
+                else { lastSeenStr = "${(Long)(hours / 24L)}d ago" }
+            }
+        }
+
+        // Action button
+        String actionCell
+        if (isCreated) {
+            String deleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px'></iconify-icon>"
+            actionCell = "<td>${buttonLink("removeBle|${mac}".toString(), deleteIcon, '#F44336', '20px')}</td>"
+        } else if (entry.driverName) {
+            String addIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:20px'></iconify-icon>"
+            actionCell = "<td>${buttonLink("createBle|${mac}".toString(), addIcon, '#4CAF50', '20px')}</td>"
+        } else {
+            actionCell = "<td class='status-na' title='Unknown model — no driver available'>—</td>"
+        }
+
+        str.append("<tr>")
+        str.append(deviceCell)
+        str.append("<td>${model}</td>")
+        str.append("<td style='font-family:monospace;font-size:12px'>${mac}</td>")
+        str.append(rssiCell)
+        str.append(batteryCell)
+        str.append("<td>${lastSeenStr}</td>")
+        str.append("<td>${gateway}</td>")
+        str.append(actionCell)
+        str.append("</tr>")
+    }
+
+    str.append("</tbody></table></div>")
+    return str.toString()
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE Gateway Column in WiFi Config Table
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Renders the BLE gateway toggle cell for a device row in the config table.
+ * Shows a Bluetooth icon (blue=enabled, gray=disabled) for Gen 2+ non-battery devices.
+ * Gen 1 and battery devices show "n/a".
+ *
+ * @param ip The device IP address
+ * @param gen The device generation ('1', '2', '3', 'ble')
+ * @param isBattery Whether the device is battery-powered
+ * @return HTML table cell content
+ */
+private String renderBleGatewayCell(String ip, String gen, Boolean isBattery) {
+    if (gen == '1' || gen == 'ble' || isBattery) {
+        return "<span class='status-na'>n/a</span>"
+    }
+
+    Boolean enabled = isBleGatewayEnabled(ip)
+    String icon = enabled ?
+        "<iconify-icon icon='material-symbols:bluetooth' style='font-size:20px'></iconify-icon>" :
+        "<iconify-icon icon='material-symbols:bluetooth-disabled' style='font-size:20px'></iconify-icon>"
+    String color = enabled ? '#2196F3' : '#9E9E9E'
+
+    return buttonLink("toggleBleGw|${ip}".toString(), icon, color, '20px')
+}
+
+// ─────────────────────────────────────────────────────────────
+// Legacy Bluetooth Functions (kept for backward compatibility)
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Enables Bluetooth on the device (BLE + RPC + observer).
+ * Used internally by enableBleGateway.
+ */
 void enableBluetooth() {
   logDebug('Enabling Bluetooth on Shelly device...')
   postCommandSync(bleSetConfigCommand(true, true, true))
 }
-/* #endregion */
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  Child Devices                                               ║
@@ -7613,26 +9377,35 @@ void setAppState(String key, value) {
   state[key] = value
 }
 
+/**
+ * Checks whether Gen 1 Basic Auth credentials are available.
+ * Gen 1 devices use HTTP Basic Auth with username 'admin' and the
+ * app-configured device password (same password used for Gen 2 digest auth).
+ *
+ * @return true if a device password is configured
+ */
 @CompileStatic
 Boolean authIsEnabledGen1() {
-  Boolean authEnabled = (
-    getAppSettings()?.deviceUsername != null &&
-    getAppSettings()?.devicePassword != null &&
-    getAppSettings()?.deviceUsername != '' &&
-    getAppSettings()?.devicePassword != ''
-  )
-  setAuthIsEnabled(authEnabled)
-  return authEnabled
+  String password = getAppSettings()?.devicePassword?.toString()
+  return password != null && password != ''
 }
 
 // @CompileStatic
 // void performAuthCheck() { shellyGetStatusWs('authCheck') }
 
+/**
+ * Returns a Base64-encoded Basic Auth header value for Gen 1 devices.
+ * Gen 1 devices always use username 'admin' with the app-configured password.
+ *
+ * @return Base64-encoded "admin:password" string, or null if no password configured
+ */
 @CompileStatic
 String getBasicAuthHeader() {
-  if(getAppSettings()?.deviceUsername != null && getAppSettings()?.devicePassword != null) {
-    return base64Encode("${getAppSettings().deviceUsername}:${getAppSettings().devicePassword}".toString())
+  String password = getAppSettings()?.devicePassword?.toString()
+  if (password != null && password != '') {
+    return base64Encode("admin:${password}".toString())
   }
+  return null
 }
 /* #endregion */
 String prettyJson(Map jsonInput) {
@@ -9265,6 +11038,15 @@ private void sendSwitchCommand(def childDevice, Boolean onState) {
       return
     }
 
+    // Gen 1: GET /relay/{id}?turn=on|off
+    if (isGen1Device(childDevice)) {
+      Integer switchId = extractComponentId(childDevice, 'switchId')
+      logDebug("sendSwitchCommand: Gen 1 relay/${switchId}?turn=${action}")
+      sendGen1Get(ipAddress, "relay/${switchId}", [turn: action])
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Switch.Set
     String rpcUri = "http://${ipAddress}/rpc"
     Integer switchId = extractComponentId(childDevice, 'switchId')
     logDebug("sendSwitchCommand: sending ${action} command to ${rpcUri} (switch:${switchId})")
@@ -9275,7 +11057,6 @@ private void sendSwitchCommand(def childDevice, Boolean onState) {
 
   } catch (Exception e) {
     logError("sendSwitchCommand(${action}) exception for ${childDevice.displayName}: ${e.message}")
-    // Trigger watchdog scan to detect possible IP change (respects 5-min cooldown)
     if (settings?.enableWatchdog != false) { watchdogScan() }
   }
 }
@@ -9332,6 +11113,16 @@ void componentOpen(def childDevice) {
       logError("componentOpen: No IP address found for device ${childDevice.displayName}")
       return
     }
+
+    // Gen 1: GET /roller/{id}?go=open
+    if (isGen1Device(childDevice)) {
+      Integer coverId = extractComponentId(childDevice, 'coverId')
+      logDebug("componentOpen: Gen 1 roller/${coverId}?go=open")
+      sendGen1Get(ipAddress, "roller/${coverId}", [go: 'open'])
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Cover.Open
     String rpcUri = "http://${ipAddress}/rpc"
     Integer coverId = extractComponentId(childDevice, 'coverId')
     LinkedHashMap command = coverOpenCommand(coverId)
@@ -9356,6 +11147,16 @@ void componentClose(def childDevice) {
       logError("componentClose: No IP address found for device ${childDevice.displayName}")
       return
     }
+
+    // Gen 1: GET /roller/{id}?go=close
+    if (isGen1Device(childDevice)) {
+      Integer coverId = extractComponentId(childDevice, 'coverId')
+      logDebug("componentClose: Gen 1 roller/${coverId}?go=close")
+      sendGen1Get(ipAddress, "roller/${coverId}", [go: 'close'])
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Cover.Close
     String rpcUri = "http://${ipAddress}/rpc"
     Integer coverId = extractComponentId(childDevice, 'coverId')
     LinkedHashMap command = coverCloseCommand(coverId)
@@ -9381,6 +11182,16 @@ void componentSetPosition(def childDevice, Integer position) {
       logError("componentSetPosition: No IP address found for device ${childDevice.displayName}")
       return
     }
+
+    // Gen 1: GET /roller/{id}?go=to_pos&roller_pos={pos}
+    if (isGen1Device(childDevice)) {
+      Integer coverId = extractComponentId(childDevice, 'coverId')
+      logDebug("componentSetPosition: Gen 1 roller/${coverId}?go=to_pos&roller_pos=${position}")
+      sendGen1Get(ipAddress, "roller/${coverId}", [go: 'to_pos', roller_pos: position.toString()])
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Cover.GoToPosition
     String rpcUri = "http://${ipAddress}/rpc"
     Integer coverId = extractComponentId(childDevice, 'coverId')
     LinkedHashMap command = coverGoToPositionCommand(coverId, position)
@@ -9405,6 +11216,16 @@ void componentStop(def childDevice) {
       logError("componentStop: No IP address found for device ${childDevice.displayName}")
       return
     }
+
+    // Gen 1: GET /roller/{id}?go=stop
+    if (isGen1Device(childDevice)) {
+      Integer coverId = extractComponentId(childDevice, 'coverId')
+      logDebug("componentStop: Gen 1 roller/${coverId}?go=stop")
+      sendGen1Get(ipAddress, "roller/${coverId}", [go: 'stop'])
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Cover.Stop
     String rpcUri = "http://${ipAddress}/rpc"
     Integer coverId = extractComponentId(childDevice, 'coverId')
     LinkedHashMap command = coverStopCommand(coverId)
@@ -9433,6 +11254,16 @@ void componentLightOn(def childDevice) {
       logError("componentLightOn: No IP address found for device ${childDevice.displayName}")
       return
     }
+
+    // Gen 1: GET /light/{id}?turn=on
+    if (isGen1Device(childDevice)) {
+      Integer lightId = extractComponentId(childDevice, 'lightId')
+      logDebug("componentLightOn: Gen 1 light/${lightId}?turn=on")
+      sendGen1Get(ipAddress, "light/${lightId}", [turn: 'on'])
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Light.Set
     String rpcUri = "http://${ipAddress}/rpc"
     Integer lightId = extractComponentId(childDevice, 'lightId')
     LinkedHashMap command = lightSetCommand(lightId, true)
@@ -9457,6 +11288,16 @@ void componentLightOff(def childDevice) {
       logError("componentLightOff: No IP address found for device ${childDevice.displayName}")
       return
     }
+
+    // Gen 1: GET /light/{id}?turn=off
+    if (isGen1Device(childDevice)) {
+      Integer lightId = extractComponentId(childDevice, 'lightId')
+      logDebug("componentLightOff: Gen 1 light/${lightId}?turn=off")
+      sendGen1Get(ipAddress, "light/${lightId}", [turn: 'off'])
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Light.Set
     String rpcUri = "http://${ipAddress}/rpc"
     Integer lightId = extractComponentId(childDevice, 'lightId')
     LinkedHashMap command = lightSetCommand(lightId, false)
@@ -9483,6 +11324,21 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
       logError("componentSetLevel: No IP address found for device ${childDevice.displayName}")
       return
     }
+
+    // Gen 1: GET /light/{id}?turn=on&brightness={level}
+    if (isGen1Device(childDevice)) {
+      Integer lightId = extractComponentId(childDevice, 'lightId')
+      String turnAction = level > 0 ? 'on' : 'off'
+      Map params = [turn: turnAction, brightness: level.toString()]
+      if (transitionMs != null) {
+        params.transition = (transitionMs / 1000).intValue().toString()
+      }
+      logDebug("componentSetLevel: Gen 1 light/${lightId}?turn=${turnAction}&brightness=${level}")
+      sendGen1Get(ipAddress, "light/${lightId}", params)
+      return
+    }
+
+    // Gen 2/3: JSON-RPC Light.Set
     String rpcUri = "http://${ipAddress}/rpc"
     Integer lightId = extractComponentId(childDevice, 'lightId')
     Boolean turnOn = level > 0
@@ -10242,11 +12098,21 @@ void componentRefresh(def childDevice) {
             return
         }
 
-        // Determine if this is a parent device or a child device
+        // Gen 1 devices use REST polling instead of RPC status query
+        if (isGen1Device(childDevice)) {
+            // For battery devices: attempt pending action URL installation on wake-up
+            if (isSleepyBatteryDevice(childDevice)) {
+                attemptGen1ActionUrlInstallOnWake(ipAddress)
+            }
+            pollGen1DeviceStatus(ipAddress)
+            return
+        }
+
+        // Gen 2/3: Determine if this is a parent device or a child device
         String parentDni = childDevice.getDataValue('parentDni') ?: childDevice.deviceNetworkId
         Boolean isParent = childDevice.getDataValue('isParentDevice') == 'true'
 
-        // Query full device status
+        // Query full device status via RPC
         Map deviceStatus = queryDeviceStatus(ipAddress)
         if (!deviceStatus) {
             logWarn("componentRefresh: Could not query device status for ${ipAddress}")
@@ -10318,6 +12184,39 @@ void parentSendCommand(def parentDevice, String method, Map params) {
 
     logDebug("parentSendCommand from ${parentDevice.displayName}: ${method} with params ${params}")
 
+    // Gen 1: route standard RPC method names to Gen 1 REST endpoints
+    if (isGen1Device(parentDevice)) {
+        Integer componentId = params?.id != null ? params.id as Integer : 0
+        switch (method) {
+            case 'Switch.Set':
+                String action = params?.on ? 'on' : 'off'
+                sendGen1Get(ipAddress, "relay/${componentId}", [turn: action])
+                break
+            case 'Cover.Open':
+                sendGen1Get(ipAddress, "roller/${componentId}", [go: 'open'])
+                break
+            case 'Cover.Close':
+                sendGen1Get(ipAddress, "roller/${componentId}", [go: 'close'])
+                break
+            case 'Cover.GoToPosition':
+                sendGen1Get(ipAddress, "roller/${componentId}", [go: 'to_pos', roller_pos: (params?.pos ?: 0).toString()])
+                break
+            case 'Cover.Stop':
+                sendGen1Get(ipAddress, "roller/${componentId}", [go: 'stop'])
+                break
+            case 'Light.Set':
+                String turnAction = params?.on ? 'on' : 'off'
+                Map lightParams = [turn: turnAction]
+                if (params?.brightness != null) { lightParams.brightness = params.brightness.toString() }
+                sendGen1Get(ipAddress, "light/${componentId}", lightParams)
+                break
+            default:
+                logWarn("parentSendCommand: unsupported Gen 1 method '${method}'")
+        }
+        return
+    }
+
+    // Gen 2/3: standard JSON-RPC
     String rpcUri = "http://${ipAddress}/rpc"
     LinkedHashMap command = [
         id: 0,

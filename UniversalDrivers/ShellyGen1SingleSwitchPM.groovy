@@ -1,17 +1,18 @@
 /**
- * Shelly Autoconf Single Switch
+ * Shelly Gen1 Single Switch PM
  *
- * Pre-built standalone driver for single-switch Shelly devices without power monitoring.
- * Examples: Shelly 1, Shelly 1 Mini, Shelly Plus 1
+ * Pre-built standalone driver for Gen 1 single-relay Shelly devices with power monitoring.
+ * Examples: Shelly 1PM, Shelly Plug S, Shelly Plug
  *
- * This driver is installed directly by ShellyDeviceManager, bypassing the modular
- * assembly pipeline. Commands delegate to the parent app via componentOn/componentOff.
+ * Gen 1 devices use HTTP REST action URLs instead of Gen 2 webhooks/scripts.
+ * Power monitoring data is obtained via polling (no powermonitoring.js on Gen 1).
+ * Commands delegate to the parent app which routes to Gen 1 REST endpoints.
  *
  * Version: 1.0.0
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Single Switch', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Single Switch PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -24,11 +25,25 @@ metadata {
 
     capability 'Refresh'
     //Commands: refresh()
+
+    capability 'CurrentMeter'
+    //Attributes: amperage - NUMBER, unit:A
+
+    capability 'PowerMeter'
+    //Attributes: power - NUMBER, unit:W
+
+    capability 'VoltageMeasurement'
+    //Attributes: voltage - NUMBER, unit:V
+
+    capability 'EnergyMeter'
+    //Attributes: energy - NUMBER, unit:kWh
   }
 }
 
 preferences {
-  input name: 'logLevel', type: 'enum', title: 'Logging Level', options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'], defaultValue: 'debug', required: true
+  input name: 'logLevel', type: 'enum', title: 'Logging Level',
+    options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
+    defaultValue: 'debug', required: true
 }
 
 
@@ -42,7 +57,7 @@ preferences {
  * Delegates to initialize() for initial setup.
  */
 void installed() {
-  logDebug("installed() called")
+  logDebug('installed() called')
   initialize()
 }
 
@@ -56,15 +71,9 @@ void updated() {
 }
 
 /**
- * Parses incoming LAN messages from the Shelly device.
- * Routes notifications to the appropriate handler based on the dst field.
- *
- * @param description Raw LAN message description string from Hubitat
- */
-/**
- * Parses incoming LAN messages from the Shelly device.
- * POST requests (from Shelly scripts) carry data in the JSON body.
- * GET requests (from Shelly Action Webhooks) carry state in the URL path.
+ * Parses incoming LAN messages from the Gen 1 Shelly device.
+ * Gen 1 action URLs fire GET requests with state encoded in the URL path.
+ * No POST body handling — Gen 1 devices have no scripting support.
  *
  * @param description Raw LAN message description string from Hubitat
  */
@@ -75,10 +84,12 @@ void parse(String description) {
 
     if (msg?.status != null) { return }
 
-    if (msg?.body) {
-      handlePostWebhook(msg)
+    Map params = parseWebhookQueryParams(msg)
+    if (params?.dst) {
+      logDebug("Action URL callback dst=${params.dst}, cid=${params.cid}")
+      routeActionUrlCallback(params)
     } else {
-      handleGetWebhook(msg)
+      logTrace('No dst found in action URL callback')
     }
   } catch (Exception e) {
     logError("Error parsing LAN message: ${e.message}")
@@ -86,60 +97,7 @@ void parse(String description) {
 }
 
 /**
- * Handles POST webhook notifications from Shelly scripts.
- * Parses JSON body and routes to webhook params handler.
- *
- * @param msg The parsed LAN message map containing a JSON body
- */
-private void handlePostWebhook(Map msg) {
-  try {
-    Map json = new groovy.json.JsonSlurper().parseText(msg.body) as Map
-    String dst = json?.dst?.toString()
-    if (!dst) { logTrace('POST webhook: no dst in body'); return }
-
-    // BLE relay: forward to app for BLE device processing
-    if (dst == 'ble') {
-      logDebug('BLE relay received, forwarding to app')
-      parent?.handleBleRelay(device, json)
-      return
-    }
-
-    Map params = [:]
-    json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
-
-    logDebug("POST webhook dst=${dst}, cid=${params.cid}")
-    logTrace("POST webhook params: ${params}")
-    routeWebhookParams(params)
-  } catch (Exception e) {
-    logDebug("POST webhook parse error: ${e.message}")
-  }
-}
-
-/**
- * Handles GET webhook notifications from Shelly Action Webhooks.
- *
- * @param msg The parsed LAN message map (no body)
- */
-private void handleGetWebhook(Map msg) {
-  Map params = parseWebhookQueryParams(msg)
-  if (params?.dst) {
-    logDebug("GET webhook dst=${params.dst}, cid=${params.cid}")
-    logTrace("GET webhook params: ${params}")
-    routeWebhookParams(params)
-  } else {
-    logTrace('GET webhook: no dst found, unable to route')
-  }
-}
-
-/**
- * Parses query parameters from an incoming GET webhook request.
- *
- * @param msg The parsed LAN message map
- * @return Map of query parameter key-value pairs, or null if not parseable
- */
-/**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /webhook/switch_on/0).
  *
  * @param msg The parsed LAN message map from parseLanMessage()
  * @return Map with dst and cid keys, or null if not parseable
@@ -171,56 +129,33 @@ private Map parseWebhookQueryParams(Map msg) {
 }
 
 /**
- * Routes parsed webhook GET query parameters to appropriate event handlers.
- * Supports both new discrete dst values (switch_on, switch_off, input_toggle_on,
- * input_toggle_off) and legacy combined dst values (switchmon, input_toggle).
+ * Routes Gen 1 action URL callbacks to appropriate event handlers.
+ * After handling state change, triggers a refresh to get power monitoring data.
  *
- * @param params The parsed query parameters including dst and optional output/state fields
+ * @param params Map with dst and cid from the action URL path
  */
-private void routeWebhookParams(Map params) {
+private void routeActionUrlCallback(Map params) {
   switch (params.dst) {
-    // New discrete switch webhooks — state is encoded in the dst name
     case 'switch_on':
       sendEvent(name: 'switch', value: 'on', descriptionText: 'Switch turned on')
       logInfo('Switch state changed to: on')
+      parent?.componentRefresh(device)
       break
     case 'switch_off':
       sendEvent(name: 'switch', value: 'off', descriptionText: 'Switch turned off')
       logInfo('Switch state changed to: off')
+      parent?.componentRefresh(device)
       break
 
-    // Legacy combined switch webhook — state is in params.output
-    case 'switchmon':
-      if (params.output != null) {
-        String switchState = params.output == 'true' ? 'on' : 'off'
-        sendEvent(name: 'switch', value: switchState,
-          descriptionText: "Switch turned ${switchState}")
-        logInfo("Switch state changed to: ${switchState}")
-      }
+    case 'input_short':
+      logInfo('Input short push received')
       break
-
-    // New discrete input toggle webhooks — state is encoded in the dst name
-    case 'input_toggle_on':
-      sendEvent(name: 'switch', value: 'on', descriptionText: 'Switch turned on (input toggle)')
-      logInfo('Switch state changed to: on (input toggle)')
-      break
-    case 'input_toggle_off':
-      sendEvent(name: 'switch', value: 'off', descriptionText: 'Switch turned off (input toggle)')
-      logInfo('Switch state changed to: off (input toggle)')
-      break
-
-    // Legacy combined input toggle webhook — state is in params.state
-    case 'input_toggle':
-      if (params.state != null) {
-        String switchState = params.state == 'true' ? 'on' : 'off'
-        sendEvent(name: 'switch', value: switchState,
-          descriptionText: "Switch turned ${switchState} (input toggle)")
-        logInfo("Switch state changed to: ${switchState} (input toggle)")
-      }
+    case 'input_long':
+      logInfo('Input long push received')
       break
 
     default:
-      logDebug("routeWebhookParams: unhandled dst=${params.dst}")
+      logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
   }
 }
 
@@ -238,15 +173,14 @@ private void routeWebhookParams(Map params) {
  * Initializes the device driver. Called on install and settings update.
  */
 void initialize() {
-  logDebug("initialize() called")
+  logDebug('initialize() called')
 }
 
 /**
  * Configures the device driver settings.
- * Sets default log level if not already configured.
  */
 void configure() {
-  logDebug("configure() called")
+  logDebug('configure() called')
   if (!settings.logLevel) {
     logWarn("No log level set, defaulting to 'debug'")
     device.updateSetting('logLevel', 'debug')
@@ -255,9 +189,11 @@ void configure() {
 
 /**
  * Refreshes the device state by querying the parent app.
+ * App will poll the Gen 1 device via GET /status and send events back.
  */
 void refresh() {
-  logDebug("refresh() called")
+  logDebug('refresh() called')
+  parent?.componentRefresh(device)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -274,7 +210,7 @@ void refresh() {
  * Turns the switch on by delegating to the parent app.
  */
 void on() {
-  logDebug("on() called")
+  logDebug('on() called')
   parent?.componentOn(device)
 }
 
@@ -282,45 +218,8 @@ void on() {
  * Turns the switch off by delegating to the parent app.
  */
 void off() {
-  logDebug("off() called")
+  logDebug('off() called')
   parent?.componentOff(device)
-}
-
-/**
- * Parses switch monitoring notifications from Shelly device.
- * Processes JSON with dst:"switchmon" and updates device state.
- * JSON format: [dst:switchmon, result:[switch:0:[id:0, output:true]]]
- *
- * @param json The parsed JSON notification from the Shelly device
- */
-void parseSwitchmon(Map json) {
-  logDebug("parseSwitchmon() called with: ${json}")
-
-  try {
-    Map result = json?.result
-    if (!result) {
-      logWarn("parseSwitchmon: No result data in JSON")
-      return
-    }
-
-    // Iterate over switch entries (e.g., "switch:0")
-    result.each { key, value ->
-      if (key.toString().startsWith('switch:')) {
-        if (value instanceof Map) {
-          Integer switchId = value.id
-          Boolean output = value.output
-
-          if (output != null) {
-            String switchState = output ? "on" : "off"
-            logInfo("Switch ${switchId} state changed to: ${switchState}")
-            sendEvent(name: "switch", value: switchState, descriptionText: "Switch turned ${switchState}")
-          }
-        }
-      }
-    }
-  } catch (Exception e) {
-    logError("parseSwitchmon exception: ${e.message}")
-  }
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -330,36 +229,70 @@ void parseSwitchmon(Map json) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Logging Helpers                                             ║
+// ║  Status Distribution                                         ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Returns the display label used in log messages.
+ * Distributes polled status data to the device.
+ * Called by the parent app after polling GET /status on the Gen 1 device.
+ * Handles switch state and power monitoring values from Gen 1 meters[].
  *
- * @return The device display name
+ * @param status Map of normalized component statuses
  */
+void distributeStatus(Map status) {
+  logDebug("distributeStatus() called with: ${status}")
+  if (!status) { return }
+
+  status.each { k, v ->
+    String key = k.toString()
+    if (!key.startsWith('switch:') || !(v instanceof Map)) { return }
+
+    Map data = v as Map
+    if (data.output != null) {
+      String switchState = data.output ? 'on' : 'off'
+      sendEvent(name: 'switch', value: switchState, descriptionText: "Switch turned ${switchState}")
+      logInfo("Switch state: ${switchState}")
+    }
+    if (data.apower != null) {
+      BigDecimal power = data.apower as BigDecimal
+      sendEvent(name: 'power', value: power, unit: 'W', descriptionText: "Power is ${power}W")
+    }
+    if (data.voltage != null) {
+      BigDecimal voltage = data.voltage as BigDecimal
+      sendEvent(name: 'voltage', value: voltage, unit: 'V', descriptionText: "Voltage is ${voltage}V")
+    }
+    if (data.current != null) {
+      BigDecimal current = data.current as BigDecimal
+      sendEvent(name: 'amperage', value: current, unit: 'A', descriptionText: "Current is ${current}A")
+    }
+    if (data.aenergy?.total != null) {
+      BigDecimal energyKwh = (data.aenergy.total as BigDecimal) / 1000.0
+      sendEvent(name: 'energy', value: energyKwh, unit: 'kWh', descriptionText: "Energy is ${energyKwh}kWh")
+    }
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Status Distribution                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Logging Helpers                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+
 String loggingLabel() {
   return "${device.displayName}"
 }
 
-/**
- * Determines whether a log message at the given level should be emitted.
- *
- * @param messageLevel The level of the log message (error, warn, info, debug, trace)
- * @return true if the message should be logged
- */
 private Boolean shouldLogLevel(String messageLevel) {
-  if (messageLevel == 'error') {
-    return true
-  } else if (messageLevel == 'warn') {
-    return settings.logLevel == 'warn'
-  } else if (messageLevel == 'info') {
-    return ['warn', 'info'].contains(settings.logLevel)
-  } else if (messageLevel == 'debug') {
-    return ['warn', 'info', 'debug'].contains(settings.logLevel)
-  } else if (messageLevel == 'trace') {
-    return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel)
-  }
+  if (messageLevel == 'error') { return true }
+  else if (messageLevel == 'warn') { return settings.logLevel == 'warn' }
+  else if (messageLevel == 'info') { return ['warn', 'info'].contains(settings.logLevel) }
+  else if (messageLevel == 'debug') { return ['warn', 'info', 'debug'].contains(settings.logLevel) }
+  else if (messageLevel == 'trace') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
+  return false
 }
 
 void logError(message) { log.error "${loggingLabel()}: ${message}" }
@@ -368,37 +301,11 @@ void logInfo(message) { if (shouldLogLevel('info')) { log.info "${loggingLabel()
 void logDebug(message) { if (shouldLogLevel('debug')) { log.debug "${loggingLabel()}: ${message}" } }
 void logTrace(message) { if (shouldLogLevel('trace')) { log.trace "${loggingLabel()}: ${message}" } }
 
-void logClass(obj) {
-  logInfo("Object Class Name: ${getObjectClassName(obj)}")
-}
-
 @CompileStatic
 void logJson(Map message) {
   if (shouldLogLevel('trace')) {
-    String prettyJson = prettyJson(message)
-    logTrace(prettyJson)
+    logTrace(JsonOutput.prettyPrint(JsonOutput.toJson(message)))
   }
-}
-
-@CompileStatic
-void logErrorJson(Map message) {
-  logError(prettyJson(message))
-}
-
-@CompileStatic
-void logInfoJson(Map message) {
-  String prettyJson = prettyJson(message)
-  logInfo(prettyJson)
-}
-
-/**
- * Formats a Map as pretty-printed JSON.
- *
- * @param jsonInput The map to format
- * @return Pretty-printed JSON string
- */
-String prettyJson(Map jsonInput) {
-  return JsonOutput.prettyPrint(JsonOutput.toJson(jsonInput))
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
