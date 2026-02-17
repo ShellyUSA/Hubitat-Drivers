@@ -1135,9 +1135,9 @@ private String buildDeviceRow(Map entry) {
     String gen1Badge = (entry.isGen1 as Boolean) ? " <span style='font-size:10px;background:#FF9800;color:white;padding:1px 4px;border-radius:3px;vertical-align:middle'>Gen 1</span>" : ''
     if (isCreated && entry.hubDeviceId) {
         String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${entry.hubDeviceName}'>${entry.hubDeviceName}</a>"
-        str.append("<td class='device-link' style='text-align:left'>${devLink}${gen1Badge}</td>")
+        str.append("<td class='device-link'>${devLink}${gen1Badge}</td>")
     } else {
-        str.append("<td style='text-align:left'>${entry.shellyName ?: 'Unknown'}${gen1Badge}</td>")
+        str.append("<td>${entry.shellyName ?: 'Unknown'}${gen1Badge}</td>")
     }
 
     // Column 2: Device label (click to edit for created devices)
@@ -1145,7 +1145,7 @@ private String buildDeviceRow(Map entry) {
         String currentLabel = (entry.hubDeviceLabel ?: entry.hubDeviceName ?: '') as String
         String editIcon = "<iconify-icon icon='material-symbols:edit' style='font-size:14px;vertical-align:middle;margin-left:4px'></iconify-icon>"
         String editBtn = buttonLink("editLabel|${ip}", "${currentLabel} ${editIcon}", "#424242", "14px")
-        str.append("<td style='text-align:left'>${editBtn}</td>")
+        str.append("<td>${editBtn}</td>")
     } else {
         str.append("<td class='status-na'>&ndash;</td>")
     }
@@ -8669,7 +8669,7 @@ private String renderBleTableMarkup() {
             String currentLabel = (entry.hubDeviceLabel ?: entry.hubDeviceName ?: '') as String
             String editIcon = "<iconify-icon icon='material-symbols:edit' style='font-size:14px;vertical-align:middle;margin-left:4px'></iconify-icon>"
             String editBtn = buttonLink("editBleLabel|${mac}".toString(), "${currentLabel} ${editIcon}", '#424242', '14px')
-            labelCell = "<td style='text-align:left'>${editBtn}</td>"
+            labelCell = "<td>${editBtn}</td>"
         } else {
             labelCell = "<td class='status-na'>&ndash;</td>"
         }
