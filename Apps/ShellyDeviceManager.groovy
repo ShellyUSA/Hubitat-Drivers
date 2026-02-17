@@ -12568,6 +12568,7 @@ void componentRefresh(def childDevice) {
                 attemptGen1ActionUrlInstallOnWake(ipAddress)
             }
             pollGen1DeviceStatus(ipAddress)
+            syncSwitchConfigToDriver(childDevice, ipAddress)
             // Sync device-side settings to driver preferences (once after creation)
             if (!childDevice.getDataValue('gen1SettingsSynced')) {
                 syncGen1MotionSettings(ipAddress, childDevice, resolvedGen1Type)
@@ -12589,6 +12590,7 @@ void componentRefresh(def childDevice) {
         if (isParent) {
             // Parent refresh: distribute status to all children
             distributeStatusToChildren(parentDni, deviceStatus)
+            syncSwitchConfigForParentChildren(parentDni, ipAddress)
         } else {
             // Single child refresh: only update this child
             String componentType = childDevice.getDataValue('componentType')
@@ -12600,6 +12602,7 @@ void componentRefresh(def childDevice) {
                 Map componentData = deviceStatus[componentKey] as Map
                 updateChildFromStatus(childDevice, componentType, componentData)
             }
+            syncSwitchConfigToDriver(childDevice, ipAddress)
         }
     } catch (Exception e) {
         logError("componentRefresh exception for ${childDevice.displayName}: ${e.message}")
@@ -12651,6 +12654,189 @@ void componentUpdateGen1Settings(def childDevice, Map settingsMap) {
         logInfo("Gen 1 settings applied to ${childDevice.displayName}")
     } else {
         logWarn("Failed to apply Gen 1 settings to ${childDevice.displayName} — device may be unreachable")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Switch Settings (default state, auto-on, auto-off)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Receives switch settings from a standalone switch driver.
+ * Routes to the appropriate Gen1 or Gen2+ settings application method.
+ *
+ * @param childDevice The standalone switch device
+ * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
+    if (!childDevice || !switchSettings) { return }
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("componentUpdateSwitchSettings: no IP for ${childDevice.displayName}")
+        return
+    }
+    Integer switchId = extractComponentId(childDevice, 'switchId')
+    if (isGen1Device(childDevice)) {
+        applyGen1SwitchSettings(ipAddress, childDevice, switchId, switchSettings)
+    } else {
+        applyGen2SwitchSettings(ipAddress, childDevice, switchId, switchSettings)
+    }
+}
+
+/**
+ * Receives switch settings from a parent driver on behalf of a child component.
+ *
+ * @param parentDevice The parent device
+ * @param switchId The switch component ID
+ * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+void parentUpdateSwitchSettings(def parentDevice, Integer switchId, Map switchSettings) {
+    if (!parentDevice || !switchSettings) { return }
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("parentUpdateSwitchSettings: no IP for ${parentDevice.displayName}")
+        return
+    }
+    if (isGen1Device(parentDevice)) {
+        applyGen1SwitchSettings(ipAddress, parentDevice, switchId, switchSettings)
+    } else {
+        applyGen2SwitchSettings(ipAddress, parentDevice, switchId, switchSettings)
+    }
+}
+
+/**
+ * Applies switch settings to a Gen 2+ device via Switch.SetConfig RPC.
+ *
+ * @param ipAddress The device IP address
+ * @param device The Hubitat device
+ * @param switchId The switch component ID
+ * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+private void applyGen2SwitchSettings(String ipAddress, def device, Integer switchId, Map switchSettings) {
+    Map config = [:]
+    if (switchSettings.defaultState != null) {
+        String state = switchSettings.defaultState as String
+        config.initial_state = (state == 'restore') ? 'restore_last' : state
+    }
+    if (switchSettings.autoOffTime != null) {
+        BigDecimal seconds = switchSettings.autoOffTime as BigDecimal
+        config.auto_off = (seconds > 0)
+        config.auto_off_delay = seconds
+    }
+    if (switchSettings.autoOnTime != null) {
+        BigDecimal seconds = switchSettings.autoOnTime as BigDecimal
+        config.auto_on = (seconds > 0)
+        config.auto_on_delay = seconds
+    }
+    if (!config) { return }
+
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = switchSetConfigCommandJson(config, switchId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    logInfo("Applied Gen2+ switch config to ${device.displayName} switch:${switchId}: ${config}")
+}
+
+/**
+ * Applies switch settings to a Gen 1 device via GET /settings/relay/N.
+ *
+ * @param ipAddress The device IP address
+ * @param device The Hubitat device
+ * @param switchId The relay index
+ * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+private void applyGen1SwitchSettings(String ipAddress, def device, Integer switchId, Map switchSettings) {
+    Map params = [:]
+    if (switchSettings.defaultState != null) {
+        params.default_state = switchSettings.defaultState as String
+    }
+    if (switchSettings.autoOffTime != null) {
+        params.auto_off = (switchSettings.autoOffTime as BigDecimal).toString()
+    }
+    if (switchSettings.autoOnTime != null) {
+        params.auto_on = (switchSettings.autoOnTime as BigDecimal).toString()
+    }
+    if (!params) { return }
+
+    Map result = sendGen1Setting(ipAddress, "settings/relay/${switchId}", params)
+    if (result != null) {
+        logInfo("Applied Gen1 switch settings to ${device.displayName} relay:${switchId}: ${params}")
+    } else {
+        logWarn("Failed to apply Gen1 switch settings to ${device.displayName} relay:${switchId}")
+    }
+}
+
+/**
+ * Reads switch config from a device and updates the target driver's preferences.
+ * Only applies to switch-type devices.
+ *
+ * @param targetDevice The Hubitat device whose preferences should be updated
+ * @param ipAddress The device IP address
+ */
+private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
+    String componentType = targetDevice.getDataValue('componentType')
+    if (componentType != null && componentType != 'switch') { return }
+
+    Integer switchId = extractComponentId(targetDevice, 'switchId')
+
+    if (isGen1Device(targetDevice)) {
+        Map relaySettings = sendGen1Get(ipAddress, "settings/relay/${switchId}", [:])
+        if (relaySettings) { syncGen1ConfigToPreferences(targetDevice, relaySettings) }
+    } else {
+        String rpcUri = "http://${ipAddress}/rpc"
+        LinkedHashMap command = switchGetConfigCommand(switchId, 'syncSwitchConfig')
+        LinkedHashMap response = postCommandSync(command, rpcUri)
+        if (response) { syncGen2ConfigToPreferences(targetDevice, response) }
+    }
+}
+
+/**
+ * Syncs switch config to preferences for all switch children of a parent device.
+ *
+ * @param parentDni The parent device network ID
+ * @param ipAddress The device IP address
+ */
+private void syncSwitchConfigForParentChildren(String parentDni, String ipAddress) {
+    getChildDevices()?.each { child ->
+        if (child.deviceNetworkId.startsWith("${parentDni}-switch-")) {
+            syncSwitchConfigToDriver(child, ipAddress)
+        }
+    }
+}
+
+/**
+ * Maps Gen 2+ Switch.GetConfig response to Hubitat driver preferences.
+ *
+ * @param targetDevice The device whose preferences to update
+ * @param config The Switch.GetConfig response map
+ */
+private void syncGen2ConfigToPreferences(def targetDevice, Map config) {
+    if (config.initial_state) {
+        String val = (config.initial_state == 'restore_last') ? 'restore' : config.initial_state.toString()
+        deviceUpdateSettingHelper(targetDevice, 'defaultState', [type: 'enum', value: val])
+    }
+    if (config.auto_off_delay != null) {
+        deviceUpdateSettingHelper(targetDevice, 'autoOffTime', [type: 'decimal', value: config.auto_off_delay])
+    }
+    if (config.auto_on_delay != null) {
+        deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: config.auto_on_delay])
+    }
+}
+
+/**
+ * Maps Gen 1 /settings/relay/N response to Hubitat driver preferences.
+ *
+ * @param targetDevice The device whose preferences to update
+ * @param relaySettings The Gen 1 relay settings response map
+ */
+private void syncGen1ConfigToPreferences(def targetDevice, Map relaySettings) {
+    if (relaySettings.default_state) {
+        deviceUpdateSettingHelper(targetDevice, 'defaultState', [type: 'enum', value: relaySettings.default_state.toString()])
+    }
+    if (relaySettings.auto_off != null) {
+        deviceUpdateSettingHelper(targetDevice, 'autoOffTime', [type: 'decimal', value: relaySettings.auto_off])
+    }
+    if (relaySettings.auto_on != null) {
+        deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: relaySettings.auto_on])
     }
 }
 

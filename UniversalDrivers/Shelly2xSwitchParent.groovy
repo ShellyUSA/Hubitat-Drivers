@@ -506,6 +506,18 @@ void componentRefresh(def childDevice) {
   parent?.parentRefresh(device)
 }
 
+/**
+ * Relays switch settings from a child component to the app.
+ *
+ * @param childDevice The child device sending its settings
+ * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
+  Integer switchId = childDevice.getDataValue('switchId') as Integer
+  logDebug("componentUpdateSwitchSettings() from switch ${switchId}: ${switchSettings}")
+  parent?.parentUpdateSwitchSettings(device, switchId, switchSettings)
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Component Commands                                       ║
 // ╚══════════════════════════════════════════════════════════════╝

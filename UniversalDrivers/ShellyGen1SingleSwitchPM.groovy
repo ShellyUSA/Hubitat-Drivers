@@ -44,6 +44,13 @@ preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
+  input name: 'defaultState', type: 'enum', title: 'Power-On Default State',
+    options: ['restore':'Restore Last', 'off':'Off', 'on':'On'],
+    defaultValue: 'restore', required: false
+  input name: 'autoOffTime', type: 'decimal', title: 'Auto-Off Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+  input name: 'autoOnTime', type: 'decimal', title: 'Auto-On Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
 }
 
 
@@ -68,6 +75,21 @@ void installed() {
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   initialize()
+  relaySwitchSettings()
+}
+
+/**
+ * Gathers switch settings and sends them to the parent app for relay to the device.
+ */
+private void relaySwitchSettings() {
+  Map switchSettings = [:]
+  if (settings.defaultState != null) { switchSettings.defaultState = settings.defaultState as String }
+  if (settings.autoOffTime != null) { switchSettings.autoOffTime = settings.autoOffTime as BigDecimal }
+  if (settings.autoOnTime != null) { switchSettings.autoOnTime = settings.autoOnTime as BigDecimal }
+  if (switchSettings) {
+    logDebug("Relaying switch settings to parent: ${switchSettings}")
+    parent?.componentUpdateSwitchSettings(device, switchSettings)
+  }
 }
 
 /**

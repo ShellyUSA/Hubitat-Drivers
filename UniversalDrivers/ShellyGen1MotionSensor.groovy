@@ -53,8 +53,8 @@ preferences {
     range: '1..256', required: false
   input name: 'motionBlindTimeMinutes', type: 'number',
     title: 'Motion blind time (minutes)',
-    description: 'Cool-down between motion triggers. Synced to/from device.',
-    range: '0..60', required: false
+    description: 'Cool-down between motion triggers (1\u20131440 minutes). Synced to/from device.',
+    range: '1..1440', required: false
 
   // ── Tamper / Vibration (synced to device) ──
   input name: 'tamperSensitivity', type: 'number',
