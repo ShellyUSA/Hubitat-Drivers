@@ -299,14 +299,23 @@ function BLEScanCallback(event, result) {
   let modelId = -1;
 
   // Layer 1: Manufacturer data (most reliable)
-  if (typeof result.advData === "string" && result.advData.length > 0) {
+  let hasAdvData = typeof result.advData === "string" && result.advData.length > 0;
+  if (hasAdvData) {
     modelId = getShellyModelId(result.advData);
   }
 
   // Layer 2: BTHome device_type_id
-  if (modelId < 0 && typeof decoded.device_type_id !== "undefined") {
+  let hasDTID = typeof decoded.device_type_id !== "undefined";
+  if (modelId < 0 && hasDTID) {
     modelId = decoded.device_type_id;
   }
+
+  // Diagnostic: log identification layer results for first packet per MAC
+  print("BLE ID:", mac,
+    "advData=" + (hasAdvData ? "yes(" + result.advData.length + "b)" : "no"),
+    "dtid=" + (hasDTID ? decoded.device_type_id : "no"),
+    "mfId=" + modelId,
+    "ln=" + (typeof result.local_name === "string" ? result.local_name : ""));
 
   // Send numeric model ID if found
   if (modelId >= 0) {
