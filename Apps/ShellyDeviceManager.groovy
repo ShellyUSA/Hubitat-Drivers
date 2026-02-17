@@ -224,7 +224,7 @@ Map mainPage() {
         remainingSecs = getRemainingDiscoverySeconds()
     }
 
-    // Apply pending label edit if the user has typed a new label
+    // Apply pending WiFi label edit if the user has typed a new label
     String editIp = state.pendingLabelEdit as String
     if (editIp && settings?.editLabelValue != null) {
         String newLabel = (settings.editLabelValue as String)?.trim()
@@ -238,6 +238,31 @@ Map mainPage() {
         }
         state.remove('pendingLabelEdit')
         app.removeSetting('editLabelValue')
+    }
+
+    // Apply pending BLE label edit if the user has typed a new label
+    String editBleMac = state.pendingBleLabelEdit as String
+    if (editBleMac && settings?.editBleLabelValue != null) {
+        String newBleLabel = (settings.editBleLabelValue as String)?.trim()
+        if (newBleLabel) {
+            def bleDevice = getChildDevice(editBleMac)
+            if (bleDevice) {
+                bleDevice.setLabel(newBleLabel)
+                logInfo("Updated BLE label for ${editBleMac} to '${newBleLabel}'")
+                appendLog('info', "Renamed BLE ${editBleMac} to '${newBleLabel}'")
+                // Update cached label in discovery state
+                Map discoveredBle = state.discoveredBleDevices ?: [:]
+                String macKey = editBleMac.toString()
+                Map bleEntry = discoveredBle[macKey] as Map
+                if (bleEntry) {
+                    bleEntry.hubDeviceLabel = newBleLabel
+                    discoveredBle[macKey] = bleEntry
+                    state.discoveredBleDevices = discoveredBle
+                }
+            }
+        }
+        state.remove('pendingBleLabelEdit')
+        app.removeSetting('editBleLabelValue')
     }
 
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
@@ -281,6 +306,19 @@ Map mainPage() {
         section() {
             input 'btnRefreshAllStatus', 'button', title: 'Refresh All Status', submitOnChange: true
             paragraph displayDeviceConfigTable()
+        }
+
+        // BLE label editing input (shown when user clicks a label in the BLE table)
+        if (state.pendingBleLabelEdit) {
+            String labelMac = state.pendingBleLabelEdit as String
+            def labelDevice = getChildDevice(labelMac)
+            String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelMac
+            section() {
+                paragraph "<b>Editing label for BLE device ${labelMac}</b>"
+                input name: 'editBleLabelValue', type: 'text', title: "New label (current: ${currentLabel})",
+                    defaultValue: currentLabel, required: false, submitOnChange: true
+                input 'btnCancelBleLabelEdit', 'button', title: 'Cancel', submitOnChange: true
+            }
         }
 
         // BLE device delete confirmation
@@ -485,6 +523,17 @@ void appButtonHandler(String buttonName) {
     }
 
     // === BLE Device Table Buttons ===
+
+    if (buttonName.startsWith('editBleLabel|')) {
+        String targetMac = buttonName.minus('editBleLabel|')
+        state.pendingBleLabelEdit = targetMac
+        app.removeSetting('editBleLabelValue')
+    }
+
+    if (buttonName == 'btnCancelBleLabelEdit') {
+        state.remove('pendingBleLabelEdit')
+        app.removeSetting('editBleLabelValue')
+    }
 
     if (buttonName.startsWith('createBle|')) {
         String mac = buttonName.minus('createBle|')
@@ -7975,6 +8024,7 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
     if (child) {
         entry.hubDeviceId = child.id
         entry.hubDeviceName = child.displayName
+        entry.hubDeviceLabel = child.label ?: child.displayName
     }
 
     discoveredBle[macKey] = entry
@@ -8070,6 +8120,7 @@ private void createBleDevice(String mac) {
         bleInfo.isCreated = true
         bleInfo.hubDeviceId = childDevice.id
         bleInfo.hubDeviceName = deviceLabel
+        bleInfo.hubDeviceLabel = deviceLabel
         discoveredBle[macKey] = bleInfo
         state.discoveredBleDevices = discoveredBle
 
@@ -8119,6 +8170,7 @@ private void removeBleDevice(String mac) {
             bleInfo.isCreated = false
             bleInfo.hubDeviceId = null
             bleInfo.hubDeviceName = null
+            bleInfo.hubDeviceLabel = null
             discoveredBle[macKey] = bleInfo
             state.discoveredBleDevices = discoveredBle
         }
@@ -8537,6 +8589,7 @@ private String renderBleTableMarkup() {
     str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
     str.append("<thead><tr>")
     str.append("<th>Bluetooth Device</th>")
+    str.append("<th>Label</th>")
     str.append("<th>MAC</th>")
     str.append("<th>RSSI</th>")
     str.append("<th>Battery</th>")
@@ -8610,8 +8663,20 @@ private String renderBleTableMarkup() {
             actionCell = "<td class='status-na' title='Unknown model — no driver available'>—</td>"
         }
 
+        // Label column (click to edit for created devices)
+        String labelCell
+        if (isCreated && entry.hubDeviceId) {
+            String currentLabel = (entry.hubDeviceLabel ?: entry.hubDeviceName ?: '') as String
+            String editIcon = "<iconify-icon icon='material-symbols:edit' style='font-size:14px;vertical-align:middle;margin-left:4px'></iconify-icon>"
+            String editBtn = buttonLink("editBleLabel|${mac}".toString(), "${currentLabel} ${editIcon}", '#424242', '14px')
+            labelCell = "<td style='text-align:left'>${editBtn}</td>"
+        } else {
+            labelCell = "<td class='status-na'>&ndash;</td>"
+        }
+
         str.append("<tr>")
         str.append(deviceCell)
+        str.append(labelCell)
         str.append("<td style='font-family:monospace;font-size:12px'>${mac}</td>")
         str.append(rssiCell)
         str.append(batteryCell)
