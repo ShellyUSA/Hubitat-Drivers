@@ -271,6 +271,12 @@ private void routeWebhookParams(Map params) {
       logInfo("Power monitoring updated: ${params.apower ?: 0}W, ${params.voltage ?: 0}V, ${params.current ?: 0}A")
       break
 
+    case 'ble':
+      // Fallback: forward BLE data to app if handlePostWebhook intercept was missed
+      logDebug('BLE relay received via routeWebhookParams, forwarding to app')
+      parent?.handleBleRelay(device, params)
+      break
+
     default:
       logDebug("routeWebhookParams: unhandled dst=${params.dst}")
   }

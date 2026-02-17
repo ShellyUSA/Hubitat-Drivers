@@ -429,6 +429,13 @@ private void routeWebhookParams(Map params) {
     return
   }
 
+  // Fallback: forward BLE data to app if handlePostWebhook intercept was missed
+  if (dst == 'ble') {
+    logDebug('BLE relay received via routeWebhookParams, forwarding to app')
+    parent?.handleBleRelay(device, params)
+    return
+  }
+
   Integer compId = params.cid as Integer
 
   // For powermon, component type comes from the 'comp' query param (e.g., 'switch', 'cover', 'em', 'em1')

@@ -216,6 +216,12 @@ private void routeWebhookParams(Map params) {
       }
       break
 
+    case 'ble':
+      // Fallback: forward BLE data to app if handlePostWebhook intercept was missed
+      logDebug('BLE relay received via routeWebhookParams, forwarding to app')
+      parent?.handleBleRelay(device, params)
+      break
+
     default:
       logDebug("routeWebhookParams: unhandled dst=${params.dst}")
   }
