@@ -1958,9 +1958,10 @@ private void installRequiredActionsForIp(String ipAddress) {
  * <ol>
  *   <li><b>Component settings</b> — relay, roller, light, and input URL params
  *       (e.g., {@code out_on_url}, {@code roller_open_url})</li>
- *   <li><b>Actions endpoint</b> — sensor/button action arrays via {@code /settings/actions}</li>
- *   <li><b>Direct settings</b> — device-type-specific properties like {@code report_url}
- *       and {@code motion_url}</li>
+ *   <li><b>Actions endpoint</b> — sensor/button action arrays via {@code /settings/actions}.
+ *       URL clearing and disabling are sent as separate requests to avoid firmware issues
+ *       where a combined request skips the URL clear.</li>
+ *   <li><b>Direct settings</b> — device-type-specific properties (e.g., H&T {@code report_url})</li>
  * </ol>
  *
  * @param ipAddress The IP address of the Gen 1 Shelly device
@@ -2032,25 +2033,26 @@ private void clearGen1ActionUrls(String ipAddress) {
 
     // ── Step 2: Clear /settings/actions entries (sensors, buttons) ──
     // Response format: {"actions": {"report_url": [{"index": 0, "urls": [...], ...}], ...}}
+    // Split into two requests per action: clear URLs first, then disable.
+    // Sending both in one request can cause firmware to skip the URL clear.
     Map actionsResponse = sendGen1Get(ipAddress, 'settings/actions')
     Map actionsMap = actionsResponse?.get('actions') as Map
     if (actionsMap) {
         actionsMap.each { actionName, actionData ->
-            // Each action type maps to a list of URL arrays (one per index)
             if (actionData instanceof List) {
                 ((List) actionData).eachWithIndex { entry, idx ->
                     if (entry instanceof Map) {
-                        Map actionEntry = (Map) entry
-                        List urls = actionEntry.urls as List
-                        if (urls && urls.any { url -> url?.toString()?.trim() }) {
-                            sendGen1Setting(ipAddress, 'settings/actions', [
-                                index: idx.toString(),
-                                name: actionName.toString(),
-                                enabled: 'false',
-                                'urls[]': ''
-                            ])
-                            cleared++
-                        }
+                        String idxStr = idx.toString()
+                        String name = actionName.toString()
+                        // Step 2a: Clear URLs (separate request)
+                        sendGen1Setting(ipAddress, 'settings/actions', [
+                            index: idxStr, name: name, 'urls[]': ''
+                        ])
+                        // Step 2b: Disable action (separate request)
+                        sendGen1Setting(ipAddress, 'settings/actions', [
+                            index: idxStr, name: name, enabled: 'false'
+                        ])
+                        cleared++
                     }
                 }
             }
@@ -2058,17 +2060,10 @@ private void clearGen1ActionUrls(String ipAddress) {
     }
 
     // ── Step 3: Clear direct /settings URL properties ──
-    // motion_url lives on /settings (not in the /settings/actions array) for motion sensors
-    switch (typeCode) {
-        case 'SHHT-1':
-            Map rHt = sendGen1Setting(ipAddress, 'settings', [report_url: ''])
-            if (rHt != null) { cleared++ }
-            break
-        case 'SHMOS-01':
-        case 'SHMOS-02':
-            Map rMos = sendGen1Setting(ipAddress, 'settings', [motion_url: ''])
-            if (rMos != null) { cleared++ }
-            break
+    // H&T uses report_url as a direct property on /settings (not in /settings/actions)
+    if (typeCode == 'SHHT-1') {
+        Map rHt = sendGen1Setting(ipAddress, 'settings', [report_url: ''])
+        if (rHt != null) { cleared++ }
     }
 
     def childDevice = findChildDeviceByIp(ipAddress)
@@ -2327,8 +2322,10 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
         case 'SHMOS-02':  // Motion v2
             actions.add([endpoint: 'settings/actions', param: 'report_url',
                 dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings', param: 'motion_url',
-                dst: 'motion', cid: 0, name: 'Motion Detected', configType: 'component'])
+            actions.add([endpoint: 'settings/actions', param: 'motion_on',
+                dst: 'motion_on', cid: 0, name: 'Motion On', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'motion_off',
+                dst: 'motion_off', cid: 0, name: 'Motion Off', configType: 'actions', actionIndex: 0])
             break
 
         default:
@@ -5245,8 +5242,9 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         logDebug("Device is likely a roller shutter or similar (1 switch, 1+ inputs)")
     } else if (switchesFound > 1) {
         logDebug("Device is likely a multi-relay model (multiple switches)")
-    } else if (switchesFound == 0 && inputsFound == 0 && components.size() > 0) {
-        logDebug("Device is a sensor-only device (no switches/inputs, ${components.size()} sensor components)")
+    } else if (switchesFound == 0 && components.size() > 0) {
+        // Sensor-only or input-only device (e.g., Gen1 Motion Sensor has input:0 + lux + temp + battery)
+        logDebug("Device is a sensor/input-only device (no switches, ${components.size()} components)")
     } else if (switchesFound == 0 && inputsFound == 0) {
         logDebug("determineDeviceDriver: no recognized components found in device status")
     } else {
