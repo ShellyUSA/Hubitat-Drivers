@@ -1064,6 +1064,8 @@ private List<Map> buildDeviceList() {
                     ip: ip,
                     mac: dev.getDataValue('shellyMac') ?: '',
                     isCreated: true,
+                    isGen1: isGen1Device(dev),
+                    deviceGen: getDeviceGen(dev),
                     hubDeviceId: dev.id,
                     hubDeviceDni: dev.deviceNetworkId,
                     hubDeviceName: dev.displayName,
@@ -1101,6 +1103,7 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
         model: (info?.model ?: 'Unknown') as String,
         isCreated: false,
         isGen1: (info?.gen?.toString() == '1') as Boolean,
+        deviceGen: (info?.gen?.toString() ?: '2') as String,
         hubDeviceDni: null,
         hubDeviceName: null,
         hubDeviceId: null,
@@ -1132,13 +1135,16 @@ private String buildDeviceRow(Map entry) {
     Long lastRefreshed = entry.lastRefreshed as Long
     Boolean isStale = lastRefreshed == null
 
-    // Column 1: Device name (linked if created) with Gen 1 badge
-    String gen1Badge = (entry.isGen1 as Boolean) ? " <span style='font-size:10px;background:#FF9800;color:white;padding:1px 4px;border-radius:3px;vertical-align:middle'>Gen 1</span>" : ''
+    // Column 1: Device name (linked if created) with generation badge
+    Boolean isGen1 = entry.isGen1 as Boolean
+    String genLabel = isGen1 ? 'Gen 1' : "Gen${entry.deviceGen ?: '2'}+"
+    String genColor = isGen1 ? '#FF9800' : '#1976D2'
+    String genBadge = " <span style='font-size:10px;background:${genColor};color:white;padding:1px 4px;border-radius:3px;vertical-align:middle'>${genLabel}</span>"
     if (isCreated && entry.hubDeviceId) {
         String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${entry.hubDeviceName}'>${entry.hubDeviceName}</a>"
-        str.append("<td class='device-link'>${devLink}${gen1Badge}</td>")
+        str.append("<td class='device-link'>${devLink}${genBadge}</td>")
     } else {
-        str.append("<td>${entry.shellyName ?: 'Unknown'}${gen1Badge}</td>")
+        str.append("<td>${entry.shellyName ?: 'Unknown'}${genBadge}</td>")
     }
 
     // Column 2: Device label (click to edit for created devices)
@@ -1426,6 +1432,7 @@ private Map buildDeviceStatusCacheEntry(String ip) {
     Boolean isBattery = entry.isBatteryDevice as Boolean
     Boolean isGen1 = isGen1DeviceByIp(ip)
     entry.isGen1 = isGen1
+    entry.deviceGen = isGen1 ? '1' : (info?.gen?.toString() ?: (childDevice ? getDeviceGen(childDevice) : '2'))
 
     if (isBattery) {
         entry.isReachable = isGen1 ? isGen1DeviceReachable(ip) : isDeviceReachable(ip)
