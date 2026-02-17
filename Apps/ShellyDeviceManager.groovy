@@ -979,10 +979,10 @@ private String renderDeviceConfigTableMarkup() {
     StringBuilder str = new StringBuilder()
     str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
     str.append("<thead><tr>")
+    str.append("<th>Action</th>")
     str.append("<th>WiFi Device</th>")
     str.append("<th>Label</th>")
     str.append("<th>IP</th>")
-    str.append("<th>Created</th>")
     str.append("<th>Scripts Installed</th>")
     str.append("<th>Scripts Active</th>")
     str.append("<th>Webhooks Created</th>")
@@ -1135,7 +1135,16 @@ private String buildDeviceRow(Map entry) {
     Long lastRefreshed = entry.lastRefreshed as Long
     Boolean isStale = lastRefreshed == null
 
-    // Column 1: Device name (linked if created) with generation badge
+    // Column 1: Action button (create or remove)
+    if (isCreated) {
+        String deleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px'></iconify-icon>"
+        str.append("<td>${buttonLink("removeDev|${ip}", deleteIcon, '#F44336', '20px')}</td>")
+    } else {
+        String addIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:20px'></iconify-icon>"
+        str.append("<td>${buttonLink("createDev|${ip}", addIcon, '#4CAF50', '20px')}</td>")
+    }
+
+    // Column 2: Device name (linked if created) with generation badge
     Boolean isGen1 = entry.isGen1 as Boolean
     String genLabel = isGen1 ? 'Gen 1' : "Gen${entry.deviceGen ?: '2'}+"
     String genColor = isGen1 ? '#FF9800' : '#1976D2'
@@ -1160,17 +1169,7 @@ private String buildDeviceRow(Map entry) {
     // Column 3: IP
     str.append("<td>${ip}</td>")
 
-    // Column 4: Created status with action button
-    if (isCreated) {
-        String removeBtn = buttonLink("removeDev|${ip}", "<iconify-icon icon='material-symbols:delete-outline' style='font-size:18px'></iconify-icon>", "#F44336", "18px")
-        str.append("<td><span class='status-ok'>&#10003;</span> ${removeBtn}</td>")
-    } else {
-        String createBtn = buttonLink("createDev|${ip}", "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:18px'></iconify-icon>", "#4CAF50", "18px")
-        str.append("<td>${createBtn}</td>")
-    }
-
-    // Columns 5-8: Script and webhook status
-    Boolean isGen1 = entry.isGen1 as Boolean
+    // Columns 4-7: Script and webhook status
     if (!isCreated) {
         // Not created — show dashes for all status columns
         str.append("<td class='status-na'>&ndash;</td>")
@@ -8611,6 +8610,7 @@ private String renderBleTableMarkup() {
     StringBuilder str = new StringBuilder()
     str.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
     str.append("<thead><tr>")
+    str.append("<th>Action</th>")
     str.append("<th>Bluetooth Device</th>")
     str.append("<th>Label</th>")
     str.append("<th>MAC</th>")
@@ -8618,7 +8618,6 @@ private String renderBleTableMarkup() {
     str.append("<th>Battery</th>")
     str.append("<th>Last Seen</th>")
     str.append("<th>Gateway</th>")
-    str.append("<th>Action</th>")
     str.append("</tr></thead><tbody>")
 
     deviceList.each { Map entry ->
@@ -8698,6 +8697,7 @@ private String renderBleTableMarkup() {
         }
 
         str.append("<tr>")
+        str.append(actionCell)
         str.append(deviceCell)
         str.append(labelCell)
         str.append("<td style='font-family:monospace;font-size:12px'>${mac}</td>")
@@ -8705,7 +8705,6 @@ private String renderBleTableMarkup() {
         str.append(batteryCell)
         str.append("<td>${lastSeenStr}</td>")
         str.append("<td>${gateway}</td>")
-        str.append(actionCell)
         str.append("</tr>")
     }
 
@@ -11633,7 +11632,7 @@ private void handleGetWebhook(String parentDni, Map msg) {
         logDebug("componentParse: GET webhook dst=${params.dst}, cid=${params.cid}")
         processWebhookParams(parentDni, params)
     } else {
-        logDebug('componentParse: no actionable data in message')
+        logDebug("componentParse: no actionable data in message — headers keys: ${msg?.headers?.keySet()}, raw header present: ${msg?.header != null}")
     }
 }
 
@@ -11711,8 +11710,8 @@ void componentLogParsedMessage(DeviceWrapper device, Map msg) {
     Map params = [:]
     if (path.startsWith('/webhook/') && pathComponents.size() >= 2) {
         // pathComponents = ['webhook', 'dst', 'cid', ...]
-        if (pathComponents.size() >= 1) params.dst = pathComponents[0]
-        if (pathComponents.size() >= 2) params.cid = pathComponents[1]
+        if (pathComponents.size() >= 2) params.dst = pathComponents[1]
+        if (pathComponents.size() >= 3) params.cid = pathComponents[2]
     }
 
     // Check for query string parameters
@@ -11828,18 +11827,35 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
  * @param msg The parsed LAN message map from parseLanMessage()
  * @return Map with dst and cid keys, or null if not parseable
  */
+@CompileStatic
 private Map parseWebhookQueryParams(Map msg) {
     String requestLine = null
 
+    // Primary: search parsed headers Map for request line
     if (msg?.headers) {
-        requestLine = msg.headers.keySet()?.find { key ->
+        requestLine = ((Map)msg.headers).keySet()?.find { Object key ->
             key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
         }?.toString()
     }
 
+    // Fallback: parse raw header string (singular msg.header)
+    if (!requestLine && msg?.header) {
+        String rawHeader = msg.header.toString()
+        String[] lines = rawHeader.split('\n')
+        for (String line : lines) {
+            String trimmed = line.trim()
+            if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
+                requestLine = trimmed
+                break
+            }
+        }
+    }
+
     if (!requestLine) { return null }
 
-    String pathAndQuery = requestLine.split(' ')[1]
+    String[] requestParts = requestLine.split(' ')
+    if (requestParts.length < 2) { return null }
+    String pathAndQuery = requestParts[1]
 
     if (pathAndQuery.startsWith('/webhook/')) {
         String webhookPath = pathAndQuery.substring('/webhook/'.length())
