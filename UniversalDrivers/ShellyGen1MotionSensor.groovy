@@ -92,7 +92,14 @@ void installed() {
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   initialize()
-  relayDeviceSettings()
+  // If device-synced settings are still unpopulated, sync from device/cache first
+  if (settings.motionSensitivity == null && settings.tamperSensitivity == null && settings.sleepTime == null) {
+    logDebug('Device-synced settings not yet populated — requesting sync from device')
+    device.removeDataValue('gen1SettingsSynced')
+    parent?.componentRefresh(device)
+  } else {
+    relayDeviceSettings()
+  }
 }
 
 /**

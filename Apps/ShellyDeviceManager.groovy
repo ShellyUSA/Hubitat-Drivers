@@ -4397,8 +4397,10 @@ private void pollGen1DeviceStatus(String ipAddress) {
 }
 
 /**
- * Reads /settings from a Gen 1 Motion sensor and updates driver preferences
- * to reflect the actual device configuration. Sets {@code gen1SettingsSynced}
+ * Syncs Gen 1 Motion sensor configuration to driver preferences.
+ * Attempts a live {@code GET /settings} first; if the device is asleep,
+ * falls back to the cached {@code gen1Settings} from discovery in
+ * {@code state.discoveredShellys}. Sets {@code gen1SettingsSynced}
  * data value on success so subsequent refreshes skip the extra HTTP call.
  * Only applies to SHMOS-01 and SHMOS-02 devices.
  *
@@ -4410,8 +4412,18 @@ private void syncGen1MotionSettings(String ipAddress, def childDevice, String ge
     if (!childDevice) { return }
     if (gen1Type != 'SHMOS-01' && gen1Type != 'SHMOS-02') { return }
 
+    // Try live fetch first; fall back to cached discovery data if device is asleep
     Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
-    if (!gen1Settings) { return }
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (gen1Settings) {
+            logDebug("syncGen1MotionSettings: device asleep, using cached settings from discovery")
+        } else {
+            logDebug("syncGen1MotionSettings: device asleep and no cached settings for ${ipAddress}")
+            return
+        }
+    }
 
     try {
         // Motion settings are nested under 'motion' object in the response

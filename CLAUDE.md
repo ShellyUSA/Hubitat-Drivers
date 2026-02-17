@@ -27,6 +27,18 @@ This applies to ALL Gen 1 sensor types that support `report_url`: H&T (`SHHT-1`)
 
 Use other action URLs (e.g., `flood_detected_url`, `open_url`, `motion_on`) that send simple HTTP requests without query parameters. For periodic sensor data, use polling via `GET /status`.
 
+## Gen 1 Battery Device Sleep Behavior
+
+**Shelly Motion sensors (SHMOS-01, SHMOS-02) do NOT sleep.** Despite being battery-powered, they remain awake and reachable via HTTP at all times. You can query `/settings`, `/status`, or any other endpoint at any time — there is no need to wait for a wake-up event.
+
+**Devices that DO sleep** (unreachable most of the time, wake briefly to send action URL callbacks):
+- H&T (`SHHT-1`) — wakes on temperature/humidity report interval
+- Flood (`SHWT-1`) — wakes on flood state change
+- Door/Window (`SHDW-1`, `SHDW-2`) — wakes on open/close/vibration
+- Button (`SHBTN-1`, `SHBTN-2`) — wakes on button press
+
+For sleeping devices, use `attemptGen1ActionUrlInstallOnWake()` to queue configuration for the next wake-up. For Motion sensors, you can configure the device immediately since it is always reachable.
+
 ## Webhook URL Format — Path Segments (No Query Parameters)
 
 **NEVER use query parameters (`?key=val&key2=val2`) in webhook URLs.** Hubitat silently strips everything after `?` on incoming HTTP requests to port 39501, so query parameter data is lost.
