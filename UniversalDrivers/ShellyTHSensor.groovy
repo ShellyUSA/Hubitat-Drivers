@@ -34,6 +34,8 @@ metadata {
 
     capability 'Refresh'
     //Commands: refresh()
+
+    attribute 'lastUpdated', 'string'
   }
 }
 
@@ -67,16 +69,8 @@ void updated() {
 
 /**
  * Parses incoming LAN messages from the Shelly device.
- * Routes notifications to the appropriate handler based on the dst field.
- * Battery-powered devices send temperature/humidity updates when they wake,
- * and battery level is requested opportunistically during those wake windows.
- *
- * @param description Raw LAN message description string from Hubitat
- */
-/**
- * Parses incoming LAN messages from the Shelly device.
  * POST requests (from Shelly scripts) carry data in the JSON body.
- * GET requests (from Shelly Action Webhooks) carry state in the URL path.
+ * GET requests (from Shelly Action Webhooks) carry sensor data in URL query params.
  *
  * @param description Raw LAN message description string from Hubitat
  */
@@ -144,12 +138,13 @@ private void handleGetWebhook(Map msg) {
 }
 
 /**
- * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /temperature/0).
+ * Parses webhook GET request path and query string to extract routing and sensor data.
+ * GET Action Webhooks carry routing in the path (e.g., /temperature/0) and
+ * sensor values in query parameters (e.g., ?tC=22.5&tF=72.5&battPct=85).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
- * @return Map with dst and cid keys, or null if not parseable
+ * @return Map with dst, cid, and any parsed query parameter keys, or null if not parseable
  */
 @CompileStatic
 private Map parseWebhookQueryParams(Map msg) {
@@ -181,17 +176,34 @@ private Map parseWebhookQueryParams(Map msg) {
   if (requestParts.length < 2) { return null }
   String pathAndQuery = requestParts[1]
 
-  // Strip leading slash and parse /<dst>/<cid>[?queryParams]
+  // Strip leading slash and separate path from query string
   String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
   if (!webhookPath) { return null }
+
+  String queryString = null
   int qMarkIdx = webhookPath.indexOf('?')
-  if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
-  String[] segments = webhookPath.split('/')
-  if (segments.length >= 2) {
-    return [dst: segments[0], cid: segments[1]]
+  if (qMarkIdx >= 0) {
+    queryString = webhookPath.substring(qMarkIdx + 1)
+    webhookPath = webhookPath.substring(0, qMarkIdx)
   }
 
-  return null
+  String[] segments = webhookPath.split('/')
+  if (segments.length < 2) { return null }
+
+  Map result = [dst: segments[0], cid: segments[1]]
+
+  // Parse query parameters (e.g., tC=22.5&tF=72.5&battPct=85)
+  if (queryString) {
+    String[] pairs = queryString.split('&')
+    for (String pair : pairs) {
+      int eqIdx = pair.indexOf('=')
+      if (eqIdx > 0) {
+        result[pair.substring(0, eqIdx)] = pair.substring(eqIdx + 1)
+      }
+    }
+  }
+
+  return result
 }
 
 /**
@@ -207,10 +219,13 @@ private void routeWebhookParams(Map params) {
     case 'temperature':
       String scale = location.temperatureScale ?: 'F'
       BigDecimal temp = null
-      if (scale == 'C' && params.tC) {
+      if (scale == 'C' && params.tC != null) {
         temp = params.tC as BigDecimal
-      } else if (params.tF) {
+      } else if (params.tF != null) {
         temp = params.tF as BigDecimal
+      } else if (params.tC != null) {
+        // Fahrenheit hub but only Celsius available — convert
+        temp = (params.tC as BigDecimal) * 9 / 5 + 32
       }
       if (temp != null) {
         sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
@@ -232,7 +247,7 @@ private void routeWebhookParams(Map params) {
       // Fallback: forward BLE data to app if handlePostWebhook intercept was missed
       logDebug('BLE relay received via routeWebhookParams, forwarding to app')
       parent?.handleBleRelay(device, params)
-      break
+      return // don't update lastUpdated for relay-only traffic
 
     default:
       logDebug("routeWebhookParams: unhandled dst=${params.dst}")
@@ -245,6 +260,8 @@ private void routeWebhookParams(Map params) {
       descriptionText: "Battery is ${batteryPct}%")
     logInfo("Battery: ${batteryPct}%")
   }
+
+  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -258,18 +275,20 @@ private void routeWebhookParams(Map params) {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Initializes the device driver. Called on install and settings update.
+ * Initializes the device driver. Called on install, settings update, and hub startup.
+ * This is a battery-powered device — initialization only resets hub-side state.
  */
 void initialize() {
-  logDebug("initialize() called")
+  logDebug('initialize() called — battery device, hub-side reset only')
 }
 
 /**
  * Configures the device driver settings.
  * Sets default log level if not already configured.
+ * This runs on the hub side and does not require the device to be awake.
  */
 void configure() {
-  logDebug("configure() called")
+  logDebug('configure() called')
   if (!settings.logLevel) {
     logWarn("No log level set, defaulting to 'debug'")
     device.updateSetting('logLevel', 'debug')
@@ -277,151 +296,18 @@ void configure() {
 }
 
 /**
- * Refreshes the device state by querying the parent app.
+ * Refresh is a no-op for battery-powered devices.
+ * The device sleeps most of the time and cannot be polled on demand.
+ * Data updates automatically when the device wakes to send sensor reports.
  */
 void refresh() {
-  logDebug("refresh() called")
+  logDebug('refresh() called — battery device is asleep, data updates on next wake')
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Initialize / Configure / Refresh Commands               ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-
-
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  Sensor Monitoring - Temperature, Humidity & Battery Parsing ║
-// ╚══════════════════════════════════════════════════════════════╝
-
-/**
- * Parses temperature notifications from Shelly device.
- * Processes JSON with dst:"temperature" and updates the temperature attribute.
- * Also requests battery level from the parent app while the device is awake.
- * JSON format: [dst:temperature, result:[temperature:0:[id:0, tC:24.4, tF:75.9]]]
- *
- * @param json The parsed JSON notification from the Shelly device
- */
-void parseTemperature(Map json) {
-  logDebug("parseTemperature() called with: ${json}")
-
-  try {
-    Map result = json?.result
-    if (!result) {
-      logWarn("parseTemperature: No result data in JSON")
-      return
-    }
-
-    result.each { key, value ->
-      if (value instanceof Map) {
-        BigDecimal tempC = value.tC != null ? value.tC as BigDecimal : null
-        BigDecimal tempF = value.tF != null ? value.tF as BigDecimal : null
-
-        if (tempC != null || tempF != null) {
-          // Use hub's temperature scale preference
-          String scale = location.temperatureScale ?: 'F'
-          BigDecimal temp = (scale == 'C') ? tempC : (tempF ?: tempC)
-          String unit = "\u00B0${scale}"
-
-          if (temp != null) {
-            def currentTemp = device.currentValue('temperature')
-            if (currentTemp == null || (currentTemp as BigDecimal) != temp) {
-              sendEvent(name: "temperature", value: temp, unit: unit,
-                descriptionText: "Temperature is ${temp}${unit}")
-              logInfo("Temperature: ${temp}${unit}")
-            } else {
-              logDebug("Temperature unchanged: ${temp}${unit}")
-            }
-          }
-        }
-      }
-    }
-  } catch (Exception e) {
-    logError("parseTemperature exception: ${e.message}")
-  }
-}
-
-/**
- * Parses humidity notifications from Shelly device.
- * Processes JSON with dst:"humidity" and updates the humidity attribute.
- * Also requests battery level from the parent app while the device is awake.
- * JSON format: [dst:humidity, result:[humidity:0:[id:0, rh:73.7]]]
- *
- * @param json The parsed JSON notification from the Shelly device
- */
-void parseHumidity(Map json) {
-  logDebug("parseHumidity() called with: ${json}")
-
-  try {
-    Map result = json?.result
-    if (!result) {
-      logWarn("parseHumidity: No result data in JSON")
-      return
-    }
-
-    result.each { key, value ->
-      if (value instanceof Map && value.rh != null) {
-        BigDecimal humidity = value.rh as BigDecimal
-        def currentHumidity = device.currentValue('humidity')
-        if (currentHumidity == null || (currentHumidity as BigDecimal) != humidity) {
-          sendEvent(name: "humidity", value: humidity, unit: "%",
-            descriptionText: "Humidity is ${humidity}%")
-          logInfo("Humidity: ${humidity}%")
-        } else {
-          logDebug("Humidity unchanged: ${humidity}%")
-        }
-      }
-    }
-  } catch (Exception e) {
-    logError("parseHumidity exception: ${e.message}")
-  }
-}
-
-/**
- * Parses battery/device power notifications from Shelly device.
- * Processes JSON with dst:"battery" and updates the battery attribute.
- * Only sends an event if the battery percentage has actually changed.
- * JSON format: [dst:battery, result:[devicepower:0:[id:0, battery:[V:4.87, percent:50], external:[present:false]]]]
- *
- * @param json The parsed JSON notification from the Shelly device
- */
-void parseBattery(Map json) {
-  logDebug("parseBattery() called with: ${json}")
-
-  try {
-    Map result = json?.result
-    if (!result) {
-      logWarn("parseBattery: No result data in JSON")
-      return
-    }
-
-    result.each { key, value ->
-      if (value instanceof Map) {
-        Map battery = value.battery
-        if (battery?.percent != null) {
-          Integer batteryPct = battery.percent as Integer
-          def currentBattery = device.currentValue('battery')
-          if (currentBattery == null || (currentBattery as Integer) != batteryPct) {
-            sendEvent(name: "battery", value: batteryPct, unit: "%",
-              descriptionText: "Battery is ${batteryPct}%")
-            logInfo("Battery: ${batteryPct}%")
-          } else {
-            logDebug("Battery unchanged: ${batteryPct}%")
-          }
-        }
-        if (battery?.V != null) {
-          BigDecimal voltage = battery.V as BigDecimal
-          logDebug("Battery voltage: ${voltage}V")
-        }
-      }
-    }
-  } catch (Exception e) {
-    logError("parseBattery exception: ${e.message}")
-  }
-}
-
-// ╔══════════════════════════════════════════════════════════════╗
-// ║  END Sensor Monitoring                                       ║
-// ╚══════════════════════════════════════════════════════════════╝
 
 
 
@@ -445,17 +331,12 @@ String loggingLabel() {
  * @return true if the message should be logged
  */
 private Boolean shouldLogLevel(String messageLevel) {
-  if (messageLevel == 'error') {
-    return true
-  } else if (messageLevel == 'warn') {
-    return settings.logLevel == 'warn'
-  } else if (messageLevel == 'info') {
-    return ['warn', 'info'].contains(settings.logLevel)
-  } else if (messageLevel == 'debug') {
-    return ['warn', 'info', 'debug'].contains(settings.logLevel)
-  } else if (messageLevel == 'trace') {
-    return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel)
-  }
+  if (messageLevel == 'error') { return true }
+  else if (messageLevel == 'warn') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'info') { return ['info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'debug') { return ['debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'trace') { return settings.logLevel == 'trace' }
+  return false
 }
 
 void logError(message) { log.error "${loggingLabel()}: ${message}" }
@@ -464,37 +345,11 @@ void logInfo(message) { if (shouldLogLevel('info')) { log.info "${loggingLabel()
 void logDebug(message) { if (shouldLogLevel('debug')) { log.debug "${loggingLabel()}: ${message}" } }
 void logTrace(message) { if (shouldLogLevel('trace')) { log.trace "${loggingLabel()}: ${message}" } }
 
-void logClass(obj) {
-  logInfo("Object Class Name: ${getObjectClassName(obj)}")
-}
-
 @CompileStatic
 void logJson(Map message) {
   if (shouldLogLevel('trace')) {
-    String prettyJson = prettyJson(message)
-    logTrace(prettyJson)
+    logTrace(JsonOutput.prettyPrint(JsonOutput.toJson(message)))
   }
-}
-
-@CompileStatic
-void logErrorJson(Map message) {
-  logError(prettyJson(message))
-}
-
-@CompileStatic
-void logInfoJson(Map message) {
-  String prettyJson = prettyJson(message)
-  logInfo(prettyJson)
-}
-
-/**
- * Formats a Map as pretty-printed JSON.
- *
- * @param jsonInput The map to format
- * @return Pretty-printed JSON string
- */
-String prettyJson(Map jsonInput) {
-  return JsonOutput.prettyPrint(JsonOutput.toJson(jsonInput))
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

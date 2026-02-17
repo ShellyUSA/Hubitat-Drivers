@@ -338,12 +338,13 @@ private void handleGetWebhook(Map msg) {
 }
 
 /**
- * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /switch_on/0).
+ * Parses webhook GET request path and query string to extract routing and sensor data.
+ * GET Action Webhooks carry routing in the path (e.g., /switch_on/0) and
+ * data values in query parameters (e.g., ?apower=150.5&comp=switch&battPct=85).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
- * @return Map with dst and cid keys, or null if not parseable
+ * @return Map with dst, cid, and any parsed query parameter keys, or null if not parseable
  */
 @CompileStatic
 private Map parseWebhookQueryParams(Map msg) {
@@ -375,17 +376,34 @@ private Map parseWebhookQueryParams(Map msg) {
   if (requestParts.length < 2) { return null }
   String pathAndQuery = requestParts[1]
 
-  // Strip leading slash and parse /<dst>/<cid>[?queryParams]
+  // Strip leading slash and separate path from query string
   String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
   if (!webhookPath) { return null }
+
+  String queryString = null
   int qMarkIdx = webhookPath.indexOf('?')
-  if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
-  String[] segments = webhookPath.split('/')
-  if (segments.length >= 2) {
-    return [dst: segments[0], cid: segments[1]]
+  if (qMarkIdx >= 0) {
+    queryString = webhookPath.substring(qMarkIdx + 1)
+    webhookPath = webhookPath.substring(0, qMarkIdx)
   }
 
-  return null
+  String[] segments = webhookPath.split('/')
+  if (segments.length < 2) { return null }
+
+  Map result = [dst: segments[0], cid: segments[1]]
+
+  // Parse query parameters (e.g., apower=150.5&comp=switch&battPct=85)
+  if (queryString) {
+    String[] pairs = queryString.split('&')
+    for (String pair : pairs) {
+      int eqIdx = pair.indexOf('=')
+      if (eqIdx > 0) {
+        result[pair.substring(0, eqIdx)] = pair.substring(eqIdx + 1)
+      }
+    }
+  }
+
+  return result
 }
 
 /**
@@ -1057,17 +1075,11 @@ String loggingLabel() {
  */
 @CompileStatic
 private Boolean shouldLogLevel(String messageLevel) {
-  if (messageLevel == 'error') {
-    return true
-  } else if (messageLevel == 'warn') {
-    return settings.logLevel == 'warn'
-  } else if (messageLevel == 'info') {
-    return ['warn', 'info'].contains(settings.logLevel)
-  } else if (messageLevel == 'debug') {
-    return ['warn', 'info', 'debug'].contains(settings.logLevel)
-  } else if (messageLevel == 'trace') {
-    return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel)
-  }
+  if (messageLevel == 'error') { return true }
+  else if (messageLevel == 'warn') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'info') { return ['info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'debug') { return ['debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'trace') { return settings.logLevel == 'trace' }
   return false
 }
 

@@ -937,10 +937,10 @@ String loggingLabel() {
 
 private Boolean shouldLogLevel(String messageLevel) {
   if (messageLevel == 'error') { return true }
-  else if (messageLevel == 'warn') { return settings.logLevel == 'warn' }
-  else if (messageLevel == 'info') { return ['warn', 'info'].contains(settings.logLevel) }
-  else if (messageLevel == 'debug') { return ['warn', 'info', 'debug'].contains(settings.logLevel) }
-  else if (messageLevel == 'trace') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'warn') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'info') { return ['info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'debug') { return ['debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'trace') { return settings.logLevel == 'trace' }
   return false
 }
 
