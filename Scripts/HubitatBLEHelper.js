@@ -47,6 +47,8 @@ BTH[0xF0] = ["device_type_id", DT_U16, 0];
 // === Internal state ===
 // Per-MAC last packet ID for deduplication
 let lastPids = {};
+// Per-MAC cached model identification (survives button-only advertisements)
+let knownModels = {};
 
 // HTTP response handler
 function onHTTPResponse(result, error_code, error_message) {
@@ -295,8 +297,9 @@ function BLEScanCallback(event, result) {
     mac: mac,
   };
 
-  // === Model identification (priority: mfData > BTHome device_type_id > local_name) ===
+  // === Model identification (priority: mfData > BTHome device_type_id > local_name > cache) ===
   let modelId = -1;
+  let modelStr = "";
 
   // Layer 1: Manufacturer data (most reliable)
   let hasAdvData = typeof result.advData === "string" && result.advData.length > 0;
@@ -310,14 +313,32 @@ function BLEScanCallback(event, result) {
     modelId = decoded.device_type_id;
   }
 
+  // Layer 3: local_name (available with active scanning)
+  if (typeof result.local_name === "string" && result.local_name.length > 0) {
+    modelStr = result.local_name;
+  }
+
+  // Layer 4: Cache — reuse identification from a previous advertisement for this MAC
+  // Some devices (e.g., RC Button 4) only include identification in some advertisements
+  if (modelId < 0 && !modelStr && typeof knownModels[mac] !== "undefined") {
+    let cached = knownModels[mac];
+    modelId = cached.id;
+    modelStr = cached.str;
+  }
+
+  // Update cache when identification is found
+  if (modelId >= 0 || modelStr) {
+    knownModels[mac] = { id: modelId, str: modelStr };
+  }
+
   // Send numeric model ID if found
   if (modelId >= 0) {
     body.modelId = modelId;
   }
 
-  // Also send local_name as string model (backward compat)
-  if (typeof result.local_name === "string" && result.local_name.length > 0) {
-    body.model = result.local_name;
+  // Send string model if found
+  if (modelStr) {
+    body.model = modelStr;
   }
 
   // Add RSSI
@@ -352,7 +373,7 @@ function init() {
   } else {
     let started = BLE.Scanner.Start({
       duration_ms: BLE.Scanner.INFINITE_SCAN,
-      active: false,
+      active: true,
     });
     if (!started) {
       print("Error: Cannot start BLE scanner");

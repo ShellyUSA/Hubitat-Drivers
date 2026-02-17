@@ -266,6 +266,26 @@ Map mainPage() {
         app.removeSetting('editBleLabelValue')
     }
 
+    // Purge unknown BLE devices from discovery state on page load.
+    // Keeps entries that resolve to a known model OR have an existing child device.
+    Map discoveredBle = state.discoveredBleDevices as Map ?: [:]
+    if (discoveredBle) {
+        List<String> toRemove = []
+        discoveredBle.each { String macKey, bleVal ->
+            Map bleEntry = bleVal as Map
+            Integer entryModelId = bleEntry.modelId != null ? bleEntry.modelId as Integer : null
+            String entryModel = (bleEntry.model ?: '') as String
+            Map<String, String> info = resolveBleDriverInfo(entryModelId, entryModel)
+            Boolean hasChild = getChildDevice(macKey) != null
+            if (!info && !hasChild) { toRemove.add(macKey) }
+        }
+        if (toRemove) {
+            toRemove.each { String key -> discoveredBle.remove(key) }
+            state.discoveredBleDevices = discoveredBle
+            logInfo("Purged ${toRemove.size()} unknown BLE device(s) from discovery state")
+        }
+    }
+
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
         section() {
             if (state.discoveryRunning) {
@@ -8165,14 +8185,28 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
         if (driverInfo.modelCode) { entry.modelCode = driverInfo.modelCode }
     }
 
+    // Check if child device exists
+    def child = getChildDevice(mac)
+    Boolean isCreated = (child != null)
+
+    // Skip unknown devices that don't have a child device already created.
+    // Only known Shelly BLE models (resolved via model ID or model code) are tracked for discovery.
+    if (!driverInfo && !isCreated) {
+        logInfo("BLE discovery: ignoring unknown device ${mac} (model=${model}, modelId=${modelId})")
+        // Remove stale entry if previously stored
+        if (discoveredBle.containsKey(macKey)) {
+            discoveredBle.remove(macKey)
+            state.discoveredBleDevices = discoveredBle
+        }
+        return
+    }
+
     if (rssi != null) { entry.rssi = rssi }
     if (bleData.battery != null) { entry.battery = bleData.battery as Integer }
     entry.lastSeen = now()
     entry.lastGateway = gatewayName
 
-    // Check if child device exists
-    def child = getChildDevice(mac)
-    entry.isCreated = (child != null)
+    entry.isCreated = isCreated
     if (child) {
         entry.hubDeviceId = child.id
         entry.hubDeviceName = child.displayName
@@ -8724,12 +8758,38 @@ private String renderBleTableMarkup() {
         return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
     }
 
-    // Sort: created devices first, then by friendly model, then by MAC
+    // Filter to known devices only and refresh cached display fields from current model maps.
+    // Stale entries (stored before model map updates) get their friendlyModel/driverName refreshed here.
     List<Map> deviceList = []
+    Boolean stateChanged = false
     discoveredBle.each { String macKey, bleVal ->
         Map entry = bleVal as Map
+        Integer entryModelId = entry.modelId != null ? entry.modelId as Integer : null
+        String entryModel = (entry.model ?: '') as String
+        Map<String, String> driverInfo = resolveBleDriverInfo(entryModelId, entryModel)
+        Boolean isCreated = entry.isCreated ?: false
+        if (!driverInfo && !isCreated) { return }
+        // Refresh cached display fields from resolved driver info
+        if (driverInfo) {
+            if (entry.friendlyModel != driverInfo.friendlyModel ||
+                entry.driverName != driverInfo.driverName ||
+                (driverInfo.modelCode && entry.modelCode != driverInfo.modelCode)) {
+                entry.friendlyModel = driverInfo.friendlyModel
+                entry.driverName = driverInfo.driverName
+                if (driverInfo.modelCode) { entry.modelCode = driverInfo.modelCode }
+                discoveredBle[macKey] = entry
+                stateChanged = true
+            }
+        }
         deviceList.add(entry)
     }
+    if (stateChanged) { state.discoveredBleDevices = discoveredBle }
+
+    if (deviceList.size() == 0) {
+        return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
+    }
+
+    // Sort: created devices first, then by friendly model, then by MAC
     deviceList.sort { Map a, Map b ->
         if (a.isCreated != b.isCreated) { return a.isCreated ? -1 : 1 }
         String nameA = ((a.friendlyModel ?: a.mac) as String).toLowerCase()
