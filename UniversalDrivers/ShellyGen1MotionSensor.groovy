@@ -92,14 +92,7 @@ void installed() {
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   initialize()
-  // If device-synced settings are still unpopulated, sync from device/cache first
-  if (settings.motionSensitivity == null && settings.tamperSensitivity == null && settings.sleepTime == null) {
-    logDebug('Device-synced settings not yet populated — requesting sync from device')
-    device.removeDataValue('gen1SettingsSynced')
-    parent?.componentRefresh(device)
-  } else {
-    relayDeviceSettings()
-  }
+  relayDeviceSettings()
 }
 
 /**
@@ -244,6 +237,8 @@ void initialize() {
   unschedule('setMotionInactive')
   sendEvent(name: 'motion', value: 'inactive', descriptionText: 'Initialized as inactive')
   sendEvent(name: 'tamper', value: 'clear', descriptionText: 'Initialized as clear')
+  // Refresh status and sync device settings (Motion sensors are always awake)
+  parent?.componentRefresh(device)
 }
 
 void configure() {

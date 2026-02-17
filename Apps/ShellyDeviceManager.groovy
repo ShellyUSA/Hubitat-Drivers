@@ -3062,7 +3062,7 @@ void fireConfigTableSSR() {
  * @return HTML string to replace the element content
  */
 String processServerSideRender(Map event) {
-    logDebug("processServerSideRender called: ${event}")
+    // logDebug("processServerSideRender called: ${event}")
 
     String elementId = event.elementId ?: ''
     String eventName = event.name ?: ''
@@ -3946,7 +3946,7 @@ void processMdnsDiscovery() {
         if (!allEntries) {
             logTrace('processMdnsDiscovery: no mDNS entries found for either service type')
         } else {
-            logTrace("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
+            // logTrace("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
             Integer beforeCount = state.discoveredShellys.size()
             allEntries.each { entry ->
                 // Actual mDNS entry fields: server, port, ip4Addresses, ip6Addresses, gen, app, ver
@@ -4011,7 +4011,7 @@ void processMdnsDiscovery() {
                         deviceEntry.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
                         String hostnameMac = extractMacFromMdnsName(deviceName)
                         if (hostnameMac) { deviceEntry.mac = hostnameMac }
-                        logDebug("Gen 1 identified from hostname: ${deviceName} -> ${deviceEntry.model} (type=${typeKey})")
+                        // logDebug("Gen 1 identified from hostname: ${deviceName} -> ${deviceEntry.model} (type=${typeKey})")
                     }
                 }
 
