@@ -1952,9 +1952,133 @@ private void installRequiredActionsForIp(String ipAddress) {
 }
 
 /**
+ * Clears all existing action URLs on a Gen 1 Shelly device before reinstalling.
+ * This prevents stale URLs from previous integrations or manual configurations from
+ * persisting alongside newly installed ones. Clears URLs across three categories:
+ * <ol>
+ *   <li><b>Component settings</b> — relay, roller, light, and input URL params
+ *       (e.g., {@code out_on_url}, {@code roller_open_url})</li>
+ *   <li><b>Actions endpoint</b> — sensor/button action arrays via {@code /settings/actions}</li>
+ *   <li><b>Direct settings</b> — device-type-specific properties like {@code report_url}
+ *       and {@code motion_url}</li>
+ * </ol>
+ *
+ * @param ipAddress The IP address of the Gen 1 Shelly device
+ */
+private void clearGen1ActionUrls(String ipAddress) {
+    Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+    if (!deviceInfo) {
+        logError("clearGen1ActionUrls: no device info found for ${ipAddress}")
+        return
+    }
+
+    String typeCode = deviceInfo.gen1Type?.toString() ?: ''
+    Map deviceStatus = deviceInfo.deviceStatus as Map ?: [:]
+    Integer cleared = 0
+
+    // ── Step 1: Clear component-level URL params ──
+    // Relay components: clear all known relay URL params
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('switch:')) {
+            Integer cid = key.split(':')[1] as Integer
+            Map result = sendGen1Setting(ipAddress, "settings/relay/${cid}", [
+                out_on_url: '', out_off_url: '',
+                btn_on_url: '', btn_off_url: '',
+                shortpush_url: '', longpush_url: ''
+            ])
+            if (result != null) { cleared++ }
+        }
+    }
+
+    // Roller/cover components
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('cover:')) {
+            Integer cid = key.split(':')[1] as Integer
+            Map result = sendGen1Setting(ipAddress, "settings/roller/${cid}", [
+                roller_open_url: '', roller_close_url: '', roller_stop_url: ''
+            ])
+            if (result != null) { cleared++ }
+        }
+    }
+
+    // Light/dimmer components
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('light:')) {
+            Integer cid = key.split(':')[1] as Integer
+            Map result = sendGen1Setting(ipAddress, "settings/light/${cid}", [
+                out_on_url: '', out_off_url: '',
+                shortpush_url: '', longpush_url: ''
+            ])
+            if (result != null) { cleared++ }
+        }
+    }
+
+    // Input components (Shelly i3)
+    if (typeCode == 'SHIX3-1') {
+        deviceStatus.each { k, v ->
+            String key = k.toString()
+            if (key.startsWith('input:')) {
+                Integer cid = key.split(':')[1] as Integer
+                Map result = sendGen1Setting(ipAddress, "settings/input/${cid}", [
+                    shortpush_url: '', longpush_url: ''
+                ])
+                if (result != null) { cleared++ }
+            }
+        }
+    }
+
+    // ── Step 2: Clear /settings/actions entries (sensors, buttons) ──
+    Map actionsResponse = sendGen1Get(ipAddress, 'settings/actions')
+    if (actionsResponse) {
+        actionsResponse.each { actionName, actionData ->
+            // Each action type maps to a list of URL arrays (one per index)
+            if (actionData instanceof List) {
+                ((List) actionData).eachWithIndex { entry, idx ->
+                    if (entry instanceof Map) {
+                        Map actionEntry = (Map) entry
+                        List urls = actionEntry.urls as List
+                        if (urls && urls.any { it?.toString()?.trim() }) {
+                            sendGen1Setting(ipAddress, 'settings/actions', [
+                                index: idx.toString(),
+                                name: actionName.toString(),
+                                enabled: 'false',
+                                'urls[]': ''
+                            ])
+                            cleared++
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Step 3: Clear direct /settings URL properties ──
+    switch (typeCode) {
+        case 'SHHT-1':
+            sendGen1Setting(ipAddress, 'settings', [report_url: ''])
+            cleared++
+            break
+        case 'SHMOS-01':
+        case 'SHMOS-02':
+            sendGen1Setting(ipAddress, 'settings', [motion_url: ''])
+            cleared++
+            break
+    }
+
+    logInfo("Cleared ${cleared} Gen 1 action URL group(s) on ${ipAddress}")
+    appendLog('info', "Cleared ${cleared} Gen 1 action URL group(s) on ${ipAddress}")
+}
+
+/**
  * Configures Gen 1 action URLs on a device to point to the Hubitat hub for event delivery.
  * Gen 1 devices use HTTP GET "action URLs" instead of Gen 2/3 webhooks.
  * Each action URL fires a GET request to the hub when the corresponding event occurs.
+ * <p>
+ * Clears all existing action URLs first via {@link #clearGen1ActionUrls(String)} to prevent
+ * stale URLs from previous integrations persisting alongside new ones.
  * <p>
  * For relay/roller/light devices, action URLs are set via component settings endpoints
  * (e.g., {@code /settings/relay/0?out_on_url=http://...}).
@@ -1969,6 +2093,9 @@ private void installGen1ActionUrls(String ipAddress) {
         logError("installGen1ActionUrls: no device info found for ${ipAddress}")
         return
     }
+
+    // Clear all existing action URLs before reinstalling to remove stale entries
+    clearGen1ActionUrls(ipAddress)
 
     String hubIp = location.hub.localIP
     String baseCallbackUrl = "http://${hubIp}:39501/webhook"

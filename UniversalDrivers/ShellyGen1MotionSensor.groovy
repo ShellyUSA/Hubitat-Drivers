@@ -147,9 +147,14 @@ private Map parseWebhookQueryParams(Map msg) {
 private void routeActionUrlCallback(Map params) {
   switch (params.dst) {
     case 'motion':
+    case 'motion_on':
       setMotionActive()
       // Also poll for updated lux/battery/temp while device is awake
       parent?.componentRefresh(device)
+      break
+
+    case 'motion_off':
+      setMotionInactive()
       break
 
     case 'sensor_report':
