@@ -4,8 +4,8 @@
  * Pre-built standalone driver for Gen 1 Shelly H&T (temperature/humidity sensor).
  * Battery-powered device that sleeps most of the time and wakes briefly to send reports.
  *
- * Gen 1 H&T fires a report_url action URL on wake, then the app polls GET /status
- * to read full sensor data (temperature, humidity, battery) before the device sleeps again.
+ * The app polls the Gen 1 H&T via GET /status on a schedule to read full sensor data
+ * (temperature, humidity, battery).
  *
  * Version: 1.0.0
  */
@@ -58,7 +58,6 @@ void updated() {
 
 /**
  * Parses incoming LAN messages from the Gen 1 Shelly H&T.
- * On wake, the device fires report_url which triggers the app to poll full status.
  *
  * @param description Raw LAN message description string from Hubitat
  */

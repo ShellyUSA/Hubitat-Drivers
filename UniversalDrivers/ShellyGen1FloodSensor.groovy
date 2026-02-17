@@ -4,7 +4,7 @@
  * Pre-built standalone driver for Gen 1 Shelly Flood sensor.
  * Battery-powered device that sleeps most of the time.
  * Fires flood_detected_url / flood_gone_url action URLs on water detection.
- * Fires report_url periodically on wake for temperature/battery updates.
+ * Polled periodically for temperature/battery updates.
  *
  * Version: 1.0.0
  */

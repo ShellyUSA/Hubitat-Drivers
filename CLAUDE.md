@@ -19,6 +19,14 @@ All future development work is scoped to:
 
 **DO NOT modify or reference** `ShellyDriverLibrary/ShellyUSA.ShellyUSA_Driver_Library.groovy`. This is **legacy code** that is no longer maintained. Do not use it as a reference for new work, do not update it, and do not port patterns from it into the active codebase.
 
+## Gen 1 Shelly `report_url` — DO NOT USE
+
+**NEVER create, enable, or reference `report_url` action URLs on Gen 1 Shelly devices.** The `report_url` mechanism appends sensor data as URL query parameters (e.g., `?hum=55&temp=22.5&id=shellyht-AABBCC`). Hubitat silently drops URL parameters from incoming HTTP requests on port 39501, so the sensor data never reaches the app. This makes `report_url` completely unusable.
+
+This applies to ALL Gen 1 sensor types that support `report_url`: H&T (`SHHT-1`), Flood (`SHWT-1`), Door/Window (`SHDW-1`, `SHDW-2`), Button (`SHBTN-1`, `SHBTN-2`), and Motion (`SHMOS-01`, `SHMOS-02`).
+
+Use other action URLs (e.g., `flood_detected_url`, `open_url`, `motion_on`) that send simple HTTP requests without query parameters. For periodic sensor data, use polling via `GET /status`.
+
 ## Hubitat App UI Pages
 
 - Use `section()` without a title string for most sections. The `input` `title:` already labels the control — adding a section title like `section("Select Device")` creates redundant, cluttered text.

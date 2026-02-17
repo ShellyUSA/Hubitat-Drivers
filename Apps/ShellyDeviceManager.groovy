@@ -1974,14 +1974,13 @@ private void installRequiredActionsForIp(String ipAddress) {
 /**
  * Clears all existing action URLs on a Gen 1 Shelly device before reinstalling.
  * This prevents stale URLs from previous integrations or manual configurations from
- * persisting alongside newly installed ones. Clears URLs across three categories:
+ * persisting alongside newly installed ones. Clears URLs across two categories:
  * <ol>
  *   <li><b>Component settings</b> — relay, roller, light, and input URL params
  *       (e.g., {@code out_on_url}, {@code roller_open_url})</li>
  *   <li><b>Actions endpoint</b> — sensor/button action arrays via {@code /settings/actions}.
  *       URL clearing and disabling are sent as separate requests to avoid firmware issues
  *       where a combined request skips the URL clear.</li>
- *   <li><b>Direct settings</b> — device-type-specific properties (e.g., H&T {@code report_url})</li>
  * </ol>
  *
  * @param ipAddress The IP address of the Gen 1 Shelly device
@@ -2052,7 +2051,7 @@ private void clearGen1ActionUrls(String ipAddress) {
     }
 
     // ── Step 2: Clear /settings/actions entries (sensors, buttons) ──
-    // Response format: {"actions": {"report_url": [{"index": 0, "urls": [...], ...}], ...}}
+    // Response format: {"actions": {"open_url": [{"index": 0, "urls": [...], ...}], ...}}
     // Split into two requests per action: clear URLs first, then disable.
     // Sending both in one request can cause firmware to skip the URL clear.
     Map actionsResponse = sendGen1Get(ipAddress, 'settings/actions')
@@ -2077,13 +2076,6 @@ private void clearGen1ActionUrls(String ipAddress) {
                 }
             }
         }
-    }
-
-    // ── Step 3: Clear direct /settings URL properties ──
-    // H&T uses report_url as a direct property on /settings (not in /settings/actions)
-    if (typeCode == 'SHHT-1') {
-        Map rHt = sendGen1Setting(ipAddress, 'settings', [report_url: ''])
-        if (rHt != null) { cleared++ }
     }
 
     def childDevice = findChildDeviceByIp(ipAddress)
@@ -2281,7 +2273,9 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
 
 /**
  * Returns sensor-specific action URL definitions for Gen 1 battery-powered devices.
- * H&T uses direct properties on /settings; other sensors use the /settings/actions endpoint.
+ * Sensors use the /settings/actions endpoint for event-driven URLs.
+ * Note: {@code report_url} is intentionally excluded — it passes URL parameters
+ * that Hubitat silently drops, making it unusable.
  *
  * @param typeCode The Gen 1 device type code (e.g., {@code SHHT-1}, {@code SHWT-1})
  * @return List of action URL definition maps for the sensor type
@@ -2290,14 +2284,13 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
     List<Map> actions = []
 
     switch (typeCode) {
-        case 'SHHT-1':  // H&T temperature/humidity sensor — report_url is a direct property
-            actions.add([endpoint: 'settings', param: 'report_url',
-                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'component'])
+        // NOTE: report_url is intentionally excluded from ALL sensor types.
+        // Shelly report_url passes URL parameters that Hubitat silently drops, making them unusable.
+
+        case 'SHHT-1':  // H&T temperature/humidity sensor — no usable action URLs
             break
 
         case 'SHWT-1':  // Flood sensor — actions array
-            actions.add([endpoint: 'settings/actions', param: 'report_url',
-                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'flood_detected_url',
                 dst: 'flood_detected', cid: 0, name: 'Flood Detected', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'flood_gone_url',
@@ -2305,8 +2298,6 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
             break
 
         case 'SHDW-1':  // Door/Window v1 — actions array
-            actions.add([endpoint: 'settings/actions', param: 'report_url',
-                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'open_url',
                 dst: 'contact_open', cid: 0, name: 'Contact Open', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'close_url',
@@ -2314,8 +2305,6 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
             break
 
         case 'SHDW-2':  // Door/Window v2 — actions array, plus vibration
-            actions.add([endpoint: 'settings/actions', param: 'report_url',
-                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'open_url',
                 dst: 'contact_open', cid: 0, name: 'Contact Open', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'close_url',
@@ -2326,8 +2315,6 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
 
         case 'SHBTN-1':  // Button v1
         case 'SHBTN-2':  // Button v2
-            actions.add([endpoint: 'settings/actions', param: 'report_url',
-                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'shortpush_url',
                 dst: 'input_short', cid: 0, name: 'Short Push', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'longpush_url',
@@ -2340,8 +2327,6 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
 
         case 'SHMOS-01':  // Motion v1
         case 'SHMOS-02':  // Motion v2
-            actions.add([endpoint: 'settings/actions', param: 'report_url',
-                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'motion_on',
                 dst: 'motion_on', cid: 0, name: 'Motion On', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'motion_off',

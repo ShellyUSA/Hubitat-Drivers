@@ -5,8 +5,7 @@
  * Battery-powered PIR motion sensor that sleeps most of the time.
  *
  * Motion detection fires the {@code motion_url} action URL immediately on wake.
- * Periodic sensor reports fire {@code report_url}, triggering a status poll to read
- * illuminance, battery, and temperature before the device sleeps again.
+ * The app polls periodically to read illuminance, battery, and temperature.
  *
  * Version: 1.0.0
  */
