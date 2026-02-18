@@ -1,17 +1,17 @@
 /**
- * Shelly Gen1 Single Dimmer
+ * Shelly Gen1 Duo (SHBDUO-1)
  *
- * Pre-built standalone driver for Gen 1 dimmer Shelly devices.
- * Examples: Shelly Dimmer 1, Shelly Dimmer 2
+ * Pre-built standalone driver for the Gen 1 Shelly Duo white-tunable bulb.
+ * Supports brightness dimming and color temperature adjustment (2700–6500K).
+ * Does not support RGB color mode.
  *
- * Gen 1 dimmers use HTTP REST action URLs and polling for brightness level.
  * Commands delegate to the parent app which routes to Gen 1 REST endpoints.
  *
  * Version: 1.0.0
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Single Dimmer', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Duo', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -19,6 +19,10 @@ metadata {
     capability 'SwitchLevel'
     //Attributes: level - NUMBER, unit:%
     //Commands: setLevel(level, duration)
+
+    capability 'ColorTemperature'
+    //Attributes: colorTemperature - NUMBER
+    //Commands: setColorTemperature(colorTemperature, level, transitionTime)
 
     capability 'Initialize'
     //Commands: initialize()
@@ -34,6 +38,8 @@ metadata {
 
     capability 'EnergyMeter'
     //Attributes: energy - NUMBER, unit:kWh
+
+    attribute 'colorName', 'string'
   }
 }
 
@@ -41,6 +47,22 @@ preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
+
+  input name: 'defaultState', type: 'enum', title: 'Power Restore State',
+    options: ['on':'On', 'off':'Off', 'last':'Last State'],
+    defaultValue: 'last', required: false
+
+  input name: 'autoOnTime', type: 'number', title: 'Auto-On Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+
+  input name: 'autoOffTime', type: 'number', title: 'Auto-Off Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+
+  input name: 'colorTempMin', type: 'number', title: 'Minimum Color Temperature (K)',
+    defaultValue: 2700, range: '2700..6500', required: false
+
+  input name: 'colorTempMax', type: 'number', title: 'Maximum Color Temperature (K)',
+    defaultValue: 6500, range: '2700..6500', required: false
 }
 
 
@@ -56,11 +78,12 @@ void installed() {
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
+  syncLightSettings()
   initialize()
 }
 
 /**
- * Parses incoming LAN messages from the Gen 1 Shelly dimmer.
+ * Parses incoming LAN messages from the Gen 1 Shelly Duo.
  * Gen 1 action URLs fire GET requests only.
  *
  * @param description Raw LAN message description string from Hubitat
@@ -86,7 +109,7 @@ void parse(String description) {
 
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /brightness/0).
+ * GET Action Webhooks encode state in the path (e.g., /light_on/0).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
@@ -144,8 +167,8 @@ private Map parseWebhookPath(Map msg) {
 }
 
 /**
- * Routes Gen 1 action URL callbacks for dimmer events.
- * After state change, triggers a refresh to get brightness/power data.
+ * Routes Gen 1 action URL callbacks for Duo bulb events.
+ * After state change, triggers a refresh to get full light data.
  *
  * @param params Map with dst and cid from the action URL path
  */
@@ -161,14 +184,6 @@ private void routeActionUrlCallback(Map params) {
       logInfo('Light state changed to: off')
       parent?.componentRefresh(device)
       break
-
-    case 'input_short':
-      logInfo('Input short push received')
-      break
-    case 'input_long':
-      logInfo('Input long push received')
-      break
-
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
   }
@@ -208,11 +223,11 @@ void refresh() {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Switch and Level Commands                                   ║
+// ║  Switch, Level, and Color Temperature Commands               ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Turns the dimmer on by delegating to the parent app via /light/ endpoint.
+ * Turns the Duo on by delegating to the parent app via /light/ endpoint.
  */
 void on() {
   logDebug('on() called')
@@ -220,7 +235,7 @@ void on() {
 }
 
 /**
- * Turns the dimmer off by delegating to the parent app via /light/ endpoint.
+ * Turns the Duo off by delegating to the parent app via /light/ endpoint.
  */
 void off() {
   logDebug('off() called')
@@ -228,8 +243,7 @@ void off() {
 }
 
 /**
- * Sets the dimmer brightness level.
- * Delegates to parent app which sends GET /light/0?turn=on&brightness={level}.
+ * Sets the Duo brightness level.
  *
  * @param level Brightness level (0-100)
  * @param duration Transition time in seconds (optional)
@@ -239,8 +253,28 @@ void setLevel(BigDecimal level, BigDecimal duration = 0) {
   parent?.componentSetLevel(device, level as Integer, duration as Integer)
 }
 
+/**
+ * Sets the Duo to the specified color temperature.
+ * Optionally sets brightness level and transition time.
+ *
+ * @param colorTemp Color temperature in Kelvin (e.g. 2700-6500)
+ * @param level Optional brightness level (0-100)
+ * @param transitionTime Optional transition time in seconds
+ */
+void setColorTemperature(BigDecimal colorTemp, BigDecimal level = null, BigDecimal transitionTime = null) {
+  logDebug("setColorTemperature(${colorTemp}, ${level}, ${transitionTime}) called")
+  if (colorTemp == null) { return }
+
+  // Clamp to configured range
+  Integer ctMin = (settings.colorTempMin as Integer) ?: 2700
+  Integer ctMax = (settings.colorTempMax as Integer) ?: 6500
+  BigDecimal clampedTemp = Math.max(ctMin, Math.min(ctMax, colorTemp.intValue()))
+
+  parent?.componentSetColorTemperature(device, clampedTemp, level, transitionTime)
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Switch and Level Commands                               ║
+// ║  END Switch, Level, and Color Temperature Commands           ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
@@ -250,9 +284,9 @@ void setLevel(BigDecimal level, BigDecimal duration = 0) {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Distributes polled status data to the device.
+ * Distributes polled status data to the Duo device.
  * Called by the parent app after polling GET /status on the Gen 1 device.
- * Handles light state, brightness, and power monitoring values.
+ * Handles light state, brightness, color temperature, and power monitoring.
  *
  * @param status Map of normalized component statuses
  */
@@ -265,14 +299,29 @@ void distributeStatus(Map status) {
     if (!key.startsWith('light:') || !(v instanceof Map)) { return }
 
     Map data = v as Map
+
+    // Switch state
     if (data.output != null) {
       String switchState = data.output ? 'on' : 'off'
       sendEvent(name: 'switch', value: switchState, descriptionText: "Light turned ${switchState}")
     }
+
+    // Brightness
     if (data.brightness != null) {
       Integer level = data.brightness as Integer
       sendEvent(name: 'level', value: level, unit: '%', descriptionText: "Level is ${level}%")
     }
+
+    // Color temperature
+    if (data.temp != null) {
+      Integer ct = data.temp as Integer
+      sendEvent(name: 'colorTemperature', value: ct, unit: 'K', descriptionText: "Color temperature is ${ct}K")
+
+      String ctName = colorNameFromTemp(ct)
+      sendEvent(name: 'colorName', value: ctName, descriptionText: "Color name is ${ctName}")
+    }
+
+    // Power monitoring
     if (data.apower != null) {
       sendEvent(name: 'power', value: data.apower as BigDecimal, unit: 'W')
     }
@@ -285,6 +334,56 @@ void distributeStatus(Map status) {
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Status Distribution                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Settings Sync                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Syncs driver preferences to the Shelly device via parent app.
+ * Called from updated() when preferences change.
+ */
+private void syncLightSettings() {
+  Map lightSettings = [:]
+  if (settings.defaultState != null) { lightSettings.defaultState = settings.defaultState }
+  if (settings.autoOnTime != null) { lightSettings.autoOnTime = settings.autoOnTime }
+  if (settings.autoOffTime != null) { lightSettings.autoOffTime = settings.autoOffTime }
+  if (lightSettings) {
+    parent?.componentUpdateLightSettings(device, lightSettings)
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Settings Sync                                           ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Color Name Helpers                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Returns a human-readable color name based on color temperature.
+ *
+ * @param temp Color temperature in Kelvin
+ * @return Color temperature name string
+ */
+@CompileStatic
+static String colorNameFromTemp(Integer temp) {
+  if (temp == null) { return 'Unknown' }
+  if (temp < 3000) { return 'Warm White' }
+  if (temp < 4000) { return 'Soft White' }
+  if (temp < 5000) { return 'Neutral White' }
+  if (temp < 5500) { return 'Daylight' }
+  return 'Cool White'
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Color Name Helpers                                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 

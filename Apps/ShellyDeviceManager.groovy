@@ -18,6 +18,11 @@
     'SHPLG-1':  'Shelly Gen1 Plug',
     'SHPLG-S':  'Shelly Gen1 Plug S',
     'SHPLG-U1': 'Shelly Gen1 Plug S',
+    'SHBLB-1':  'Shelly Gen1 Bulb',
+    'SHCB-1':   'Shelly Gen1 Bulb',
+    'SHVIN-1':  'Shelly Gen1 Single Dimmer',
+    'SHBDUO-1': 'Shelly Gen1 Duo',
+    // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
 ]
 
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
@@ -45,8 +50,14 @@
     'Shelly Gen1 Plug': 'UniversalDrivers/ShellyGen1Plug.groovy',
     'Shelly Gen1 Plug S': 'UniversalDrivers/ShellyGen1PlugS.groovy',
     'Shelly Gen1 Single Dimmer': 'UniversalDrivers/ShellyGen1SingleDimmer.groovy',
+    'Shelly Gen1 Bulb': 'UniversalDrivers/ShellyGen1Bulb.groovy',
+    'Shelly Gen1 Duo': 'UniversalDrivers/ShellyGen1Duo.groovy',
+    'Shelly Gen1 RGBW2 Color': 'UniversalDrivers/ShellyGen1RGBW2Color.groovy',
+    'Shelly Gen1 RGBW2 White Parent': 'UniversalDrivers/ShellyGen1RGBW2WhiteParent.groovy',
+    'Shelly Gen1 White Channel': 'UniversalDrivers/ShellyGen1WhiteChannel.groovy',
     'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
+    'Shelly Gen1 Smoke Sensor': 'UniversalDrivers/ShellyGen1SmokeSensor.groovy',
     'Shelly Gen1 DW Sensor': 'UniversalDrivers/ShellyGen1DWSensor.groovy',
     'Shelly Gen1 Button': 'UniversalDrivers/ShellyGen1Button.groovy',
     'Shelly Gen1 Motion Sensor': 'UniversalDrivers/ShellyGen1MotionSensor.groovy',
@@ -154,6 +165,7 @@
     'SHIX3-1':   'Shelly i3',
     'SHUNI-1':   'Shelly Uni',
     'SHTRV-01':  'Shelly TRV',
+    'SHSM-01':   'Shelly Smoke',
 ]
 
 /** Gen 1 type codes that are battery-powered. Note: SHMOS-* and SHTRV-01 are
@@ -162,7 +174,7 @@
 @Field static final Set<String> GEN1_BATTERY_TYPES = [
     'SHHT-1', 'SHWT-1', 'SHDW-1', 'SHDW-2',
     'SHMOS-01', 'SHMOS-02', 'SHBTN-1', 'SHBTN-2',
-    'SHTRV-01',
+    'SHTRV-01', 'SHSM-01',
 ] as Set<String>
 
 /**
@@ -201,6 +213,7 @@
     'shellyix3':        'SHIX3-1',
     'shellyuni':        'SHUNI-1',
     'shellytrv':        'SHTRV-01',
+    'shellysmoke':      'SHSM-01',
 ]
 
 definition(
@@ -837,7 +850,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // The parent driver will read these to create driver-level children
         List<String> components = []
         List<String> pmComponents = []
-        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'input'] as Set
+        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input'] as Set
 
         deviceStatus.each { k, v ->
             String key = k.toString()
@@ -2122,14 +2135,27 @@ private void clearGen1ActionUrls(String ipAddress) {
         }
     }
 
-    // Light/dimmer components
+    // Light/dimmer components (RGBW2 uses /settings/color/ instead of /settings/light/)
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('light:')) {
             Integer cid = key.split(':')[1] as Integer
-            Map result = sendGen1Setting(ipAddress, "settings/light/${cid}", [
+            String settingsPath = (typeCode == 'SHRGBW2') ? "settings/color/${cid}" : "settings/light/${cid}"
+            Map result = sendGen1Setting(ipAddress, settingsPath, [
                 out_on_url: '', out_off_url: '',
                 shortpush_url: '', longpush_url: ''
+            ])
+            if (result != null) { cleared++ }
+        }
+    }
+
+    // White channel components (RGBW2 white mode)
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('white:')) {
+            Integer cid = key.split(':')[1] as Integer
+            Map result = sendGen1Setting(ipAddress, "settings/white/${cid}", [
+                out_on_url: '', out_off_url: ''
             ])
             if (result != null) { cleared++ }
         }
@@ -2142,7 +2168,7 @@ private void clearGen1ActionUrls(String ipAddress) {
             if (key.startsWith('input:')) {
                 Integer cid = key.split(':')[1] as Integer
                 Map result = sendGen1Setting(ipAddress, "settings/input/${cid}", [
-                    shortpush_url: '', longpush_url: ''
+                    shortpush_url: '', longpush_url: '', double_shortpush_url: ''
                 ])
                 if (result != null) { cleared++ }
             }
@@ -2175,6 +2201,12 @@ private void clearGen1ActionUrls(String ipAddress) {
                 }
             }
         }
+    }
+
+    // ── Step 3: Clear report_url on /settings (set directly, not via /settings/actions) ──
+    if (typeCode == 'SHHT-1') {
+        Map result = sendGen1Setting(ipAddress, 'settings', [report_url: ''])
+        if (result != null) { cleared++ }
     }
 
     def childDevice = findChildDeviceByIp(ipAddress)
@@ -2339,14 +2371,28 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
     }
 
     // Light/dimmer action URLs (component settings endpoint)
+    // RGBW2 in color mode uses /settings/color/{cid} instead of /settings/light/{cid}
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('light:')) {
             Integer cid = key.split(':')[1] as Integer
-            actions.add([endpoint: "settings/light/${cid}", param: 'out_on_url',
+            String settingsPath = (typeCode == 'SHRGBW2') ? "settings/color/${cid}" : "settings/light/${cid}"
+            actions.add([endpoint: settingsPath, param: 'out_on_url',
                 dst: 'light_on', cid: cid, name: "Light ${cid} On", configType: 'component'])
-            actions.add([endpoint: "settings/light/${cid}", param: 'out_off_url',
+            actions.add([endpoint: settingsPath, param: 'out_off_url',
                 dst: 'light_off', cid: cid, name: "Light ${cid} Off", configType: 'component'])
+        }
+    }
+
+    // White channel action URLs (RGBW2 in white mode)
+    deviceStatus.each { k, v ->
+        String key = k.toString()
+        if (key.startsWith('white:')) {
+            Integer cid = key.split(':')[1] as Integer
+            actions.add([endpoint: "settings/white/${cid}", param: 'out_on_url',
+                dst: 'white_on', cid: cid, name: "White ${cid} On", configType: 'component'])
+            actions.add([endpoint: "settings/white/${cid}", param: 'out_off_url',
+                dst: 'white_off', cid: cid, name: "White ${cid} Off", configType: 'component'])
         }
     }
 
@@ -2393,8 +2439,12 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
 /**
  * Returns sensor-specific action URL definitions for Gen 1 battery-powered devices.
  * Sensors use the /settings/actions endpoint for event-driven URLs.
- * Note: {@code report_url} is intentionally excluded — it passes URL parameters
- * that Hubitat silently drops, making it unusable.
+ * <p>
+ * Note: {@code report_url} is generally unusable because it passes URL parameters
+ * that Hubitat silently drops. However, for H&T (SHHT-1), {@code report_url} is used
+ * as a <b>wake-up trigger only</b> — the query-parameter data is ignored, but the bare
+ * GET request arrives at Hubitat, allowing the app to immediately poll {@code /status}
+ * for the actual sensor data while the device is briefly awake.
  *
  * @param typeCode The Gen 1 device type code (e.g., {@code SHHT-1}, {@code SHWT-1})
  * @return List of action URL definition maps for the sensor type
@@ -2403,10 +2453,21 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
     List<Map> actions = []
 
     switch (typeCode) {
-        // NOTE: report_url is intentionally excluded from ALL sensor types.
-        // Shelly report_url passes URL parameters that Hubitat silently drops, making them unusable.
-
-        case 'SHHT-1':  // H&T temperature/humidity sensor — no usable action URLs
+        case 'SHHT-1':  // H&T temperature/humidity sensor
+            // report_url: set on /settings directly (not /settings/actions).
+            // Query params are stripped by Hubitat, but the bare GET arrives as
+            // dst=sensor_report, triggering an immediate /status poll while the device is awake.
+            actions.add([endpoint: 'settings', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'component'])
+            // Threshold URLs via /settings/actions (array-based)
+            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
+                dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
+                dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'over_hum_url',
+                dst: 'hum_over', cid: 0, name: 'Humidity Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'under_hum_url',
+                dst: 'hum_under', cid: 0, name: 'Humidity Under', configType: 'actions', actionIndex: 0])
             break
 
         case 'SHWT-1':  // Flood sensor — actions array
@@ -2414,6 +2475,10 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'flood_detected', cid: 0, name: 'Flood Detected', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'flood_gone_url',
                 dst: 'flood_gone', cid: 0, name: 'Flood Gone', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
+                dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
+                dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
             break
 
         case 'SHDW-1':  // Door/Window v1 — actions array
@@ -2461,6 +2526,19 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'valve_open', cid: 0, name: 'Valve Open', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'valve_close',
                 dst: 'valve_close', cid: 0, name: 'Valve Close', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHSM-01':  // Smoke sensor — all URLs under /settings/actions
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'smoke_detected_url',
+                dst: 'smoke_detected', cid: 0, name: 'Smoke Detected', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'smoke_cleared_url',
+                dst: 'smoke_cleared', cid: 0, name: 'Smoke Cleared', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
+                dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
+                dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
             break
 
         default:
@@ -2855,7 +2933,7 @@ private Boolean isSleepyBatteryDevice(def childDevice) {
     return typeName.contains('TH Sensor') || typeName.contains('Temperature Sensor') ||
            typeName.contains('Humidity Sensor') || typeName.contains('Battery Device') ||
            typeName.contains('Flood Sensor') || typeName.contains('DW Sensor') ||
-           typeName.contains('Gen1 Button')
+           typeName.contains('Gen1 Button') || typeName.contains('Smoke Sensor')
 }
 
 /**
@@ -4605,6 +4683,203 @@ private void syncGen1TrvSettings(String ipAddress, def childDevice, String gen1T
 }
 
 /**
+ * Syncs Gen 1 Button device configuration to driver preferences on first refresh.
+ * Attempts a live {@code GET /settings} first; if the device is asleep,
+ * falls back to the cached {@code gen1Settings} from discovery in
+ * {@code state.discoveredShellys}. Sets {@code gen1SettingsSynced}
+ * data value on success so subsequent refreshes skip the extra HTTP call.
+ * Only applies to SHBTN-1 and SHBTN-2 devices.
+ *
+ * @param ipAddress The Button device's IP address
+ * @param childDevice The Hubitat child device whose preferences to sync
+ * @param gen1Type The resolved Gen 1 type code (SHBTN-1 or SHBTN-2)
+ */
+private void syncGen1ButtonSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice) { return }
+    if (gen1Type != 'SHBTN-1' && gen1Type != 'SHBTN-2') { return }
+
+    // Try live fetch first; fall back to cached discovery data if device is asleep
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (gen1Settings) {
+            logDebug("syncGen1ButtonSettings: device asleep, using cached settings from discovery")
+        } else {
+            logDebug("syncGen1ButtonSettings: device asleep and no cached settings for ${ipAddress}")
+            return
+        }
+    }
+
+    try {
+        if (gen1Settings.longpush_duration_ms != null) {
+            childDevice.updateSetting('longpushDurationMs',
+                [type: 'number', value: gen1Settings.longpush_duration_ms as Integer])
+        }
+        if (gen1Settings.multipush_time_between_pushes_ms != null) {
+            childDevice.updateSetting('multipushTimeBetweenPushesMs',
+                [type: 'number', value: gen1Settings.multipush_time_between_pushes_ms as Integer])
+        }
+        if (gen1Settings.led_status_disable != null) {
+            childDevice.updateSetting('ledStatusDisable',
+                [type: 'bool', value: gen1Settings.led_status_disable.toString() == 'true'])
+        }
+        if (gen1Settings.remain_awake != null) {
+            childDevice.updateSetting('remainAwake',
+                [type: 'bool', value: gen1Settings.remain_awake.toString() == 'true'])
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 Button settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1ButtonSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Syncs Gen 1 Flood sensor configuration to driver preferences on first refresh.
+ * Attempts a live {@code GET /settings} first; if the device is asleep,
+ * falls back to the cached {@code gen1Settings} from discovery in
+ * {@code state.discoveredShellys}. Sets {@code gen1SettingsSynced}
+ * data value on success so subsequent refreshes skip the extra HTTP call.
+ * Only applies to SHWT-1 devices.
+ *
+ * @param ipAddress The Flood device's IP address
+ * @param childDevice The Hubitat child device whose preferences to sync
+ * @param gen1Type The resolved Gen 1 type code (must be SHWT-1)
+ */
+private void syncGen1FloodSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice || gen1Type != 'SHWT-1') { return }
+
+    // Try live fetch first; fall back to cached discovery data if device is asleep
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (gen1Settings) {
+            logDebug("syncGen1FloodSettings: device asleep, using cached settings from discovery")
+        } else {
+            logDebug("syncGen1FloodSettings: device asleep and no cached settings for ${ipAddress}")
+            return
+        }
+    }
+
+    try {
+        if (gen1Settings.temperature_offset != null) {
+            childDevice.updateSetting('temperatureOffset',
+                [type: 'decimal', value: gen1Settings.temperature_offset as BigDecimal])
+        }
+        if (gen1Settings.temperature_threshold != null) {
+            childDevice.updateSetting('temperatureThreshold',
+                [type: 'decimal', value: gen1Settings.temperature_threshold as BigDecimal])
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 Flood settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1FloodSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Syncs Gen 1 Smoke sensor configuration to driver preferences on first refresh.
+ * Attempts a live {@code GET /settings} first; if the device is asleep,
+ * falls back to the cached {@code gen1Settings} from discovery in
+ * {@code state.discoveredShellys}. Sets {@code gen1SettingsSynced}
+ * data value on success so subsequent refreshes skip the extra HTTP call.
+ * Only applies to SHSM-01 devices.
+ *
+ * @param ipAddress The Smoke device's IP address
+ * @param childDevice The Hubitat child device whose preferences to sync
+ * @param gen1Type The resolved Gen 1 type code (must be SHSM-01)
+ */
+private void syncGen1SmokeSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice || gen1Type != 'SHSM-01') { return }
+
+    // Try live fetch first; fall back to cached discovery data if device is asleep
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (gen1Settings) {
+            logDebug("syncGen1SmokeSettings: device asleep, using cached settings from discovery")
+        } else {
+            logDebug("syncGen1SmokeSettings: device asleep and no cached settings for ${ipAddress}")
+            return
+        }
+    }
+
+    try {
+        if (gen1Settings.temperature_offset != null) {
+            childDevice.updateSetting('temperatureOffset',
+                [type: 'decimal', value: gen1Settings.temperature_offset as BigDecimal])
+        }
+        if (gen1Settings.temperature_threshold != null) {
+            childDevice.updateSetting('temperatureThreshold',
+                [type: 'decimal', value: gen1Settings.temperature_threshold as BigDecimal])
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 Smoke settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1SmokeSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Syncs Gen 1 H&T device configuration to driver preferences on first refresh.
+ * Attempts a live {@code GET /settings} first; if the device is asleep,
+ * falls back to the cached {@code gen1Settings} from discovery in
+ * {@code state.discoveredShellys}. Sets {@code gen1SettingsSynced}
+ * data value on success so subsequent refreshes skip the extra HTTP call.
+ * Only applies to SHHT-1 devices.
+ *
+ * @param ipAddress The H&T device's IP address
+ * @param childDevice The Hubitat child device whose preferences to sync
+ * @param gen1Type The resolved Gen 1 type code (must be SHHT-1)
+ */
+private void syncGen1HTSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice || gen1Type != 'SHHT-1') { return }
+
+    // Try live fetch first; fall back to cached discovery data if device is asleep
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (gen1Settings) {
+            logDebug("syncGen1HTSettings: device asleep, using cached settings from discovery")
+        } else {
+            logDebug("syncGen1HTSettings: device asleep and no cached settings for ${ipAddress}")
+            return
+        }
+    }
+
+    try {
+        if (gen1Settings.temperature_offset != null) {
+            childDevice.updateSetting('temperatureOffset',
+                [type: 'decimal', value: gen1Settings.temperature_offset as BigDecimal])
+        }
+        if (gen1Settings.humidity_offset != null) {
+            childDevice.updateSetting('humidityOffset',
+                [type: 'decimal', value: gen1Settings.humidity_offset as BigDecimal])
+        }
+        if (gen1Settings.temperature_threshold != null) {
+            childDevice.updateSetting('temperatureThreshold',
+                [type: 'decimal', value: gen1Settings.temperature_threshold as BigDecimal])
+        }
+        if (gen1Settings.humidity_threshold != null) {
+            childDevice.updateSetting('humidityThreshold',
+                [type: 'decimal', value: gen1Settings.humidity_threshold as BigDecimal])
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 H&T settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1HTSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
  * Polls all non-battery Gen 1 devices for current status.
  * Called on a schedule based on the user-configured Gen 1 polling interval.
  * Battery devices are skipped (they sleep and are polled on wake-up via action URL callbacks).
@@ -5151,6 +5426,12 @@ static Map inferGen1BatteryComponents(String typeCode) {
                 'temperature:0': [:],
                 'devicepower:0': [:]
             ]
+        case 'SHSM-01':  // Shelly Smoke
+            return [
+                'smoke:0': [:],
+                'temperature:0': [:],
+                'devicepower:0': [:]
+            ]
         default:
             return null
     }
@@ -5201,15 +5482,35 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
         }
     }
 
-    // Lights → light:N (dimmers, bulbs)
+    // Lights → light:N or white:N depending on device mode
+    // RGBW2 in white mode: normalize lights as white:N (commands use /white/ endpoint)
     List lights = gen1Status?.lights as List
     if (lights) {
+        Boolean isWhiteMode = (typeCode == 'SHRGBW2' && mode == 'white')
+        String lightPrefix = isWhiteMode ? 'white' : 'light'
+
         for (int i = 0; i < lights.size(); i++) {
             Map lightData = lights[i] as Map ?: [:]
-            normalized["light:${i}".toString()] = [
+            Map lightMap = [
                 output: lightData.ison ?: false,
                 brightness: lightData.brightness ?: 0
             ]
+            // Color mode fields (present on bulbs/RGBW devices in color mode)
+            if (!isWhiteMode) {
+                if (lightData.containsKey('mode'))  { lightMap.mode = lightData.mode }
+                // Fallback: RGBW2 reports mode at top level of status, not inside lights[]
+                if (!lightMap.containsKey('mode') && gen1Status.containsKey('mode')) {
+                    lightMap.mode = gen1Status.mode
+                }
+                if (lightData.containsKey('red'))    { lightMap.red = lightData.red }
+                if (lightData.containsKey('green'))  { lightMap.green = lightData.green }
+                if (lightData.containsKey('blue'))   { lightMap.blue = lightData.blue }
+                if (lightData.containsKey('white'))  { lightMap.white = lightData.white }
+                if (lightData.containsKey('gain'))   { lightMap.gain = lightData.gain }
+                if (lightData.containsKey('temp'))   { lightMap.temp = lightData.temp }
+                if (lightData.containsKey('effect')) { lightMap.effect = lightData.effect }
+            }
+            normalized["${lightPrefix}:${i}".toString()] = lightMap
         }
     }
 
@@ -5229,10 +5530,11 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
     if (meters) {
         for (int i = 0; i < meters.size(); i++) {
             Map meterData = meters[i] as Map ?: [:]
-            // Associate with switch or cover component at same index
+            // Associate with switch, cover, light, or white component at same index
             String switchKey = "switch:${i}".toString()
             String coverKey = "cover:${i}".toString()
             String lightKey = "light:${i}".toString()
+            String whiteKey = "white:${i}".toString()
             // Gen 1 meter.total is in Watt-minutes; convert to Wh for consistency with Gen 2
             BigDecimal totalWh = meterData.total != null ? (meterData.total as BigDecimal) / 60.0 : null
             if (normalized.containsKey(switchKey)) {
@@ -5255,6 +5557,10 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
                 Map lightMap = normalized[lightKey] as Map
                 lightMap.apower = meterData.power
                 if (totalWh != null) { lightMap.aenergy = [total: totalWh] }
+            } else if (normalized.containsKey(whiteKey)) {
+                Map whiteMap = normalized[whiteKey] as Map
+                whiteMap.apower = meterData.power
+                if (totalWh != null) { whiteMap.aenergy = [total: totalWh] }
             }
         }
     }
@@ -5357,15 +5663,42 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
     if (gen1Status?.containsKey('bat')) {
         Map batData = gen1Status?.bat as Map
         if (batData?.value != null) {
-            normalized['devicepower:0'] = [
-                battery: batData.value
-            ]
+            Map powerData = [battery: batData.value]
+            if (batData?.voltage != null) {
+                powerData.voltage = batData.voltage
+            }
+            // Charger status is a top-level field (Button1/Button2 USB charging)
+            if (gen1Status?.containsKey('charger')) {
+                powerData.charger = gen1Status.charger as Boolean
+            }
+            // H&T uses 'charging' field (not 'charger' like Button)
+            if (gen1Status?.containsKey('charging')) {
+                powerData.charger = gen1Status.charging as Boolean
+            }
+            normalized['devicepower:0'] = powerData
+        }
+    }
+
+    // Fallback: top-level `battery` integer (Smoke SHSM-01 uses this instead of `bat` Map)
+    if (!normalized.containsKey('devicepower:0') && gen1Status?.containsKey('battery')) {
+        def batteryVal = gen1Status.battery
+        if (batteryVal instanceof Number) {
+            Map powerData = [battery: batteryVal as Integer]
+            if (gen1Status?.containsKey('charger')) {
+                powerData.charger = gen1Status.charger as Boolean
+            }
+            normalized['devicepower:0'] = powerData
         }
     }
 
     // Flood sensor
     if (gen1Status?.containsKey('flood')) {
         normalized['flood:0'] = [flood: gen1Status.flood]
+    }
+
+    // Smoke sensor (Shelly Smoke SHSM-01)
+    if (gen1Status?.containsKey('alarm')) {
+        normalized['smoke:0'] = [alarm: gen1Status.alarm]
     }
 
     // Door/Window sensor — 'sensor' field contains state: "open" or "close"
@@ -5440,7 +5773,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     Map<String, Boolean> componentPowerMonitoring = [:]
 
     // Comprehensive set of recognized Shelly component types
-    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'input', 'pm1', 'em', 'em1',
+    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'input', 'pm1', 'em', 'em1',
         'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
         'flood', 'contact', 'lux', 'tilt', 'motion', 'thermostat'] as Set
 
@@ -5471,7 +5804,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
 
     // Detect multi-component devices needing parent-child architecture
     // A device needs parent-child if it has 2+ instances of any single actuator type
-    Set<String> actuatorComponentTypes = ['switch', 'cover', 'light'] as Set
+    Set<String> actuatorComponentTypes = ['switch', 'cover', 'light', 'white'] as Set
     Map<String, Integer> actuatorCounts = [:]
     components.each { String comp ->
         String baseType = comp.contains(':') ? comp.split(':')[0] : comp
@@ -5503,6 +5836,13 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         String driverName
         if (gen1TypeCode && GEN1_MODEL_DRIVER_OVERRIDE.containsKey(gen1TypeCode)) {
             driverName = GEN1_MODEL_DRIVER_OVERRIDE[gen1TypeCode]
+        } else if (gen1TypeCode == 'SHRGBW2') {
+            // RGBW2 mode-based driver selection (color vs white firmware mode)
+            Map gen1Settings = ipKey ? state.discoveredShellys[ipKey]?.gen1Settings as Map : null
+            String rgbw2Mode = gen1Settings?.mode?.toString() ?: 'color'
+            driverName = (rgbw2Mode == 'white') ?
+                'Shelly Gen1 RGBW2 White Parent' :
+                'Shelly Gen1 RGBW2 Color'
         } else {
             driverName = generateDriverName(components, componentPowerMonitoring, isParent, isGen1)
         }
@@ -5512,6 +5852,11 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         if (PREBUILT_DRIVERS.containsKey(driverName)) {
             // Prebuilt driver exists — install it (idempotent, skips if already installed)
             installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
+
+            // White parent needs its child driver installed too
+            if (driverName == 'Shelly Gen1 RGBW2 White Parent') {
+                installPrebuiltDriver('Shelly Gen1 White Channel', components, componentPowerMonitoring, version)
+            }
 
             // Store the driver name on the discovered device entry
             if (ipKey && state.discoveredShellys[ipKey]) {
@@ -5688,12 +6033,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
 
         if (hasTemp && hasHumidity) {
             return "${prefix} TH Sensor${parentSuffix}"
+        } else if (foundSensors.contains('smoke')) {
+            return "${prefix} Smoke Sensor${parentSuffix}"
         } else if (hasTemp) {
             return "${prefix} Temperature Sensor${parentSuffix}"
         } else if (hasHumidity) {
             return "${prefix} Humidity Sensor${parentSuffix}"
-        } else if (foundSensors.contains('smoke')) {
-            return "${prefix} Smoke Sensor${parentSuffix}"
         } else if (foundSensors.contains('illuminance')) {
             return "${prefix} Illuminance Sensor${parentSuffix}"
         } else if (foundSensors.contains('voltmeter')) {
@@ -11983,6 +12328,167 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
 }
 
 /**
+ * Handles setColor() command from child light component devices.
+ * Converts Hubitat HSV color map to Shelly RGB values and switches to color mode.
+ *
+ * @param childDevice The child device that sent the command
+ * @param colorMap Map with keys: hue (0-100), saturation (0-100), level (0-100)
+ */
+void componentSetColor(def childDevice, Map colorMap) {
+  logDebug("componentSetColor(${colorMap}) called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentSetColor: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+
+    // Gen 1: Convert HSV to RGB and send to the appropriate endpoint
+    if (isGen1Device(childDevice)) {
+      Integer lightId = extractComponentId(childDevice, 'lightId')
+      // Convert Hubitat HSV (hue 0-100, sat 0-100) to full-brightness RGB (0-255).
+      // Pass 100 as value so RGB preserves pure hue/saturation; gain handles brightness separately.
+      Integer gainLevel = colorMap.level != null ? (colorMap.level as Integer) : 100
+      List rgb = hubitat.helper.ColorUtils.hsvToRGB([colorMap.hue as Float, colorMap.saturation as Float, 100.0f])
+      Map params = [
+          turn: 'on',
+          red: rgb[0].toString(), green: rgb[1].toString(), blue: rgb[2].toString(),
+          white: '0', gain: gainLevel.toString()
+      ]
+
+      // RGBW2 uses /color/{id} endpoint; bulbs use /light/{id} with mode=color
+      String gen1Type = childDevice.getDataValue('gen1Type')
+      if (gen1Type == 'SHRGBW2') {
+        logDebug("componentSetColor: Gen 1 color/${lightId} params=${params}")
+        sendGen1Get(ipAddress, "color/${lightId}", params)
+      } else {
+        params.mode = 'color'
+        logDebug("componentSetColor: Gen 1 light/${lightId} params=${params}")
+        sendGen1Get(ipAddress, "light/${lightId}", params)
+      }
+      return
+    }
+
+    // Gen 2/3 color support can be added here later
+    logWarn("componentSetColor: Gen 2/3 color control not yet implemented")
+  } catch (Exception e) {
+    logError("componentSetColor exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles setColorTemperature() command from child light component devices.
+ * Switches the device to white mode at the specified color temperature.
+ *
+ * @param childDevice The child device that sent the command
+ * @param colorTemp Color temperature in Kelvin
+ * @param level Optional brightness level (0-100)
+ * @param transitionSecs Optional transition time in seconds
+ */
+void componentSetColorTemperature(def childDevice, BigDecimal colorTemp, BigDecimal level = null, BigDecimal transitionSecs = null) {
+  logDebug("componentSetColorTemperature(${colorTemp}, ${level}, ${transitionSecs}) called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentSetColorTemperature: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+
+    // Gen 1: GET /light/{id}?turn=on&mode=white&temp=CT[&brightness=LEVEL][&transition=MS]
+    if (isGen1Device(childDevice)) {
+      Integer lightId = extractComponentId(childDevice, 'lightId')
+      Map params = [turn: 'on', mode: 'white', temp: colorTemp.intValue().toString()]
+      if (level != null) { params.brightness = level.intValue().toString() }
+      if (transitionSecs != null) { params.transition = (transitionSecs * 1000).intValue().toString() }
+      logDebug("componentSetColorTemperature: Gen 1 light/${lightId} params=${params}")
+      sendGen1Get(ipAddress, "light/${lightId}", params)
+      return
+    }
+
+    // Gen 2/3 CT support can be added here later
+    logWarn("componentSetColorTemperature: Gen 2/3 color temperature control not yet implemented")
+  } catch (Exception e) {
+    logError("componentSetColorTemperature exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles on() command from RGBW2 color mode devices via /color/{id} endpoint.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentColorOn(def childDevice) {
+  logDebug("componentColorOn() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentColorOn: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    logDebug("componentColorOn: Gen 1 color/${lightId}?turn=on")
+    sendGen1Get(ipAddress, "color/${lightId}", [turn: 'on'])
+  } catch (Exception e) {
+    logError("componentColorOn exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles off() command from RGBW2 color mode devices via /color/{id} endpoint.
+ *
+ * @param childDevice The child device that sent the command
+ */
+void componentColorOff(def childDevice) {
+  logDebug("componentColorOff() called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentColorOff: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    logDebug("componentColorOff: Gen 1 color/${lightId}?turn=off")
+    sendGen1Get(ipAddress, "color/${lightId}", [turn: 'off'])
+  } catch (Exception e) {
+    logError("componentColorOff exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
+ * Handles setLevel() command from RGBW2 color mode devices.
+ * Uses 'gain' parameter on the /color/{id} endpoint for brightness control.
+ *
+ * @param childDevice The child device that sent the command
+ * @param gain Brightness gain level (0-100)
+ * @param transitionMs Optional transition duration in milliseconds
+ */
+void componentSetColorGain(def childDevice, Integer gain, Integer transitionMs = null) {
+  logDebug("componentSetColorGain(${gain}, ${transitionMs}) called from device: ${childDevice.displayName}")
+  try {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+      logError("componentSetColorGain: No IP address found for device ${childDevice.displayName}")
+      return
+    }
+    Integer lightId = extractComponentId(childDevice, 'lightId')
+    String turnAction = gain > 0 ? 'on' : 'off'
+    Map params = [turn: turnAction, gain: gain.toString()]
+    if (transitionMs != null && transitionMs > 0) {
+      params.transition = transitionMs.toString()
+    }
+    logDebug("componentSetColorGain: Gen 1 color/${lightId} params=${params}")
+    sendGen1Get(ipAddress, "color/${lightId}", params)
+  } catch (Exception e) {
+    logError("componentSetColorGain exception for ${childDevice.displayName}: ${e.message}")
+    if (settings?.enableWatchdog != false) { watchdogScan() }
+  }
+}
+
+/**
  * Handles startLevelChange() command from child light component devices.
  *
  * @param childDevice The child device that sent the command
@@ -12765,9 +13271,10 @@ void componentRefresh(def childDevice) {
                     childDevice.updateDataValue('gen1Type', resolvedGen1Type)
                 }
             }
-            // For battery devices: attempt pending action URL installation on wake-up
+            // For battery devices: attempt pending action URL installation and settings on wake-up
             if (isSleepyBatteryDevice(childDevice)) {
                 attemptGen1ActionUrlInstallOnWake(ipAddress)
+                applyPendingGen1Settings(childDevice, ipAddress)
             }
             pollGen1DeviceStatus(ipAddress)
             if (childDevice.getDataValue('isParentDevice') == 'true') {
@@ -12779,6 +13286,10 @@ void componentRefresh(def childDevice) {
             if (!childDevice.getDataValue('gen1SettingsSynced')) {
                 syncGen1MotionSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1TrvSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1ButtonSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1FloodSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1SmokeSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1HTSettings(ipAddress, childDevice, resolvedGen1Type)
             }
             return
         }
@@ -12855,12 +13366,76 @@ void componentUpdateGen1Settings(def childDevice, Map settingsMap) {
         logError("componentUpdateGen1Settings: no IP for ${childDevice.displayName}")
         return
     }
+
+    if (isSleepyBatteryDevice(childDevice)) {
+        // Sleepy devices: try immediately, queue on failure for next wake-up
+        Map result = sendGen1Setting(ipAddress, 'settings', settingsMap)
+        if (result != null) {
+            logInfo("Gen 1 settings applied to ${childDevice.displayName}")
+            clearPendingGen1Settings(childDevice.deviceNetworkId)
+        } else {
+            logInfo("Device ${childDevice.displayName} is asleep — queuing settings for next wake-up")
+            queueGen1Settings(childDevice.deviceNetworkId, settingsMap)
+        }
+        return
+    }
+
     logInfo("Sending Gen 1 settings to ${childDevice.displayName} at ${ipAddress}: ${settingsMap}")
     Map result = sendGen1Setting(ipAddress, 'settings', settingsMap)
     if (result != null) {
         logInfo("Gen 1 settings applied to ${childDevice.displayName}")
     } else {
         logWarn("Failed to apply Gen 1 settings to ${childDevice.displayName} — device may be unreachable")
+    }
+}
+
+/**
+ * Queues Gen 1 device settings for delivery on next wake-up.
+ * Merges new settings with any already-queued settings for the same device.
+ *
+ * @param dni The device network ID
+ * @param settingsMap Map of Gen 1 /settings query parameters to queue
+ */
+private void queueGen1Settings(String dni, Map settingsMap) {
+    if (!state.pendingGen1Settings) { state.pendingGen1Settings = [:] }
+    Map existing = state.pendingGen1Settings[dni] as Map ?: [:]
+    existing.putAll(settingsMap)
+    state.pendingGen1Settings[dni] = existing
+    logDebug("Queued Gen 1 settings for ${dni}: ${existing}")
+}
+
+/**
+ * Clears any pending Gen 1 settings for a device after successful delivery.
+ *
+ * @param dni The device network ID
+ */
+private void clearPendingGen1Settings(String dni) {
+    if (state.pendingGen1Settings?.containsKey(dni)) {
+        state.pendingGen1Settings.remove(dni)
+    }
+}
+
+/**
+ * Applies any queued Gen 1 settings to a device that has just woken up.
+ * Called during {@link #componentRefresh(def)} for sleepy battery devices.
+ * On success, clears the queue; on failure, retains for the next wake-up.
+ *
+ * @param childDevice The child device that just woke up
+ * @param ipAddress The device's IP address
+ */
+private void applyPendingGen1Settings(def childDevice, String ipAddress) {
+    if (!childDevice || !ipAddress) { return }
+    String dni = childDevice.deviceNetworkId
+    Map pending = state.pendingGen1Settings?.get(dni) as Map
+    if (!pending) { return }
+
+    logInfo("Applying queued settings to ${childDevice.displayName}: ${pending}")
+    Map result = sendGen1Setting(ipAddress, 'settings', pending)
+    if (result != null) {
+        logInfo("Queued Gen 1 settings applied to ${childDevice.displayName}")
+        clearPendingGen1Settings(dni)
+    } else {
+        logWarn("Failed to apply queued settings to ${childDevice.displayName} — will retry next wake-up")
     }
 }
 
@@ -12980,6 +13555,88 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Light Settings (default state, auto-on, auto-off for bulbs/dimmers)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Receives light settings from a standalone light/bulb driver.
+ * Applies settings to Gen 1 devices via GET /settings/light/{id}.
+ *
+ * @param childDevice The standalone light/bulb device
+ * @param lightSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+void componentUpdateLightSettings(def childDevice, Map lightSettings) {
+    if (!childDevice || !lightSettings) { return }
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("componentUpdateLightSettings: no IP for ${childDevice.displayName}")
+        return
+    }
+
+    if (isGen1Device(childDevice)) {
+        Integer lightId = extractComponentId(childDevice, 'lightId')
+        Map params = [:]
+        if (lightSettings.defaultState != null) {
+            params.default_state = lightSettings.defaultState as String
+        }
+        if (lightSettings.autoOffTime != null) {
+            params.auto_off = (lightSettings.autoOffTime as BigDecimal).toString()
+        }
+        if (lightSettings.autoOnTime != null) {
+            params.auto_on = (lightSettings.autoOnTime as BigDecimal).toString()
+        }
+        if (!params) { return }
+
+        Map result = sendGen1Setting(ipAddress, "settings/light/${lightId}", params)
+        if (result != null) {
+            logInfo("Applied Gen1 light settings to ${childDevice.displayName}: ${params}")
+        }
+    }
+    // Gen 2/3 light settings can be added here later
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Color Settings (default state, auto-on, auto-off for RGBW2 color mode)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Receives color settings from an RGBW2 color mode driver.
+ * Applies settings to Gen 1 devices via GET /settings/color/{id}.
+ *
+ * @param childDevice The standalone RGBW2 color device
+ * @param colorSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+void componentUpdateColorSettings(def childDevice, Map colorSettings) {
+    if (!childDevice || !colorSettings) { return }
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("componentUpdateColorSettings: no IP for ${childDevice.displayName}")
+        return
+    }
+
+    if (isGen1Device(childDevice)) {
+        Integer lightId = extractComponentId(childDevice, 'lightId')
+        Map params = [:]
+        if (colorSettings.defaultState != null) {
+            params.default_state = colorSettings.defaultState as String
+        }
+        if (colorSettings.autoOffTime != null) {
+            params.auto_off = (colorSettings.autoOffTime as BigDecimal).toString()
+        }
+        if (colorSettings.autoOnTime != null) {
+            params.auto_on = (colorSettings.autoOnTime as BigDecimal).toString()
+        }
+        if (!params) { return }
+
+        Map result = sendGen1Setting(ipAddress, "settings/color/${lightId}", params)
+        if (result != null) {
+            logInfo("Applied Gen1 color settings to ${childDevice.displayName}: ${params}")
+        }
+    }
+    // Gen 2/3 color settings can be added here later
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Switch Settings (default state, auto-on, auto-off)
 // ═══════════════════════════════════════════════════════════════
 
@@ -13023,6 +13680,40 @@ void parentUpdateSwitchSettings(def parentDevice, Integer switchId, Map switchSe
         applyGen1SwitchSettings(ipAddress, parentDevice, switchId, switchSettings)
     } else {
         applyGen2SwitchSettings(ipAddress, parentDevice, switchId, switchSettings)
+    }
+}
+
+/**
+ * Receives white channel settings from a parent driver on behalf of a child component.
+ * Applies settings to the Gen 1 {@code /settings/white/{id}} endpoint.
+ *
+ * @param parentDevice The parent device
+ * @param whiteId The white channel component ID (0-3)
+ * @param whiteSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ */
+void parentUpdateWhiteSettings(def parentDevice, Integer whiteId, Map whiteSettings) {
+    if (!parentDevice || !whiteSettings) { return }
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("parentUpdateWhiteSettings: no IP for ${parentDevice.displayName}")
+        return
+    }
+
+    Map params = [:]
+    if (whiteSettings.defaultState != null) {
+        params.default_state = whiteSettings.defaultState.toString()
+    }
+    if (whiteSettings.autoOffTime != null) {
+        params.auto_off = (whiteSettings.autoOffTime as BigDecimal).toString()
+    }
+    if (whiteSettings.autoOnTime != null) {
+        params.auto_on = (whiteSettings.autoOnTime as BigDecimal).toString()
+    }
+    if (!params) { return }
+
+    Map result = sendGen1Setting(ipAddress, "settings/white/${whiteId}", params)
+    if (result != null) {
+        logInfo("Applied Gen1 white settings to ${parentDevice.displayName} channel ${whiteId}: ${params}")
     }
 }
 
@@ -13262,6 +13953,19 @@ void parentSendCommand(def parentDevice, String method, Map params) {
                 if (params?.brightness != null) { lightParams.brightness = params.brightness.toString() }
                 sendGen1Get(ipAddress, "light/${componentId}", lightParams)
                 break
+            case 'White.Set':
+                String whiteAction = params?.on ? 'on' : 'off'
+                sendGen1Get(ipAddress, "white/${componentId}", [turn: whiteAction])
+                break
+            case 'White.SetLevel':
+                Integer brightness = params?.brightness != null ? params.brightness as Integer : 0
+                String whiteTurn = brightness > 0 ? 'on' : 'off'
+                Map whiteParams = [turn: whiteTurn, brightness: brightness.toString()]
+                if (params?.transitionMs != null && params.transitionMs as Integer > 0) {
+                    whiteParams.transition = params.transitionMs.toString()
+                }
+                sendGen1Get(ipAddress, "white/${componentId}", whiteParams)
+                break
             default:
                 logWarn("parentSendCommand: unsupported Gen 1 method '${method}'")
         }
@@ -13346,7 +14050,7 @@ void reinitializeDevice(def parentDevice) {
  * @param deviceStatus The full device status map from Shelly.GetStatus
  */
 private void distributeStatusToChildren(String parentDni, Map deviceStatus) {
-    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'input'] as Set
+    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString()

@@ -24,10 +24,33 @@ metadata {
     //Attributes: battery - NUMBER, unit:%
 
     attribute 'lastUpdated', 'string'
+    attribute 'voltage', 'number'
+    attribute 'powerSource', 'string'  // "battery" or "usb"
   }
 }
 
 preferences {
+  // -- Button Behavior (synced to device) --
+  input name: 'longpushDurationMs', type: 'number',
+    title: 'Long push duration (ms)',
+    description: 'Hold duration to trigger long push (800\u20133000 ms). Synced to/from device.',
+    range: '800..3000', required: false
+  input name: 'multipushTimeBetweenPushesMs', type: 'number',
+    title: 'Multi-push interval (ms)',
+    description: 'Max time between pushes for multi-push detection (200\u20132000 ms). Synced to/from device.',
+    range: '200..2000', required: false
+
+  // -- Device Configuration (synced to device) --
+  input name: 'ledStatusDisable', type: 'bool',
+    title: 'Disable LED status indicator',
+    description: 'Turn off the device status LED. Synced to/from device.',
+    defaultValue: false, required: false
+  input name: 'remainAwake', type: 'bool',
+    title: 'Remain awake (heavy battery drain)',
+    description: 'Keep device always awake instead of sleeping. Synced to/from device.',
+    defaultValue: false, required: false
+
+  // -- Logging --
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
@@ -53,13 +76,54 @@ void installed() {
 
 /**
  * Called when device settings are saved.
- * Sets button count and default log level.
+ * Sets button count, default log level, and relays settings to the device.
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   sendEvent(name: 'numberOfButtons', value: 1)
   if (!settings.logLevel) {
     device.updateSetting('logLevel', 'debug')
+  }
+  relayDeviceSettings()
+}
+
+/**
+ * Re-initializes the device by clearing the settings sync flag
+ * so the next refresh re-reads configuration from the physical device.
+ */
+void configure() {
+  logDebug('configure() called')
+  if (!settings.logLevel) {
+    logWarn("No log level set, defaulting to 'debug'")
+    device.updateSetting('logLevel', 'debug')
+  }
+  // Clear sync flag so next refresh re-reads settings from device
+  device.removeDataValue('gen1SettingsSynced')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Gathers device-side settings and sends them to the parent app for
+ * relay to the Shelly device via GET /settings.
+ * Only sends settings that have been configured (non-null).
+ */
+private void relayDeviceSettings() {
+  Map settingsMap = [:]
+  if (settings.longpushDurationMs != null) {
+    settingsMap.longpush_duration_ms = (settings.longpushDurationMs as Integer).toString()
+  }
+  if (settings.multipushTimeBetweenPushesMs != null) {
+    settingsMap.multipush_time_between_pushes_ms = (settings.multipushTimeBetweenPushesMs as Integer).toString()
+  }
+  if (settings.ledStatusDisable != null) {
+    settingsMap.led_status_disable = settings.ledStatusDisable ? 'true' : 'false'
+  }
+  if (settings.remainAwake != null) {
+    settingsMap.remain_awake = settings.remainAwake ? 'true' : 'false'
+  }
+  if (settingsMap) {
+    logDebug("Relaying device settings to parent: ${settingsMap}")
+    parent?.componentUpdateGen1Settings(device, settingsMap)
   }
 }
 
@@ -167,11 +231,6 @@ private void routeActionUrlCallback(Map params) {
       logInfo('Button triple-pushed')
       break
 
-    case 'sensor_report':
-      logInfo('Sensor wake-up report received — requesting status poll')
-      parent?.componentRefresh(device)
-      break
-
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
   }
@@ -230,6 +289,18 @@ void distributeStatus(Map status) {
         sendEvent(name: 'battery', value: battery, unit: '%',
           descriptionText: "Battery is ${battery}%")
         logInfo("Battery: ${battery}%")
+      }
+      if (data.voltage != null) {
+        BigDecimal voltage = data.voltage as BigDecimal
+        sendEvent(name: 'voltage', value: voltage, unit: 'V',
+          descriptionText: "Battery voltage is ${voltage}V")
+        logInfo("Voltage: ${voltage}V")
+      }
+      if (data.charger != null) {
+        String source = data.charger ? 'usb' : 'battery'
+        sendEvent(name: 'powerSource', value: source,
+          descriptionText: "Power source is ${source}")
+        logInfo("Power source: ${source}")
       }
     }
   }

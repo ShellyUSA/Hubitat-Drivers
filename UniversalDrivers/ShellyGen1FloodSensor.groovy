@@ -1,12 +1,22 @@
 /**
- * Shelly Gen1 Flood Sensor
+ * Shelly Gen1 Flood Sensor (SHWT-1)
  *
- * Pre-built standalone driver for Gen 1 Shelly Flood sensor.
+ * Pre-built standalone driver for the Gen 1 Shelly Flood sensor.
  * Battery-powered device that sleeps most of the time.
- * Fires flood_detected_url / flood_gone_url action URLs on water detection.
- * Polled periodically for temperature/battery updates.
  *
- * Version: 1.0.0
+ * Wakes and fires action URL callbacks on:
+ *   - Flood detected / flood cleared (flood_detected_url / flood_gone_url)
+ *   - Temperature threshold crossings (over_temp_url / under_temp_url)
+ *
+ * Note: No report_url / sensor_report mechanism — unlike H&T, the SHWT-1 has
+ * no periodic wake-up URL. All wake-ups are event-driven. Temperature and battery
+ * data are polled via GET /status when the device wakes for a flood or threshold event.
+ *
+ * User-configurable preferences (temperature_offset, temperature_threshold)
+ * are synced bidirectionally: device-to-driver on first refresh, driver-to-device
+ * on Save Preferences (queued for next wake-up if the device is asleep).
+ *
+ * Version: 1.1.0
  */
 
 metadata {
@@ -20,11 +30,26 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER, unit:%
 
+    capability 'Configuration'
+    //Commands: configure()
+
+    capability 'Refresh'
+    //Commands: refresh()
+
     attribute 'lastUpdated', 'string'
+    attribute 'voltage', 'number'
   }
 }
 
 preferences {
+  // -- Sensor Calibration (synced to device) --
+  input name: 'temperatureOffset', type: 'decimal', title: 'Temperature offset',
+    description: 'Calibration offset for temperature. Synced to/from device.', required: false
+  input name: 'temperatureThreshold', type: 'decimal', title: 'Temperature threshold',
+    description: 'Min temperature change to trigger report (0.5\u20135.0). Synced to/from device.',
+    range: '0.5..5.0', required: false
+
+  // -- Logging --
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
@@ -49,12 +74,57 @@ void installed() {
 
 /**
  * Called when device settings are saved.
- * Sets default log level if not already configured.
+ * Relays user-changed preferences to the physical device (or queues for next wake-up).
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   if (!settings.logLevel) {
     device.updateSetting('logLevel', 'debug')
+  }
+  relayDeviceSettings()
+}
+
+/**
+ * Re-reads configuration from the physical device by clearing the sync flag.
+ * The next refresh will re-sync device settings to driver preferences.
+ */
+void configure() {
+  logDebug('configure() called')
+  if (!settings.logLevel) {
+    logWarn("No log level set, defaulting to 'debug'")
+    device.updateSetting('logLevel', 'debug')
+  }
+  // Clear sync flag so next refresh re-reads settings from device
+  device.removeDataValue('gen1SettingsSynced')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Refreshes the device state. Note: battery device may be asleep.
+ * Data will update on next wake-up (flood event callback).
+ */
+void refresh() {
+  logDebug('refresh() called — note: battery device may be asleep')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Gathers device-side settings and sends them to the parent app for
+ * relay to the Shelly device via GET /settings.
+ * Only sends settings that have been configured (non-null).
+ * For sleepy devices, the app will queue settings if the device is unreachable.
+ */
+private void relayDeviceSettings() {
+  Map settingsMap = [:]
+  if (settings.temperatureOffset != null) {
+    settingsMap.temperature_offset = (settings.temperatureOffset as BigDecimal).toString()
+  }
+  if (settings.temperatureThreshold != null) {
+    settingsMap.temperature_threshold = (settings.temperatureThreshold as BigDecimal).toString()
+  }
+  if (settingsMap) {
+    logDebug("Relaying device settings to parent: ${settingsMap}")
+    parent?.componentUpdateGen1Settings(device, settingsMap)
   }
 }
 
@@ -139,7 +209,7 @@ private Map parseWebhookPath(Map msg) {
 /**
  * Routes Gen 1 action URL callbacks for flood sensor.
  * Flood events update water attribute immediately.
- * Report/flood events also trigger a refresh to get temp/battery.
+ * Temperature threshold and flood events trigger a refresh to get temp/battery.
  */
 private void routeActionUrlCallback(Map params) {
   switch (params.dst) {
@@ -154,14 +224,21 @@ private void routeActionUrlCallback(Map params) {
       parent?.componentRefresh(device)
       break
 
-    case 'sensor_report':
-      logInfo('Sensor wake-up report received — requesting status poll')
+    case 'temp_over':
+      logWarn('Over-temperature threshold exceeded')
+      parent?.componentRefresh(device)
+      break
+    case 'temp_under':
+      logWarn('Under-temperature threshold exceeded')
       parent?.componentRefresh(device)
       break
 
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
+      return  // Don't update lastUpdated for unhandled callbacks
   }
+
+  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -214,6 +291,12 @@ void distributeStatus(Map status) {
         sendEvent(name: 'battery', value: battery, unit: '%',
           descriptionText: "Battery is ${battery}%")
         logInfo("Battery: ${battery}%")
+      }
+      if (data.voltage != null) {
+        BigDecimal voltage = data.voltage as BigDecimal
+        sendEvent(name: 'voltage', value: voltage, unit: 'V',
+          descriptionText: "Battery voltage is ${voltage}V")
+        logInfo("Voltage: ${voltage}V")
       }
     }
   }

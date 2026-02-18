@@ -1,17 +1,21 @@
 /**
- * Shelly Gen1 Single Dimmer
+ * Shelly Gen1 RGBW2 Color (SHRGBW2)
  *
- * Pre-built standalone driver for Gen 1 dimmer Shelly devices.
- * Examples: Shelly Dimmer 1, Shelly Dimmer 2
+ * Pre-built standalone driver for the Gen 1 Shelly RGBW2 in color mode.
+ * Controls an RGBW LED strip with RGB color channels, a white channel, and
+ * gain-based brightness. Does not support color temperature (no CT mode).
  *
- * Gen 1 dimmers use HTTP REST action URLs and polling for brightness level.
+ * The RGBW2 uses the {@code /color/0} endpoint for commands, unlike bulbs which
+ * use {@code /light/0}. This driver delegates to dedicated parent app component
+ * functions that route to the correct endpoint.
+ *
  * Commands delegate to the parent app which routes to Gen 1 REST endpoints.
  *
  * Version: 1.0.0
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Single Dimmer', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 RGBW2 Color', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -19,6 +23,10 @@ metadata {
     capability 'SwitchLevel'
     //Attributes: level - NUMBER, unit:%
     //Commands: setLevel(level, duration)
+
+    capability 'ColorControl'
+    //Attributes: hue - NUMBER, saturation - NUMBER, color - STRING, RGB - STRING
+    //Commands: setColor(colorMap), setHue(hue), setSaturation(saturation)
 
     capability 'Initialize'
     //Commands: initialize()
@@ -34,6 +42,8 @@ metadata {
 
     capability 'EnergyMeter'
     //Attributes: energy - NUMBER, unit:kWh
+
+    attribute 'colorName', 'string'
   }
 }
 
@@ -41,6 +51,16 @@ preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
+
+  input name: 'defaultState', type: 'enum', title: 'Power Restore State',
+    options: ['on':'On', 'off':'Off', 'last':'Last State'],
+    defaultValue: 'last', required: false
+
+  input name: 'autoOnTime', type: 'number', title: 'Auto-On Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+
+  input name: 'autoOffTime', type: 'number', title: 'Auto-Off Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
 }
 
 
@@ -56,11 +76,12 @@ void installed() {
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
+  syncColorSettings()
   initialize()
 }
 
 /**
- * Parses incoming LAN messages from the Gen 1 Shelly dimmer.
+ * Parses incoming LAN messages from the Gen 1 Shelly RGBW2.
  * Gen 1 action URLs fire GET requests only.
  *
  * @param description Raw LAN message description string from Hubitat
@@ -86,7 +107,6 @@ void parse(String description) {
 
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /brightness/0).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
@@ -144,8 +164,8 @@ private Map parseWebhookPath(Map msg) {
 }
 
 /**
- * Routes Gen 1 action URL callbacks for dimmer events.
- * After state change, triggers a refresh to get brightness/power data.
+ * Routes Gen 1 action URL callbacks for RGBW2 color events.
+ * After state change, triggers a refresh to get full color data.
  *
  * @param params Map with dst and cid from the action URL path
  */
@@ -153,22 +173,14 @@ private void routeActionUrlCallback(Map params) {
   switch (params.dst) {
     case 'light_on':
       sendEvent(name: 'switch', value: 'on', descriptionText: 'Light turned on')
-      logInfo('Light state changed to: on')
+      logInfo('RGBW2 state changed to: on')
       parent?.componentRefresh(device)
       break
     case 'light_off':
       sendEvent(name: 'switch', value: 'off', descriptionText: 'Light turned off')
-      logInfo('Light state changed to: off')
+      logInfo('RGBW2 state changed to: off')
       parent?.componentRefresh(device)
       break
-
-    case 'input_short':
-      logInfo('Input short push received')
-      break
-    case 'input_long':
-      logInfo('Input long push received')
-      break
-
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
   }
@@ -212,31 +224,31 @@ void refresh() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Turns the dimmer on by delegating to the parent app via /light/ endpoint.
+ * Turns the RGBW2 on via the /color/0 endpoint.
  */
 void on() {
   logDebug('on() called')
-  parent?.componentLightOn(device)
+  parent?.componentColorOn(device)
 }
 
 /**
- * Turns the dimmer off by delegating to the parent app via /light/ endpoint.
+ * Turns the RGBW2 off via the /color/0 endpoint.
  */
 void off() {
   logDebug('off() called')
-  parent?.componentLightOff(device)
+  parent?.componentColorOff(device)
 }
 
 /**
- * Sets the dimmer brightness level.
- * Delegates to parent app which sends GET /light/0?turn=on&brightness={level}.
+ * Sets the RGBW2 brightness (gain) level.
+ * In color mode, the RGBW2 uses 'gain' for brightness control.
  *
  * @param level Brightness level (0-100)
  * @param duration Transition time in seconds (optional)
  */
 void setLevel(BigDecimal level, BigDecimal duration = 0) {
   logDebug("setLevel(${level}, ${duration}) called")
-  parent?.componentSetLevel(device, level as Integer, duration as Integer)
+  parent?.componentSetColorGain(device, level as Integer, duration as Integer)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -246,13 +258,59 @@ void setLevel(BigDecimal level, BigDecimal duration = 0) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
+// ║  Color Commands                                              ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Sets the RGBW2 color using a Hubitat HSV color map.
+ * Converts to RGB and sends via the /color/0 endpoint with white=0.
+ *
+ * @param colorMap Map with keys: hue (0-100), saturation (0-100), level (0-100)
+ */
+void setColor(Map colorMap) {
+  logDebug("setColor(${colorMap}) called")
+  if (colorMap == null) { return }
+  parent?.componentSetColor(device, colorMap)
+}
+
+/**
+ * Sets the RGBW2 hue, preserving current saturation and level.
+ *
+ * @param hue Hue value (0-100)
+ */
+void setHue(BigDecimal hue) {
+  logDebug("setHue(${hue}) called")
+  Integer currentSat = device.currentValue('saturation') as Integer ?: 100
+  Integer currentLevel = device.currentValue('level') as Integer ?: 100
+  setColor([hue: hue, saturation: currentSat, level: currentLevel])
+}
+
+/**
+ * Sets the RGBW2 saturation, preserving current hue and level.
+ *
+ * @param saturation Saturation value (0-100)
+ */
+void setSaturation(BigDecimal saturation) {
+  logDebug("setSaturation(${saturation}) called")
+  Integer currentHue = device.currentValue('hue') as Integer ?: 0
+  Integer currentLevel = device.currentValue('level') as Integer ?: 100
+  setColor([hue: currentHue, saturation: saturation, level: currentLevel])
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Color Commands                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
 // ║  Status Distribution                                         ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Distributes polled status data to the device.
+ * Distributes polled status data to the RGBW2 device.
  * Called by the parent app after polling GET /status on the Gen 1 device.
- * Handles light state, brightness, and power monitoring values.
+ * Handles switch state, RGB color values, gain (brightness), and power monitoring.
  *
  * @param status Map of normalized component statuses
  */
@@ -265,14 +323,43 @@ void distributeStatus(Map status) {
     if (!key.startsWith('light:') || !(v instanceof Map)) { return }
 
     Map data = v as Map
+
+    // Switch state
     if (data.output != null) {
       String switchState = data.output ? 'on' : 'off'
       sendEvent(name: 'switch', value: switchState, descriptionText: "Light turned ${switchState}")
     }
-    if (data.brightness != null) {
-      Integer level = data.brightness as Integer
+
+    // Gain is the brightness control in color mode (0-100)
+    if (data.gain != null) {
+      Integer level = data.gain as Integer
       sendEvent(name: 'level', value: level, unit: '%', descriptionText: "Level is ${level}%")
     }
+
+    // Convert RGB to HSV for Hubitat color attributes
+    if (data.red != null && data.green != null && data.blue != null) {
+      Integer r = data.red as Integer
+      Integer g = data.green as Integer
+      Integer b = data.blue as Integer
+
+      List hsv = hubitat.helper.ColorUtils.rgbToHSV([r, g, b])
+      Integer hue = Math.round(hsv[0] as Double) as Integer
+      Integer saturation = Math.round(hsv[1] as Double) as Integer
+
+      sendEvent(name: 'hue', value: hue, descriptionText: "Hue is ${hue}")
+      sendEvent(name: 'saturation', value: saturation, descriptionText: "Saturation is ${saturation}")
+
+      String hexColor = String.format('#%02X%02X%02X', r, g, b)
+      sendEvent(name: 'color', value: hexColor, descriptionText: "Color is ${hexColor}")
+
+      String rgbString = "${r},${g},${b}"
+      sendEvent(name: 'RGB', value: rgbString)
+
+      String colorName = colorNameFromHue(hue)
+      sendEvent(name: 'colorName', value: colorName, descriptionText: "Color name is ${colorName}")
+    }
+
+    // Power monitoring
     if (data.apower != null) {
       sendEvent(name: 'power', value: data.apower as BigDecimal, unit: 'W')
     }
@@ -285,6 +372,67 @@ void distributeStatus(Map status) {
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Status Distribution                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Settings Sync                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Syncs driver preferences to the Shelly device via parent app.
+ * Called from updated() when preferences change.
+ * Uses /settings/color/0 endpoint for RGBW2 color mode settings.
+ */
+private void syncColorSettings() {
+  Map colorSettings = [:]
+  if (settings.defaultState != null) { colorSettings.defaultState = settings.defaultState }
+  if (settings.autoOnTime != null) { colorSettings.autoOnTime = settings.autoOnTime }
+  if (settings.autoOffTime != null) { colorSettings.autoOffTime = settings.autoOffTime }
+  if (colorSettings) {
+    parent?.componentUpdateColorSettings(device, colorSettings)
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Settings Sync                                           ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Color Name Helpers                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Returns a human-readable color name based on hue value.
+ *
+ * @param hue Hue value (0-100 Hubitat scale)
+ * @return Color name string
+ */
+@CompileStatic
+static String colorNameFromHue(Integer hue) {
+  if (hue == null) { return 'Unknown' }
+  // Map 0-100 hue to 0-360 for standard color wheel
+  Integer hueDeg = Math.round(hue * 3.6f) as Integer
+  if (hueDeg < 15)  { return 'Red' }
+  if (hueDeg < 45)  { return 'Orange' }
+  if (hueDeg < 75)  { return 'Yellow' }
+  if (hueDeg < 105) { return 'Chartreuse' }
+  if (hueDeg < 135) { return 'Green' }
+  if (hueDeg < 165) { return 'Spring' }
+  if (hueDeg < 195) { return 'Cyan' }
+  if (hueDeg < 225) { return 'Azure' }
+  if (hueDeg < 255) { return 'Blue' }
+  if (hueDeg < 285) { return 'Violet' }
+  if (hueDeg < 315) { return 'Magenta' }
+  if (hueDeg < 345) { return 'Rose' }
+  return 'Red'
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Color Name Helpers                                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 

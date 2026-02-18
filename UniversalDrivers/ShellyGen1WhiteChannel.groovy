@@ -1,17 +1,23 @@
 /**
- * Shelly Gen1 Single Dimmer
+ * Shelly Gen1 White Channel
  *
- * Pre-built standalone driver for Gen 1 dimmer Shelly devices.
- * Examples: Shelly Dimmer 1, Shelly Dimmer 2
+ * Child driver for an individual white channel of the Shelly RGBW2 in white mode.
+ * Each RGBW2 in white mode has 4 independent dimmer channels (white:0 through white:3).
  *
- * Gen 1 dimmers use HTTP REST action URLs and polling for brightness level.
- * Commands delegate to the parent app which routes to Gen 1 REST endpoints.
+ * This driver is created as a driver-level child by the
+ * {@code Shelly Gen1 RGBW2 White Parent} driver. All commands delegate
+ * to the parent, which relays them to the app for REST endpoint routing.
+ *
+ * Commands use the Gen 1 {@code /white/{id}} endpoint:
+ *   - On/Off: {@code GET /white/{id}?turn=on|off}
+ *   - Brightness: {@code GET /white/{id}?turn=on&brightness=50}
+ *   - Settings: {@code GET /settings/white/{id}?auto_off=300}
  *
  * Version: 1.0.0
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Single Dimmer', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 White Channel', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -34,6 +40,8 @@ metadata {
 
     capability 'EnergyMeter'
     //Attributes: energy - NUMBER, unit:kWh
+
+    attribute 'lastUpdated', 'string'
   }
 }
 
@@ -41,6 +49,16 @@ preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
+
+  input name: 'defaultState', type: 'enum', title: 'Power Restore State',
+    options: ['on':'On', 'off':'Off', 'last':'Last State'],
+    defaultValue: 'last', required: false
+
+  input name: 'autoOnTime', type: 'number', title: 'Auto-On Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+
+  input name: 'autoOffTime', type: 'number', title: 'Auto-Off Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
 }
 
 
@@ -56,11 +74,12 @@ void installed() {
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
+  syncWhiteSettings()
   initialize()
 }
 
 /**
- * Parses incoming LAN messages from the Gen 1 Shelly dimmer.
+ * Parses incoming LAN messages from the Gen 1 Shelly RGBW2.
  * Gen 1 action URLs fire GET requests only.
  *
  * @param description Raw LAN message description string from Hubitat
@@ -86,7 +105,6 @@ void parse(String description) {
 
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /brightness/0).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
@@ -144,31 +162,23 @@ private Map parseWebhookPath(Map msg) {
 }
 
 /**
- * Routes Gen 1 action URL callbacks for dimmer events.
+ * Routes Gen 1 action URL callbacks for white channel events.
  * After state change, triggers a refresh to get brightness/power data.
  *
  * @param params Map with dst and cid from the action URL path
  */
 private void routeActionUrlCallback(Map params) {
   switch (params.dst) {
-    case 'light_on':
-      sendEvent(name: 'switch', value: 'on', descriptionText: 'Light turned on')
-      logInfo('Light state changed to: on')
+    case 'white_on':
+      sendEvent(name: 'switch', value: 'on', descriptionText: 'White channel turned on')
+      logInfo('White channel state changed to: on')
       parent?.componentRefresh(device)
       break
-    case 'light_off':
-      sendEvent(name: 'switch', value: 'off', descriptionText: 'Light turned off')
-      logInfo('Light state changed to: off')
+    case 'white_off':
+      sendEvent(name: 'switch', value: 'off', descriptionText: 'White channel turned off')
+      logInfo('White channel state changed to: off')
       parent?.componentRefresh(device)
       break
-
-    case 'input_short':
-      logInfo('Input short push received')
-      break
-    case 'input_long':
-      logInfo('Input long push received')
-      break
-
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
   }
@@ -212,31 +222,32 @@ void refresh() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Turns the dimmer on by delegating to the parent app via /light/ endpoint.
+ * Turns the white channel on by delegating to the parent driver.
  */
 void on() {
   logDebug('on() called')
-  parent?.componentLightOn(device)
+  parent?.componentWhiteOn(device)
 }
 
 /**
- * Turns the dimmer off by delegating to the parent app via /light/ endpoint.
+ * Turns the white channel off by delegating to the parent driver.
  */
 void off() {
   logDebug('off() called')
-  parent?.componentLightOff(device)
+  parent?.componentWhiteOff(device)
 }
 
 /**
- * Sets the dimmer brightness level.
- * Delegates to parent app which sends GET /light/0?turn=on&brightness={level}.
+ * Sets the white channel brightness level.
+ * Delegates to parent driver which sends GET /white/{id}?turn=on&brightness={level}.
  *
  * @param level Brightness level (0-100)
  * @param duration Transition time in seconds (optional)
  */
 void setLevel(BigDecimal level, BigDecimal duration = 0) {
   logDebug("setLevel(${level}, ${duration}) called")
-  parent?.componentSetLevel(device, level as Integer, duration as Integer)
+  Integer transitionMs = duration > 0 ? (duration * 1000) as Integer : null
+  parent?.componentSetWhiteLevel(device, level as Integer, transitionMs)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -250,9 +261,13 @@ void setLevel(BigDecimal level, BigDecimal duration = 0) {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Distributes polled status data to the device.
- * Called by the parent app after polling GET /status on the Gen 1 device.
- * Handles light state, brightness, and power monitoring values.
+ * Distributes polled status data to this white channel.
+ * Called by the parent driver after receiving normalized status.
+ * Handles switch state, brightness, and power monitoring values.
+ *
+ * Note: In the parent-child architecture, the parent's distributeStatus()
+ * handles routing to children. This method exists for completeness but
+ * the parent directly sends events to children via child.sendEvent().
  *
  * @param status Map of normalized component statuses
  */
@@ -260,14 +275,17 @@ void distributeStatus(Map status) {
   logDebug("distributeStatus() called with: ${status}")
   if (!status) { return }
 
+  String whiteId = device.getDataValue('whiteId') ?: '0'
+  String whiteKey = "white:${whiteId}".toString()
+
   status.each { k, v ->
     String key = k.toString()
-    if (!key.startsWith('light:') || !(v instanceof Map)) { return }
+    if (key != whiteKey || !(v instanceof Map)) { return }
 
     Map data = v as Map
     if (data.output != null) {
       String switchState = data.output ? 'on' : 'off'
-      sendEvent(name: 'switch', value: switchState, descriptionText: "Light turned ${switchState}")
+      sendEvent(name: 'switch', value: switchState, descriptionText: "White channel turned ${switchState}")
     }
     if (data.brightness != null) {
       Integer level = data.brightness as Integer
@@ -285,6 +303,31 @@ void distributeStatus(Map status) {
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Status Distribution                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Settings Sync                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Syncs driver preferences to the Shelly device via parent driver.
+ * Called from updated() when preferences change.
+ * Uses /settings/white/{id} endpoint for RGBW2 white mode settings.
+ */
+private void syncWhiteSettings() {
+  Map whiteSettings = [:]
+  if (settings.defaultState != null) { whiteSettings.defaultState = settings.defaultState }
+  if (settings.autoOnTime != null) { whiteSettings.autoOnTime = settings.autoOnTime }
+  if (settings.autoOffTime != null) { whiteSettings.autoOffTime = settings.autoOffTime }
+  if (whiteSettings) {
+    parent?.componentUpdateWhiteSettings(device, whiteSettings)
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Settings Sync                                           ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 

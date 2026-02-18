@@ -1,17 +1,20 @@
 /**
- * Shelly Gen1 Single Dimmer
+ * Shelly Gen1 Bulb (SHBLB-1)
  *
- * Pre-built standalone driver for Gen 1 dimmer Shelly devices.
- * Examples: Shelly Dimmer 1, Shelly Dimmer 2
+ * Pre-built standalone driver for the Gen 1 Shelly Bulb RGBW device.
+ * Supports two operating modes:
+ * <ul>
+ *   <li><b>Color mode</b>: RGB + white channel with gain-based brightness</li>
+ *   <li><b>White mode</b>: Color temperature (3000–6500K) with brightness</li>
+ * </ul>
  *
- * Gen 1 dimmers use HTTP REST action URLs and polling for brightness level.
  * Commands delegate to the parent app which routes to Gen 1 REST endpoints.
  *
  * Version: 1.0.0
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Single Dimmer', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Bulb', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -19,6 +22,17 @@ metadata {
     capability 'SwitchLevel'
     //Attributes: level - NUMBER, unit:%
     //Commands: setLevel(level, duration)
+
+    capability 'ColorControl'
+    //Attributes: hue - NUMBER, saturation - NUMBER, color - STRING, RGB - STRING
+    //Commands: setColor(colorMap), setHue(hue), setSaturation(saturation)
+
+    capability 'ColorTemperature'
+    //Attributes: colorTemperature - NUMBER
+    //Commands: setColorTemperature(colorTemperature, level, transitionTime)
+
+    capability 'ColorMode'
+    //Attributes: colorMode - ENUM ["CT", "RGB"]
 
     capability 'Initialize'
     //Commands: initialize()
@@ -34,6 +48,8 @@ metadata {
 
     capability 'EnergyMeter'
     //Attributes: energy - NUMBER, unit:kWh
+
+    attribute 'colorName', 'string'
   }
 }
 
@@ -41,6 +57,22 @@ preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
+
+  input name: 'defaultState', type: 'enum', title: 'Power Restore State',
+    options: ['on':'On', 'off':'Off', 'last':'Last State'],
+    defaultValue: 'last', required: false
+
+  input name: 'autoOnTime', type: 'number', title: 'Auto-On Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+
+  input name: 'autoOffTime', type: 'number', title: 'Auto-Off Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+
+  input name: 'colorTempMin', type: 'number', title: 'Minimum Color Temperature (K)',
+    defaultValue: 3000, range: '2700..6500', required: false
+
+  input name: 'colorTempMax', type: 'number', title: 'Maximum Color Temperature (K)',
+    defaultValue: 6500, range: '2700..6500', required: false
 }
 
 
@@ -56,11 +88,12 @@ void installed() {
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
+  syncLightSettings()
   initialize()
 }
 
 /**
- * Parses incoming LAN messages from the Gen 1 Shelly dimmer.
+ * Parses incoming LAN messages from the Gen 1 Shelly Bulb.
  * Gen 1 action URLs fire GET requests only.
  *
  * @param description Raw LAN message description string from Hubitat
@@ -86,7 +119,7 @@ void parse(String description) {
 
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
- * GET Action Webhooks encode state in the path (e.g., /brightness/0).
+ * GET Action Webhooks encode state in the path (e.g., /light_on/0).
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
@@ -144,8 +177,8 @@ private Map parseWebhookPath(Map msg) {
 }
 
 /**
- * Routes Gen 1 action URL callbacks for dimmer events.
- * After state change, triggers a refresh to get brightness/power data.
+ * Routes Gen 1 action URL callbacks for bulb events.
+ * After state change, triggers a refresh to get full light data.
  *
  * @param params Map with dst and cid from the action URL path
  */
@@ -161,14 +194,6 @@ private void routeActionUrlCallback(Map params) {
       logInfo('Light state changed to: off')
       parent?.componentRefresh(device)
       break
-
-    case 'input_short':
-      logInfo('Input short push received')
-      break
-    case 'input_long':
-      logInfo('Input long push received')
-      break
-
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
   }
@@ -212,7 +237,7 @@ void refresh() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Turns the dimmer on by delegating to the parent app via /light/ endpoint.
+ * Turns the bulb on by delegating to the parent app via /light/ endpoint.
  */
 void on() {
   logDebug('on() called')
@@ -220,7 +245,7 @@ void on() {
 }
 
 /**
- * Turns the dimmer off by delegating to the parent app via /light/ endpoint.
+ * Turns the bulb off by delegating to the parent app via /light/ endpoint.
  */
 void off() {
   logDebug('off() called')
@@ -228,8 +253,8 @@ void off() {
 }
 
 /**
- * Sets the dimmer brightness level.
- * Delegates to parent app which sends GET /light/0?turn=on&brightness={level}.
+ * Sets the bulb brightness level.
+ * In color mode this adjusts gain; in white mode it adjusts brightness.
  *
  * @param level Brightness level (0-100)
  * @param duration Transition time in seconds (optional)
@@ -246,13 +271,79 @@ void setLevel(BigDecimal level, BigDecimal duration = 0) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
+// ║  Color and Color Temperature Commands                        ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Sets the bulb color using a Hubitat HSV color map.
+ * Switches the bulb to color mode and sends RGB + gain values.
+ *
+ * @param colorMap Map with keys: hue (0-100), saturation (0-100), level (0-100)
+ */
+void setColor(Map colorMap) {
+  logDebug("setColor(${colorMap}) called")
+  if (colorMap == null) { return }
+  parent?.componentSetColor(device, colorMap)
+}
+
+/**
+ * Sets the bulb hue, preserving current saturation and level.
+ *
+ * @param hue Hue value (0-100)
+ */
+void setHue(BigDecimal hue) {
+  logDebug("setHue(${hue}) called")
+  Integer currentSat = device.currentValue('saturation') as Integer ?: 100
+  Integer currentLevel = device.currentValue('level') as Integer ?: 100
+  setColor([hue: hue, saturation: currentSat, level: currentLevel])
+}
+
+/**
+ * Sets the bulb saturation, preserving current hue and level.
+ *
+ * @param saturation Saturation value (0-100)
+ */
+void setSaturation(BigDecimal saturation) {
+  logDebug("setSaturation(${saturation}) called")
+  Integer currentHue = device.currentValue('hue') as Integer ?: 0
+  Integer currentLevel = device.currentValue('level') as Integer ?: 100
+  setColor([hue: currentHue, saturation: saturation, level: currentLevel])
+}
+
+/**
+ * Sets the bulb to white mode at the specified color temperature.
+ * Optionally sets brightness level and transition time.
+ *
+ * @param colorTemp Color temperature in Kelvin (e.g. 3000-6500)
+ * @param level Optional brightness level (0-100)
+ * @param transitionTime Optional transition time in seconds
+ */
+void setColorTemperature(BigDecimal colorTemp, BigDecimal level = null, BigDecimal transitionTime = null) {
+  logDebug("setColorTemperature(${colorTemp}, ${level}, ${transitionTime}) called")
+  if (colorTemp == null) { return }
+
+  // Clamp to configured range
+  Integer ctMin = (settings.colorTempMin as Integer) ?: 3000
+  Integer ctMax = (settings.colorTempMax as Integer) ?: 6500
+  BigDecimal clampedTemp = Math.max(ctMin, Math.min(ctMax, colorTemp.intValue()))
+
+  parent?.componentSetColorTemperature(device, clampedTemp, level, transitionTime)
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Color and Color Temperature Commands                    ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
 // ║  Status Distribution                                         ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Distributes polled status data to the device.
+ * Distributes polled status data to the bulb device.
  * Called by the parent app after polling GET /status on the Gen 1 device.
- * Handles light state, brightness, and power monitoring values.
+ * Handles light state, brightness, color/CT mode, RGB values, and power monitoring.
  *
  * @param status Map of normalized component statuses
  */
@@ -265,14 +356,30 @@ void distributeStatus(Map status) {
     if (!key.startsWith('light:') || !(v instanceof Map)) { return }
 
     Map data = v as Map
+
+    // Switch state
     if (data.output != null) {
       String switchState = data.output ? 'on' : 'off'
       sendEvent(name: 'switch', value: switchState, descriptionText: "Light turned ${switchState}")
     }
-    if (data.brightness != null) {
-      Integer level = data.brightness as Integer
-      sendEvent(name: 'level', value: level, unit: '%', descriptionText: "Level is ${level}%")
+
+    // Color mode detection
+    String shellyMode = data.mode?.toString()
+    if (shellyMode == 'color') {
+      sendEvent(name: 'colorMode', value: 'RGB', descriptionText: 'Color mode: RGB')
+      distributeColorModeStatus(data)
+    } else if (shellyMode == 'white') {
+      sendEvent(name: 'colorMode', value: 'CT', descriptionText: 'Color mode: CT')
+      distributeWhiteModeStatus(data)
+    } else {
+      // Fallback: treat as white mode if no mode specified
+      if (data.brightness != null) {
+        Integer level = data.brightness as Integer
+        sendEvent(name: 'level', value: level, unit: '%', descriptionText: "Level is ${level}%")
+      }
     }
+
+    // Power monitoring
     if (data.apower != null) {
       sendEvent(name: 'power', value: data.apower as BigDecimal, unit: 'W')
     }
@@ -283,8 +390,143 @@ void distributeStatus(Map status) {
   }
 }
 
+/**
+ * Distributes status when bulb is in color (RGB) mode.
+ * Converts Shelly RGB (0-255) to Hubitat HSV (hue 0-100, saturation 0-100).
+ *
+ * @param data Normalized light component data map
+ */
+private void distributeColorModeStatus(Map data) {
+  // In color mode, Shelly uses 'gain' for brightness (0-100)
+  if (data.gain != null) {
+    Integer level = data.gain as Integer
+    sendEvent(name: 'level', value: level, unit: '%', descriptionText: "Level is ${level}%")
+  }
+
+  // Convert RGB to HSV for Hubitat
+  if (data.red != null && data.green != null && data.blue != null) {
+    Integer r = data.red as Integer
+    Integer g = data.green as Integer
+    Integer b = data.blue as Integer
+
+    List hsv = hubitat.helper.ColorUtils.rgbToHSV([r, g, b])
+    Integer hue = Math.round(hsv[0] as Double) as Integer
+    Integer saturation = Math.round(hsv[1] as Double) as Integer
+
+    sendEvent(name: 'hue', value: hue, descriptionText: "Hue is ${hue}")
+    sendEvent(name: 'saturation', value: saturation, descriptionText: "Saturation is ${saturation}")
+
+    String hexColor = String.format('#%02X%02X%02X', r, g, b)
+    sendEvent(name: 'color', value: hexColor, descriptionText: "Color is ${hexColor}")
+
+    String rgbString = "${r},${g},${b}"
+    sendEvent(name: 'RGB', value: rgbString)
+
+    String colorName = colorNameFromHue(hue)
+    sendEvent(name: 'colorName', value: colorName, descriptionText: "Color name is ${colorName}")
+  }
+}
+
+/**
+ * Distributes status when bulb is in white (CT) mode.
+ *
+ * @param data Normalized light component data map
+ */
+private void distributeWhiteModeStatus(Map data) {
+  // In white mode, Shelly uses 'brightness' for level (0-100)
+  if (data.brightness != null) {
+    Integer level = data.brightness as Integer
+    sendEvent(name: 'level', value: level, unit: '%', descriptionText: "Level is ${level}%")
+  }
+
+  // Color temperature
+  if (data.temp != null) {
+    Integer ct = data.temp as Integer
+    sendEvent(name: 'colorTemperature', value: ct, unit: 'K', descriptionText: "Color temperature is ${ct}K")
+
+    String ctName = colorNameFromTemp(ct)
+    sendEvent(name: 'colorName', value: ctName, descriptionText: "Color name is ${ctName}")
+  }
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Status Distribution                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Settings Sync                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Syncs driver preferences to the Shelly device via parent app.
+ * Called from updated() when preferences change.
+ */
+private void syncLightSettings() {
+  Map lightSettings = [:]
+  if (settings.defaultState != null) { lightSettings.defaultState = settings.defaultState }
+  if (settings.autoOnTime != null) { lightSettings.autoOnTime = settings.autoOnTime }
+  if (settings.autoOffTime != null) { lightSettings.autoOffTime = settings.autoOffTime }
+  if (lightSettings) {
+    parent?.componentUpdateLightSettings(device, lightSettings)
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Settings Sync                                           ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Color Name Helpers                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Returns a human-readable color name based on hue value.
+ *
+ * @param hue Hue value (0-100 Hubitat scale)
+ * @return Color name string
+ */
+@CompileStatic
+static String colorNameFromHue(Integer hue) {
+  if (hue == null) { return 'Unknown' }
+  // Map 0-100 hue to 0-360 for standard color wheel
+  Integer hueDeg = Math.round(hue * 3.6f) as Integer
+  if (hueDeg < 15)  { return 'Red' }
+  if (hueDeg < 45)  { return 'Orange' }
+  if (hueDeg < 75)  { return 'Yellow' }
+  if (hueDeg < 105) { return 'Chartreuse' }
+  if (hueDeg < 135) { return 'Green' }
+  if (hueDeg < 165) { return 'Spring' }
+  if (hueDeg < 195) { return 'Cyan' }
+  if (hueDeg < 225) { return 'Azure' }
+  if (hueDeg < 255) { return 'Blue' }
+  if (hueDeg < 285) { return 'Violet' }
+  if (hueDeg < 315) { return 'Magenta' }
+  if (hueDeg < 345) { return 'Rose' }
+  return 'Red'
+}
+
+/**
+ * Returns a human-readable color name based on color temperature.
+ *
+ * @param temp Color temperature in Kelvin
+ * @return Color temperature name string
+ */
+@CompileStatic
+static String colorNameFromTemp(Integer temp) {
+  if (temp == null) { return 'Unknown' }
+  if (temp < 3000) { return 'Warm White' }
+  if (temp < 4000) { return 'Soft White' }
+  if (temp < 5000) { return 'Neutral White' }
+  if (temp < 5500) { return 'Daylight' }
+  return 'Cool White'
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Color Name Helpers                                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 

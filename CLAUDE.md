@@ -27,7 +27,7 @@ This applies to ALL Gen 1 sensor types that support `report_url`: H&T (`SHHT-1`)
 
 Use other action URLs (e.g., `flood_detected_url`, `open_url`, `motion_on`) that send simple HTTP requests without query parameters. For periodic sensor data, use polling via `GET /status`.
 
-**Exception — SHHT-1 wake-up trigger:** `report_url` is used on the H&T as a bare wake-up notification only. The query-parameter data is completely ignored; the callback (`/sensor_report/0`) simply triggers an immediate `GET /status` poll. This is the only mechanism to detect when the H&T wakes from sleep. The `dst` and `cid` are encoded as path segments per the standard webhook URL format.
+**Exception — SHHT-1 and SHSM-01 wake-up trigger:** `report_url` is used on the H&T and Smoke as a bare wake-up notification only. The query-parameter data is completely ignored; the callback (`/sensor_report/0`) simply triggers an immediate `GET /status` poll. This is the only mechanism to detect when these devices wake from sleep. The `dst` and `cid` are encoded as path segments per the standard webhook URL format. Note: H&T's `report_url` is configured on `/settings` directly, while Smoke's is under `/settings/actions`.
 
 ## Gen 1 Battery Device Sleep Behavior
 
@@ -38,6 +38,7 @@ Use other action URLs (e.g., `flood_detected_url`, `open_url`, `motion_on`) that
 - Flood (`SHWT-1`) — wakes on flood state change
 - Door/Window (`SHDW-1`, `SHDW-2`) — wakes on open/close/vibration
 - Button (`SHBTN-1`, `SHBTN-2`) — wakes on button press
+- Smoke (`SHSM-01`) — wakes on smoke detection, temperature threshold, or periodic report
 
 For sleeping devices, use `attemptGen1ActionUrlInstallOnWake()` to queue configuration for the next wake-up. For Motion sensors, you can configure the device immediately since it is always reachable.
 
