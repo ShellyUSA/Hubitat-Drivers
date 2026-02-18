@@ -329,7 +329,24 @@ Map mainPage() {
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
         section() {
             if (state.discoveryRunning) {
-                paragraph "<b><span class='app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>"
+                Long endTimeMs = state.discoveryEndTime as Long
+                paragraph """<b><span id='discovery-timer'>Discovery time remaining: ${remainingSecs} seconds</span></b>
+<script>
+(function(){
+  var endTime = ${endTimeMs};
+  var el = document.getElementById('discovery-timer');
+  if (!el || !endTime) return;
+  function update() {
+    var remaining = Math.max(0, Math.round((endTime - Date.now()) / 1000));
+    el.textContent = remaining > 0
+      ? 'Discovery time remaining: ' + remaining + ' seconds'
+      : 'Discovery has finished.';
+    if (remaining <= 0) clearInterval(timer);
+  }
+  var timer = setInterval(update, 1000);
+  update();
+})();
+</script>"""
             } else {
                 paragraph "<b>Discovery has stopped.</b>"
             }
@@ -469,9 +486,8 @@ Map mainPage() {
 
             input name: 'displayLogLevel', type: 'enum', title: 'App page display log level (X and above)', options: displayOptions, defaultValue: validatedDisplay, submitOnChange: true
 
-            String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-            String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
+            String logsHtml = renderRecentLogsHtml()
+            paragraph "<span class='ssr-app-state-${getAppIdHelper()}-configTable' id='recent-logs'>${logsHtml}</span>"
         }
     }
 }
@@ -3364,6 +3380,9 @@ String processServerSideRender(Map event) {
 
     // App-level events
     if (eventName == 'configTable') {
+        if (elementId == 'recent-logs') {
+            return renderRecentLogsHtml()
+        }
         ensureDeviceStatusCache()
         return "<div id='config-table-wrapper'>${renderDeviceConfigTableMarkup()}</div>"
     }
@@ -4083,10 +4102,8 @@ void startDiscovery(Boolean resetFound = false) {
     startMdnsDiscovery()
 
     unschedule('stopDiscovery')
-    unschedule('updateDiscoveryUI')
     unschedule('processMdnsDiscovery')
     runIn(getDiscoveryDurationSeconds(), 'stopDiscovery')
-    runIn(1, 'updateDiscoveryUI')
     // Give the hub 10 seconds after listener registration to collect mDNS responses
     runIn(10, 'processMdnsDiscovery')
 }
@@ -4102,7 +4119,6 @@ void extendDiscovery(Integer seconds) {
     if (!state.discoveryRunning) {
         // Sonos-style: if stopped, start again without clearing discovered list.
         state.discoveryRunning = true
-        runIn(1, 'updateDiscoveryUI')
         runIn(2, 'processMdnsDiscovery')
     }
 
@@ -4153,34 +4169,24 @@ void stopDiscovery() {
     state.discoveryEndTime = null
 
     unschedule('processMdnsDiscovery')
-    unschedule('updateDiscoveryUI')
     unschedule('stopDiscovery')
+    unschedule('fireFoundShellyEventsIfPending')
+    state.remove('pendingFoundShellyEvent')
+
+    // Fire one final SSR update so the table reflects all devices found
+    sendFoundShellyEvents()
 
     // Do NOT unregister mDNS listeners - keep them active so data accumulates
     logTrace('Discovery stopped (mDNS listeners remain active)')
 }
 
 /**
- * Combined discovery UI updater. Sends both the countdown timer and recent
- * log lines to the browser in a single scheduled callback, keeping the total
- * {@code sendEvent} rate well below Hubitat's per-app rate limit.
- * Reschedules itself every 3 seconds while discovery is active.
+ * No-op retained for backward compatibility with any pending {@code runIn()} schedules.
+ * Timer countdown is now handled by client-side JavaScript, and log display
+ * updates on page re-renders. No {@code sendEvent()} calls are needed.
  */
 void updateDiscoveryUI() {
-    if (!state.discoveryRunning || !state.discoveryEndTime) {
-        return
-    }
-    Integer remainingSecs = getRemainingDiscoverySeconds()
-
-    app.sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds")
-
-    String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-    String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-    app.sendEvent(name: 'recentLogs', value: recentPayload)
-
-    if (remainingSecs > 0) {
-        runIn(3, 'updateDiscoveryUI')
-    }
+    // Intentionally empty — timer is client-side JS, logs update on page re-render
 }
 
 /**
@@ -4312,7 +4318,7 @@ void processMdnsDiscovery() {
             Integer afterCount = state.discoveredShellys.size()
             if (afterCount > beforeCount) {
                 logDebug("Found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
-                sendFoundShellyEvents()
+                debounceSendFoundShellyEvents()
             }
         }
     } catch (Exception e) {
@@ -4325,10 +4331,36 @@ void processMdnsDiscovery() {
 }
 
 /**
+ * Schedules an SSR table update after a short debounce delay.
+ * Multiple rapid calls collapse into a single {@link #sendFoundShellyEvents()} call,
+ * preventing Hubitat's per-app rate limit from being exceeded during discovery
+ * when many async device fetches complete in rapid succession.
+ */
+private void debounceSendFoundShellyEvents() {
+    state.pendingFoundShellyEvent = true
+    runIn(3, 'fireFoundShellyEventsIfPending')
+}
+
+/**
+ * Fires the debounced SSR event if one is pending.
+ * Called by {@code runIn()} after the debounce delay set by
+ * {@link #debounceSendFoundShellyEvents()}.
+ */
+void fireFoundShellyEventsIfPending() {
+    if (state.pendingFoundShellyEvent) {
+        state.pendingFoundShellyEvent = false
+        sendFoundShellyEvents()
+    }
+}
+
+/**
  * Fires an SSR event to update the device configuration table on the main page.
  * Merges newly discovered devices into the existing cache without destroying entries
  * that already have detailed status data (script/webhook counts from RPC queries).
  * Uses bare {@code sendEvent()} to trigger the SSR callback in {@link #processServerSideRender}.
+ *
+ * <p><b>Note:</b> During discovery, prefer {@link #debounceSendFoundShellyEvents()} to avoid
+ * exceeding Hubitat's per-app event rate limit.</p>
  */
 void sendFoundShellyEvents() {
     Map cache = state.deviceStatusCache ?: [:]
@@ -5381,7 +5413,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         logDebug("fetchAndStoreDeviceInfo: Gen 1 device at ${ip}, using REST API")
         appendLog('debug', "Getting Gen 1 device info from ${ip}")
         if (fetchGen1DeviceInfo(ipKey, device)) {
-            sendFoundShellyEvents()
+            debounceSendFoundShellyEvents()
         }
         return
     }
@@ -5455,7 +5487,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         if (deviceStatus) { logDebug("fetchAndStoreDeviceInfo: deviceStatus keys=${deviceStatus.keySet()}") }
 
 
-        sendFoundShellyEvents()
+        debounceSendFoundShellyEvents()
         determineDeviceDriver(deviceStatus, ipKey)
     } catch (Exception e) {
         String errorMsg = e.message ?: e.toString() ?: e.class.simpleName
@@ -5472,7 +5504,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
             state.discoveredShellys[ipKey] = device
             logDebug("fetchAndStoreDeviceInfo: RPC failed for ${ip}, trying Gen 1 REST API")
             if (fetchGen1DeviceInfo(ipKey, device)) {
-                sendFoundShellyEvents()
+                debounceSendFoundShellyEvents()
                 return
             }
 
@@ -5500,7 +5532,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
                 if (device.deviceStatus) {
                     determineDeviceDriver(device.deviceStatus, ipKey)
-                    sendFoundShellyEvents()
+                    debounceSendFoundShellyEvents()
                 }
                 return
             }
@@ -6850,18 +6882,28 @@ private void pruneDisplayedLogs(String displayLevel) {
     int removed = state.recentLogs.size() - kept.size()
     state.recentLogs = kept
     if (removed > 0) { logDebug("pruneDisplayedLogs: removed ${removed} entries below ${displayLevel}") }
-    String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-    String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-    app.sendEvent(name: 'recentLogs', value: recentPayload)
+    // Logs display updates on next page re-render (no sendEvent needed)
 }
 
+
+/**
+ * Renders the recent log lines as an HTML {@code <pre>} block.
+ * Used both for initial page render and SSR updates (piggybacked on
+ * the {@code configTable} event to avoid additional {@code sendEvent()} calls).
+ *
+ * @return HTML string containing the formatted log lines
+ */
+private String renderRecentLogsHtml() {
+    String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
+    String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+    return "<pre style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
+}
 
 /**
  * Appends a log message to the in-app log buffer.
  * Adds the message with timestamp and level to state if it meets the display
  * threshold and maintains a rolling buffer of the most recent 300 entries.
- * UI updates are handled by {@link #updateDiscoveryUI()} on a 3-second timer
- * during discovery to avoid exceeding Hubitat's per-app event rate limit.
+ * Logs update in real time via SSR, piggybacked on the {@code configTable} event.
  *
  * @param level The log level (trace, debug, info, warn, error)
  * @param msg The message to log
