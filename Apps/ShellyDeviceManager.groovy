@@ -1627,7 +1627,9 @@ private Set<String> getHubDeviceDnis() {
         ]) { resp ->
             if (resp?.status == 200 && resp.data) {
                 resp.data.each { devId, devData ->
-                    if (devData?.deviceNetworkId) { dnis.add(devData.deviceNetworkId.toString()) }
+                    if (devData instanceof Map && devData.deviceNetworkId) {
+                        dnis.add(devData.deviceNetworkId.toString())
+                    }
                 }
             }
         }
@@ -2439,9 +2441,9 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
             break
 
         case 'SHTRV-01':  // TRV — valve open/close
-            actions.add([endpoint: 'settings/actions', param: 'valve_open_url',
+            actions.add([endpoint: 'settings/actions', param: 'valve_open',
                 dst: 'valve_open', cid: 0, name: 'Valve Open', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'valve_close_url',
+            actions.add([endpoint: 'settings/actions', param: 'valve_close',
                 dst: 'valve_close', cid: 0, name: 'Valve Close', configType: 'actions', actionIndex: 0])
             break
 
@@ -2667,7 +2669,12 @@ private void removeDeviceByIp(String ip) {
     Map config = deviceConfigs[dni] as Map
 
     // Step 1: Clean up all Hubitat resources on the Shelly device before removing from Hubitat
-    cleanupShellyDevice(ip, name)
+    // Gen 1 devices don't support RPC — skip webhook/script/KVS cleanup
+    if (config?.gen?.toString() != '1') {
+        cleanupShellyDevice(ip, name)
+    } else {
+        logInfo("No Hubitat resources to clean up on Gen 1 device ${name}")
+    }
 
     // Step 2: Remove child devices (if parent-child architecture)
     if (config?.isParentChild && config?.childDnis) {
@@ -13064,7 +13071,14 @@ private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
     if (componentType == null) {
         String dni = targetDevice.deviceNetworkId
         Map config = (state.deviceConfigs ?: [:])[dni] as Map
-        if (config && !config.hasSwitch) { return }
+        if (config) {
+            if (!config.hasSwitch) { return }
+        } else {
+            // Config not yet stored (first refresh during device creation).
+            // Check driver name to skip non-switch devices.
+            String typeName = targetDevice.typeName ?: ''
+            if (!typeName.contains('Switch') && !typeName.contains('Dimmer')) { return }
+        }
     }
 
     Integer switchId = extractComponentId(targetDevice, 'switchId')
