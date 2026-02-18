@@ -27,6 +27,8 @@ This applies to ALL Gen 1 sensor types that support `report_url`: H&T (`SHHT-1`)
 
 Use other action URLs (e.g., `flood_detected_url`, `open_url`, `motion_on`) that send simple HTTP requests without query parameters. For periodic sensor data, use polling via `GET /status`.
 
+**Exception — SHHT-1 wake-up trigger:** `report_url` is used on the H&T as a bare wake-up notification only. The query-parameter data is completely ignored; the callback (`/sensor_report/0`) simply triggers an immediate `GET /status` poll. This is the only mechanism to detect when the H&T wakes from sleep. The `dst` and `cid` are encoded as path segments per the standard webhook URL format.
+
 ## Gen 1 Battery Device Sleep Behavior
 
 **Shelly Motion sensors (SHMOS-01, SHMOS-02) do NOT sleep.** Despite being battery-powered, they remain awake and reachable via HTTP at all times. You can query `/settings`, `/status`, or any other endpoint at any time — there is no need to wait for a wake-up event.
