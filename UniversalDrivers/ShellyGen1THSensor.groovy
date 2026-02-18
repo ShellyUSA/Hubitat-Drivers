@@ -161,6 +161,7 @@ void parse(String description) {
     if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
 
     if (msg?.status != null) { return }
+    checkAndUpdateSourceIp(msg)
 
     Map params = parseWebhookPath(msg)
     if (params?.dst) {
@@ -231,6 +232,39 @@ private Map parseWebhookPath(Map msg) {
   }
 
   return result
+}
+
+/**
+ * Converts a hex-encoded IP address string to dotted-decimal format.
+ *
+ * @param hex The 8-character hex string (e.g., "C0A80164")
+ * @return Dotted-decimal IP (e.g., "192.168.1.100"), or null if invalid
+ */
+@CompileStatic
+private static String convertHexToIP(String hex) {
+  if (!hex || hex.length() != 8) { return null }
+  return [Integer.parseInt(hex[0..1], 16),
+          Integer.parseInt(hex[2..3], 16),
+          Integer.parseInt(hex[4..5], 16),
+          Integer.parseInt(hex[6..7], 16)].join('.')
+}
+
+/**
+ * Checks the source IP of an incoming LAN message against the stored device IP.
+ * If different, updates the device data value and notifies the parent app.
+ *
+ * @param msg The parsed LAN message map from parseLanMessage()
+ */
+private void checkAndUpdateSourceIp(Map msg) {
+  String hexIp = msg?.ip
+  if (!hexIp) { return }
+  String sourceIp = convertHexToIP(hexIp)
+  if (!sourceIp) { return }
+  String storedIp = device.getDataValue('ipAddress')
+  if (!storedIp || sourceIp == storedIp) { return }
+  logWarn("Device IP changed: ${storedIp} -> ${sourceIp}")
+  device.updateDataValue('ipAddress', sourceIp)
+  parent?.componentNotifyIpChanged(device, storedIp, sourceIp)
 }
 
 /**

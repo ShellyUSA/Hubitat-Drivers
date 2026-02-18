@@ -186,7 +186,8 @@
 
 /**
  * Maps Gen 1 mDNS hostname prefixes to device type codes.
- * Gen 1 hostnames follow the pattern {@code <prefix>-<MAC12>}, e.g. {@code shelly1-AABBCCDDEEFF}.
+ * Gen 1 hostnames follow the pattern {@code <prefix>-<MAC>}, where MAC is 6 or 12 hex chars,
+ * e.g. {@code shellyht-AABBCC} or {@code shelly1-AABBCCDDEEFF}.
  * Used to identify Gen 1 devices from mDNS alone (critical for sleeping battery devices).
  */
 @Field static final Map<String, String> GEN1_HOSTNAME_TO_TYPE = [
@@ -4082,12 +4083,10 @@ void startDiscovery(Boolean resetFound = false) {
     startMdnsDiscovery()
 
     unschedule('stopDiscovery')
-    unschedule('updateDiscoveryTimer')
-    unschedule('updateRecentLogs')
+    unschedule('updateDiscoveryUI')
     unschedule('processMdnsDiscovery')
     runIn(getDiscoveryDurationSeconds(), 'stopDiscovery')
-    runIn(1, 'updateDiscoveryTimer')
-    runIn(1, 'updateRecentLogs')
+    runIn(1, 'updateDiscoveryUI')
     // Give the hub 10 seconds after listener registration to collect mDNS responses
     runIn(10, 'processMdnsDiscovery')
 }
@@ -4103,7 +4102,7 @@ void extendDiscovery(Integer seconds) {
     if (!state.discoveryRunning) {
         // Sonos-style: if stopped, start again without clearing discovered list.
         state.discoveryRunning = true
-        runIn(1, 'updateDiscoveryTimer')
+        runIn(1, 'updateDiscoveryUI')
         runIn(2, 'processMdnsDiscovery')
     }
 
@@ -4118,17 +4117,11 @@ void extendDiscovery(Integer seconds) {
 }
 
 /**
- * Registers mDNS listeners for Shelly device discovery.
- * Registers listeners for both _shelly._tcp and _http._tcp service types
- * to discover Shelly devices on the local network.
+ * Registers mDNS listener for Shelly device discovery.
+ * Registers a listener for {@code _http._tcp} which captures all Shelly devices
+ * (both Gen1 and Gen2+) on the local network.
  */
 void startMdnsDiscovery() {
-    try {
-        registerMDNSListener('_shelly._tcp')
-        logTrace('Registered mDNS listener: _shelly._tcp')
-    } catch (Exception e) {
-        logWarn("mDNS listener registration failed for _shelly._tcp: ${e.message}")
-    }
     try {
         registerMDNSListener('_http._tcp')
         logTrace('Registered mDNS listener: _http._tcp')
@@ -4160,8 +4153,7 @@ void stopDiscovery() {
     state.discoveryEndTime = null
 
     unschedule('processMdnsDiscovery')
-    unschedule('updateDiscoveryTimer')
-    unschedule('updateRecentLogs')
+    unschedule('updateDiscoveryUI')
     unschedule('stopDiscovery')
 
     // Do NOT unregister mDNS listeners - keep them active so data accumulates
@@ -4169,51 +4161,34 @@ void stopDiscovery() {
 }
 
 /**
- * Updates the discovery timer display in real-time.
- * Sends an event to the UI showing remaining discovery time and reschedules
- * itself every second while discovery is active. Stops automatically when
- * the timer reaches zero or discovery is no longer running.
+ * Combined discovery UI updater. Sends both the countdown timer and recent
+ * log lines to the browser in a single scheduled callback, keeping the total
+ * {@code sendEvent} rate well below Hubitat's per-app rate limit.
+ * Reschedules itself every 3 seconds while discovery is active.
  */
-void updateDiscoveryTimer() {
+void updateDiscoveryUI() {
     if (!state.discoveryRunning || !state.discoveryEndTime) {
         return
     }
     Integer remainingSecs = getRemainingDiscoverySeconds()
 
-    // Send event for real-time browser update
     app.sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds")
 
-    // Continue scheduling if time remaining
-    if (remainingSecs > 0) {
-        runIn(1, 'updateDiscoveryTimer')
-    }
-}
-
-/**
- * Updates the recent logs display in the UI.
- * Retrieves the most recent 10 log entries from state, reverses them
- * (most recent first), and sends them to the UI via an app event.
- * Reschedules itself every second while discovery is running to provide
- * real-time log updates.
- */
-void updateRecentLogs() {
-    // Send the most recent 10 log lines to the browser for the app-state binding
     String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
     String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
     app.sendEvent(name: 'recentLogs', value: recentPayload)
 
-    // Continue updating once per second while discovery is running
-    if (state.discoveryRunning) {
-        runIn(1, 'updateRecentLogs')
+    if (remainingSecs > 0) {
+        runIn(3, 'updateDiscoveryUI')
     }
 }
 
 /**
  * Processes mDNS discovery by querying for Shelly devices on the network.
- * Retrieves mDNS entries for both _shelly._tcp and _http._tcp service types,
- * filters for Shelly devices, extracts device information (name, IP, port, generation,
- * firmware version), and stores discovered devices in state. Updates the UI with
- * discovery results and reschedules itself periodically while discovery is active.
+ * Retrieves mDNS entries for {@code _http._tcp}, filters for Shelly devices,
+ * extracts device information (name, IP, port, generation, firmware version),
+ * and stores discovered devices in state. Updates the UI with discovery results
+ * and reschedules itself periodically while discovery is active.
  * <p>
  * Only processes entries that appear to be Shelly devices (based on server name,
  * gen field, or app field) and have valid IPv4 addresses. Tracks the timestamp
@@ -4227,18 +4202,11 @@ void processMdnsDiscovery() {
 
     try {
         // getMDNSEntries requires the service type parameter per Hubitat docs
-        List<Map<String,Object>> shellyEntries = getMDNSEntries('_shelly._tcp')
-        List<Map<String,Object>> httpEntries = getMDNSEntries('_http._tcp')
-
-        logTrace("processMdnsDiscovery: _shelly._tcp raw=${shellyEntries}, _http._tcp raw=${httpEntries}")
-        logTrace("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries?.size() ?: 0} entries, _http._tcp returned ${httpEntries?.size() ?: 0} entries")
-
-        List allEntries = []
-        if (shellyEntries) { allEntries.addAll(shellyEntries) }
-        if (httpEntries) { allEntries.addAll(httpEntries) }
+        List<Map<String,Object>> allEntries = getMDNSEntries('_http._tcp') ?: []
+        logTrace("processMdnsDiscovery: _http._tcp returned ${allEntries.size()} entries")
 
         if (!allEntries) {
-            logTrace('processMdnsDiscovery: no mDNS entries found for either service type')
+            logTrace('processMdnsDiscovery: no mDNS entries found')
         } else {
             logTrace("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
             Integer beforeCount = state.discoveredShellys.size()
@@ -4278,6 +4246,9 @@ void processMdnsDiscovery() {
                 Boolean isNewToState = !state.discoveredShellys.containsKey(key)
                 Boolean alreadyLogged = foundDevices.containsKey(key)
 
+                // Capture existing entry BEFORE overwrite so we can check identification status
+                Map existingEntry = isNewToState ? null : (state.discoveredShellys[key] as Map)
+
                 // Only log if this is a newly discovered device AND we haven't logged it yet this run
                 if (isNewToState && !alreadyLogged) {
                     logDebug("Found NEW Shelly: ${deviceName} at ${ip4}:${port} (gen=${gen}, app=${deviceApp}, ver=${ver})")
@@ -4294,8 +4265,10 @@ void processMdnsDiscovery() {
                     ts: now()
                 ]
 
-                // Pre-enrich Gen 1 devices from hostname when no TXT records are present
-                if (isLikelyGen1Device(gen, deviceApp, server)) {
+                // Gen1 devices advertise under _http._tcp with no gen/app TXT records.
+                // Extract type from hostname for immediate identification; leave mac null
+                // so the /shelly probe still fires to get the REAL MAC address.
+                if (isLikelyGen1Device(gen, deviceApp, deviceName)) {
                     String gen1Type = extractGen1TypeFromHostname(deviceName)
                     if (gen1Type) {
                         String typeKey = gen1Type.toString()
@@ -4303,17 +4276,36 @@ void processMdnsDiscovery() {
                         deviceEntry.gen1Type = typeKey
                         deviceEntry.model = GEN1_TYPE_TO_MODEL.get(typeKey) ?: typeKey
                         deviceEntry.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
-                        String hostnameMac = extractMacFromMdnsName(deviceName)
-                        if (hostnameMac) { deviceEntry.mac = hostnameMac }
-                        logDebug("Gen 1 identified from hostname: ${deviceName} -> ${deviceEntry.model} (type=${typeKey})")
+                        // NOTE: Do NOT set mac from hostname — leave it null so the /shelly probe
+                        // at fetchAndStoreDeviceInfo() fires to get the REAL MAC address.
+                    } else {
+                        // Hostname didn't match known Gen1 patterns (custom name) — still mark as Gen1
+                        deviceEntry.gen = '1'
+                    }
+                }
+
+                // Preserve enriched fields from prior /shelly probe or REST/RPC fetch
+                if (existingEntry) {
+                    for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice', 'deviceInfo',
+                                         'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
+                                         'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents']) {
+                        if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
+                            deviceEntry[field] = existingEntry[field]
+                        }
+                    }
+                    // Preserve gen from prior enrichment if mDNS TXT didn't provide one
+                    if (!deviceEntry.gen && existingEntry.gen) {
+                        deviceEntry.gen = existingEntry.gen
                     }
                 }
 
                 state.discoveredShellys[key] = deviceEntry
 
-                // Schedule async device info fetch for newly discovered devices
-                // This prevents blocking page loads while waiting for sleepy battery devices
-                if (isNewToState) {
+                // Schedule async device info fetch for new or still-unidentified devices.
+                // Re-queuing unidentified devices handles sleepy battery devices that were
+                // unreachable on a previous attempt but may now be awake.
+                Boolean needsIdentification = !isNewToState && (!existingEntry?.model || existingEntry?.model == 'Unknown')
+                if (isNewToState || needsIdentification) {
                     scheduleAsyncDeviceInfoFetch(key)
                 }
             }
@@ -4385,26 +4377,6 @@ static String stripMdnsDomainSuffix(String serverName) {
     return (dotIndex > 0) ? serverName.substring(0, dotIndex) : serverName
 }
 
-/**
- * Extracts the MAC address from an mDNS server name.
- * Shelly mDNS server names follow the pattern {@code ShellyModel-AABBCCDDEEFF}
- * where the last segment after the final hyphen is a 12-character hex MAC address.
- *
- * @param serverName The mDNS server name (e.g. {@code ShellyPlugUS-C049EF8B3A44})
- * @return The uppercase MAC address string, or null if the name does not contain a valid MAC
- */
-@CompileStatic
-static String extractMacFromMdnsName(String serverName) {
-    if (!serverName) { return null }
-    String cleaned = stripMdnsDomainSuffix(serverName)
-    Integer lastDash = cleaned.lastIndexOf('-')
-    if (lastDash < 0 || lastDash >= cleaned.length() - 1) { return null }
-    String candidate = cleaned.substring(lastDash + 1).toUpperCase()
-    if (candidate.length() == 12 && candidate.matches(/^[0-9A-F]{12}$/)) {
-        return candidate
-    }
-    return null
-}
 
 /**
  * Determines whether a discovered device is likely a Gen 1 Shelly based on mDNS TXT fields.
@@ -4423,24 +4395,22 @@ static Boolean isLikelyGen1Device(String gen, String deviceApp, String serverNam
 
 /**
  * Extracts the Gen 1 device type code from an mDNS hostname.
- * Gen 1 hostnames follow the pattern {@code <model-prefix>-<MAC12>}, e.g. {@code shelly1pm-AABBCCDDEEFF}.
- * Handles hyphenated model prefixes like {@code shellyplug-s} by matching against {@link #GEN1_HOSTNAME_TO_TYPE}.
+ * Gen 1 hostnames follow the pattern {@code <model-prefix>-<MAC>},
+ * where MAC is either 6 hex chars (3 bytes) or 12 hex chars (6 bytes).
+ * Examples: {@code shellyht-AABBCC}, {@code shelly1pm-AABBCCDDEEFF},
+ * {@code shellyplug-s-AABBCC}.
  *
- * @param hostname The mDNS hostname (without .local. suffix)
- * @return The Gen 1 type code (e.g. {@code SHSW-PM}), or null if not recognized
+ * @param hostname The mDNS hostname (with or without .local. suffix)
+ * @return The Gen 1 type code (e.g. {@code SHHT-1}), or null if not recognized
  */
 @CompileStatic
 static String extractGen1TypeFromHostname(String hostname) {
     if (!hostname) { return null }
     String lower = stripMdnsDomainSuffix(hostname).toLowerCase()
-
-    // Find the last segment that looks like a 12-char hex MAC
-    // Hostname format: <prefix>-<MAC12> or <prefix-with-hyphens>-<MAC12>
     Integer lastDash = lower.lastIndexOf('-')
     if (lastDash < 0 || lastDash >= lower.length() - 1) { return null }
-
     String maybeMac = lower.substring(lastDash + 1)
-    if (maybeMac.length() == 12 && maybeMac.matches(/^[0-9a-f]{12}$/)) {
+    if ((maybeMac.length() == 6 || maybeMac.length() == 12) && maybeMac.matches(/^[0-9a-f]+$/)) {
         String prefix = lower.substring(0, lastDash)
         return GEN1_HOSTNAME_TO_TYPE.get(prefix)
     }
@@ -4492,6 +4462,15 @@ void watchdogProcessResults() {
             return
         }
 
+        // Build hostname→MAC lookup from discoveredShellys (authoritative MAC from /shelly probe)
+        Map<String, String> hostnameToMac = [:]
+        (state.discoveredShellys as Map)?.each { String ip, Object val ->
+            Map entry = val as Map
+            String name = stripMdnsDomainSuffix(entry.name?.toString() ?: '')
+            String entryMac = entry.mac?.toString()
+            if (name && entryMac) { hostnameToMac[name] = entryMac }
+        }
+
         Integer updatedCount = 0
         allEntries.each { entry ->
             String server = (entry?.server ?: '') as String
@@ -4506,7 +4485,8 @@ void watchdogProcessResults() {
             }
             if (!server || !ip4) { return }
 
-            String mac = extractMacFromMdnsName(server)
+            String hostname = stripMdnsDomainSuffix(server)
+            String mac = hostnameToMac[hostname]
             if (!mac) { return }
 
             // Check if we have a child device with this MAC as DNI
@@ -5369,7 +5349,34 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
     String ip = (device.ipAddress ?: ipKey).toString()
     Integer port = (device.port ?: 80) as Integer
 
-    // If already identified as Gen 1 during mDNS processing, go directly to REST API
+    // Lightweight /shelly probe — works for both Gen1 and Gen2+, no auth required.
+    // Determines generation and provides MAC/model for routing.
+    // Also re-probe when gen='1' was set heuristically (no MAC yet) to self-correct
+    // if the device turns out to be Gen2+ once it responds.
+    if (!device.gen || (device.gen?.toString() == '1' && !device.mac)) {
+        Map shellyProbe = null
+        try {
+            httpGetHelper([uri: "http://${ip}/shelly", timeout: 5, contentType: 'application/json']) { resp ->
+                if (resp?.status == 200 && resp.data) { shellyProbe = resp.data as Map }
+            }
+        } catch (Exception e) {
+            logDebug("fetchAndStoreDeviceInfo: /shelly probe failed for ${ip}: ${e.message}")
+        }
+
+        if (shellyProbe) {
+            if (shellyProbe.gen) {
+                // Gen 2+: has 'gen' field
+                device.gen = shellyProbe.gen.toString()
+            } else if (shellyProbe.type) {
+                // Gen 1: has 'type' but no 'gen'
+                device.gen = '1'
+            }
+            if (shellyProbe.mac) { device.mac = shellyProbe.mac.toString().toUpperCase() }
+            state.discoveredShellys[ipKey] = device
+        }
+    }
+
+    // Route based on generation determined by /shelly probe or mDNS TXT records
     if (device.gen?.toString() == '1') {
         logDebug("fetchAndStoreDeviceInfo: Gen 1 device at ${ip}, using REST API")
         appendLog('debug', "Getting Gen 1 device info from ${ip}")
@@ -5459,42 +5466,44 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
         // Gen 1 fallback: if RPC failed, try Gen 1 REST API
         if (isLikelyGen1Device(device.gen?.toString() ?: '', device.deviceApp?.toString() ?: '', device.name?.toString() ?: '')) {
+            // Persist gen='1' before attempting fetch — sleepy devices may not respond,
+            // but the badge should still display correctly on the Discovery page.
+            device.gen = '1'
+            state.discoveredShellys[ipKey] = device
             logDebug("fetchAndStoreDeviceInfo: RPC failed for ${ip}, trying Gen 1 REST API")
             if (fetchGen1DeviceInfo(ipKey, device)) {
                 sendFoundShellyEvents()
                 return
             }
-        }
 
-        // Last resort: hostname-based identification for sleeping/unreachable Gen 1 devices
-        String deviceName = (device.name ?: '').toString()
-        String gen1Type = extractGen1TypeFromHostname(deviceName)
-        if (gen1Type && !device.model) {
-            String typeKey = gen1Type.toString()
-            device.gen = '1'
-            device.gen1Type = typeKey
-            device.model = GEN1_TYPE_TO_MODEL.get(typeKey) ?: typeKey
-            device.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
-            String hostnameMac = extractMacFromMdnsName(deviceName)
-            if (hostnameMac && !device.mac) { device.mac = hostnameMac }
+            // Last resort: hostname-based identification for sleeping/unreachable Gen 1 devices
+            String deviceName = (device.name ?: '').toString()
+            String gen1Type = extractGen1TypeFromHostname(deviceName)
+            if (gen1Type && !device.model) {
+                String typeKey = gen1Type.toString()
+                device.gen = '1'
+                device.gen1Type = typeKey
+                device.model = GEN1_TYPE_TO_MODEL.get(typeKey) ?: typeKey
+                device.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
+                // NOTE: Do NOT set mac from hostname — mac comes from /shelly probe only
 
-            // Infer components for battery devices so driver can be determined
-            if (device.isBatteryDevice) {
-                Map syntheticStatus = inferGen1BatteryComponents(typeKey)
-                if (syntheticStatus) {
-                    device.deviceStatus = syntheticStatus
+                // Infer components for battery devices so driver can be determined
+                if (device.isBatteryDevice) {
+                    Map syntheticStatus = inferGen1BatteryComponents(typeKey)
+                    if (syntheticStatus) {
+                        device.deviceStatus = syntheticStatus
+                    }
                 }
+
+                state.discoveredShellys[ipKey] = device
+                appendLog('info', "Gen 1 identified from hostname (device unreachable): ${deviceName} -> ${device.model}")
+
+                if (device.deviceStatus) {
+                    determineDeviceDriver(device.deviceStatus, ipKey)
+                    sendFoundShellyEvents()
+                }
+                return
             }
-
-            state.discoveredShellys[ipKey] = device
-            appendLog('info', "Gen 1 identified from hostname (device unreachable): ${deviceName} -> ${device.model}")
-
-            if (device.deviceStatus) {
-                determineDeviceDriver(device.deviceStatus as Map, ipKey)
-            }
-
-            sendFoundShellyEvents()
-            return
         }
 
         appendLog('error', "Failed to get device info from ${ip}: ${errorMsg}")
@@ -6850,8 +6859,9 @@ private void pruneDisplayedLogs(String displayLevel) {
 /**
  * Appends a log message to the in-app log buffer.
  * Adds the message with timestamp and level to state if it meets the display
- * threshold, maintains a rolling buffer of the most recent 300 entries, and
- * sends the 10 most recent entries to the UI for real-time display.
+ * threshold and maintains a rolling buffer of the most recent 300 entries.
+ * UI updates are handled by {@link #updateDiscoveryUI()} on a 3-second timer
+ * during discovery to avoid exceeding Hubitat's per-app event rate limit.
  *
  * @param level The log level (trace, debug, info, warn, error)
  * @param msg The message to log
@@ -6866,11 +6876,6 @@ private void appendLog(String level, String msg) {
         if (state.recentLogs.size() > 300) {
             state.recentLogs = state.recentLogs[-300..-1]
         }
-
-        // Push the most recent 10 lines to the app UI for live updates
-        String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-        String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-        app.sendEvent(name: 'recentLogs', value: recentPayload)
     }
 }
 
@@ -9016,8 +9021,13 @@ void handleBleRelay(def gatewayDevice, Map bleData) {
     // Route events to child device (if created)
     routeBleEventToChild(mac, bleData)
 
-    // Fire SSR update for BLE table
-    sendEvent(name: 'bleTable', value: 'update')
+    // Throttle BLE table SSR updates to avoid exceeding hub event rate limits.
+    // At most once per 10 seconds — BLE advertisements arrive frequently.
+    Long lastBleUpdate = (state.lastBleTableUpdate ?: 0) as Long
+    if (now() - lastBleUpdate > 10000) {
+        sendEvent(name: 'bleTable', value: 'update')
+        state.lastBleTableUpdate = now()
+    }
 }
 
 /**
@@ -9364,7 +9374,7 @@ private void routeBleEventToChild(String mac, Map bleData) {
     deviceConfigs[macKey] = config
     state.deviceConfigs = deviceConfigs
 
-    logDebug("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}")
+    logTrace("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}")
 }
 
 /**
@@ -13273,6 +13283,31 @@ void componentLogParsedMessage(DeviceWrapper device, Map msg) {
     }
 
     logTrace("[${deviceLabel}] " + "=" * 79)
+}
+
+/**
+ * Called by device drivers when they detect the source IP of an incoming
+ * LAN message differs from the stored device IP. Updates the discoveredShellys
+ * cache to reflect the new IP address.
+ *
+ * @param childDevice The device that detected the IP change
+ * @param oldIp The previous IP address (dotted-decimal)
+ * @param newIp The new IP address (dotted-decimal)
+ */
+void componentNotifyIpChanged(DeviceWrapper childDevice, String oldIp, String newIp) {
+    if (!oldIp || !newIp || oldIp == newIp) { return }
+    String deviceName = childDevice?.displayName ?: 'Unknown'
+    logInfo("componentNotifyIpChanged: ${deviceName} IP changed: ${oldIp} -> ${newIp}")
+    childDevice.updateSetting('ipAddress', newIp)
+    if (state.discoveredShellys?.containsKey(oldIp)) {
+        Map deviceEntry = state.discoveredShellys.remove(oldIp) as Map
+        deviceEntry.ipAddress = newIp
+        deviceEntry.ts = now()
+        if (state.discoveredShellys?.containsKey(newIp)) {
+            logWarn("componentNotifyIpChanged: new IP ${newIp} already exists in discoveredShellys — overwriting")
+        }
+        state.discoveredShellys[newIp] = deviceEntry
+    }
 }
 
 /**

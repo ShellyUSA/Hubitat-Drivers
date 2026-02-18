@@ -90,6 +90,9 @@ void parse(String description) {
     if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
 
     if (msg?.status != null) { return }
+    // No checkAndUpdateSourceIp() — this child driver's DNI is not the device IP,
+    // so Hubitat does not route LAN messages directly here. IP change detection
+    // is handled by the parent (ShellyGen1RGBW2WhiteParent).
 
     Map params = parseWebhookPath(msg)
     if (params?.dst) {
