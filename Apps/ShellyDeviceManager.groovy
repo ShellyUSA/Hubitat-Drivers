@@ -1626,8 +1626,8 @@ private Set<String> getHubDeviceDnis() {
             timeout: 10
         ]) { resp ->
             if (resp?.status == 200 && resp.data) {
-                resp.data.each { dev ->
-                    if (dev.deviceNetworkId) { dnis.add(dev.deviceNetworkId.toString()) }
+                resp.data.each { devId, devData ->
+                    if (devData?.deviceNetworkId) { dnis.add(devData.deviceNetworkId.toString()) }
                 }
             }
         }
@@ -5407,7 +5407,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Comprehensive set of recognized Shelly component types
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'input', 'pm1', 'em', 'em1',
         'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
-        'flood', 'contact', 'lux', 'tilt', 'motion'] as Set
+        'flood', 'contact', 'lux', 'tilt', 'motion', 'thermostat'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -13058,6 +13058,14 @@ private void applyGen1SwitchSettings(String ipAddress, def device, Integer switc
 private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
     String componentType = targetDevice.getDataValue('componentType')
     if (componentType != null && componentType != 'switch') { return }
+
+    // For standalone devices (componentType is null), check stored config
+    // to avoid querying settings/relay on devices without switches (TRV, Motion, etc.)
+    if (componentType == null) {
+        String dni = targetDevice.deviceNetworkId
+        Map config = (state.deviceConfigs ?: [:])[dni] as Map
+        if (config && !config.hasSwitch) { return }
+    }
 
     Integer switchId = extractComponentId(targetDevice, 'switchId')
 
