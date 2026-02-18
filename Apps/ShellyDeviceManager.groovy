@@ -486,8 +486,7 @@ Map mainPage() {
 
             input name: 'displayLogLevel', type: 'enum', title: 'App page display log level (X and above)', options: displayOptions, defaultValue: validatedDisplay, submitOnChange: true
 
-            String logsHtml = renderRecentLogsHtml()
-            paragraph "<span class='ssr-app-state-${getAppIdHelper()}-configTable' id='recent-logs'>${logsHtml}</span>"
+            paragraph renderRecentLogsHtml()
         }
     }
 }
@@ -3380,9 +3379,6 @@ String processServerSideRender(Map event) {
 
     // App-level events
     if (eventName == 'configTable') {
-        if (elementId == 'recent-logs') {
-            return renderRecentLogsHtml()
-        }
         ensureDeviceStatusCache()
         return "<div id='config-table-wrapper'>${renderDeviceConfigTableMarkup()}</div>"
     }
@@ -4000,6 +3996,10 @@ private String stripJsExtension(String filename) {
 void initialize() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
+    // Trim oversized log buffer from previous versions (was 300, now capped at 50)
+    if (state.recentLogs instanceof List && state.recentLogs.size() > 50) {
+        state.recentLogs = state.recentLogs[-50..-1]
+    }
     if (state.discoveryRunning == null) { state.discoveryRunning = false }
 
     // BLE state initialization
@@ -4017,7 +4017,7 @@ void initialize() {
     // Also register now in case hub has been up for a while
     startMdnsDiscovery()
 
-    // Clean up stale rebuild state from previous versions
+    // Clean up stale state from previous versions
     state.remove('driverRebuildInProgress')
     state.remove('driverRebuildQueue')
     state.remove('driverRebuildCurrentKey')
@@ -4025,6 +4025,7 @@ void initialize() {
     state.remove('pendingDeviceCreations')
     state.remove('discoveryDriverQueue')
     state.remove('discoveryDriverInProgress')
+    state.remove('driverGeneration')
 
     // Clean up stale driver tracking entries from old app versions
     pruneStaleDriverTracking()
@@ -6902,7 +6903,7 @@ private String renderRecentLogsHtml() {
 /**
  * Appends a log message to the in-app log buffer.
  * Adds the message with timestamp and level to state if it meets the display
- * threshold and maintains a rolling buffer of the most recent 300 entries.
+ * threshold and maintains a rolling buffer of the most recent 50 entries.
  * Logs update in real time via SSR, piggybacked on the {@code configTable} event.
  *
  * @param level The log level (trace, debug, info, warn, error)
@@ -6915,8 +6916,8 @@ private void appendLog(String level, String msg) {
     String displayLevel = (settings?.displayLogLevel ?: (settings?.logLevel ?: 'warn'))?.toString()
     if (levelPriority(level) >= levelPriority(displayLevel)) {
         state.recentLogs.add("${new Date().format('yyyy-MM-dd HH:mm:ss')} - ${level?.toUpperCase()}: ${msg}")
-        if (state.recentLogs.size() > 300) {
-            state.recentLogs = state.recentLogs[-300..-1]
+        if (state.recentLogs.size() > 50) {
+            state.recentLogs = state.recentLogs[-50..-1]
         }
     }
 }
