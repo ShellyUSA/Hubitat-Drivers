@@ -1,3 +1,5 @@
+import groovy.transform.Field
+
 metadata {
   definition (name: 'Shelly Autoconf EM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Refresh'
@@ -6,9 +8,16 @@ metadata {
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
     attribute 'powerFactor', 'number'
-    attribute 'apparentPower', 'number'
-    attribute 'returnedEnergy', 'number' //unit:kWh
+    attribute 'reactivePower', 'number' //unit:VAR
+    attribute 'energyReturned', 'number' //unit:kWh
+    attribute 'lastUpdated', 'string'
   }
 }
 
 @Field static Boolean COMP = true
+
+void installed() { }
+
+void updated() { }
+
+void refresh() { parent?.refresh() }

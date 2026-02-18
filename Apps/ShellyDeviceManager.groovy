@@ -22,6 +22,7 @@
     'SHCB-1':   'Shelly Gen1 Bulb',
     'SHVIN-1':  'Shelly Gen1 Single Dimmer',
     'SHBDUO-1': 'Shelly Gen1 Duo',
+    'SHGS-1':   'Shelly Gen1 Gas Sensor',
     // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
 ]
 
@@ -58,6 +59,7 @@
     'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
     'Shelly Gen1 Smoke Sensor': 'UniversalDrivers/ShellyGen1SmokeSensor.groovy',
+    'Shelly Gen1 Gas Sensor': 'UniversalDrivers/ShellyGen1GasSensor.groovy',
     'Shelly Gen1 DW Sensor': 'UniversalDrivers/ShellyGen1DWSensor.groovy',
     'Shelly Gen1 Button': 'UniversalDrivers/ShellyGen1Button.groovy',
     'Shelly Gen1 Motion Sensor': 'UniversalDrivers/ShellyGen1MotionSensor.groovy',
@@ -70,8 +72,6 @@
     'Shelly Gen1 Single Cover PM Parent': 'UniversalDrivers/ShellyGen1SingleCoverPMParent.groovy',
     'Shelly Gen1 3x Input Parent': 'UniversalDrivers/ShellyGen1_3xInputParent.groovy',
     'Shelly Gen1 EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
-    'Shelly Gen1 2x EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
-    'Shelly Gen1 3x EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
 
     // BLE device drivers
     'Shelly BLU Button1': 'UniversalDrivers/ShellyBluButton1.groovy',
@@ -850,7 +850,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // The parent driver will read these to create driver-level children
         List<String> components = []
         List<String> pmComponents = []
-        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input'] as Set
+        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em'] as Set
 
         deviceStatus.each { k, v ->
             String key = k.toString()
@@ -869,6 +869,11 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         parentDevice.updateDataValue('components', componentStr)
         if (pmComponentStr) {
             parentDevice.updateDataValue('pmComponents', pmComponentStr)
+        }
+
+        // For EM parent drivers: set switchId for relay control (relay:0 is on the parent)
+        if (parentDriverName.contains('EM Parent')) {
+            parentDevice.updateDataValue('switchId', '0')
         }
 
         logInfo("  Components: ${componentStr}")
@@ -2428,8 +2433,8 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
         }
     }
 
-    // Battery sensor action URLs
-    if (GEN1_BATTERY_TYPES.contains(typeCode)) {
+    // Battery sensor action URLs (plus mains-powered sensors with /settings/actions)
+    if (GEN1_BATTERY_TYPES.contains(typeCode) || typeCode == 'SHGS-1') {
         actions.addAll(getGen1SensorActionUrls(typeCode))
     }
 
@@ -2529,6 +2534,8 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
             break
 
         case 'SHSM-01':  // Smoke sensor — all URLs under /settings/actions
+            // NOTE: report_url assumed to be in /settings/actions (needs hardware verification;
+            // H&T uses /settings directly for report_url, but Smoke may differ)
             actions.add([endpoint: 'settings/actions', param: 'report_url',
                 dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'smoke_detected_url',
@@ -2539,6 +2546,15 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
                 dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHGS-1':  // Gas sensor — alarm URLs under /settings/actions
+            actions.add([endpoint: 'settings/actions', param: 'alarm_mild_url',
+                dst: 'gas_alarm_mild', cid: 0, name: 'Gas Alarm Mild', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'alarm_heavy_url',
+                dst: 'gas_alarm_heavy', cid: 0, name: 'Gas Alarm Heavy', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'alarm_off_url',
+                dst: 'gas_alarm_off', cid: 0, name: 'Gas Alarm Off', configType: 'actions', actionIndex: 0])
             break
 
         default:
@@ -4827,6 +4843,48 @@ private void syncGen1SmokeSettings(String ipAddress, def childDevice, String gen
 }
 
 /**
+ * Syncs Gen 1 Gas sensor configuration to driver preferences on first refresh.
+ * The Gas sensor is mains-powered and always reachable, so live fetch should
+ * always succeed. Falls back to cached settings from discovery if needed.
+ * Currently syncs valve default state if a valve is connected.
+ * Only applies to SHGS-1 devices.
+ *
+ * @param ipAddress The Gas sensor device's IP address
+ * @param childDevice The Hubitat child device whose preferences to sync
+ * @param gen1Type The resolved Gen 1 type code (must be SHGS-1)
+ */
+private void syncGen1GasSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice || gen1Type != 'SHGS-1') { return }
+
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (!gen1Settings) {
+            logDebug("syncGen1GasSettings: no settings available for ${ipAddress}")
+            return
+        }
+    }
+
+    try {
+        // Sync valve default state if valve is present
+        List valves = gen1Settings.valves as List
+        if (valves && valves.size() > 0) {
+            Map valveSettings = valves[0] as Map ?: [:]
+            if (valveSettings.default_state != null) {
+                childDevice.updateSetting('valveDefaultState',
+                    [type: 'enum', value: valveSettings.default_state.toString()])
+            }
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 Gas settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1GasSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
  * Syncs Gen 1 H&T device configuration to driver preferences on first refresh.
  * Attempts a live {@code GET /settings} first; if the device is asleep,
  * falls back to the cached {@code gen1Settings} from discovery in
@@ -5579,6 +5637,8 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
                 act_power: emData.power,
                 voltage: emData.voltage,
                 current: emData.current,
+                pf: emData.pf,
+                reactive: emData.reactive,
                 total_act_energy: emData.total,
                 total_act_ret_energy: emData.total_returned
             ]
@@ -5696,9 +5756,32 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
         normalized['flood:0'] = [flood: gen1Status.flood]
     }
 
-    // Smoke sensor (Shelly Smoke SHSM-01)
-    if (gen1Status?.containsKey('alarm')) {
+    // Smoke sensor (Shelly Smoke SHSM-01) — guarded by typeCode to avoid
+    // collision if other Gen 1 devices ever return a top-level `alarm` field
+    if (typeCode == 'SHSM-01' && gen1Status?.containsKey('alarm')) {
         normalized['smoke:0'] = [alarm: gen1Status.alarm]
+    }
+
+    // Gas sensor (Shelly Gas SHGS-1)
+    if (typeCode == 'SHGS-1') {
+        Map gasSensor = gen1Status?.gas_sensor as Map
+        Map concentration = gen1Status?.concentration as Map
+        if (gasSensor || concentration) {
+            Map gasMap = [:]
+            if (gasSensor?.alarm_state != null) { gasMap.alarm_state = gasSensor.alarm_state }
+            if (gasSensor?.sensor_state != null) { gasMap.sensor_state = gasSensor.sensor_state }
+            if (gasSensor?.self_test_state != null) { gasMap.self_test_state = gasSensor.self_test_state }
+            if (concentration?.ppm != null) { gasMap.ppm = concentration.ppm }
+            if (concentration?.is_valid != null) { gasMap.is_valid = concentration.is_valid }
+            normalized['gas:0'] = gasMap
+        }
+
+        // Valve state
+        List valves = gen1Status?.valves as List
+        if (valves && valves.size() > 0) {
+            Map valveData = valves[0] as Map ?: [:]
+            normalized['valve:0'] = [state: valveData.state ?: 'not_connected']
+        }
     }
 
     // Door/Window sensor — 'sensor' field contains state: "open" or "close"
@@ -5774,8 +5857,8 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
 
     // Comprehensive set of recognized Shelly component types
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'input', 'pm1', 'em', 'em1',
-        'smoke', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
-        'flood', 'contact', 'lux', 'tilt', 'motion', 'thermostat'] as Set
+        'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
+        'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -5804,7 +5887,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
 
     // Detect multi-component devices needing parent-child architecture
     // A device needs parent-child if it has 2+ instances of any single actuator type
-    Set<String> actuatorComponentTypes = ['switch', 'cover', 'light', 'white'] as Set
+    Set<String> actuatorComponentTypes = ['switch', 'cover', 'light', 'white', 'em'] as Set
     Map<String, Integer> actuatorCounts = [:]
     components.each { String comp ->
         String baseType = comp.contains(':') ? comp.split(':')[0] : comp
@@ -5973,11 +6056,9 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     }
 
     // Gen 1 special types: Energy meter (EM, 3EM)
+    // Always returns the same driver name — the driver dynamically creates
+    // children based on the components data value (2 for EM, 3 for 3EM).
     if (isGen1 && hasEM) {
-        Integer emCount = componentCounts['em'] ?: 0
-        if (emCount > 1) {
-            return "${prefix} ${emCount}x EM Parent"
-        }
         return "${prefix} EM Parent"
     }
 
@@ -6304,7 +6385,8 @@ private String getComponentDriverFileName(String componentType, Boolean hasPower
         'switch': [default: 'ShellySwitchComponent.groovy', pm: 'ShellySwitchComponentPM.groovy'],
         'cover': [default: 'ShellyCoverComponent.groovy', pm: 'ShellyCoverComponentPM.groovy'],
         'light': [default: 'ShellyDimmerComponent.groovy'],
-        'input': [default: 'ShellyInputButtonComponent.groovy']
+        'input': [default: 'ShellyInputButtonComponent.groovy'],
+        'em': [default: 'ShellyEMComponent.groovy']
     ]
 
     Map<String, String> typeMap = driverMap[componentType]
@@ -6329,7 +6411,8 @@ private String getComponentDriverName(String componentType, Boolean hasPowerMoni
         'switch': [default: 'Shelly Autoconf Switch', pm: 'Shelly Autoconf Switch PM'],
         'cover': [default: 'Shelly Autoconf Cover', pm: 'Shelly Autoconf Cover PM'],
         'light': [default: 'Shelly Autoconf Dimmer'],
-        'input': [default: 'Shelly Autoconf Input Button']
+        'input': [default: 'Shelly Autoconf Input Button'],
+        'em': [default: 'Shelly Autoconf EM']
     ]
 
     Map<String, String> typeMap = nameMap[componentType]
@@ -6425,7 +6508,7 @@ private void installComponentDriversForDevice(Map deviceInfo) {
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
-        if (!['switch', 'cover', 'light', 'input'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em'].contains(baseType)) { return }
 
         Boolean hasPM = componentPowerMonitoring[key] ?: false
         String driverName = getComponentDriverName(baseType, hasPM)
@@ -12570,6 +12653,75 @@ void componentResetEnergyMonitors(def childDevice) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Gas Sensor Command Handlers (SHGS-1)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Opens the gas valve on a Gen 1 Shelly Gas sensor.
+ * Sends GET /valve/0?go=open to the device.
+ *
+ * @param childDevice The child device requesting valve open
+ */
+void componentGasValveOpen(def childDevice) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentGasValveOpen: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentGasValveOpen: opening valve at ${ipAddress}")
+    sendGen1Get(ipAddress, 'valve/0', [go: 'open'])
+}
+
+/**
+ * Closes the gas valve on a Gen 1 Shelly Gas sensor.
+ * Sends GET /valve/0?go=close to the device.
+ *
+ * @param childDevice The child device requesting valve close
+ */
+void componentGasValveClose(def childDevice) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentGasValveClose: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentGasValveClose: closing valve at ${ipAddress}")
+    sendGen1Get(ipAddress, 'valve/0', [go: 'close'])
+}
+
+/**
+ * Initiates a self-test on the Gen 1 Shelly Gas sensor.
+ * Sends GET /self_test to the device.
+ *
+ * @param childDevice The child device requesting self-test
+ */
+void componentGasSelfTest(def childDevice) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentGasSelfTest: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentGasSelfTest: starting self-test at ${ipAddress}")
+    sendGen1Get(ipAddress, 'self_test')
+}
+
+/**
+ * Mutes the active gas alarm on the Gen 1 Shelly Gas sensor.
+ * Sends GET /mute to the device.
+ *
+ * @param childDevice The child device requesting mute
+ */
+void componentGasMute(def childDevice) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentGasMute: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentGasMute: muting alarm at ${ipAddress}")
+    sendGen1Get(ipAddress, 'mute')
+}
+
+/**
+ * Unmutes the gas alarm on the Gen 1 Shelly Gas sensor.
+ * Sends GET /unmute to the device.
+ *
+ * @param childDevice The child device requesting unmute
+ */
+void componentGasUnmute(def childDevice) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentGasUnmute: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentGasUnmute: unmuting alarm at ${ipAddress}")
+    sendGen1Get(ipAddress, 'unmute')
+}
+
 /* #endregion Component Device Command Handlers */
 
 // ═══════════════════════════════════════════════════════════════
@@ -13067,6 +13219,17 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
                     unit: 'lux', descriptionText: "Illuminance is ${params.lux} lux"])
             }
             break
+
+        // Gas alarm webhooks (Gen 1 Shelly Gas SHGS-1)
+        case 'gas_alarm_mild':
+            events.add([name: 'naturalGas', value: 'detected', descriptionText: 'Gas alarm: mild level detected'])
+            break
+        case 'gas_alarm_heavy':
+            events.add([name: 'naturalGas', value: 'detected', descriptionText: 'Gas alarm: heavy level detected'])
+            break
+        case 'gas_alarm_off':
+            events.add([name: 'naturalGas', value: 'clear', descriptionText: 'Gas alarm cleared'])
+            break
     }
 
     // Battery data piggybacked on any webhook (from supplemental token groups)
@@ -13093,6 +13256,7 @@ private String dstToComponentType(String dst) {
     if (dst.startsWith('switch_')) { return 'switch' }
     if (dst.startsWith('cover_')) { return 'cover' }
     if (dst.startsWith('smoke_')) { return 'smoke' }
+    if (dst.startsWith('gas_')) { return 'gas' }
     switch (dst) {
         case 'switchmon': return 'switch'  // legacy
         case 'covermon': return 'cover'    // legacy
@@ -13106,6 +13270,7 @@ private String mapDstToComponentType(String dst, String baseType) {
     if (dst.startsWith('cover_')) { return 'cover' }
     if (dst.startsWith('input_')) { return 'input' }
     if (dst.startsWith('smoke_')) { return 'smoke' }
+    if (dst.startsWith('gas_')) { return 'gas' }
 
     // Legacy and passthrough dst types
     switch (dst) {
@@ -13278,7 +13443,13 @@ void componentRefresh(def childDevice) {
             }
             pollGen1DeviceStatus(ipAddress)
             if (childDevice.getDataValue('isParentDevice') == 'true') {
-                syncSwitchConfigForParentChildren(childDevice.deviceNetworkId, ipAddress)
+                String typeName = childDevice.typeName ?: ''
+                if (typeName.contains('EM Parent')) {
+                    // EM parent: relay is on the parent device itself, not children
+                    syncSwitchConfigToDriver(childDevice, ipAddress)
+                } else {
+                    syncSwitchConfigForParentChildren(childDevice.deviceNetworkId, ipAddress)
+                }
             } else {
                 syncSwitchConfigToDriver(childDevice, ipAddress)
             }
@@ -13289,6 +13460,7 @@ void componentRefresh(def childDevice) {
                 syncGen1ButtonSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1FloodSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1SmokeSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1GasSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1HTSettings(ipAddress, childDevice, resolvedGen1Type)
             }
             return
@@ -13796,15 +13968,17 @@ private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
     // For standalone devices (componentType is null), check stored config
     // to avoid querying settings/relay on devices without switches (TRV, Motion, etc.)
     if (componentType == null) {
+        String typeName = targetDevice.typeName ?: ''
+        // EM Parent always has relay:0 even though config.hasSwitch is false (no switch: components)
+        Boolean isEmParent = typeName.contains('EM Parent')
         String dni = targetDevice.deviceNetworkId
         Map config = (state.deviceConfigs ?: [:])[dni] as Map
         if (config) {
-            if (!config.hasSwitch) { return }
+            if (!config.hasSwitch && !isEmParent) { return }
         } else {
             // Config not yet stored (first refresh during device creation).
             // Check driver name to skip non-switch devices.
-            String typeName = targetDevice.typeName ?: ''
-            if (!typeName.contains('Switch') && !typeName.contains('Dimmer') && !typeName.contains('Plug')) { return }
+            if (!typeName.contains('Switch') && !typeName.contains('Dimmer') && !typeName.contains('Plug') && !isEmParent) { return }
         }
     }
 
@@ -13814,9 +13988,9 @@ private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
         Map relaySettings = sendGen1Get(ipAddress, "settings/relay/${switchId}", [:])
         if (relaySettings) { syncGen1ConfigToPreferences(targetDevice, relaySettings) }
 
-        // Sync device-level settings (LED control) for Plug drivers
+        // Sync device-level settings (LED control) for Plug and EM Parent drivers
         String typeName = targetDevice.typeName ?: ''
-        if (typeName.contains('Plug')) {
+        if (typeName.contains('Plug') || typeName.contains('EM Parent')) {
             Map deviceSettings = sendGen1Get(ipAddress, 'settings', [:])
             if (deviceSettings) { syncGen1DeviceSettingsToPreferences(targetDevice, deviceSettings) }
         }

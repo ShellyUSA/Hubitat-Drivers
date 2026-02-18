@@ -7,14 +7,17 @@
  * Architecture:
  *   - App creates parent device with component data values
  *   - Parent creates EM children per channel in initialize()
- *   - All data comes via polling (Gen 1 EM has no useful action URLs)
+ *   - Relay (contactor) is controlled directly on the parent via Switch capability
+ *   - All EM data comes via polling (Gen 1 EM has no useful action URLs)
  *   - Parent aggregates total power/energy across channels
  *
- * Version: 1.0.0
+ * Version: 1.1.0
  */
 
 metadata {
   definition(name: 'Shelly Gen1 EM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+    capability 'Switch'
+    capability 'TemperatureMeasurement'
     capability 'PowerMeter'
     capability 'EnergyMeter'
     capability 'CurrentMeter'
@@ -25,10 +28,27 @@ metadata {
 
     command 'reinitialize'
     attribute 'lastUpdated', 'string'
+    attribute 'powerFactor', 'number'
+    attribute 'reactivePower', 'number'
+    attribute 'energyReturned', 'number'
   }
 }
 
 preferences {
+  // -- Relay Settings (synced to device via /settings/relay/0) --
+  input name: 'defaultState', type: 'enum', title: 'Relay Power-On Default State',
+    options: ['off':'Off', 'on':'On', 'restore':'Restore Last'],
+    defaultValue: 'off', required: false
+  input name: 'autoOffTime', type: 'decimal', title: 'Auto-Off Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+  input name: 'autoOnTime', type: 'decimal', title: 'Auto-On Timer (seconds, 0 = disabled)',
+    defaultValue: 0, range: '0..86400', required: false
+
+  // -- Device Configuration (synced to device via /settings) --
+  input name: 'ledStatusDisable', type: 'bool', title: 'Disable LED status indicator',
+    defaultValue: false, required: false
+
+  // -- Logging --
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
@@ -45,9 +65,15 @@ void installed() {
   initialize()
 }
 
+/**
+ * Handles preference updates. Re-initializes and pushes relay/device settings
+ * to the physical device via the parent app.
+ */
 void updated() {
   logDebug('Parent device updated')
   initialize()
+  relaySwitchSettings()
+  relayDeviceSettings()
 }
 
 void initialize() {
@@ -72,6 +98,72 @@ void reinitialize() {
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Lifecycle                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Switch Commands (Relay/Contactor Control)                    ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Turns on relay:0 (contactor) via the parent app.
+ */
+void on() {
+  logDebug('on() called')
+  parent?.componentOn(device)
+}
+
+/**
+ * Turns off relay:0 (contactor) via the parent app.
+ */
+void off() {
+  logDebug('off() called')
+  parent?.componentOff(device)
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Switch Commands                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Settings Write-Back                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Gathers relay switch settings and sends them to the parent app
+ * for relay to the device via /settings/relay/0.
+ */
+private void relaySwitchSettings() {
+  Map switchSettings = [:]
+  if (settings.defaultState != null) { switchSettings.defaultState = settings.defaultState as String }
+  if (settings.autoOffTime != null) { switchSettings.autoOffTime = settings.autoOffTime as BigDecimal }
+  if (settings.autoOnTime != null) { switchSettings.autoOnTime = settings.autoOnTime as BigDecimal }
+  if (switchSettings) {
+    logDebug("Relaying switch settings to parent: ${switchSettings}")
+    parent?.componentUpdateSwitchSettings(device, switchSettings)
+  }
+}
+
+/**
+ * Gathers device-level settings (LED control) and sends them to the parent app
+ * for relay to the device via /settings.
+ */
+private void relayDeviceSettings() {
+  Map deviceSettings = [:]
+  if (settings.ledStatusDisable != null) {
+    deviceSettings.led_status_disable = settings.ledStatusDisable ? 'true' : 'false'
+  }
+  if (deviceSettings) {
+    logDebug("Relaying device settings to parent: ${deviceSettings}")
+    parent?.componentUpdateGen1Settings(device, deviceSettings)
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Settings Write-Back                                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
@@ -131,12 +223,17 @@ void reconcileChildDevices() {
     String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
     if (getChildDevice(childDni)) { return }
 
-    String driverName = 'Shelly Autoconf Switch PM'
+    String driverName = 'Shelly Autoconf EM'
     String label = "${device.displayName} Channel ${compId}"
     try {
       def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
-      child.updateDataValue("emId", compId.toString())
+      child.updateDataValue('emId', compId.toString())
+      // Propagate parent data values for forward compatibility
+      String ip = device.getDataValue('ipAddress') ?: ''
+      if (ip) { child.updateDataValue('ipAddress', ip) }
+      String gen1Type = device.getDataValue('gen1Type') ?: ''
+      if (gen1Type) { child.updateDataValue('gen1Type', gen1Type) }
       logInfo("Created child: ${label} (${driverName})")
     } catch (Exception e) {
       logError("Failed to create child ${label}: ${e.message}")
@@ -182,8 +279,10 @@ void parse(String description) {
 /**
  * Distributes polled Gen 1 status to EM children and parent aggregate.
  * Called by app after polling GET /status on the Gen 1 device.
+ * Handles em:N channels (routed to children), switch:N relay state,
+ * and temperature:N internal device temperature.
  *
- * @param deviceStatus Map of normalized component statuses (em:0, em:1, etc.)
+ * @param deviceStatus Map of normalized component statuses (em:0, em:1, switch:0, temperature:0, etc.)
  */
 void distributeStatus(Map deviceStatus) {
   if (!deviceStatus) { return }
@@ -191,51 +290,100 @@ void distributeStatus(Map deviceStatus) {
   BigDecimal totalPower = 0
   BigDecimal totalEnergy = 0
   BigDecimal totalCurrent = 0
+  BigDecimal totalReactivePower = 0
+  BigDecimal totalReturnedEnergy = 0
   BigDecimal maxVoltage = 0
+  BigDecimal weightedPfSum = 0
+  BigDecimal pfWeightDenom = 0
 
   deviceStatus.each { k, v ->
     String key = k.toString()
-    if (!key.startsWith('em:') || !(v instanceof Map)) { return }
-
-    Integer componentId = key.split(':')[1] as Integer
+    if (!(v instanceof Map)) { return }
     Map data = v as Map
 
-    List<Map> events = []
-    if (data.act_power != null) {
-      BigDecimal power = data.act_power as BigDecimal
-      events.add([name: 'power', value: power, unit: 'W'])
-      totalPower += power
-    }
-    if (data.voltage != null) {
-      BigDecimal voltage = data.voltage as BigDecimal
-      events.add([name: 'voltage', value: voltage, unit: 'V'])
-      if (voltage > maxVoltage) { maxVoltage = voltage }
-    }
-    if (data.current != null) {
-      BigDecimal current = data.current as BigDecimal
-      events.add([name: 'amperage', value: current, unit: 'A'])
-      totalCurrent += current
-    }
-    if (data.total_act_energy != null) {
-      BigDecimal energyKwh = (data.total_act_energy as BigDecimal) / 1000.0
-      events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
-      totalEnergy += energyKwh
+    // EM channel data → route to children and aggregate on parent
+    if (key.startsWith('em:')) {
+      Integer componentId = key.split(':')[1] as Integer
+
+      List<Map> events = []
+      if (data.act_power != null) {
+        BigDecimal power = data.act_power as BigDecimal
+        events.add([name: 'power', value: power, unit: 'W'])
+        totalPower += power
+      }
+      if (data.voltage != null) {
+        BigDecimal voltage = data.voltage as BigDecimal
+        events.add([name: 'voltage', value: voltage, unit: 'V'])
+        if (voltage > maxVoltage) { maxVoltage = voltage }
+      }
+      if (data.current != null) {
+        BigDecimal current = data.current as BigDecimal
+        events.add([name: 'amperage', value: current, unit: 'A'])
+        totalCurrent += current
+      }
+      if (data.total_act_energy != null) {
+        BigDecimal energyKwh = (data.total_act_energy as BigDecimal) / 1000.0
+        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+        totalEnergy += energyKwh
+      }
+      if (data.pf != null) {
+        BigDecimal pf = data.pf as BigDecimal
+        events.add([name: 'powerFactor', value: pf])
+        // Weight power factor by absolute active power for meaningful average
+        BigDecimal absPower = (data.act_power != null) ? Math.abs(data.act_power as BigDecimal) : 0
+        weightedPfSum += pf * absPower
+        pfWeightDenom += absPower
+      }
+      if (data.reactive != null) {
+        BigDecimal reactive = data.reactive as BigDecimal
+        events.add([name: 'reactivePower', value: reactive, unit: 'VAR'])
+        totalReactivePower += reactive
+      }
+      if (data.total_act_ret_energy != null) {
+        BigDecimal retKwh = (data.total_act_ret_energy as BigDecimal) / 1000.0
+        events.add([name: 'energyReturned', value: retKwh, unit: 'kWh'])
+        totalReturnedEnergy += retKwh
+      }
+
+      // Route to child
+      String childDni = "${device.deviceNetworkId}-em-${componentId}"
+      def child = getChildDevice(childDni)
+      if (child) {
+        events.each { Map evt -> child.sendEvent(evt) }
+        child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+      }
     }
 
-    // Route to child
-    String childDni = "${device.deviceNetworkId}-em-${componentId}"
-    def child = getChildDevice(childDni)
-    if (child) {
-      events.each { Map evt -> child.sendEvent(evt) }
-      child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+    // Relay state → parent switch attribute
+    if (key.startsWith('switch:')) {
+      String switchState = data.output ? 'on' : 'off'
+      sendEvent(name: 'switch', value: switchState, descriptionText: "Relay is ${switchState}")
+    }
+
+    // Internal device temperature → parent temperature attribute
+    if (key.startsWith('temperature:') && !key.contains(':100')) {
+      String scale = location?.temperatureScale ?: 'F'
+      BigDecimal temp = (scale == 'C' && data.tC != null) ? data.tC as BigDecimal : data.tF as BigDecimal
+      if (temp != null) {
+        sendEvent(name: 'temperature', value: temp, unit: "\u00B0${scale}")
+      }
     }
   }
 
-  // Parent aggregate
+  // Parent aggregate totals
   sendEvent(name: 'power', value: totalPower, unit: 'W')
   sendEvent(name: 'energy', value: totalEnergy, unit: 'kWh')
   sendEvent(name: 'amperage', value: totalCurrent, unit: 'A')
   sendEvent(name: 'voltage', value: maxVoltage, unit: 'V')
+  sendEvent(name: 'reactivePower', value: totalReactivePower, unit: 'VAR')
+  sendEvent(name: 'energyReturned', value: totalReturnedEnergy, unit: 'kWh')
+
+  // Weighted average power factor (weighted by absolute active power per channel)
+  if (pfWeightDenom > 0) {
+    BigDecimal avgPf = weightedPfSum / pfWeightDenom
+    sendEvent(name: 'powerFactor', value: avgPf.setScale(2, BigDecimal.ROUND_HALF_UP))
+  }
+
   sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 
