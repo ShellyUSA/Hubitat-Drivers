@@ -23,6 +23,8 @@
     'SHVIN-1':  'Shelly Gen1 Single Dimmer',
     'SHBDUO-1': 'Shelly Gen1 Duo',
     'SHGS-1':   'Shelly Gen1 Gas Sensor',
+    'SHSN-1':   'Shelly Gen1 Sense',
+    'SHUNI-1':  'Shelly Gen1 Uni Parent',
     // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
 ]
 
@@ -63,6 +65,7 @@
     'Shelly Gen1 DW Sensor': 'UniversalDrivers/ShellyGen1DWSensor.groovy',
     'Shelly Gen1 Button': 'UniversalDrivers/ShellyGen1Button.groovy',
     'Shelly Gen1 Motion Sensor': 'UniversalDrivers/ShellyGen1MotionSensor.groovy',
+    'Shelly Gen1 Sense': 'UniversalDrivers/ShellyGen1Sense.groovy',
     'Shelly Gen1 TRV': 'UniversalDrivers/ShellyGen1TRV.groovy',
 
     // Gen 1 multi-component parent drivers
@@ -72,6 +75,7 @@
     'Shelly Gen1 Single Cover PM Parent': 'UniversalDrivers/ShellyGen1SingleCoverPMParent.groovy',
     'Shelly Gen1 3x Input Parent': 'UniversalDrivers/ShellyGen1_3xInputParent.groovy',
     'Shelly Gen1 EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
+    'Shelly Gen1 Uni Parent': 'UniversalDrivers/ShellyGen1UniParent.groovy',
 
     // BLE device drivers
     'Shelly BLU Button1': 'UniversalDrivers/ShellyBluButton1.groovy',
@@ -166,15 +170,16 @@
     'SHUNI-1':   'Shelly Uni',
     'SHTRV-01':  'Shelly TRV',
     'SHSM-01':   'Shelly Smoke',
+    'SHSN-1':    'Shelly Sense',
 ]
 
-/** Gen 1 type codes that are battery-powered. Note: SHMOS-* and SHTRV-01 are
+/** Gen 1 type codes that are battery-powered. Note: SHMOS-*, SHSN-1 and SHTRV-01 are
  *  always-awake despite running on battery. Sleepiness is controlled by
  *  {@link #isSleepyBatteryDevice}, not by membership in this set. */
 @Field static final Set<String> GEN1_BATTERY_TYPES = [
     'SHHT-1', 'SHWT-1', 'SHDW-1', 'SHDW-2',
     'SHMOS-01', 'SHMOS-02', 'SHBTN-1', 'SHBTN-2',
-    'SHTRV-01', 'SHSM-01',
+    'SHTRV-01', 'SHSM-01', 'SHSN-1',
 ] as Set<String>
 
 /**
@@ -214,6 +219,7 @@
     'shellyuni':        'SHUNI-1',
     'shellytrv':        'SHTRV-01',
     'shellysmoke':      'SHSM-01',
+    'shellysense':      'SHSN-1',
 ]
 
 definition(
@@ -850,7 +856,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // The parent driver will read these to create driver-level children
         List<String> components = []
         List<String> pmComponents = []
-        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em'] as Set
+        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity'] as Set
 
         deviceStatus.each { k, v ->
             String key = k.toString()
@@ -1796,7 +1802,7 @@ private void updateComponentDriversForDevice(Map config) {
     Set<String> updatedDrivers = [] as Set
 
     componentTypes.each { String baseType ->
-        if (!['switch', 'cover', 'light', 'input'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'adc', 'temperature', 'humidity'].contains(baseType)) { return }
 
         String compDriverName = getComponentDriverName(baseType, parentHasPM)
         if (!compDriverName || updatedDrivers.contains(compDriverName)) { return }
@@ -2433,8 +2439,8 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
         }
     }
 
-    // Battery sensor action URLs (plus mains-powered sensors with /settings/actions)
-    if (GEN1_BATTERY_TYPES.contains(typeCode) || typeCode == 'SHGS-1') {
+    // Sensor action URLs (battery devices, mains-powered sensors, and Uni)
+    if (GEN1_BATTERY_TYPES.contains(typeCode) || typeCode == 'SHGS-1' || typeCode == 'SHUNI-1') {
         actions.addAll(getGen1SensorActionUrls(typeCode))
     }
 
@@ -2493,13 +2499,17 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'contact_close', cid: 0, name: 'Contact Close', configType: 'actions', actionIndex: 0])
             break
 
-        case 'SHDW-2':  // Door/Window v2 — actions array, plus vibration
+        case 'SHDW-2':  // Door/Window v2 — actions array, plus vibration and lux thresholds
             actions.add([endpoint: 'settings/actions', param: 'open_url',
                 dst: 'contact_open', cid: 0, name: 'Contact Open', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'close_url',
                 dst: 'contact_close', cid: 0, name: 'Contact Close', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'vibration_url',
                 dst: 'vibration', cid: 0, name: 'Vibration', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'dark_url',
+                dst: 'lux_dark', cid: 0, name: 'Dark', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'twilight_url',
+                dst: 'lux_twilight', cid: 0, name: 'Twilight', configType: 'actions', actionIndex: 0])
             break
 
         case 'SHBTN-1':  // Button v1
@@ -2526,6 +2536,25 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'tamper_alarm_off', cid: 0, name: 'Tamper Off', configType: 'actions', actionIndex: 0])
             break
 
+        case 'SHSN-1':  // Shelly Sense — motion + threshold URLs under /settings/actions
+            actions.add([endpoint: 'settings/actions', param: 'motion_on',
+                dst: 'motion_on', cid: 0, name: 'Motion On', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'motion_off',
+                dst: 'motion_off', cid: 0, name: 'Motion Off', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
+                dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
+                dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'over_hum_url',
+                dst: 'hum_over', cid: 0, name: 'Humidity Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'under_hum_url',
+                dst: 'hum_under', cid: 0, name: 'Humidity Under', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'over_lux_url',
+                dst: 'lux_over', cid: 0, name: 'Lux Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'under_lux_url',
+                dst: 'lux_under', cid: 0, name: 'Lux Under', configType: 'actions', actionIndex: 0])
+            break
+
         case 'SHTRV-01':  // TRV — valve open/close
             actions.add([endpoint: 'settings/actions', param: 'valve_open',
                 dst: 'valve_open', cid: 0, name: 'Valve Open', configType: 'actions', actionIndex: 0])
@@ -2546,6 +2575,21 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
                 dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHUNI-1':  // Shelly Uni — ADC + external sensor threshold URLs
+            actions.add([endpoint: 'settings/actions', param: 'adc_over_url',
+                dst: 'adc_over', cid: 0, name: 'ADC Over Threshold', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'adc_under_url',
+                dst: 'adc_under', cid: 0, name: 'ADC Under Threshold', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'ext_temp_over_url',
+                dst: 'ext_temp_over', cid: 0, name: 'Ext Temp Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'ext_temp_under_url',
+                dst: 'ext_temp_under', cid: 0, name: 'Ext Temp Under', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'ext_hum_over_url',
+                dst: 'ext_hum_over', cid: 0, name: 'Ext Humidity Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'ext_hum_under_url',
+                dst: 'ext_hum_under', cid: 0, name: 'Ext Humidity Under', configType: 'actions', actionIndex: 0])
             break
 
         case 'SHGS-1':  // Gas sensor — alarm URLs under /settings/actions
@@ -2904,6 +2948,7 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
         hasHumidity: componentTypes.contains('humidity'),
         hasFlood: componentTypes.contains('flood'),
         hasContact: componentTypes.contains('contact'),
+        hasMotion: componentTypes.contains('motion'),
         hasThermostat: componentTypes.contains('thermostat'),
         supportedWebhookEvents: (deviceInfo.supportedWebhookEvents ?: []) as List<String>,
         storedAt: now()
@@ -2941,7 +2986,7 @@ private Boolean isSleepyBatteryDevice(def childDevice) {
     Map config = deviceConfigs[dni] as Map
 
     if (config) {
-        return config.hasBattery && !config.hasBthome && !config.hasScript && !config.hasThermostat
+        return config.hasBattery && !config.hasBthome && !config.hasScript && !config.hasThermostat && !config.hasMotion
     }
 
     // Fallback: check driver name for battery-only patterns (Gen 1 and Gen 2)
@@ -4666,6 +4711,46 @@ private void syncGen1MotionSettings(String ipAddress, def childDevice, String ge
 }
 
 /**
+ * Syncs device-side motion/sensor settings to driver preferences on first refresh.
+ * Reads /settings from the Shelly Sense and populates motion sensitivity and
+ * blind time preferences with the device values.
+ * The Sense is always awake, so live fetch should always succeed.
+ *
+ * @param ipAddress The Sense device's IP address
+ * @param childDevice The Sense child device
+ * @param gen1Type The Gen 1 type code (must be SHSN-1)
+ */
+private void syncGen1SenseSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice || gen1Type != 'SHSN-1') { return }
+
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (!gen1Settings) {
+            logDebug("syncGen1SenseSettings: no settings available for ${ipAddress}")
+            return
+        }
+    }
+
+    try {
+        Map motionSettings = gen1Settings.motion as Map ?: [:]
+        if (motionSettings.sensitivity != null) {
+            childDevice.updateSetting('motionSensitivity',
+                [type: 'number', value: motionSettings.sensitivity as Integer])
+        }
+        if (motionSettings.blind_time_minutes != null) {
+            childDevice.updateSetting('motionBlindTimeMinutes',
+                [type: 'number', value: motionSettings.blind_time_minutes as Integer])
+        }
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 Sense settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1SenseSettings: failed for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
  * Syncs device-side thermostat settings to driver preferences on first refresh.
  * Reads /settings/thermostats/0 from the TRV and populates the driver's
  * temperatureOffset preference with the device value.
@@ -4794,6 +4879,76 @@ private void syncGen1FloodSettings(String ipAddress, def childDevice, String gen
         logDebug("Synced Gen 1 Flood settings from device at ${ipAddress}")
     } catch (Exception e) {
         logWarn("syncGen1FloodSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Syncs Gen 1 Door/Window sensor configuration to driver preferences on first refresh.
+ * Attempts a live {@code GET /settings} first; if the device is asleep,
+ * falls back to the cached {@code gen1Settings} from discovery in
+ * {@code state.discoveredShellys}. Sets {@code gen1SettingsSynced}
+ * data value on success so subsequent refreshes skip the extra HTTP call.
+ * SHDW-2 has additional settings (dark/twilight thresholds, vibration sensitivity,
+ * temperature offset/threshold, lux wakeup) that SHDW-1 lacks.
+ *
+ * @param ipAddress The DW device's IP address
+ * @param childDevice The Hubitat child device whose preferences to sync
+ * @param gen1Type The resolved Gen 1 type code (must be SHDW-1 or SHDW-2)
+ */
+private void syncGen1DWSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice || (gen1Type != 'SHDW-1' && gen1Type != 'SHDW-2')) { return }
+
+    // Try live fetch first; fall back to cached discovery data if device is asleep
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    if (!gen1Settings) {
+        Map deviceInfo = state.discoveredShellys?.get(ipAddress)
+        gen1Settings = deviceInfo?.gen1Settings as Map
+        if (gen1Settings) {
+            logDebug("syncGen1DWSettings: device asleep, using cached settings from discovery")
+        } else {
+            logDebug("syncGen1DWSettings: device asleep and no cached settings for ${ipAddress}")
+            return
+        }
+    }
+
+    try {
+        // SHDW-2 only settings
+        if (gen1Type == 'SHDW-2') {
+            if (gen1Settings.dark_threshold != null) {
+                childDevice.updateSetting('darkThreshold',
+                    [type: 'number', value: gen1Settings.dark_threshold as Integer])
+            }
+            if (gen1Settings.twilight_threshold != null) {
+                childDevice.updateSetting('twilightThreshold',
+                    [type: 'number', value: gen1Settings.twilight_threshold as Integer])
+            }
+            if (gen1Settings.vibration_sensitivity != null) {
+                childDevice.updateSetting('vibrationSensitivity',
+                    [type: 'enum', value: (gen1Settings.vibration_sensitivity as Integer).toString()])
+            }
+            if (gen1Settings.temperature_offset != null) {
+                childDevice.updateSetting('temperatureOffset',
+                    [type: 'decimal', value: gen1Settings.temperature_offset as BigDecimal])
+            }
+            if (gen1Settings.temperature_threshold != null) {
+                childDevice.updateSetting('temperatureThreshold',
+                    [type: 'decimal', value: gen1Settings.temperature_threshold as BigDecimal])
+            }
+            if (gen1Settings.lux_wakeup_enable != null) {
+                childDevice.updateSetting('luxWakeupEnable',
+                    [type: 'bool', value: gen1Settings.lux_wakeup_enable == true || gen1Settings.lux_wakeup_enable == 1])
+            }
+        }
+        // Both SHDW-1 and SHDW-2
+        if (gen1Settings.led_status_disable != null) {
+            childDevice.updateSetting('ledStatusDisable',
+                [type: 'bool', value: gen1Settings.led_status_disable == true])
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 DW settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1DWSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
     }
 }
 
@@ -5490,6 +5645,14 @@ static Map inferGen1BatteryComponents(String typeCode) {
                 'temperature:0': [:],
                 'devicepower:0': [:]
             ]
+        case 'SHSN-1':  // Shelly Sense — motion, temp, humidity, lux, battery
+            return [
+                'motion:0': [:],
+                'temperature:0': [:],
+                'humidity:0': [:],
+                'lux:0': [:],
+                'devicepower:0': [:]
+            ]
         default:
             return null
     }
@@ -5580,6 +5743,17 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
             normalized["input:${i}".toString()] = [
                 state: inputData.input ?: false
             ]
+        }
+    }
+
+    // ADC channels → adc:N (Shelly Uni)
+    List adcs = gen1Status?.adcs as List
+    if (adcs) {
+        for (int i = 0; i < adcs.size(); i++) {
+            Map adcData = adcs[i] as Map ?: [:]
+            if (adcData.containsKey('voltage')) {
+                normalized["adc:${i}".toString()] = [voltage: adcData.voltage]
+            }
         }
     }
 
@@ -5790,12 +5964,17 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
         normalized['contact:0'] = [open: sensorData.state == 'open']
     }
 
-    // Motion sensor (Shelly Motion, Motion 2)
+    // Motion sensor (Shelly Motion, Motion 2) — nested under 'sensor' object
     if (sensorData?.containsKey('motion')) {
         normalized['motion:0'] = [
             motion: sensorData.motion,
             active: sensorData.active
         ]
+    }
+
+    // Shelly Sense (SHSN-1): top-level 'motion' boolean (not inside 'sensor' object)
+    if (typeCode == 'SHSN-1' && gen1Status?.containsKey('motion') && !normalized.containsKey('motion:0')) {
+        normalized['motion:0'] = [motion: gen1Status.motion as Boolean]
     }
 
     // Vibration / tamper sensor (Motion sensors)
@@ -5858,7 +6037,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Comprehensive set of recognized Shelly component types
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'input', 'pm1', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
-        'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat'] as Set
+        'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat', 'adc'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -6386,7 +6565,10 @@ private String getComponentDriverFileName(String componentType, Boolean hasPower
         'cover': [default: 'ShellyCoverComponent.groovy', pm: 'ShellyCoverComponentPM.groovy'],
         'light': [default: 'ShellyDimmerComponent.groovy'],
         'input': [default: 'ShellyInputButtonComponent.groovy'],
-        'em': [default: 'ShellyEMComponent.groovy']
+        'em': [default: 'ShellyEMComponent.groovy'],
+        'adc': [default: 'ShellyPollingVoltageSensorComponent.groovy'],
+        'temperature': [default: 'ShellyTemperaturePeripheralComponent.groovy'],
+        'humidity': [default: 'ShellyHumidityPeripheralComponent.groovy']
     ]
 
     Map<String, String> typeMap = driverMap[componentType]
@@ -6412,7 +6594,10 @@ private String getComponentDriverName(String componentType, Boolean hasPowerMoni
         'cover': [default: 'Shelly Autoconf Cover', pm: 'Shelly Autoconf Cover PM'],
         'light': [default: 'Shelly Autoconf Dimmer'],
         'input': [default: 'Shelly Autoconf Input Button'],
-        'em': [default: 'Shelly Autoconf EM']
+        'em': [default: 'Shelly Autoconf EM'],
+        'adc': [default: 'Shelly Autoconf Polling Voltage Sensor'],
+        'temperature': [default: 'Shelly Autoconf Temperature Peripheral'],
+        'humidity': [default: 'Shelly Autoconf Humidity Peripheral']
     ]
 
     Map<String, String> typeMap = nameMap[componentType]
@@ -6508,7 +6693,7 @@ private void installComponentDriversForDevice(Map deviceInfo) {
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
-        if (!['switch', 'cover', 'light', 'input', 'em'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity'].contains(baseType)) { return }
 
         Boolean hasPM = componentPowerMonitoring[key] ?: false
         String driverName = getComponentDriverName(baseType, hasPM)
@@ -12722,6 +12907,110 @@ void componentGasUnmute(def childDevice) {
     sendGen1Get(ipAddress, 'unmute')
 }
 
+// ═══════════════════════════════════════════════════════════════
+// Shelly Sense IR Blaster Commands (SHSN-1)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Emits an IR code in Pronto hex format via the Shelly Sense IR blaster.
+ * Sends {@code GET /ir/emit?type=pronto_hex&code=<hex>} to the device.
+ *
+ * @param childDevice The Sense child device
+ * @param prontoHex The Pronto hex string to transmit
+ */
+void componentSenseEmitIR(def childDevice, String prontoHex) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentSenseEmitIR: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentSenseEmitIR: emitting Pronto hex at ${ipAddress}")
+    sendGen1Get(ipAddress, 'ir/emit', [type: 'pronto_hex', code: prontoHex])
+}
+
+/**
+ * Emits a previously stored IR code by its ID.
+ * Sends {@code GET /ir/emit?type=stored&id=<id>} to the device.
+ *
+ * @param childDevice The Sense child device
+ * @param codeId The numeric ID of the stored code to emit
+ */
+void componentSenseEmitStoredIR(def childDevice, Integer codeId) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentSenseEmitStoredIR: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentSenseEmitStoredIR: emitting stored code ID=${codeId} at ${ipAddress}")
+    sendGen1Get(ipAddress, 'ir/emit', [type: 'stored', id: codeId.toString()])
+}
+
+/**
+ * Retrieves the list of stored IR codes from the Shelly Sense.
+ * {@code /ir/list} returns a JSON array (not a Map), so we use {@code httpGetHelper}
+ * directly instead of {@code sendGen1Get} which expects a Map response.
+ * Results are published as the {@code irCodes} attribute on the child device.
+ *
+ * @param childDevice The Sense child device
+ */
+void componentSenseListIRCodes(def childDevice) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentSenseListIRCodes: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentSenseListIRCodes: listing codes at ${ipAddress}")
+    try {
+        String uri = "http://${ipAddress}/ir/list"
+        Map params = [uri: uri, timeout: 10, contentType: 'application/json']
+        if (authIsEnabledGen1()) {
+            String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
+            String encoded = credentials.bytes.encodeBase64().toString()
+            params.headers = ['Authorization': "Basic ${encoded}"]
+        }
+        httpGetHelper(params) { resp ->
+            if (resp?.status == 200 && resp.data) {
+                String codesJson = groovy.json.JsonOutput.toJson(resp.data)
+                childSendEventHelper(childDevice, [name: 'irCodes', value: codesJson,
+                    descriptionText: 'IR code list updated'])
+                logInfo("IR codes list updated for ${childDevice.displayName}")
+            }
+        }
+    } catch (Exception e) {
+        logError("componentSenseListIRCodes: failed for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Stores a new IR code on the Shelly Sense in Pronto hex format.
+ * Sends {@code GET /ir/add?type=pronto_hex&code=<hex>&name=<name>} to the device.
+ * Automatically refreshes the IR code list after storing.
+ *
+ * @param childDevice The Sense child device
+ * @param prontoHex The Pronto hex string to store
+ * @param codeName A human-readable name for the stored code
+ */
+void componentSenseAddIRCode(def childDevice, String prontoHex, String codeName) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentSenseAddIRCode: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentSenseAddIRCode: adding '${codeName}' at ${ipAddress}")
+    Map result = sendGen1Get(ipAddress, 'ir/add', [type: 'pronto_hex', code: prontoHex, name: codeName])
+    if (result != null) {
+        logInfo("IR code '${codeName}' added to ${childDevice.displayName}")
+        componentSenseListIRCodes(childDevice)
+    }
+}
+
+/**
+ * Removes a stored IR code from the Shelly Sense by its ID.
+ * Sends {@code GET /ir/remove?id=<id>} to the device.
+ * Automatically refreshes the IR code list after removal.
+ *
+ * @param childDevice The Sense child device
+ * @param codeId The numeric ID of the stored code to remove
+ */
+void componentSenseRemoveIRCode(def childDevice, Integer codeId) {
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("componentSenseRemoveIRCode: no IP for ${childDevice.displayName}"); return }
+    logDebug("componentSenseRemoveIRCode: removing code ID=${codeId} at ${ipAddress}")
+    Map result = sendGen1Get(ipAddress, 'ir/remove', [id: codeId.toString()])
+    if (result != null) {
+        logInfo("IR code ID=${codeId} removed from ${childDevice.displayName}")
+        componentSenseListIRCodes(childDevice)
+    }
+}
+
 /* #endregion Component Device Command Handlers */
 
 // ═══════════════════════════════════════════════════════════════
@@ -13462,6 +13751,8 @@ void componentRefresh(def childDevice) {
                 syncGen1SmokeSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1GasSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1HTSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1SenseSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1DWSettings(ipAddress, childDevice, resolvedGen1Type)
             }
             return
         }

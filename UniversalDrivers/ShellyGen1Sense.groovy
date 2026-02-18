@@ -1,0 +1,513 @@
+/**
+ * Shelly Gen1 Sense
+ *
+ * Pre-built standalone driver for the Gen 1 Shelly Sense (SHSN-1).
+ * Battery-powered multisensor with PIR motion, temperature, humidity,
+ * illuminance, and an IR blaster for controlling external devices.
+ *
+ * <p>The Sense is <b>always reachable</b> via HTTP despite being battery-powered
+ * (same as SHMOS motion sensors). No wake-up queuing is needed.
+ *
+ * <p>IR blaster commands (emit, list, add, remove) are delegated to the parent
+ * app which communicates directly with the device via HTTP.
+ *
+ * Version: 1.0.0
+ */
+
+metadata {
+  definition(name: 'Shelly Gen1 Sense', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+    capability 'MotionSensor'
+    //Attributes: motion - ENUM ["inactive", "active"]
+
+    capability 'TemperatureMeasurement'
+    //Attributes: temperature - NUMBER
+
+    capability 'RelativeHumidityMeasurement'
+    //Attributes: humidity - NUMBER, unit:%
+
+    capability 'IlluminanceMeasurement'
+    //Attributes: illuminance - NUMBER, unit:lux
+
+    capability 'Battery'
+    //Attributes: battery - NUMBER, unit:%
+
+    capability 'Initialize'
+    //Commands: initialize()
+
+    capability 'Configuration'
+    //Commands: configure()
+
+    capability 'Refresh'
+    //Commands: refresh()
+
+    attribute 'chargerConnected', 'string'
+    attribute 'irCodes', 'string'
+    attribute 'lastUpdated', 'string'
+
+    command 'emitIR', [[name: 'prontoHex', type: 'STRING', description: 'Pronto hex IR code to emit']]
+    command 'emitStoredIR', [[name: 'codeId', type: 'NUMBER', description: 'ID of stored IR code to emit']]
+    command 'listIRCodes'
+    command 'addIRCode', [
+      [name: 'prontoHex', type: 'STRING', description: 'Pronto hex IR code to store'],
+      [name: 'codeName', type: 'STRING', description: 'Name for the stored code']
+    ]
+    command 'removeIRCode', [[name: 'codeId', type: 'NUMBER', description: 'ID of stored IR code to remove']]
+  }
+}
+
+preferences {
+  // ── Motion Detection (synced to device) ──
+  input name: 'motionSensitivity', type: 'number',
+    title: 'Motion sensitivity (1\u2013256)',
+    description: 'PIR sensitivity \u2014 lower = more sensitive. Synced to/from device.',
+    range: '1..256', required: false
+  input name: 'motionBlindTimeMinutes', type: 'number',
+    title: 'Motion blind time (minutes)',
+    description: 'Cool-down between motion triggers (1\u20131440 minutes). Synced to/from device.',
+    range: '1..1440', required: false
+
+  // ── Logging ──
+  input name: 'logLevel', type: 'enum', title: 'Logging Level',
+    options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
+    defaultValue: 'debug', required: true
+}
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Driver Lifecycle and Configuration                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+void installed() {
+  logDebug('installed() called')
+  initialize()
+}
+
+void updated() {
+  logDebug("updated() called with settings: ${settings}")
+  initialize()
+  relayDeviceSettings()
+}
+
+/**
+ * Parses incoming LAN messages from the Gen 1 Shelly Sense.
+ * Handles action URL callbacks for motion detection and threshold alerts.
+ *
+ * @param description Raw LAN message description string from Hubitat
+ */
+void parse(String description) {
+  try {
+    Map msg = parseLanMessage(description)
+    if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
+
+    if (msg?.status != null) { return }
+
+    Map params = parseWebhookPath(msg)
+    if (params?.dst) {
+      logDebug("Action URL callback dst=${params.dst}, cid=${params.cid}")
+      routeActionUrlCallback(params)
+    } else {
+      logDebug("No dst found in action URL callback — headers keys: ${msg?.headers?.keySet()}, raw header present: ${msg?.header != null}")
+    }
+  } catch (Exception e) {
+    logError("Error parsing LAN message: ${e.message}")
+  }
+}
+
+/**
+ * Parses webhook GET request path to extract dst and cid from URL segments.
+ * GET Action Webhooks encode state in the path (e.g., /motion_on/0).
+ * Falls back to raw header string if parsed headers Map lacks the request line.
+ *
+ * @param msg The parsed LAN message map from parseLanMessage()
+ * @return Map with dst and cid keys, or null if not parseable
+ */
+@CompileStatic
+private Map parseWebhookPath(Map msg) {
+  String requestLine = null
+
+  // Primary: search parsed headers Map for request line
+  if (msg?.headers) {
+    requestLine = ((Map)msg.headers).keySet()?.find { Object key ->
+      key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
+    }?.toString()
+  }
+
+  // Fallback: parse raw header string (singular msg.header)
+  if (!requestLine && msg?.header) {
+    String rawHeader = msg.header.toString()
+    String[] lines = rawHeader.split('\n')
+    for (String line : lines) {
+      String trimmed = line.trim()
+      if (trimmed.startsWith('GET ') || trimmed.startsWith('POST ')) {
+        requestLine = trimmed
+        break
+      }
+    }
+  }
+
+  if (!requestLine) { return null }
+
+  String[] requestParts = requestLine.split(' ')
+  if (requestParts.length < 2) { return null }
+  String pathAndQuery = requestParts[1]
+
+  // Strip leading slash
+  String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
+  if (!webhookPath) { return null }
+
+  // Defensive: strip query string if somehow present
+  int qMarkIdx = webhookPath.indexOf('?')
+  if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
+
+  String[] segments = webhookPath.split('/')
+  if (segments.length < 2) { return null }
+
+  Map result = [dst: segments[0], cid: segments[1]]
+
+  // Parse key/value pairs from remaining path segments
+  for (int i = 2; i + 1 < segments.length; i += 2) {
+    result[segments[i]] = segments[i + 1]
+  }
+
+  return result
+}
+
+/**
+ * Routes Gen 1 action URL callbacks for Sense events.
+ * Handles motion detection, motion cleared, and threshold alerts
+ * (temperature, humidity, lux over/under).
+ *
+ * @param params Parsed webhook path parameters with dst and cid keys
+ */
+private void routeActionUrlCallback(Map params) {
+  switch (params.dst) {
+    case 'motion':
+    case 'motion_on':
+      setMotionActive()
+      // Also poll for updated sensor readings while device is reporting
+      parent?.componentRefresh(device)
+      break
+
+    case 'motion_off':
+      setMotionInactive()
+      break
+
+    case 'temp_over':
+      logWarn("Temperature over threshold triggered")
+      parent?.componentRefresh(device)
+      break
+
+    case 'temp_under':
+      logWarn("Temperature under threshold triggered")
+      parent?.componentRefresh(device)
+      break
+
+    case 'hum_over':
+      logInfo("Humidity over threshold triggered")
+      parent?.componentRefresh(device)
+      break
+
+    case 'hum_under':
+      logInfo("Humidity under threshold triggered")
+      parent?.componentRefresh(device)
+      break
+
+    case 'lux_over':
+      logInfo("Lux over threshold triggered")
+      parent?.componentRefresh(device)
+      break
+
+    case 'lux_under':
+      logInfo("Lux under threshold triggered")
+      parent?.componentRefresh(device)
+      break
+
+    default:
+      logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
+  }
+
+  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Driver Lifecycle and Configuration                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Initialize / Configure / Refresh Commands                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+void initialize() {
+  logDebug('initialize() called')
+  sendEvent(name: 'motion', value: 'inactive', descriptionText: 'Initialized as inactive')
+  // Sense is always awake — refresh immediately
+  parent?.componentRefresh(device)
+}
+
+void configure() {
+  logDebug('configure() called')
+  if (!settings.logLevel) {
+    logWarn("No log level set, defaulting to 'debug'")
+    device.updateSetting('logLevel', 'debug')
+  }
+  // Clear sync flag so next refresh re-reads settings from device
+  device.removeDataValue('gen1SettingsSynced')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Gathers device-side settings and sends them to the parent app for
+ * relay to the Shelly device via GET /settings.
+ * Only sends settings that have been configured (non-null).
+ */
+private void relayDeviceSettings() {
+  Map settingsMap = [:]
+  if (settings.motionSensitivity != null) {
+    settingsMap.motion_sensitivity = (settings.motionSensitivity as Integer).toString()
+  }
+  if (settings.motionBlindTimeMinutes != null) {
+    settingsMap.motion_blind_time_minutes = (settings.motionBlindTimeMinutes as Integer).toString()
+  }
+  if (settingsMap) {
+    logDebug("Relaying device settings to parent: ${settingsMap}")
+    parent?.componentUpdateGen1Settings(device, settingsMap)
+  }
+}
+
+/**
+ * Refreshes the device state. The Sense is always awake, so this
+ * will succeed immediately.
+ */
+void refresh() {
+  logDebug('refresh() called')
+  parent?.componentRefresh(device)
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Initialize / Configure / Refresh Commands               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Motion State Management                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Sets motion to active. The device's own blind time setting and
+ * {@code motion_off} action URL handle the inactive transition.
+ */
+private void setMotionActive() {
+  sendEvent(name: 'motion', value: 'active', isStateChange: true,
+    descriptionText: 'Motion detected')
+  logInfo('Motion detected')
+}
+
+/**
+ * Sets motion to inactive. Called by {@code motion_off} action URL callback
+ * or by status poll showing motion is no longer active.
+ */
+void setMotionInactive() {
+  if (device.currentValue('motion') == 'active') {
+    sendEvent(name: 'motion', value: 'inactive', isStateChange: true,
+      descriptionText: 'Motion inactive')
+    logInfo('Motion inactive')
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Motion State Management                                 ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  IR Blaster Commands                                         ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Emits an IR code in Pronto hex format via the Sense's IR blaster.
+ *
+ * @param prontoHex The Pronto hex string to transmit
+ */
+void emitIR(String prontoHex) {
+  if (!prontoHex) { logError('emitIR: prontoHex is required'); return }
+  logDebug("emitIR: emitting Pronto hex code")
+  parent?.componentSenseEmitIR(device, prontoHex)
+}
+
+/**
+ * Emits a previously stored IR code by its ID.
+ *
+ * @param codeId The numeric ID of the stored code to emit
+ */
+void emitStoredIR(BigDecimal codeId) {
+  if (codeId == null) { logError('emitStoredIR: codeId is required'); return }
+  logDebug("emitStoredIR: emitting stored code ID=${codeId.intValue()}")
+  parent?.componentSenseEmitStoredIR(device, codeId.intValue())
+}
+
+/**
+ * Retrieves the list of stored IR codes from the device.
+ * Results are published as the {@code irCodes} attribute (JSON array).
+ */
+void listIRCodes() {
+  logDebug('listIRCodes: requesting code list from device')
+  parent?.componentSenseListIRCodes(device)
+}
+
+/**
+ * Stores a new IR code on the device in Pronto hex format.
+ * Automatically refreshes the {@code irCodes} attribute after storing.
+ *
+ * @param prontoHex The Pronto hex string to store
+ * @param codeName A human-readable name for the stored code
+ */
+void addIRCode(String prontoHex, String codeName) {
+  if (!prontoHex || !codeName) { logError('addIRCode: prontoHex and codeName are required'); return }
+  logDebug("addIRCode: storing '${codeName}'")
+  parent?.componentSenseAddIRCode(device, prontoHex, codeName)
+}
+
+/**
+ * Removes a stored IR code from the device by its ID.
+ * Automatically refreshes the {@code irCodes} attribute after removal.
+ *
+ * @param codeId The numeric ID of the stored code to remove
+ */
+void removeIRCode(BigDecimal codeId) {
+  if (codeId == null) { logError('removeIRCode: codeId is required'); return }
+  logDebug("removeIRCode: removing stored code ID=${codeId.intValue()}")
+  parent?.componentSenseRemoveIRCode(device, codeId.intValue())
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END IR Blaster Commands                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Status Distribution                                         ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Distributes polled status data to the device attributes.
+ * Called by the parent app after polling GET /status on the Gen 1 device.
+ * Handles motion state, temperature, humidity, illuminance, battery, and charger.
+ *
+ * @param status Map of normalized component statuses
+ */
+void distributeStatus(Map status) {
+  logDebug("distributeStatus() called with: ${status}")
+  if (!status) { return }
+
+  String scale = location.temperatureScale ?: 'F'
+
+  status.each { k, v ->
+    String key = k.toString()
+    if (!(v instanceof Map)) { return }
+    Map data = v as Map
+
+    if (key.startsWith('motion:')) {
+      if (data.motion == true) {
+        setMotionActive()
+      } else if (data.motion == false) {
+        setMotionInactive()
+      }
+    } else if (key.startsWith('temperature:')) {
+      BigDecimal temp = (scale == 'C' && data.tC != null) ? data.tC as BigDecimal :
+        (data.tF != null ? data.tF as BigDecimal : null)
+      if (temp != null) {
+        sendEvent(name: 'temperature', value: temp, unit: "\u00B0${scale}",
+          descriptionText: "Temperature is ${temp}\u00B0${scale}")
+        logInfo("Temperature: ${temp}\u00B0${scale}")
+      }
+    } else if (key.startsWith('humidity:')) {
+      if (data.value != null) {
+        Integer rh = data.value as Integer
+        sendEvent(name: 'humidity', value: rh, unit: '%',
+          descriptionText: "Humidity is ${rh}%")
+        logInfo("Humidity: ${rh}%")
+      }
+    } else if (key.startsWith('lux:')) {
+      if (data.value != null) {
+        Integer lux = data.value as Integer
+        sendEvent(name: 'illuminance', value: lux, unit: 'lux',
+          descriptionText: "Illuminance is ${lux} lux")
+        logInfo("Illuminance: ${lux} lux")
+      }
+    } else if (key.startsWith('devicepower:')) {
+      if (data.battery != null) {
+        Integer battery = data.battery as Integer
+        sendEvent(name: 'battery', value: battery, unit: '%',
+          descriptionText: "Battery is ${battery}%")
+        logInfo("Battery: ${battery}%")
+      }
+      if (data.charger != null) {
+        String chargerState = data.charger ? 'true' : 'false'
+        sendEvent(name: 'chargerConnected', value: chargerState,
+          descriptionText: "Charger connected: ${chargerState}")
+      }
+    }
+  }
+
+  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Status Distribution                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Logging Helpers                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+String loggingLabel() {
+  return "${device.displayName}"
+}
+
+private Boolean shouldLogLevel(String messageLevel) {
+  if (messageLevel == 'error') { return true }
+  else if (messageLevel == 'warn') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'info') { return ['info', 'debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'debug') { return ['debug', 'trace'].contains(settings.logLevel) }
+  else if (messageLevel == 'trace') { return settings.logLevel == 'trace' }
+  return false
+}
+
+void logError(message) { log.error "${loggingLabel()}: ${message}" }
+void logWarn(message) { log.warn "${loggingLabel()}: ${message}" }
+void logInfo(message) { if (shouldLogLevel('info')) { log.info "${loggingLabel()}: ${message}" } }
+void logDebug(message) { if (shouldLogLevel('debug')) { log.debug "${loggingLabel()}: ${message}" } }
+void logTrace(message) { if (shouldLogLevel('trace')) { log.trace "${loggingLabel()}: ${message}" } }
+
+@CompileStatic
+void logJson(Map message) {
+  if (shouldLogLevel('trace')) {
+    logTrace(JsonOutput.prettyPrint(JsonOutput.toJson(message)))
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Logging Helpers                                         ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Imports And Fields                                          ║
+// ╚══════════════════════════════════════════════════════════════╝
+import groovy.transform.CompileStatic
+import groovy.json.JsonOutput
+import groovy.transform.Field
+
+@Field static Boolean NOCHILDSWITCH = true
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Imports And Fields                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
