@@ -329,24 +329,7 @@ Map mainPage() {
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
         section() {
             if (state.discoveryRunning) {
-                Long endTimeMs = state.discoveryEndTime as Long
-                paragraph """<b><span id='discovery-timer'>Discovery time remaining: ${remainingSecs} seconds</span></b>
-<script>
-(function(){
-  var endTime = ${endTimeMs};
-  var el = document.getElementById('discovery-timer');
-  if (!el || !endTime) return;
-  function update() {
-    var remaining = Math.max(0, Math.round((endTime - Date.now()) / 1000));
-    el.textContent = remaining > 0
-      ? 'Discovery time remaining: ' + remaining + ' seconds'
-      : 'Discovery has finished.';
-    if (remaining <= 0) clearInterval(timer);
-  }
-  var timer = setInterval(update, 1000);
-  update();
-})();
-</script>"""
+                paragraph "<b><span class='app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>"
             } else {
                 paragraph "<b>Discovery has stopped.</b>"
             }
@@ -486,7 +469,9 @@ Map mainPage() {
 
             input name: 'displayLogLevel', type: 'enum', title: 'App page display log level (X and above)', options: displayOptions, defaultValue: validatedDisplay, submitOnChange: true
 
-            paragraph renderRecentLogsHtml()
+            String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
+            String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
         }
     }
 }
@@ -3996,10 +3981,6 @@ private String stripJsExtension(String filename) {
 void initialize() {
     if (!state.discoveredShellys) { state.discoveredShellys = [:] }
     if (!state.recentLogs) { state.recentLogs = [] }
-    // Trim oversized log buffer from previous versions (was 300, now capped at 50)
-    if (state.recentLogs instanceof List && state.recentLogs.size() > 50) {
-        state.recentLogs = state.recentLogs[-50..-1]
-    }
     if (state.discoveryRunning == null) { state.discoveryRunning = false }
 
     // BLE state initialization
@@ -4026,6 +4007,7 @@ void initialize() {
     state.remove('discoveryDriverQueue')
     state.remove('discoveryDriverInProgress')
     state.remove('driverGeneration')
+    state.remove('pendingFoundShellyEvent')
 
     // Clean up stale driver tracking entries from old app versions
     pruneStaleDriverTracking()
@@ -4103,8 +4085,12 @@ void startDiscovery(Boolean resetFound = false) {
     startMdnsDiscovery()
 
     unschedule('stopDiscovery')
+    unschedule('updateDiscoveryTimer')
+    unschedule('updateRecentLogs')
     unschedule('processMdnsDiscovery')
     runIn(getDiscoveryDurationSeconds(), 'stopDiscovery')
+    runIn(1, 'updateDiscoveryTimer')
+    runIn(1, 'updateRecentLogs')
     // Give the hub 10 seconds after listener registration to collect mDNS responses
     runIn(10, 'processMdnsDiscovery')
 }
@@ -4120,6 +4106,7 @@ void extendDiscovery(Integer seconds) {
     if (!state.discoveryRunning) {
         // Sonos-style: if stopped, start again without clearing discovered list.
         state.discoveryRunning = true
+        runIn(1, 'updateDiscoveryTimer')
         runIn(2, 'processMdnsDiscovery')
     }
 
@@ -4170,24 +4157,52 @@ void stopDiscovery() {
     state.discoveryEndTime = null
 
     unschedule('processMdnsDiscovery')
+    unschedule('updateDiscoveryTimer')
+    unschedule('updateRecentLogs')
     unschedule('stopDiscovery')
-    unschedule('fireFoundShellyEventsIfPending')
-    state.remove('pendingFoundShellyEvent')
-
-    // Fire one final SSR update so the table reflects all devices found
-    sendFoundShellyEvents()
 
     // Do NOT unregister mDNS listeners - keep them active so data accumulates
     logTrace('Discovery stopped (mDNS listeners remain active)')
 }
 
 /**
- * No-op retained for backward compatibility with any pending {@code runIn()} schedules.
- * Timer countdown is now handled by client-side JavaScript, and log display
- * updates on page re-renders. No {@code sendEvent()} calls are needed.
+ * Updates the discovery timer display in real-time.
+ * Sends an event to the UI showing remaining discovery time and reschedules
+ * itself every second while discovery is active. Stops automatically when
+ * the timer reaches zero or discovery is no longer running.
  */
-void updateDiscoveryUI() {
-    // Intentionally empty — timer is client-side JS, logs update on page re-render
+void updateDiscoveryTimer() {
+    if (!state.discoveryRunning || !state.discoveryEndTime) {
+        return
+    }
+    Integer remainingSecs = getRemainingDiscoverySeconds()
+
+    // Send event for real-time browser update
+    app.sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds")
+
+    // Continue scheduling if time remaining
+    if (remainingSecs > 0) {
+        runIn(1, 'updateDiscoveryTimer')
+    }
+}
+
+/**
+ * Updates the recent logs display in the UI.
+ * Retrieves the most recent 10 log entries from state, reverses them
+ * (most recent first), and sends them to the UI via an app event.
+ * Reschedules itself every second while discovery is running to provide
+ * real-time log updates.
+ */
+void updateRecentLogs() {
+    // Send the most recent 10 log lines to the browser for the app-state binding
+    String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
+    String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+    app.sendEvent(name: 'recentLogs', value: recentPayload)
+
+    // Continue updating once per second while discovery is running
+    if (state.discoveryRunning) {
+        runIn(1, 'updateRecentLogs')
+    }
 }
 
 /**
@@ -4319,7 +4334,7 @@ void processMdnsDiscovery() {
             Integer afterCount = state.discoveredShellys.size()
             if (afterCount > beforeCount) {
                 logDebug("Found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
-                debounceSendFoundShellyEvents()
+                sendFoundShellyEvents()
             }
         }
     } catch (Exception e) {
@@ -4332,36 +4347,10 @@ void processMdnsDiscovery() {
 }
 
 /**
- * Schedules an SSR table update after a short debounce delay.
- * Multiple rapid calls collapse into a single {@link #sendFoundShellyEvents()} call,
- * preventing Hubitat's per-app rate limit from being exceeded during discovery
- * when many async device fetches complete in rapid succession.
- */
-private void debounceSendFoundShellyEvents() {
-    state.pendingFoundShellyEvent = true
-    runIn(3, 'fireFoundShellyEventsIfPending')
-}
-
-/**
- * Fires the debounced SSR event if one is pending.
- * Called by {@code runIn()} after the debounce delay set by
- * {@link #debounceSendFoundShellyEvents()}.
- */
-void fireFoundShellyEventsIfPending() {
-    if (state.pendingFoundShellyEvent) {
-        state.pendingFoundShellyEvent = false
-        sendFoundShellyEvents()
-    }
-}
-
-/**
  * Fires an SSR event to update the device configuration table on the main page.
  * Merges newly discovered devices into the existing cache without destroying entries
  * that already have detailed status data (script/webhook counts from RPC queries).
  * Uses bare {@code sendEvent()} to trigger the SSR callback in {@link #processServerSideRender}.
- *
- * <p><b>Note:</b> During discovery, prefer {@link #debounceSendFoundShellyEvents()} to avoid
- * exceeding Hubitat's per-app event rate limit.</p>
  */
 void sendFoundShellyEvents() {
     Map cache = state.deviceStatusCache ?: [:]
@@ -5414,7 +5403,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         logDebug("fetchAndStoreDeviceInfo: Gen 1 device at ${ip}, using REST API")
         appendLog('debug', "Getting Gen 1 device info from ${ip}")
         if (fetchGen1DeviceInfo(ipKey, device)) {
-            debounceSendFoundShellyEvents()
+            sendFoundShellyEvents()
         }
         return
     }
@@ -5488,7 +5477,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         if (deviceStatus) { logDebug("fetchAndStoreDeviceInfo: deviceStatus keys=${deviceStatus.keySet()}") }
 
 
-        debounceSendFoundShellyEvents()
+        sendFoundShellyEvents()
         determineDeviceDriver(deviceStatus, ipKey)
     } catch (Exception e) {
         String errorMsg = e.message ?: e.toString() ?: e.class.simpleName
@@ -5505,7 +5494,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
             state.discoveredShellys[ipKey] = device
             logDebug("fetchAndStoreDeviceInfo: RPC failed for ${ip}, trying Gen 1 REST API")
             if (fetchGen1DeviceInfo(ipKey, device)) {
-                debounceSendFoundShellyEvents()
+                sendFoundShellyEvents()
                 return
             }
 
@@ -5533,7 +5522,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
                 if (device.deviceStatus) {
                     determineDeviceDriver(device.deviceStatus, ipKey)
-                    debounceSendFoundShellyEvents()
+                    sendFoundShellyEvents()
                 }
                 return
             }
@@ -6883,28 +6872,17 @@ private void pruneDisplayedLogs(String displayLevel) {
     int removed = state.recentLogs.size() - kept.size()
     state.recentLogs = kept
     if (removed > 0) { logDebug("pruneDisplayedLogs: removed ${removed} entries below ${displayLevel}") }
-    // Logs display updates on next page re-render (no sendEvent needed)
-}
-
-
-/**
- * Renders the recent log lines as an HTML {@code <pre>} block.
- * Used both for initial page render and SSR updates (piggybacked on
- * the {@code configTable} event to avoid additional {@code sendEvent()} calls).
- *
- * @return HTML string containing the formatted log lines
- */
-private String renderRecentLogsHtml() {
     String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
     String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-    return "<pre style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
+    app.sendEvent(name: 'recentLogs', value: recentPayload)
 }
+
 
 /**
  * Appends a log message to the in-app log buffer.
  * Adds the message with timestamp and level to state if it meets the display
- * threshold and maintains a rolling buffer of the most recent 50 entries.
- * Logs update in real time via SSR, piggybacked on the {@code configTable} event.
+ * threshold, maintains a rolling buffer of the most recent 300 entries, and
+ * sends the 10 most recent entries to the UI for real-time display.
  *
  * @param level The log level (trace, debug, info, warn, error)
  * @param msg The message to log
@@ -6916,9 +6894,14 @@ private void appendLog(String level, String msg) {
     String displayLevel = (settings?.displayLogLevel ?: (settings?.logLevel ?: 'warn'))?.toString()
     if (levelPriority(level) >= levelPriority(displayLevel)) {
         state.recentLogs.add("${new Date().format('yyyy-MM-dd HH:mm:ss')} - ${level?.toUpperCase()}: ${msg}")
-        if (state.recentLogs.size() > 50) {
-            state.recentLogs = state.recentLogs[-50..-1]
+        if (state.recentLogs.size() > 300) {
+            state.recentLogs = state.recentLogs[-300..-1]
         }
+
+        // Push the most recent 10 lines to the app UI for live updates
+        String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
+        String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+        app.sendEvent(name: 'recentLogs', value: recentPayload)
     }
 }
 
