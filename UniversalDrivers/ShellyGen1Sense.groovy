@@ -182,7 +182,7 @@ private Map parseWebhookPath(Map msg) {
  */
 private void routeActionUrlCallback(Map params) {
   switch (params.dst) {
-    case 'motion':
+    case 'motion':     // Defensive: matches Motion sensor pattern in case device sends bare 'motion' dst
     case 'motion_on':
       setMotionActive()
       // Also poll for updated sensor readings while device is reporting

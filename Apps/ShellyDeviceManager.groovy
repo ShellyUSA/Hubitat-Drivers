@@ -173,9 +173,11 @@
     'SHSN-1':    'Shelly Sense',
 ]
 
-/** Gen 1 type codes that are battery-powered. Note: SHMOS-*, SHSN-1 and SHTRV-01 are
- *  always-awake despite running on battery. Sleepiness is controlled by
- *  {@link #isSleepyBatteryDevice}, not by membership in this set. */
+/** Gen 1 type codes that are battery-powered. All battery devices are excluded from
+ *  periodic polling via {@link #isBatteryPoweredDevice}. Devices that are also
+ *  unreachable most of the time (truly sleepy) are identified by
+ *  {@link #isSleepyBatteryDevice} — SHMOS-*, SHSN-1 and SHTRV-01 are always-awake
+ *  and NOT sleepy, even though they run on battery. */
 @Field static final Set<String> GEN1_BATTERY_TYPES = [
     'SHHT-1', 'SHWT-1', 'SHDW-1', 'SHDW-2',
     'SHMOS-01', 'SHMOS-02', 'SHBTN-1', 'SHBTN-2',
@@ -1166,7 +1168,7 @@ private List<Map> buildDeviceList() {
                     hubDeviceDni: dev.deviceNetworkId,
                     hubDeviceName: dev.displayName,
                     hubDeviceLabel: dev.label ?: dev.displayName,
-                    isBatteryDevice: isSleepyBatteryDevice(dev),
+                    isBatteryDevice: isBatteryPoweredDevice(dev),
                     isReachable: null,
                     requiredScriptCount: null,
                     installedScriptCount: null,
@@ -1460,7 +1462,7 @@ private void ensureDeviceStatusCache() {
                 hubDeviceDni: dev.deviceNetworkId,
                 hubDeviceName: dev.displayName,
                 hubDeviceId: dev.id,
-                isBatteryDevice: isSleepyBatteryDevice(dev),
+                isBatteryDevice: isBatteryPoweredDevice(dev),
                 isReachable: null,
                 requiredScriptCount: null,
                 installedScriptCount: null,
@@ -1521,7 +1523,7 @@ private Map buildDeviceStatusCacheEntry(String ip) {
         entry.hubDeviceDni = childDevice.deviceNetworkId
         entry.hubDeviceName = childDevice.displayName
         entry.hubDeviceId = childDevice.id
-        entry.isBatteryDevice = isSleepyBatteryDevice(childDevice)
+        entry.isBatteryDevice = isBatteryPoweredDevice(childDevice)
     } else {
         // Device was deleted outside the app - clean up stale config entries
         cleanupStaleDeviceConfig(ip)
@@ -2910,7 +2912,8 @@ private void cleanupStaleDeviceConfig(String ip) {
 /**
  * Stores device component configuration in app state for later reference.
  * Extracts component types from the device status and stores them keyed by DNI.
- * Used by {@link #isSleepyBatteryDevice} and the device config page to make
+ * Used by {@link #isBatteryPoweredDevice}, {@link #isSleepyBatteryDevice},
+ * and the device config page to make
  * intelligent decisions without needing to contact the device.
  *
  * @param dni The device network ID
@@ -2971,12 +2974,50 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
 }
 
 /**
- * Determines if a child device is a sleepy battery device.
- * Checks stored device config for battery capability without BTHome or Script
- * components, indicating the device is not always awake.
+ * Determines if a child device is battery-powered.
+ * Battery devices should never be periodically polled — status updates come
+ * exclusively from on-device webhook pushes to Hubitat. Polling drains battery
+ * life even on always-awake devices like Motion sensors and Sense.
+ *
+ * <p>Use this for polling exclusion. For wake-up queuing decisions (whether the
+ * device needs deferred action URL / settings installation), use
+ * {@link #isSleepyBatteryDevice} instead.
  *
  * @param childDevice The child device to check
- * @return true if the device is a sleepy battery device
+ * @return true if the device is battery-powered
+ */
+private Boolean isBatteryPoweredDevice(def childDevice) {
+    if (!childDevice) { return false }
+
+    String dni = childDevice.deviceNetworkId
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Map config = deviceConfigs[dni] as Map
+
+    if (config) {
+        return config.hasBattery && !config.hasBthome && !config.hasScript
+    }
+
+    // Fallback: check driver name for battery patterns (Gen 1 and Gen 2)
+    String typeName = childDevice.typeName ?: ''
+    return typeName.contains('TH Sensor') || typeName.contains('Temperature Sensor') ||
+           typeName.contains('Humidity Sensor') || typeName.contains('Battery Device') ||
+           typeName.contains('Flood Sensor') || typeName.contains('DW Sensor') ||
+           typeName.contains('Gen1 Button') || typeName.contains('Smoke Sensor') ||
+           typeName.contains('Motion Sensor') || typeName.contains('Gen1 Sense')
+}
+
+/**
+ * Determines if a child device is a sleepy battery device that is usually
+ * unreachable via HTTP. Sleepy devices wake briefly to send action URL callbacks,
+ * then go back to sleep. Configuration changes (action URLs, settings) must be
+ * queued and applied during the next wake-up window.
+ *
+ * <p>Always-awake battery devices (Motion sensors, Sense) are NOT sleepy —
+ * they can receive settings pushes at any time. But they should still not be
+ * polled; use {@link #isBatteryPoweredDevice} for polling exclusion.
+ *
+ * @param childDevice The child device to check
+ * @return true if the device is a sleepy (usually unreachable) battery device
  */
 private Boolean isSleepyBatteryDevice(def childDevice) {
     if (!childDevice) { return false }
@@ -2989,7 +3030,7 @@ private Boolean isSleepyBatteryDevice(def childDevice) {
         return config.hasBattery && !config.hasBthome && !config.hasScript && !config.hasThermostat && !config.hasMotion
     }
 
-    // Fallback: check driver name for battery-only patterns (Gen 1 and Gen 2)
+    // Fallback: check driver name for sleepy-only patterns (excludes Motion/Sense which are always-awake)
     String typeName = childDevice.typeName ?: ''
     return typeName.contains('TH Sensor') || typeName.contains('Temperature Sensor') ||
            typeName.contains('Humidity Sensor') || typeName.contains('Battery Device') ||
@@ -4189,8 +4230,8 @@ void processMdnsDiscovery() {
         List<Map<String,Object>> shellyEntries = getMDNSEntries('_shelly._tcp')
         List<Map<String,Object>> httpEntries = getMDNSEntries('_http._tcp')
 
-        // logTrace("processMdnsDiscovery: _shelly._tcp raw=${shellyEntries}, _http._tcp raw=${httpEntries}")
-        // logTrace("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries?.size() ?: 0} entries, _http._tcp returned ${httpEntries?.size() ?: 0} entries")
+        logTrace("processMdnsDiscovery: _shelly._tcp raw=${shellyEntries}, _http._tcp raw=${httpEntries}")
+        logTrace("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries?.size() ?: 0} entries, _http._tcp returned ${httpEntries?.size() ?: 0} entries")
 
         List allEntries = []
         if (shellyEntries) { allEntries.addAll(shellyEntries) }
@@ -4199,7 +4240,7 @@ void processMdnsDiscovery() {
         if (!allEntries) {
             logTrace('processMdnsDiscovery: no mDNS entries found for either service type')
         } else {
-            // logTrace("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
+            logTrace("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
             Integer beforeCount = state.discoveredShellys.size()
             allEntries.each { entry ->
                 // Actual mDNS entry fields: server, port, ip4Addresses, ip6Addresses, gen, app, ver
@@ -4211,7 +4252,7 @@ void processMdnsDiscovery() {
 
                 // Defensive parsing: ip4Addresses may be String or List<String> depending on service type
                 Object rawIp4 = entry?.ip4Addresses
-                // logTrace("mDNS ip4Addresses isList=${rawIp4 instanceof List}, value=${rawIp4}")
+                logTrace("mDNS ip4Addresses isList=${rawIp4 instanceof List}, value=${rawIp4}")
                 String ip4 = ''
                 if (rawIp4 instanceof List) {
                     ip4 = rawIp4.find { it && !it.toString().contains(':') }?.toString() ?: ''
@@ -4219,7 +4260,7 @@ void processMdnsDiscovery() {
                     ip4 = rawIp4.toString().replaceAll(/[\[\]]/, '').trim()
                 }
 
-                // logTrace("mDNS entry: server=${server}, ip=${ip4}, port=${port}, gen=${gen}, app=${deviceApp}, ver=${ver}")
+                logTrace("mDNS entry: server=${server}, ip=${ip4}, port=${port}, gen=${gen}, app=${deviceApp}, ver=${ver}")
 
                 // All entries from _shelly._tcp are Shelly devices
                 // For _http._tcp entries, check if server name contains 'shelly'
@@ -4264,7 +4305,7 @@ void processMdnsDiscovery() {
                         deviceEntry.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
                         String hostnameMac = extractMacFromMdnsName(deviceName)
                         if (hostnameMac) { deviceEntry.mac = hostnameMac }
-                        // logDebug("Gen 1 identified from hostname: ${deviceName} -> ${deviceEntry.model} (type=${typeKey})")
+                        logDebug("Gen 1 identified from hostname: ${deviceName} -> ${deviceEntry.model} (type=${typeKey})")
                     }
                 }
 
@@ -5108,8 +5149,8 @@ void pollGen1Devices() {
         String ip = dev.getDataValue('ipAddress')
         if (!ip) { return }
 
-        // Skip battery devices — they are polled on wake-up callback
-        if (isSleepyBatteryDevice(dev)) { return }
+        // Skip battery devices — status comes from webhook pushes, not polling
+        if (isBatteryPoweredDevice(dev)) { return }
 
         pollGen1DeviceStatus(ip)
         polled++
@@ -5126,7 +5167,7 @@ void pollGen1Devices() {
  */
 private void scheduleGen1Polling() {
     List childDevices = getChildDevices() ?: []
-    Boolean hasGen1NonBattery = childDevices.any { isGen1Device(it) && !isSleepyBatteryDevice(it) }
+    Boolean hasGen1NonBattery = childDevices.any { isGen1Device(it) && !isBatteryPoweredDevice(it) }
 
     if (hasGen1NonBattery) {
         Integer intervalSec = (settings?.gen1PollInterval ?: '60') as Integer
@@ -12961,7 +13002,7 @@ void componentSenseListIRCodes(def childDevice) {
         }
         httpGetHelper(params) { resp ->
             if (resp?.status == 200 && resp.data) {
-                String codesJson = groovy.json.JsonOutput.toJson(resp.data)
+                String codesJson = JsonOutput.toJson(resp.data)
                 childSendEventHelper(childDevice, [name: 'irCodes', value: codesJson,
                     descriptionText: 'IR code list updated'])
                 logInfo("IR codes list updated for ${childDevice.displayName}")
@@ -14426,7 +14467,7 @@ void parentSendCommand(def parentDevice, String method, Map params) {
                 Integer brightness = params?.brightness != null ? params.brightness as Integer : 0
                 String whiteTurn = brightness > 0 ? 'on' : 'off'
                 Map whiteParams = [turn: whiteTurn, brightness: brightness.toString()]
-                if (params?.transitionMs != null && params.transitionMs as Integer > 0) {
+                if (params?.transitionMs != null && (params.transitionMs as Integer) > 0) {
                     whiteParams.transition = params.transitionMs.toString()
                 }
                 sendGen1Get(ipAddress, "white/${componentId}", whiteParams)
