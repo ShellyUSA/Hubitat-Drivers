@@ -1,21 +1,23 @@
 /**
- * Shelly Gen1 2x Switch PM Parent
+ * Shelly Gen1 4x Switch PM Parent
  *
- * Parent driver for Gen 1 dual-relay Shelly devices with power monitoring.
- * Examples: Shelly 2.5 (relay mode)
+ * Parent driver for the Shelly 4Pro (SHSW-44), a Gen 1 four-channel relay device
+ * with per-channel power metering, 4 physical switch inputs, and device-level
+ * voltage reporting.
  *
  * Architecture:
  *   - App creates parent device with component data values
- *   - Parent creates 2 switch PM children as driver-level children in initialize()
+ *   - Parent creates 4 switch PM children as driver-level children in initialize()
  *   - Parent receives Gen 1 action URL callbacks, routes to children
  *   - Parent aggregates switch state (anyOn/allOn) and power values (sum)
+ *   - Device-level voltage reported on parent (from top-level /status field)
  *   - Commands: child -> parent componentOn() -> app Gen 1 REST endpoint
  *
  * Version: 1.0.0
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 2x Switch PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 4x Switch PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'PowerMeter'
     capability 'EnergyMeter'
@@ -59,10 +61,12 @@ void updated() {
 }
 
 /**
- * Initializes the parent device: creates/reconciles children, updates aggregate state.
+ * Initializes the parent device: creates/reconciles children, sets button count,
+ * and updates aggregate state.
  */
 void initialize() {
   logDebug('Parent device initialized')
+  sendEvent(name: 'numberOfButtons', value: 4, descriptionText: '4 physical inputs')
   reconcileChildDevices()
   updateParentSwitchState()
 }
@@ -94,7 +98,7 @@ void reinitialize() {
 
 /**
  * Reconciles driver-level child devices against the components data value.
- * Expected: 2 switch PM children.
+ * Expected: 4 switch PM children for the Shelly 4Pro.
  */
 void reconcileChildDevices() {
   String componentStr = device.getDataValue('components')
@@ -256,6 +260,10 @@ private Map parseWebhookPath(Map msg) {
 
 /**
  * Routes Gen 1 action URL callbacks to children and updates parent aggregates.
+ * Handles switch on/off, input push/hold, and overpower events.
+ *
+ * Overpower: Gen 1 relays auto-shut off when overpower is detected. The callback
+ * tells us which relay tripped, so we update the child's switch state accordingly.
  */
 private void routeActionUrlCallback(Map params) {
   String dst = params.dst
@@ -273,15 +281,18 @@ private void routeActionUrlCallback(Map params) {
       events.add([name: 'switch', value: 'off', descriptionText: 'Switch turned off'])
       break
     case 'over_power':
+      // Relay auto-shutoff due to overpower — treat as switch off for the affected child
       events.add([name: 'switch', value: 'off', descriptionText: "Switch turned off (overpower on relay ${componentId})"])
       logWarn("Overpower detected on relay ${componentId} — relay auto-shutoff triggered")
       sendEvent(name: 'overpower', value: "relay ${componentId}", descriptionText: "Overpower on relay ${componentId}")
       break
     case 'input_short':
-      events.add([name: 'pushed', value: 1, isStateChange: true, descriptionText: 'Button 1 was pushed'])
+      Integer buttonNum = componentId + 1
+      events.add([name: 'pushed', value: buttonNum, isStateChange: true, descriptionText: "Button ${buttonNum} was pushed"])
       break
     case 'input_long':
-      events.add([name: 'held', value: 1, isStateChange: true, descriptionText: 'Button 1 was held'])
+      Integer buttonNum = componentId + 1
+      events.add([name: 'held', value: buttonNum, isStateChange: true, descriptionText: "Button ${buttonNum} was held"])
       break
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${dst}")
@@ -307,8 +318,7 @@ private void routeActionUrlCallback(Map params) {
     // Trigger refresh to get power data
     parent?.componentRefresh(device)
   } else if (dst.startsWith('input_')) {
-    // Input events fire on parent
-    sendEvent(name: 'numberOfButtons', value: 1)
+    // Input events fire on parent (button events)
     events.each { Map evt -> sendEvent(evt) }
   }
 }
@@ -408,6 +418,10 @@ private void updateParentSwitchState() {
  * Distributes polled Gen 1 status to children and parent.
  * Called by app after polling GET /status on the Gen 1 device.
  *
+ * Aggregates power, energy, and current across all 4 children onto the parent.
+ * Reports device-level voltage from the top-level deviceVoltage key (Shelly 4Pro
+ * reports supply voltage at the device level, not per-component).
+ *
  * @param deviceStatus Map of normalized component statuses
  */
 void distributeStatus(Map deviceStatus) {
@@ -438,9 +452,9 @@ void distributeStatus(Map deviceStatus) {
       totalPower += data.apower as BigDecimal
     }
     if (data.voltage != null) {
-      events.add([name: 'voltage', value: data.voltage as BigDecimal, unit: 'V'])
-      BigDecimal v2 = data.voltage as BigDecimal
-      if (v2 > maxVoltage) { maxVoltage = v2 }
+      BigDecimal compVoltage = data.voltage as BigDecimal
+      events.add([name: 'voltage', value: compVoltage, unit: 'V'])
+      if (compVoltage > maxVoltage) { maxVoltage = compVoltage }
     }
     if (data.current != null) {
       events.add([name: 'amperage', value: data.current as BigDecimal, unit: 'A'])
@@ -468,7 +482,15 @@ void distributeStatus(Map deviceStatus) {
   sendEvent(name: 'power', value: totalPower, unit: 'W')
   sendEvent(name: 'energy', value: totalEnergy, unit: 'kWh')
   sendEvent(name: 'amperage', value: totalCurrent, unit: 'A')
-  sendEvent(name: 'voltage', value: maxVoltage, unit: 'V')
+
+  // Device-level voltage (Shelly 4Pro reports supply voltage at the device level)
+  // Falls back to max per-component voltage if device-level voltage is absent
+  if (deviceStatus.containsKey('deviceVoltage')) {
+    sendEvent(name: 'voltage', value: deviceStatus.deviceVoltage as BigDecimal, unit: 'V')
+  } else if (maxVoltage > 0) {
+    sendEvent(name: 'voltage', value: maxVoltage, unit: 'V')
+  }
+
   sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 

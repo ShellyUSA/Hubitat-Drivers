@@ -12,6 +12,14 @@
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
 @Field static final String GITHUB_BRANCH = 'master'
 
+// Model-specific driver overrides for Gen 1 devices that need dedicated drivers
+// instead of the generic generated driver name. Checked before generateDriverName().
+@Field static final Map<String, String> GEN1_MODEL_DRIVER_OVERRIDE = [
+    'SHPLG-1':  'Shelly Gen1 Plug',
+    'SHPLG-S':  'Shelly Gen1 Plug S',
+    'SHPLG-U1': 'Shelly Gen1 Plug S',
+]
+
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
 // New device types should be added here as prebuilt .groovy files.
 @Field static final Map<String, String> PREBUILT_DRIVERS = [
@@ -34,6 +42,8 @@
     'Shelly Gen1 Single Switch PM': 'UniversalDrivers/ShellyGen1SingleSwitchPM.groovy',
     'Shelly Gen1 Single Switch Input': 'UniversalDrivers/ShellyGen1SingleSwitchInput.groovy',
     'Shelly Gen1 Single Switch Input PM': 'UniversalDrivers/ShellyGen1SingleSwitchInputPM.groovy',
+    'Shelly Gen1 Plug': 'UniversalDrivers/ShellyGen1Plug.groovy',
+    'Shelly Gen1 Plug S': 'UniversalDrivers/ShellyGen1PlugS.groovy',
     'Shelly Gen1 Single Dimmer': 'UniversalDrivers/ShellyGen1SingleDimmer.groovy',
     'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
@@ -43,6 +53,7 @@
     'Shelly Gen1 TRV': 'UniversalDrivers/ShellyGen1TRV.groovy',
 
     // Gen 1 multi-component parent drivers
+    'Shelly Gen1 4x Switch PM Parent': 'UniversalDrivers/ShellyGen1_4xSwitchPMParent.groovy',
     'Shelly Gen1 2x Switch PM Parent': 'UniversalDrivers/ShellyGen1_2xSwitchPMParent.groovy',
     'Shelly Gen1 2x Switch Parent': 'UniversalDrivers/ShellyGen1_2xSwitchParent.groovy',
     'Shelly Gen1 Single Cover PM Parent': 'UniversalDrivers/ShellyGen1SingleCoverPMParent.groovy',
@@ -2092,7 +2103,8 @@ private void clearGen1ActionUrls(String ipAddress) {
             Map result = sendGen1Setting(ipAddress, "settings/relay/${cid}", [
                 out_on_url: '', out_off_url: '',
                 btn_on_url: '', btn_off_url: '',
-                shortpush_url: '', longpush_url: ''
+                shortpush_url: '', longpush_url: '',
+                over_power_url: ''
             ])
             if (result != null) { cleared++ }
         }
@@ -2307,6 +2319,8 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
                 dst: 'switch_on', cid: cid, name: "Relay ${cid} On", configType: 'component'])
             actions.add([endpoint: "settings/relay/${cid}", param: 'out_off_url',
                 dst: 'switch_off', cid: cid, name: "Relay ${cid} Off", configType: 'component'])
+            actions.add([endpoint: "settings/relay/${cid}", param: 'over_power_url',
+                dst: 'over_power', cid: cid, name: "Relay ${cid} Over Power", configType: 'component'])
         }
     }
 
@@ -2362,6 +2376,8 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
                     dst: 'input_short', cid: cid, name: "Input ${cid} Short Push", configType: 'component'])
                 actions.add([endpoint: "settings/input/${cid}", param: 'longpush_url',
                     dst: 'input_long', cid: cid, name: "Input ${cid} Long Push", configType: 'component'])
+                actions.add([endpoint: "settings/input/${cid}", param: 'double_shortpush_url',
+                    dst: 'input_double', cid: cid, name: "Input ${cid} Double Push", configType: 'component'])
             }
         }
     }
@@ -5224,6 +5240,13 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
                 switchMap.apower = meterData.power
                 if (totalWh != null) { switchMap.aenergy = [total: totalWh] }
                 switchMap.voltage = meterData.voltage
+                // Compute current from power and voltage (Gen 1 meters don't report current directly)
+                if (meterData.power != null && meterData.voltage != null) {
+                    BigDecimal v = meterData.voltage as BigDecimal
+                    if (v > 0) {
+                        switchMap.current = ((meterData.power as BigDecimal) / v).setScale(3, BigDecimal.ROUND_HALF_UP)
+                    }
+                }
             } else if (normalized.containsKey(coverKey)) {
                 Map coverMap = normalized[coverKey] as Map
                 coverMap.apower = meterData.power
@@ -5234,6 +5257,11 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
                 if (totalWh != null) { lightMap.aenergy = [total: totalWh] }
             }
         }
+    }
+
+    // Device-level input voltage (Shelly 4Pro reports supply voltage at top level)
+    if (gen1Status?.containsKey('voltage')) {
+        normalized['deviceVoltage'] = gen1Status.voltage
     }
 
     // Energy meters → em:N (Shelly EM, 3EM)
@@ -5469,7 +5497,15 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     if (components.size() > 0) {
         Boolean isParent = needsParentChild
         Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.gen?.toString() == '1') : false
-        String driverName = generateDriverName(components, componentPowerMonitoring, isParent, isGen1)
+
+        // Model-specific driver override for Gen 1 devices (e.g., Plugs)
+        String gen1TypeCode = ipKey ? state.discoveredShellys[ipKey]?.gen1Type?.toString() : null
+        String driverName
+        if (gen1TypeCode && GEN1_MODEL_DRIVER_OVERRIDE.containsKey(gen1TypeCode)) {
+            driverName = GEN1_MODEL_DRIVER_OVERRIDE[gen1TypeCode]
+        } else {
+            driverName = generateDriverName(components, componentPowerMonitoring, isParent, isGen1)
+        }
         String version = getAppVersion()
         String driverNameWithVersion = "${driverName} v${version}"
 
@@ -13077,7 +13113,7 @@ private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
             // Config not yet stored (first refresh during device creation).
             // Check driver name to skip non-switch devices.
             String typeName = targetDevice.typeName ?: ''
-            if (!typeName.contains('Switch') && !typeName.contains('Dimmer')) { return }
+            if (!typeName.contains('Switch') && !typeName.contains('Dimmer') && !typeName.contains('Plug')) { return }
         }
     }
 
@@ -13086,6 +13122,13 @@ private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
     if (isGen1Device(targetDevice)) {
         Map relaySettings = sendGen1Get(ipAddress, "settings/relay/${switchId}", [:])
         if (relaySettings) { syncGen1ConfigToPreferences(targetDevice, relaySettings) }
+
+        // Sync device-level settings (LED control) for Plug drivers
+        String typeName = targetDevice.typeName ?: ''
+        if (typeName.contains('Plug')) {
+            Map deviceSettings = sendGen1Get(ipAddress, 'settings', [:])
+            if (deviceSettings) { syncGen1DeviceSettingsToPreferences(targetDevice, deviceSettings) }
+        }
     } else {
         String rpcUri = "http://${ipAddress}/rpc"
         LinkedHashMap command = switchGetConfigCommand(switchId, 'syncSwitchConfig')
@@ -13149,6 +13192,25 @@ private void syncGen1ConfigToPreferences(def targetDevice, Map relaySettings) {
     }
     if (relaySettings.btn_type) {
         deviceUpdateSettingHelper(targetDevice, 'buttonType', [type: 'enum', value: relaySettings.btn_type.toString()])
+    }
+}
+
+/**
+ * Maps Gen 1 device-level /settings response to Hubitat driver preferences.
+ * Used for Plug-specific settings like LED control that live at the device level
+ * rather than per-relay.
+ *
+ * @param targetDevice The device whose preferences to update
+ * @param deviceSettings The Gen 1 /settings response map
+ */
+private void syncGen1DeviceSettingsToPreferences(def targetDevice, Map deviceSettings) {
+    if (deviceSettings.led_status_disable != null) {
+        deviceUpdateSettingHelper(targetDevice, 'ledStatusDisable',
+            [type: 'bool', value: deviceSettings.led_status_disable.toString() == 'true'])
+    }
+    if (deviceSettings.led_power_disable != null) {
+        deviceUpdateSettingHelper(targetDevice, 'ledPowerDisable',
+            [type: 'bool', value: deviceSettings.led_power_disable.toString() == 'true'])
     }
 }
 
