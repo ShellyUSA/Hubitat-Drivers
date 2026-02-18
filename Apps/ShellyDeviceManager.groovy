@@ -333,10 +333,18 @@ Map mainPage() {
             } else {
                 paragraph "<b>Discovery has stopped.</b>"
             }
-            input 'btnExtendScan', 'button', title: 'Extend Scan (120s)', submitOnChange: true
+            input 'btnExtendScan', 'button', title: 'Extend Scan (10 min)', submitOnChange: true
             if (!state.discoveryRunning && !(state.discoveredShellys as Map)?.findAll { String k, v -> v }) {
                 paragraph "<b style='color:#FF9800'>No devices discovered.</b> If this is a new installation, a hub reboot is required before mDNS discovery will find devices. Go to <i>Settings > Reboot Hub</i>, then reopen this app."
             }
+        }
+
+        // Manual device discovery by IP/hostname
+        section() {
+            input name: 'manualDeviceIp', type: 'text', title: 'Add device by IP or hostname',
+                description: 'Enter an IP address (e.g., 192.168.1.100), hostname, or URL (e.g., http://192.168.1.100) to probe for a Shelly device.',
+                required: false, submitOnChange: false
+            input 'btnManualDiscover', 'button', title: 'Discover Device', submitOnChange: true
         }
 
         // Delete confirmation (shown when user clicks delete on a device)
@@ -404,6 +412,9 @@ Map mainPage() {
                 defaultValue: true, submitOnChange: true
             input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
                 description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
+                defaultValue: true, submitOnChange: true
+            input name: 'enableIpScan', type: 'bool', title: 'Enable IP subnet scan during discovery',
+                description: 'Probes each IP on the local /24 subnet at /shelly during discovery. Fallback for when mDNS is unreliable. Scans ~254 addresses over ~4 minutes.',
                 defaultValue: true, submitOnChange: true
             input name: 'gen1PollInterval', type: 'enum', title: 'Gen 1 device poll interval',
                 description: 'How often to poll Gen 1 devices for power monitoring and state updates. Gen 1 devices do not support real-time power/energy reporting.',
@@ -483,7 +494,17 @@ Map mainPage() {
  * @param buttonName The name of the button that was clicked
  */
 void appButtonHandler(String buttonName) {
-    if (buttonName == 'btnExtendScan') { extendDiscovery(120) }
+    if (buttonName == 'btnExtendScan') { extendDiscovery(600) }
+
+    if (buttonName == 'btnManualDiscover') {
+        String rawInput = settings?.manualDeviceIp?.toString()?.trim()
+        if (rawInput) {
+            manualDiscoverDevice(rawInput)
+            app.removeSetting('manualDeviceIp')
+        } else {
+            appendLog('warn', 'Manual discovery: no IP or hostname entered')
+        }
+    }
 
     if (buttonName == 'btnForceRebuildDrivers') {
         Map allDrivers = state.autoDrivers ?: [:]
@@ -3983,6 +4004,12 @@ void initialize() {
     if (!state.recentLogs) { state.recentLogs = [] }
     if (state.discoveryRunning == null) { state.discoveryRunning = false }
 
+    // IP subnet scan state reset
+    state.ipScanRunning = false
+    state.remove('ipScanCurrentOctet')
+    state.remove('ipScanSubnet')
+    state.remove('ipScanResults')
+
     // BLE state initialization
     if (!state.discoveredBleDevices) { state.discoveredBleDevices = [:] }
     if (!state.recentBlePids) { state.recentBlePids = [:] }
@@ -4088,11 +4115,16 @@ void startDiscovery(Boolean resetFound = false) {
     unschedule('updateDiscoveryTimer')
     unschedule('updateRecentLogs')
     unschedule('processMdnsDiscovery')
+    unschedule('scanNextIpAddress')
+    state.ipScanRunning = false
     runIn(getDiscoveryDurationSeconds(), 'stopDiscovery')
     runIn(1, 'updateDiscoveryTimer')
     runIn(1, 'updateRecentLogs')
     // Give the hub 10 seconds after listener registration to collect mDNS responses
     runIn(10, 'processMdnsDiscovery')
+
+    // Start IP subnet scan as a fallback discovery mechanism
+    startIpSubnetScan()
 }
 
 /**
@@ -4118,14 +4150,25 @@ void extendDiscovery(Integer seconds) {
     unschedule('stopDiscovery')
     runIn(totalRemaining, 'stopDiscovery')
     appendLog('info', "Discovery extended by ${seconds} seconds")
+
+    // Restart IP subnet scan if not already running (startIpSubnetScan checks the setting)
+    if (state.ipScanRunning != true) {
+        startIpSubnetScan()
+    }
 }
 
 /**
- * Registers mDNS listener for Shelly device discovery.
- * Registers a listener for {@code _http._tcp} which captures all Shelly devices
- * (both Gen1 and Gen2+) on the local network.
+ * Registers mDNS listeners for Shelly device discovery.
+ * Registers listeners for both {@code _shelly._tcp} (Shelly-specific, Gen 2+ with rich TXT records)
+ * and {@code _http._tcp} (catches Gen 1 devices that only advertise here) on the local network.
  */
 void startMdnsDiscovery() {
+    try {
+        registerMDNSListener('_shelly._tcp')
+        logTrace('Registered mDNS listener: _shelly._tcp')
+    } catch (Exception e) {
+        logWarn("mDNS listener registration failed for _shelly._tcp: ${e.message}")
+    }
     try {
         registerMDNSListener('_http._tcp')
         logTrace('Registered mDNS listener: _http._tcp')
@@ -4160,6 +4203,9 @@ void stopDiscovery() {
     unschedule('updateDiscoveryTimer')
     unschedule('updateRecentLogs')
     unschedule('stopDiscovery')
+
+    // Stop IP subnet scan if running
+    stopIpSubnetScan()
 
     // Do NOT unregister mDNS listeners - keep them active so data accumulates
     logTrace('Discovery stopped (mDNS listeners remain active)')
@@ -4207,14 +4253,14 @@ void updateRecentLogs() {
 
 /**
  * Processes mDNS discovery by querying for Shelly devices on the network.
- * Retrieves mDNS entries for {@code _http._tcp}, filters for Shelly devices,
+ * Retrieves mDNS entries for both {@code _shelly._tcp} (Shelly-specific, faster identification)
+ * and {@code _http._tcp} (catches Gen 1 devices), merges them, filters for Shelly devices,
  * extracts device information (name, IP, port, generation, firmware version),
  * and stores discovered devices in state. Updates the UI with discovery results
  * and reschedules itself periodically while discovery is active.
  * <p>
- * Only processes entries that appear to be Shelly devices (based on server name,
- * gen field, or app field) and have valid IPv4 addresses. Tracks the timestamp
- * of each discovery to enable aging and cleanup of stale entries.
+ * Also updates {@code state.ipScanResults} for each discovered Shelly IP so the
+ * IP subnet scanner uses the longer 5-minute cooldown instead of re-probing.
  */
 void processMdnsDiscovery() {
     if (!state.discoveryRunning) {
@@ -4223,9 +4269,14 @@ void processMdnsDiscovery() {
     }
 
     try {
-        // getMDNSEntries requires the service type parameter per Hubitat docs
-        List<Map<String,Object>> allEntries = getMDNSEntries('_http._tcp') ?: []
-        logTrace("processMdnsDiscovery: _http._tcp returned ${allEntries.size()} entries")
+        // Query both mDNS service types and merge results
+        List<Map<String,Object>> shellyEntries = getMDNSEntries('_shelly._tcp') ?: []
+        List<Map<String,Object>> httpEntries = getMDNSEntries('_http._tcp') ?: []
+        logTrace("processMdnsDiscovery: _shelly._tcp returned ${shellyEntries.size()}, _http._tcp returned ${httpEntries.size()} entries")
+
+        List<Map<String,Object>> allEntries = []
+        if (shellyEntries) { allEntries.addAll(shellyEntries) }
+        if (httpEntries) { allEntries.addAll(httpEntries) }
 
         if (!allEntries) {
             logTrace('processMdnsDiscovery: no mDNS entries found')
@@ -4322,6 +4373,12 @@ void processMdnsDiscovery() {
                 }
 
                 state.discoveredShellys[key] = deviceEntry
+
+                // Mark this IP as a known Shelly in ipScanResults so the IP subnet
+                // scanner uses the 5-minute cooldown instead of re-probing at 2 minutes
+                Map scanResults = state.ipScanResults ?: [:]
+                scanResults[key] = [scannedAt: now(), result: 'shelly']
+                state.ipScanResults = scanResults
 
                 // Schedule async device info fetch for new or still-unidentified devices.
                 // Re-queuing unidentified devices handles sleepy battery devices that were
@@ -4539,6 +4596,356 @@ void watchdogProcessResults() {
     } catch (Exception e) {
         logWarn("watchdogProcessResults: error processing mDNS entries: ${e.message}")
     }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// IP Subnet Scanning (fallback when mDNS is unreliable)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Extracts the /24 subnet prefix from an IP address string.
+ * For example, "192.168.1.4" returns "192.168.1".
+ *
+ * @param hubIp The full IPv4 address
+ * @return The first three octets as a string, or null if invalid
+ */
+@CompileStatic
+static String computeSubnetPrefix(String hubIp) {
+    if (!hubIp) { return null }
+    List<String> octets = hubIp.tokenize('.')
+    if (octets.size() != 4) { return null }
+    return "${octets[0]}.${octets[1]}.${octets[2]}".toString()
+}
+
+/**
+ * Parses a user-provided device address into a bare IP or hostname.
+ * Accepts: bare IP ("192.168.1.100"), URL ("http://192.168.1.100"),
+ * URL with path ("https://192.168.1.100/shelly"), or hostname ("myshelly.local").
+ * Strips protocol, port, and path components.
+ *
+ * @param rawInput The raw user input
+ * @return The bare IP or hostname, or null if input is empty/invalid
+ */
+@CompileStatic
+static String parseDeviceAddress(String rawInput) {
+    if (!rawInput) { return null }
+    String addr = rawInput.trim()
+    // Strip protocol
+    if (addr.startsWith('http://')) { addr = addr.substring(7) }
+    else if (addr.startsWith('https://')) { addr = addr.substring(8) }
+    // Strip path (everything after first /)
+    int slashIdx = addr.indexOf('/')
+    if (slashIdx > 0) { addr = addr.substring(0, slashIdx) }
+    // Strip port (everything after last :)
+    int colonIdx = addr.lastIndexOf(':')
+    if (colonIdx > 0) { addr = addr.substring(0, colonIdx) }
+    return addr ?: null
+}
+
+/**
+ * Starts an IP subnet scan over the hub's /24 subnet.
+ * Probes each IP at GET /shelly to discover Shelly devices that mDNS may have missed.
+ * Scans ~254 addresses at 1-second intervals (~4.2 minutes for a full pass).
+ * Uses a 2-minute cooldown per IP to avoid redundant probes on extended discovery.
+ */
+void startIpSubnetScan() {
+    if (settings?.enableIpScan == false) {
+        logTrace('startIpSubnetScan: IP scan disabled by setting')
+        return
+    }
+    if (!state.discoveryRunning) {
+        logTrace('startIpSubnetScan: discovery not running')
+        return
+    }
+    if (state.ipScanRunning == true) {
+        logTrace('startIpSubnetScan: scan already running')
+        return
+    }
+
+    String hubIp = location.hub.localIP
+    if (!hubIp) {
+        logWarn('startIpSubnetScan: could not determine hub IP address')
+        return
+    }
+
+    String subnet = computeSubnetPrefix(hubIp)
+    if (!subnet) {
+        logWarn("startIpSubnetScan: invalid hub IP '${hubIp}'")
+        return
+    }
+
+    state.ipScanSubnet = subnet
+    state.ipScanCurrentOctet = 1
+    state.ipScanRunning = true
+    if (!state.ipScanResults) { state.ipScanResults = [:] }
+
+    appendLog('info', "Starting IP subnet scan on ${subnet}.0/24")
+    runInMillis(1000, 'scanNextIpAddress')
+}
+
+/**
+ * Scans the next IP address in the subnet scan sequence.
+ * Self-rescheduling loop that probes one IP per invocation at 1-second intervals.
+ * Uses tiered cooldowns based on prior scan results to focus time on unknown IPs:
+ * <ul>
+ *   <li>{@code timeout} (no response) — 2-minute cooldown, scanned most often</li>
+ *   <li>{@code shelly} (confirmed Shelly) — 5-minute cooldown</li>
+ *   <li>{@code not_shelly}/{@code invalid_json} (responded, not Shelly) — 15-minute cooldown</li>
+ * </ul>
+ * Wraps around from 254 back to 1 for continuous scanning during long discovery sessions.
+ */
+void scanNextIpAddress() {
+    if (!state.discoveryRunning || state.ipScanRunning != true) {
+        state.ipScanRunning = false
+        return
+    }
+
+    String subnet = state.ipScanSubnet
+    Integer octet = state.ipScanCurrentOctet ?: 1
+    if (!subnet) {
+        state.ipScanRunning = false
+        return
+    }
+
+    // Wrap around for continuous scanning during extended discovery
+    if (octet > 254) { octet = 1 }
+
+    String targetIp = "${subnet}.${octet}".toString()
+
+    // Advance octet before any early returns so the loop always progresses
+    state.ipScanCurrentOctet = octet + 1
+
+    // Tiered cooldown based on previous scan result
+    Map results = state.ipScanResults ?: [:]
+    Map existing = results[targetIp] as Map
+    if (existing?.scannedAt) {
+        Long scannedAt = existing.scannedAt as Long
+        Long elapsed = now() - scannedAt
+        String prevResult = (existing.result ?: '').toString()
+
+        // Determine cooldown based on what we found last time:
+        //   - Known Shelly devices: 5 minutes (they're already discovered)
+        //   - Non-Shelly responders: 15 minutes (unlikely to become a Shelly)
+        //   - Timeout/no response: 2 minutes (could be a new device powering on)
+        Long cooldownMs
+        switch (prevResult) {
+            case 'shelly':
+                cooldownMs = 300000L   // 5 minutes
+                break
+            case 'not_shelly':
+            case 'invalid_json':
+                cooldownMs = 900000L   // 15 minutes
+                break
+            default:
+                cooldownMs = 120000L   // 2 minutes (timeout, pending, unknown)
+                break
+        }
+
+        if (elapsed < cooldownMs) {
+            // Skip — still within cooldown for this result type
+            runInMillis(50, 'scanNextIpAddress')
+            return
+        }
+    }
+
+    // Record pending scan
+    results[targetIp] = [scannedAt: now(), result: 'pending']
+    state.ipScanResults = results
+
+    // Fire async GET to /shelly
+    try {
+        Map params = [
+            uri: "http://${targetIp}/shelly",
+            timeout: 3,
+            contentType: 'application/json',
+            ignoreSSLIssues: true
+        ]
+        asynchttpGet('ipScanCallback', params, [targetIp: targetIp])
+    } catch (Exception e) {
+        logTrace("scanNextIpAddress: exception probing ${targetIp}: ${e.message}")
+    }
+
+    // Schedule next IP probe (1s interval keeps max ~3 concurrent requests with 3s timeout)
+    runInMillis(1000, 'scanNextIpAddress')
+}
+
+/**
+ * Async callback for IP subnet scan probes.
+ * Processes the response from a GET /shelly request and registers discovered Shelly devices.
+ * Non-Shelly responses are logged at trace level only to avoid log spam.
+ *
+ * @param response The async HTTP response
+ * @param data Map containing targetIp key
+ */
+void ipScanCallback(response, Map data) {
+    String targetIp = data?.targetIp
+    if (!targetIp) { return }
+
+    Map results = state.ipScanResults ?: [:]
+
+    // Check for HTTP errors or non-200 status
+    if (response.hasError() || response.getStatus() != 200) {
+        results[targetIp] = [scannedAt: now(), result: 'timeout']
+        state.ipScanResults = results
+        return
+    }
+
+    // Parse JSON response
+    Map shellyData = null
+    try {
+        shellyData = response.getJson() as Map
+    } catch (Exception e) {
+        results[targetIp] = [scannedAt: now(), result: 'invalid_json']
+        state.ipScanResults = results
+        logTrace("ipScanCallback: invalid JSON from ${targetIp}")
+        return
+    }
+
+    // Validate it's actually a Shelly device
+    if (!shellyData || (!shellyData.type && !shellyData.gen)) {
+        results[targetIp] = [scannedAt: now(), result: 'not_shelly']
+        state.ipScanResults = results
+        logTrace("ipScanCallback: ${targetIp} is not a Shelly device")
+        return
+    }
+
+    // Valid Shelly found!
+    results[targetIp] = [scannedAt: now(), result: 'shelly']
+    state.ipScanResults = results
+    logDebug("ipScanCallback: found Shelly device at ${targetIp}")
+    registerIpScanDiscovery(targetIp, shellyData)
+}
+
+/**
+ * Registers a Shelly device discovered via IP scan or manual discovery.
+ * Creates or updates the device entry in {@code state.discoveredShellys} using
+ * the same format as mDNS discovery, then triggers device info fetch and UI update.
+ * Preserves enriched fields from any existing entry to avoid overwriting RPC/REST data.
+ *
+ * @param ip The IP address of the discovered device
+ * @param shellyData The parsed response from GET /shelly
+ */
+void registerIpScanDiscovery(String ip, Map shellyData) {
+    if (!ip || !shellyData) { return }
+
+    Boolean isNew = !state.discoveredShellys?.containsKey(ip)
+    Map existingEntry = isNew ? null : (state.discoveredShellys[ip] as Map)
+
+    Map deviceEntry = [
+        name: "Shelly ${ip}",
+        ipAddress: ip,
+        port: 80,
+        ts: now()
+    ]
+
+    if (shellyData.gen) {
+        // Gen 2+ device: /shelly returns {gen:N, app:"...", model:"...", ver:"...", ...}
+        deviceEntry.gen = shellyData.gen.toString()
+        if (shellyData.app) { deviceEntry.deviceApp = shellyData.app.toString() }
+        if (shellyData.ver) { deviceEntry.ver = shellyData.ver.toString() }
+        if (shellyData.mac) { deviceEntry.mac = shellyData.mac.toString().toUpperCase() }
+        if (shellyData.model) { deviceEntry.model = shellyData.model.toString() }
+        if (shellyData.fw_id) { deviceEntry.fw_id = shellyData.fw_id.toString() }
+        if (shellyData.auth_en != null) { deviceEntry.auth_en = shellyData.auth_en }
+        if (shellyData.profile) { deviceEntry.profile = shellyData.profile.toString() }
+        // Use app name as a friendlier name if available
+        if (shellyData.app) {
+            String appName = shellyData.app.toString()
+            String macStr = shellyData.mac?.toString() ?: ''
+            deviceEntry.name = macStr.length() >= 6 ? "${appName}-${macStr[-6..-1]}" : (macStr ? "${appName}-${macStr}" : appName)
+        }
+    } else if (shellyData.type) {
+        // Gen 1 device: /shelly returns {type:"SHSW-1", mac:"AABBCCDDEEFF", auth:bool, fw:"..."}
+        String typeKey = shellyData.type.toString()
+        deviceEntry.gen = '1'
+        deviceEntry.gen1Type = typeKey
+        deviceEntry.model = GEN1_TYPE_TO_MODEL.get(typeKey) ?: typeKey
+        deviceEntry.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
+        if (shellyData.mac) { deviceEntry.mac = shellyData.mac.toString().toUpperCase() }
+        if (shellyData.fw) { deviceEntry.ver = shellyData.fw.toString() }
+        if (shellyData.auth != null) { deviceEntry.auth_en = shellyData.auth }
+        // Build a descriptive name from type and MAC
+        if (shellyData.mac) {
+            String macStr = shellyData.mac.toString()
+            deviceEntry.name = macStr.length() >= 6 ? "${typeKey}-${macStr[-6..-1]}" : "${typeKey}-${macStr}"
+        }
+    }
+
+    // Preserve enriched fields from existing entry (same merge logic as processMdnsDiscovery)
+    if (existingEntry) {
+        for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice', 'deviceInfo',
+                             'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
+                             'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents']) {
+            if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
+                deviceEntry[field] = existingEntry[field]
+            }
+        }
+        // Preserve gen from prior enrichment if scan didn't provide one
+        if (!deviceEntry.gen && existingEntry.gen) {
+            deviceEntry.gen = existingEntry.gen
+        }
+    }
+
+    state.discoveredShellys[ip] = deviceEntry
+
+    // Schedule async device info fetch for new or still-unidentified devices
+    Boolean needsIdentification = !isNew && (!existingEntry?.model || existingEntry?.model == 'Unknown')
+    if (isNew || needsIdentification) {
+        scheduleAsyncDeviceInfoFetch(ip)
+    }
+
+    // Update the UI
+    sendFoundShellyEvents()
+}
+
+/**
+ * Stops the IP subnet scan loop.
+ * Sets the running flag to false and unschedules the scan loop.
+ */
+void stopIpSubnetScan() {
+    state.ipScanRunning = false
+    unschedule('scanNextIpAddress')
+}
+
+/**
+ * Probes a user-provided IP or hostname for a Shelly device.
+ * Sends a synchronous GET to /shelly, validates the response,
+ * and registers the device if found. Uses synchronous HTTP so the
+ * result is visible immediately on page re-render.
+ *
+ * @param rawInput The user-provided IP, hostname, or URL
+ */
+void manualDiscoverDevice(String rawInput) {
+    String addr = parseDeviceAddress(rawInput)
+    if (!addr) {
+        appendLog('warn', "Manual discovery: invalid address '${rawInput}'")
+        return
+    }
+
+    appendLog('info', "Manual discovery: probing ${addr}...")
+
+    Map shellyData = null
+    try {
+        httpGetHelper([uri: "http://${addr}/shelly", timeout: 5, contentType: 'application/json']) { resp ->
+            if (resp?.status == 200 && resp.data) {
+                shellyData = resp.data as Map
+            }
+        }
+    } catch (Exception e) {
+        appendLog('error', "Manual discovery: failed to reach ${addr} — ${e.message}")
+        return
+    }
+
+    if (!shellyData || (!shellyData.type && !shellyData.gen)) {
+        appendLog('warn', "Manual discovery: ${addr} did not respond as a Shelly device")
+        return
+    }
+
+    String modelInfo = (shellyData.model ?: shellyData.type ?: 'Unknown').toString()
+    appendLog('info', "Manual discovery: found Shelly at ${addr} (${modelInfo})")
+
+    // Register using the shared discovery registration function
+    registerIpScanDiscovery(addr, shellyData)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -6822,9 +7229,9 @@ private Integer getRemainingDiscoverySeconds() {
 /**
  * Returns the configured discovery duration.
  *
- * @return Discovery duration in seconds (default: 120)
+ * @return Discovery duration in seconds (default: 600)
  */
-private Integer getDiscoveryDurationSeconds() { 120 }
+private Integer getDiscoveryDurationSeconds() { 600 }
 
 /**
  * Returns the mDNS polling interval.
