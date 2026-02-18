@@ -32,15 +32,19 @@
     // Gen 1 single-component standalone drivers
     'Shelly Gen1 Single Switch': 'UniversalDrivers/ShellyGen1SingleSwitch.groovy',
     'Shelly Gen1 Single Switch PM': 'UniversalDrivers/ShellyGen1SingleSwitchPM.groovy',
+    'Shelly Gen1 Single Switch Input': 'UniversalDrivers/ShellyGen1SingleSwitchInput.groovy',
+    'Shelly Gen1 Single Switch Input PM': 'UniversalDrivers/ShellyGen1SingleSwitchInputPM.groovy',
     'Shelly Gen1 Single Dimmer': 'UniversalDrivers/ShellyGen1SingleDimmer.groovy',
     'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
     'Shelly Gen1 DW Sensor': 'UniversalDrivers/ShellyGen1DWSensor.groovy',
     'Shelly Gen1 Button': 'UniversalDrivers/ShellyGen1Button.groovy',
     'Shelly Gen1 Motion Sensor': 'UniversalDrivers/ShellyGen1MotionSensor.groovy',
+    'Shelly Gen1 TRV': 'UniversalDrivers/ShellyGen1TRV.groovy',
 
     // Gen 1 multi-component parent drivers
     'Shelly Gen1 2x Switch PM Parent': 'UniversalDrivers/ShellyGen1_2xSwitchPMParent.groovy',
+    'Shelly Gen1 2x Switch Parent': 'UniversalDrivers/ShellyGen1_2xSwitchParent.groovy',
     'Shelly Gen1 Single Cover PM Parent': 'UniversalDrivers/ShellyGen1SingleCoverPMParent.groovy',
     'Shelly Gen1 3x Input Parent': 'UniversalDrivers/ShellyGen1_3xInputParent.groovy',
     'Shelly Gen1 EM Parent': 'UniversalDrivers/ShellyGen1EMParent.groovy',
@@ -141,10 +145,13 @@
     'SHTRV-01':  'Shelly TRV',
 ]
 
-/** Gen 1 type codes that are battery-powered (sleep between sensor updates). */
+/** Gen 1 type codes that are battery-powered. Note: SHMOS-* and SHTRV-01 are
+ *  always-awake despite running on battery. Sleepiness is controlled by
+ *  {@link #isSleepyBatteryDevice}, not by membership in this set. */
 @Field static final Set<String> GEN1_BATTERY_TYPES = [
     'SHHT-1', 'SHWT-1', 'SHDW-1', 'SHDW-2',
     'SHMOS-01', 'SHMOS-02', 'SHBTN-1', 'SHBTN-2',
+    'SHTRV-01',
 ] as Set<String>
 
 /**
@@ -473,6 +480,14 @@ void appButtonHandler(String buttonName) {
         runInMillis(500, 'fireConfigTableSSR')
     }
 
+    if (buttonName.startsWith('dniConflict|')) {
+        String targetIp = buttonName.minus('dniConflict|')
+        Map deviceInfo = state.discoveredShellys?.get(targetIp) as Map
+        String mac = deviceInfo?.mac?.toString() ?: ''
+        String conflictDni = mac ?: "shelly-${targetIp.replaceAll('\\.', '-')}".toString()
+        appendLog('warn', "Cannot create device at ${targetIp}: a device with DNI '${conflictDni}' already exists on this hub. Remove or change the existing device's DNI first.")
+    }
+
     if (buttonName.startsWith('removeDev|')) {
         String targetIp = buttonName.minus('removeDev|')
         state.pendingDeleteIp = targetIp
@@ -705,6 +720,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
 
     try {
         def childDevice = addChildDevice('ShellyUSA', driverName, dni, deviceProps)
+        state.remove('hubDnisCachedAt') // Invalidate DNI cache after device creation
 
         logInfo("Created device: ${deviceLabel} using driver ${driverName}")
         appendLog('info', "Created: ${deviceLabel} (${driverName})")
@@ -799,6 +815,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
 
     try {
         def parentDevice = addChildDevice('ShellyUSA', parentDriverName, parentDni, parentProps)
+        state.remove('hubDnisCachedAt') // Invalidate DNI cache after device creation
         logInfo("Created parent device: ${baseLabel} using driver ${parentDriverName}")
         appendLog('info', "Created parent: ${baseLabel} (${parentDriverName})")
 
@@ -1044,6 +1061,15 @@ private List<Map> buildDeviceList() {
         if (ip) { childByIp[ip] = dev }
     }
 
+    // Build hub-wide DNI set for conflict detection (cached with 60s TTL)
+    Long dniCacheAge = state.hubDnisCachedAt ? (now() - (state.hubDnisCachedAt as Long)) : Long.MAX_VALUE
+    if (dniCacheAge > 60_000L || !state.hubDnisCached) {
+        state.hubDnisCached = getHubDeviceDnis() as List<String>
+        state.hubDnisCachedAt = now()
+    }
+    Set<String> hubDnis = (state.hubDnisCached ?: []).toSet()
+    Set<String> ownChildDnis = childDevices.collect { it.deviceNetworkId.toString() }.toSet()
+
     // Build set of IPs already processed
     Set<String> processedIps = [] as Set
 
@@ -1062,6 +1088,7 @@ private List<Map> buildDeviceList() {
             entry.hubDeviceDni = dev.deviceNetworkId
             entry.hubDeviceName = dev.displayName
             entry.hubDeviceLabel = dev.label ?: dev.displayName
+            entry.hasDniConflict = false
         } else {
             // Device doesn't exist - clear stale cached data
             entry.isCreated = false
@@ -1069,6 +1096,12 @@ private List<Map> buildDeviceList() {
             entry.hubDeviceDni = null
             entry.hubDeviceName = null
             entry.hubDeviceLabel = null
+
+            // Check if the would-be DNI is already in use by a non-child device
+            String mac = (info as Map)?.mac?.toString() ?: ''
+            String wouldBeDni = mac ?: "shelly-${ip.replaceAll('\\.', '-')}".toString()
+            entry.hasDniConflict = hubDnis.contains(wouldBeDni) && !ownChildDnis.contains(wouldBeDni)
+            entry.conflictDni = entry.hasDniConflict ? wouldBeDni : null
         }
         result.add(entry)
     }
@@ -1163,10 +1196,13 @@ private String buildDeviceRow(Map entry) {
     Long lastRefreshed = entry.lastRefreshed as Long
     Boolean isStale = lastRefreshed == null
 
-    // Column 1: Action button (create or remove)
+    // Column 1: Action button (create, remove, or DNI conflict warning)
     if (isCreated) {
         String deleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px'></iconify-icon>"
         str.append("<td>${buttonLink("removeDev|${ip}", deleteIcon, '#F44336', '20px')}</td>")
+    } else if (entry.hasDniConflict == true) {
+        String conflictIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:20px'></iconify-icon>"
+        str.append("<td title='DNI conflict — another device already uses this MAC'>${buttonLink("dniConflict|${ip}", conflictIcon, '#F44336', '20px')}</td>")
     } else {
         String addIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:20px'></iconify-icon>"
         str.append("<td>${buttonLink("createDev|${ip}", addIcon, '#4CAF50', '20px')}</td>")
@@ -1569,6 +1605,36 @@ private Map buildDeviceStatusCacheEntry(String ip) {
 private def findChildDeviceByIp(String ip) {
     def childDevices = getChildDevices() ?: []
     return childDevices.find { it.getDataValue('ipAddress') == ip }
+}
+
+/**
+ * Queries the Hubitat hub for all existing device network IDs.
+ * Uses the internal /hub2/devicesList endpoint with cookie authentication,
+ * following the same pattern as {@link #getAppCodeId}.
+ *
+ * @return Set of all device network IDs currently on the hub, or empty set on failure
+ */
+private Set<String> getHubDeviceDnis() {
+    Set<String> dnis = [] as Set
+    try {
+        String cookie = login()
+        if (!cookie) { return dnis }
+        httpGet([
+            uri: 'http://127.0.0.1:8080',
+            path: '/hub2/devicesList',
+            headers: ['Cookie': cookie],
+            timeout: 10
+        ]) { resp ->
+            if (resp?.status == 200 && resp.data) {
+                resp.data.each { dev ->
+                    if (dev.deviceNetworkId) { dnis.add(dev.deviceNetworkId.toString()) }
+                }
+            }
+        }
+    } catch (Exception e) {
+        logWarn("getHubDeviceDnis failed — conflict detection unavailable: ${e.message}")
+    }
+    return dnis
 }
 
 /**
@@ -2268,7 +2334,23 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
         }
     }
 
-    // Shelly i3 input action URLs (component settings endpoint)
+    // Input action URLs for switch devices with inputs (SHSW-1, SHSW-PM, etc.)
+    // For switch devices, input push URLs are configured on the relay endpoint (settings/relay/{cid})
+    Boolean hasSwitches = deviceStatus.keySet().any { Object k -> k.toString().startsWith('switch:') }
+    if (hasSwitches) {
+        deviceStatus.each { k, v ->
+            String key = k.toString()
+            if (key.startsWith('input:')) {
+                Integer cid = key.split(':')[1] as Integer
+                actions.add([endpoint: "settings/relay/${cid}", param: 'shortpush_url',
+                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push", configType: 'component'])
+                actions.add([endpoint: "settings/relay/${cid}", param: 'longpush_url',
+                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push", configType: 'component'])
+            }
+        }
+    }
+
+    // Shelly i3 input action URLs (pure input device — uses settings/input endpoint)
     if (typeCode == 'SHIX3-1') {
         deviceStatus.each { k, v ->
             String key = k.toString()
@@ -2354,6 +2436,13 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'tamper_alarm_on', cid: 0, name: 'Tamper On', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'tamper_alarm_off',
                 dst: 'tamper_alarm_off', cid: 0, name: 'Tamper Off', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHTRV-01':  // TRV — valve open/close
+            actions.add([endpoint: 'settings/actions', param: 'valve_open_url',
+                dst: 'valve_open', cid: 0, name: 'Valve Open', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'valve_close_url',
+                dst: 'valve_close', cid: 0, name: 'Valve Close', configType: 'actions', actionIndex: 0])
             break
 
         default:
@@ -2596,6 +2685,7 @@ private void removeDeviceByIp(String ip) {
 
     // Step 3: Remove the device from Hubitat
     deleteChildDevice(dni)
+    state.remove('hubDnisCachedAt') // Invalidate DNI cache after device removal
     logInfo("Removed device: ${name} (${dni})")
     appendLog('info', "Removed: ${name}")
 
@@ -2697,6 +2787,7 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
         hasHumidity: componentTypes.contains('humidity'),
         hasFlood: componentTypes.contains('flood'),
         hasContact: componentTypes.contains('contact'),
+        hasThermostat: componentTypes.contains('thermostat'),
         supportedWebhookEvents: (deviceInfo.supportedWebhookEvents ?: []) as List<String>,
         storedAt: now()
     ]
@@ -2733,7 +2824,7 @@ private Boolean isSleepyBatteryDevice(def childDevice) {
     Map config = deviceConfigs[dni] as Map
 
     if (config) {
-        return config.hasBattery && !config.hasBthome && !config.hasScript
+        return config.hasBattery && !config.hasBthome && !config.hasScript && !config.hasThermostat
     }
 
     // Fallback: check driver name for battery-only patterns (Gen 1 and Gen 2)
@@ -4458,6 +4549,39 @@ private void syncGen1MotionSettings(String ipAddress, def childDevice, String ge
 }
 
 /**
+ * Syncs device-side thermostat settings to driver preferences on first refresh.
+ * Reads /settings/thermostats/0 from the TRV and populates the driver's
+ * temperatureOffset preference with the device value.
+ *
+ * @param ipAddress The TRV's IP address
+ * @param childDevice The TRV child device
+ * @param gen1Type The Gen 1 type code (must be SHTRV-01)
+ */
+private void syncGen1TrvSettings(String ipAddress, def childDevice, String gen1Type) {
+    if (!childDevice) { return }
+    if (gen1Type != 'SHTRV-01') { return }
+
+    // TRV is always awake, so live fetch should succeed
+    Map trvSettings = sendGen1Get(ipAddress, 'settings/thermostats/0', [:], 2)
+    if (!trvSettings) {
+        logDebug("syncGen1TrvSettings: could not read settings from ${ipAddress}")
+        return
+    }
+
+    try {
+        if (trvSettings.temperature_offset != null) {
+            childDevice.updateSetting('temperatureOffset',
+                [type: 'decimal', value: trvSettings.temperature_offset as BigDecimal])
+        }
+
+        childDevice.updateDataValue('gen1SettingsSynced', 'true')
+        logDebug("Synced Gen 1 TRV settings from device at ${ipAddress}")
+    } catch (Exception e) {
+        logWarn("syncGen1TrvSettings: failed to sync settings for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
  * Polls all non-battery Gen 1 devices for current status.
  * Called on a schedule based on the user-configured Gen 1 polling interval.
  * Battery devices are skipped (they sleep and are polled on wake-up via action URL callbacks).
@@ -4998,6 +5122,12 @@ static Map inferGen1BatteryComponents(String typeCode) {
                 'temperature:0': [:],
                 'devicepower:0': [:]
             ]
+        case 'SHTRV-01':  // TRV — thermostat, temperature, battery
+            return [
+                'thermostat:0': [:],
+                'temperature:0': [:],
+                'devicepower:0': [:]
+            ]
         default:
             return null
     }
@@ -5166,6 +5296,25 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
         Map humData = gen1Status?.hum as Map
         if (humData?.value != null) {
             normalized['humidity:0'] = [value: humData.value]
+        }
+    }
+
+    // Thermostats → thermostat:N (Shelly TRV)
+    List thermostats = gen1Status?.thermostats as List
+    if (thermostats) {
+        for (int i = 0; i < thermostats.size(); i++) {
+            Map trvData = thermostats[i] as Map ?: [:]
+            Map targetT = trvData.target_t as Map ?: [:]
+            BigDecimal targetTempC = targetT.value != null ? targetT.value as BigDecimal : null
+            normalized["thermostat:${i}".toString()] = [
+                pos: trvData.pos,
+                target_t_enabled: targetT.enabled,
+                target_t: targetTempC,
+                schedule: trvData.schedule,
+                schedule_profile: trvData.schedule_profile,
+                boost_minutes: trvData.boost_minutes,
+                window_open: trvData.window_open
+            ]
         }
     }
 
@@ -5404,6 +5553,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
     String parentSuffix = isParent ? " Parent" : ""
 
+    // Gen 1 special types: TRV (thermostat component)
+    Boolean hasThermostat = componentCounts.containsKey('thermostat')
+    if (isGen1 && hasThermostat) {
+        return "${prefix} TRV"
+    }
+
     // Gen 1 special types: Flood sensor
     if (isGen1 && hasFlood) {
         return "${prefix} Flood Sensor"
@@ -5468,6 +5623,10 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
                 if (needsParent) {
                     return "${prefix} Single ${typeName}${pmSuffix} Parent"
                 } else {
+                    // Gen 1 devices with inputs get a separate driver with button support
+                    if (isGen1 && inputCount > 0) {
+                        return "${prefix} Single ${typeName} Input${pmSuffix}"
+                    }
                     return "${prefix} Single ${typeName}${pmSuffix}"
                 }
             } else {
@@ -12576,6 +12735,7 @@ void componentRefresh(def childDevice) {
             // Sync device-side settings to driver preferences (once after creation)
             if (!childDevice.getDataValue('gen1SettingsSynced')) {
                 syncGen1MotionSettings(ipAddress, childDevice, resolvedGen1Type)
+                syncGen1TrvSettings(ipAddress, childDevice, resolvedGen1Type)
             }
             return
         }
@@ -12658,6 +12818,121 @@ void componentUpdateGen1Settings(def childDevice, Map settingsMap) {
         logInfo("Gen 1 settings applied to ${childDevice.displayName}")
     } else {
         logWarn("Failed to apply Gen 1 settings to ${childDevice.displayName} — device may be unreachable")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRV Component Handlers (Shelly Gen 1 TRV)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Sets TRV heating setpoint via GET /thermostats/0.
+ * Always sends target_t_enabled=1 to ensure thermostat control mode is active.
+ *
+ * @param childDevice The TRV child device
+ * @param tempC Target temperature in Celsius
+ */
+void componentSetTrvHeatingSetpoint(def childDevice, BigDecimal tempC) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) { logError("componentSetTrvHeatingSetpoint: no IP for ${childDevice.displayName}"); return }
+        logDebug("componentSetTrvHeatingSetpoint: setting ${tempC}°C on ${childDevice.displayName}")
+        sendGen1Get(ip, 'thermostats/0', [target_t_enabled: '1', target_t: tempC.toString()])
+    } catch (Exception e) {
+        logError("componentSetTrvHeatingSetpoint exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Sets TRV valve position (0-100) via GET /thermostats/0.
+ *
+ * @param childDevice The TRV child device
+ * @param position Valve position percentage (0 = closed, 100 = fully open)
+ */
+void componentSetTrvValvePosition(def childDevice, Integer position) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) { logError("componentSetTrvValvePosition: no IP for ${childDevice.displayName}"); return }
+        logDebug("componentSetTrvValvePosition: setting pos=${position} on ${childDevice.displayName}")
+        sendGen1Get(ip, 'thermostats/0', [pos: position.toString()])
+    } catch (Exception e) {
+        logError("componentSetTrvValvePosition exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Sends an external temperature reading to the TRV via GET /ext_t.
+ * Helps the TRV make more accurate heating decisions using a remote sensor.
+ *
+ * @param childDevice The TRV child device
+ * @param tempC External temperature in Celsius
+ */
+void componentSetTrvExternalTemp(def childDevice, BigDecimal tempC) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) { logError("componentSetTrvExternalTemp: no IP for ${childDevice.displayName}"); return }
+        logDebug("componentSetTrvExternalTemp: sending ${tempC}°C to ${childDevice.displayName}")
+        sendGen1Get(ip, 'ext_t', [temp: tempC.toString()])
+    } catch (Exception e) {
+        logError("componentSetTrvExternalTemp exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Sets TRV boost mode duration via GET /thermostats/0.
+ * Boost heats at maximum output for the specified duration.
+ *
+ * @param childDevice The TRV child device
+ * @param minutes Boost duration in minutes (0 to cancel)
+ */
+void componentSetTrvBoostMinutes(def childDevice, Integer minutes) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) { logError("componentSetTrvBoostMinutes: no IP for ${childDevice.displayName}"); return }
+        logDebug("componentSetTrvBoostMinutes: setting ${minutes} minutes on ${childDevice.displayName}")
+        sendGen1Get(ip, 'thermostats/0', [boost_minutes: minutes.toString()])
+    } catch (Exception e) {
+        logError("componentSetTrvBoostMinutes exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Enables or disables the TRV's internal schedule via GET /settings/thermostats/0.
+ *
+ * @param childDevice The TRV child device
+ * @param enabled true to enable, false to disable
+ */
+void componentSetTrvScheduleEnabled(def childDevice, Boolean enabled) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) { logError("componentSetTrvScheduleEnabled: no IP for ${childDevice.displayName}"); return }
+        logDebug("componentSetTrvScheduleEnabled: setting schedule=${enabled} on ${childDevice.displayName}")
+        sendGen1Setting(ip, 'settings/thermostats/0', [schedule: enabled ? '1' : '0'])
+    } catch (Exception e) {
+        logError("componentSetTrvScheduleEnabled exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Receives TRV-specific settings from the driver and sends them to the
+ * physical device via GET /settings/thermostats/0.
+ *
+ * @param childDevice The TRV child device relaying its settings
+ * @param settingsMap Map of thermostat settings parameters
+ */
+void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
+    if (!childDevice || !settingsMap) { return }
+    String ip = childDevice.getDataValue('ipAddress')
+    if (!ip) {
+        logError("componentUpdateGen1ThermostatSettings: no IP for ${childDevice.displayName}")
+        return
+    }
+    logInfo("Sending Gen 1 TRV settings to ${childDevice.displayName} at ${ip}: ${settingsMap}")
+    Map result = sendGen1Setting(ip, 'settings/thermostats/0', settingsMap)
+    if (result != null) {
+        logInfo("Gen 1 TRV settings applied to ${childDevice.displayName}")
+    } else {
+        logWarn("Failed to apply Gen 1 TRV settings to ${childDevice.displayName} — device may be unreachable")
     }
 }
 
@@ -12760,6 +13035,9 @@ private void applyGen1SwitchSettings(String ipAddress, def device, Integer switc
     if (switchSettings.autoOnTime != null) {
         params.auto_on = (switchSettings.autoOnTime as BigDecimal).toString()
     }
+    if (switchSettings.btn_type != null) {
+        params.btn_type = switchSettings.btn_type as String
+    }
     if (!params) { return }
 
     Map result = sendGen1Setting(ipAddress, "settings/relay/${switchId}", params)
@@ -12846,6 +13124,9 @@ private void syncGen1ConfigToPreferences(def targetDevice, Map relaySettings) {
     }
     if (relaySettings.auto_on != null) {
         deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: relaySettings.auto_on])
+    }
+    if (relaySettings.btn_type) {
+        deviceUpdateSettingHelper(targetDevice, 'buttonType', [type: 'enum', value: relaySettings.btn_type.toString()])
     }
 }
 
