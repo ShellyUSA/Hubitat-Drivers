@@ -12568,7 +12568,11 @@ void componentRefresh(def childDevice) {
                 attemptGen1ActionUrlInstallOnWake(ipAddress)
             }
             pollGen1DeviceStatus(ipAddress)
-            syncSwitchConfigToDriver(childDevice, ipAddress)
+            if (childDevice.getDataValue('isParentDevice') == 'true') {
+                syncSwitchConfigForParentChildren(childDevice.deviceNetworkId, ipAddress)
+            } else {
+                syncSwitchConfigToDriver(childDevice, ipAddress)
+            }
             // Sync device-side settings to driver preferences (once after creation)
             if (!childDevice.getDataValue('gen1SettingsSynced')) {
                 syncGen1MotionSettings(ipAddress, childDevice, resolvedGen1Type)
@@ -12747,7 +12751,8 @@ private void applyGen2SwitchSettings(String ipAddress, def device, Integer switc
 private void applyGen1SwitchSettings(String ipAddress, def device, Integer switchId, Map switchSettings) {
     Map params = [:]
     if (switchSettings.defaultState != null) {
-        params.default_state = switchSettings.defaultState as String
+        String rawState = switchSettings.defaultState as String
+        params.default_state = (rawState == 'restore') ? 'last' : rawState
     }
     if (switchSettings.autoOffTime != null) {
         params.auto_off = (switchSettings.autoOffTime as BigDecimal).toString()
@@ -12815,10 +12820,12 @@ private void syncGen2ConfigToPreferences(def targetDevice, Map config) {
         deviceUpdateSettingHelper(targetDevice, 'defaultState', [type: 'enum', value: val])
     }
     if (config.auto_off_delay != null) {
-        deviceUpdateSettingHelper(targetDevice, 'autoOffTime', [type: 'decimal', value: config.auto_off_delay])
+        BigDecimal offTime = (config.auto_off == true) ? (config.auto_off_delay as BigDecimal) : 0
+        deviceUpdateSettingHelper(targetDevice, 'autoOffTime', [type: 'decimal', value: offTime])
     }
     if (config.auto_on_delay != null) {
-        deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: config.auto_on_delay])
+        BigDecimal onTime = (config.auto_on == true) ? (config.auto_on_delay as BigDecimal) : 0
+        deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: onTime])
     }
 }
 
@@ -12830,7 +12837,9 @@ private void syncGen2ConfigToPreferences(def targetDevice, Map config) {
  */
 private void syncGen1ConfigToPreferences(def targetDevice, Map relaySettings) {
     if (relaySettings.default_state) {
-        deviceUpdateSettingHelper(targetDevice, 'defaultState', [type: 'enum', value: relaySettings.default_state.toString()])
+        String rawState = relaySettings.default_state.toString()
+        String mappedState = (rawState == 'last') ? 'restore' : rawState
+        deviceUpdateSettingHelper(targetDevice, 'defaultState', [type: 'enum', value: mappedState])
     }
     if (relaySettings.auto_off != null) {
         deviceUpdateSettingHelper(targetDevice, 'autoOffTime', [type: 'decimal', value: relaySettings.auto_off])

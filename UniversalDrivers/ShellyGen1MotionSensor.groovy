@@ -41,11 +41,6 @@ metadata {
 }
 
 preferences {
-  // ── Hubitat-Side Settings ──
-  input name: 'motionTimeout', type: 'number', title: 'Motion inactive timeout (seconds)',
-    description: 'Hubitat-side timer. Seconds after motion before setting inactive (0 = use device timeout)',
-    defaultValue: 60, range: '0..3600', required: true
-
   // ── Motion Detection (synced to device) ──
   input name: 'motionSensitivity', type: 'number',
     title: 'Motion sensitivity (1\u2013256)',
@@ -234,7 +229,6 @@ private void routeActionUrlCallback(Map params) {
 
 void initialize() {
   logDebug('initialize() called')
-  unschedule('setMotionInactive')
   sendEvent(name: 'motion', value: 'inactive', descriptionText: 'Initialized as inactive')
   sendEvent(name: 'tamper', value: 'clear', descriptionText: 'Initialized as clear')
   // Refresh status and sync device settings (Motion sensors are always awake)
@@ -246,9 +240,6 @@ void configure() {
   if (!settings.logLevel) {
     logWarn("No log level set, defaulting to 'debug'")
     device.updateSetting('logLevel', 'debug')
-  }
-  if (settings.motionTimeout == null) {
-    device.updateSetting('motionTimeout', 60)
   }
   // Clear sync flag so next refresh re-reads settings from device
   device.removeDataValue('gen1SettingsSynced')
@@ -303,18 +294,13 @@ void refresh() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Sets motion to active and schedules the inactive timeout.
- * If motionTimeout is 0, relies on the device's own timeout via status polling.
+ * Sets motion to active. The device's own blind time setting and
+ * {@code motion_off} action URL handle the inactive transition.
  */
 private void setMotionActive() {
   sendEvent(name: 'motion', value: 'active', isStateChange: true,
     descriptionText: 'Motion detected')
   logInfo('Motion detected')
-
-  Integer timeout = settings.motionTimeout != null ? (settings.motionTimeout as Integer) : 60
-  if (timeout > 0) {
-    runIn(timeout, 'setMotionInactive')
-  }
 }
 
 /**
