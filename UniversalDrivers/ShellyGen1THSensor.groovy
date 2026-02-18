@@ -1,13 +1,19 @@
 /**
  * Shelly Gen1 TH Sensor
  *
- * Pre-built standalone driver for Gen 1 Shelly H&T (temperature/humidity sensor).
+ * Pre-built standalone driver for Gen 1 Shelly H&T (SHHT-1) temperature/humidity sensor.
  * Battery-powered device that sleeps most of the time and wakes briefly to send reports.
  *
- * The app polls the Gen 1 H&T via GET /status on a schedule to read full sensor data
- * (temperature, humidity, battery).
+ * The device fires {@code report_url} on wake, which triggers the app to immediately
+ * poll {@code GET /status} for real sensor data (temperature, humidity, battery).
+ * Threshold action URLs ({@code over_temp_url}, {@code under_temp_url}, {@code over_hum_url},
+ * {@code under_hum_url}) also trigger a status poll when exceeded.
  *
- * Version: 1.0.0
+ * User-configurable preferences (offsets, thresholds) are synced bidirectionally:
+ * device-to-driver on first refresh, driver-to-device on Save Preferences (queued
+ * for next wake-up if the device is asleep).
+ *
+ * Version: 1.1.0
  */
 
 metadata {
@@ -21,11 +27,36 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER, unit:%
 
+    capability 'Initialize'
+    //Commands: initialize()
+
+    capability 'Configuration'
+    //Commands: configure()
+
+    capability 'Refresh'
+    //Commands: refresh()
+
     attribute 'lastUpdated', 'string'
+    attribute 'powerSource', 'string'  // "battery" or "usb"
   }
 }
 
 preferences {
+  // -- Sensor Calibration (synced to device) --
+  input name: 'temperatureOffset', type: 'decimal', title: 'Temperature offset',
+    description: 'Calibration offset for temperature. Synced to/from device.', required: false
+  input name: 'humidityOffset', type: 'decimal', title: 'Humidity offset',
+    description: 'Calibration offset for humidity. Synced to/from device.', required: false
+
+  // -- Reporting Thresholds (synced to device) --
+  input name: 'temperatureThreshold', type: 'decimal', title: 'Temperature threshold',
+    description: 'Min temperature change to trigger report (0.5\u20135.0). Synced to/from device.',
+    range: '0.5..5.0', required: false
+  input name: 'humidityThreshold', type: 'decimal', title: 'Humidity threshold',
+    description: 'Min humidity change to trigger report (0.5\u20135.0). Synced to/from device.',
+    range: '0.5..5.0', required: false
+
+  // -- Logging --
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'],
     defaultValue: 'debug', required: true
@@ -39,23 +70,83 @@ preferences {
 
 /**
  * Called when driver is first installed on a device.
- * Sets default log level if not already configured.
+ * Initializes defaults and requests a status refresh.
  */
 void installed() {
   logDebug('installed() called')
-  if (!settings.logLevel) {
-    device.updateSetting('logLevel', 'debug')
-  }
+  initialize()
 }
 
 /**
  * Called when device settings are saved.
- * Sets default log level if not already configured.
+ * Relays user-changed preferences to the physical device (or queues for next wake-up).
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   if (!settings.logLevel) {
     device.updateSetting('logLevel', 'debug')
+  }
+  relayDeviceSettings()
+}
+
+/**
+ * Initializes the device with default attribute values and requests a status refresh.
+ */
+void initialize() {
+  logDebug('initialize() called')
+  if (!settings.logLevel) {
+    device.updateSetting('logLevel', 'debug')
+  }
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Re-reads configuration from the physical device by clearing the sync flag.
+ * The next refresh will re-sync device settings to driver preferences.
+ */
+void configure() {
+  logDebug('configure() called')
+  if (!settings.logLevel) {
+    logWarn("No log level set, defaulting to 'debug'")
+    device.updateSetting('logLevel', 'debug')
+  }
+  // Clear sync flag so next refresh re-reads settings from device
+  device.removeDataValue('gen1SettingsSynced')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Refreshes the device state. Note: battery device may be asleep.
+ * Data will update on next wake-up (report_url callback).
+ */
+void refresh() {
+  logDebug('refresh() called — note: battery device may be asleep')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Gathers device-side settings and sends them to the parent app for
+ * relay to the Shelly device via GET /settings.
+ * Only sends settings that have been configured (non-null).
+ * For sleepy devices, the app will queue settings if the device is unreachable.
+ */
+private void relayDeviceSettings() {
+  Map settingsMap = [:]
+  if (settings.temperatureOffset != null) {
+    settingsMap.temperature_offset = (settings.temperatureOffset as BigDecimal).toString()
+  }
+  if (settings.humidityOffset != null) {
+    settingsMap.humidity_offset = (settings.humidityOffset as BigDecimal).toString()
+  }
+  if (settings.temperatureThreshold != null) {
+    settingsMap.temperature_threshold = (settings.temperatureThreshold as BigDecimal).toString()
+  }
+  if (settings.humidityThreshold != null) {
+    settingsMap.humidity_threshold = (settings.humidityThreshold as BigDecimal).toString()
+  }
+  if (settingsMap) {
+    logDebug("Relaying device settings to parent: ${settingsMap}")
+    parent?.componentUpdateGen1Settings(device, settingsMap)
   }
 }
 
@@ -144,7 +235,8 @@ private Map parseWebhookPath(Map msg) {
 
 /**
  * Routes Gen 1 action URL callbacks for H&T sensor.
- * On sensor_report, triggers immediate refresh to read data before device sleeps.
+ * On sensor_report (report_url wake-up), triggers immediate refresh to read data
+ * before the device goes back to sleep. Threshold callbacks also trigger refresh.
  */
 private void routeActionUrlCallback(Map params) {
   switch (params.dst) {
@@ -162,17 +254,26 @@ private void routeActionUrlCallback(Map params) {
       parent?.componentRefresh(device)
       break
 
+    case 'hum_over':
+      logWarn('Over-humidity threshold exceeded')
+      parent?.componentRefresh(device)
+      break
+    case 'hum_under':
+      logWarn('Under-humidity threshold exceeded')
+      parent?.componentRefresh(device)
+      break
+
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
+      return  // Don't update lastUpdated for unhandled callbacks
   }
+
+  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Driver Lifecycle and Configuration                      ║
 // ╚══════════════════════════════════════════════════════════════╝
-
-
-
 
 
 
@@ -183,6 +284,7 @@ private void routeActionUrlCallback(Map params) {
 /**
  * Distributes polled status data to the device.
  * Called by the parent app after polling GET /status on the Gen 1 device.
+ * Handles temperature, humidity, battery, and power source (USB/battery).
  *
  * @param status Map of normalized component statuses
  */
@@ -201,9 +303,9 @@ void distributeStatus(Map status) {
       BigDecimal temp = (scale == 'C' && data.tC != null) ? data.tC as BigDecimal :
         (data.tF != null ? data.tF as BigDecimal : null)
       if (temp != null) {
-        sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
-          descriptionText: "Temperature is ${temp}°${scale}")
-        logInfo("Temperature: ${temp}°${scale}")
+        sendEvent(name: 'temperature', value: temp, unit: "\u00B0${scale}",
+          descriptionText: "Temperature is ${temp}\u00B0${scale}")
+        logInfo("Temperature: ${temp}\u00B0${scale}")
       }
     } else if (key.startsWith('humidity:')) {
       if (data.value != null) {
@@ -218,6 +320,12 @@ void distributeStatus(Map status) {
         sendEvent(name: 'battery', value: battery, unit: '%',
           descriptionText: "Battery is ${battery}%")
         logInfo("Battery: ${battery}%")
+      }
+      if (data.charger != null) {
+        String source = data.charger ? 'usb' : 'battery'
+        sendEvent(name: 'powerSource', value: source,
+          descriptionText: "Power source is ${source}")
+        logInfo("Power source: ${source}")
       }
     }
   }
