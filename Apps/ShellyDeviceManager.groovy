@@ -3909,7 +3909,9 @@ private Map queryDeviceStatus(String ipAddress) {
         LinkedHashMap json = postCommandSync(command, uri)
         Map status = json?.result as Map
 
-        // BLU Gateway: merge dynamic components (blutrv) from Shelly.GetComponents
+        // BLU Gateway: discover dynamic blutrv components and query their full status
+        // Shelly.GetComponents returns BLE link status (rssi, paired, battery) but NOT
+        // thermostat data (current_C, target_C, pos). BluTrv.GetStatus returns the full data.
         if (status?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }) {
             LinkedHashMap getComponentsCmd = [id: 0, src: 'deviceConfig', method: 'Shelly.GetComponents', params: [dynamic_only: true, include: ['status']]]
             if (authIsEnabled() == true && getAuth().size() > 0) { getComponentsCmd.auth = getAuth() }
@@ -3917,8 +3919,23 @@ private Map queryDeviceStatus(String ipAddress) {
             if (componentsResp?.result?.components) {
                 (componentsResp.result.components as List<Map>).each { Map comp ->
                     String compKey = comp.key?.toString()
-                    if (compKey?.startsWith('blutrv:') && comp.status) {
-                        status[compKey] = comp.status
+                    if (compKey?.startsWith('blutrv:')) {
+                        Integer trvId = compKey.split(':')[1] as Integer
+                        // Query full TRV thermostat status via BluTrv.GetStatus
+                        try {
+                            LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: trvId]]
+                            if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
+                            LinkedHashMap trvResp = postCommandSync(trvCmd, uri)
+                            if (trvResp?.result) {
+                                status[compKey] = trvResp.result
+                            } else if (comp.status) {
+                                // Fallback to component link status if BluTrv.GetStatus fails
+                                status[compKey] = comp.status
+                            }
+                        } catch (Exception trvEx) {
+                            logDebug("BluTrv.GetStatus failed for ${compKey}: ${trvEx.message}")
+                            if (comp.status) { status[compKey] = comp.status }
+                        }
                     }
                 }
             }
@@ -5892,9 +5909,10 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         LinkedHashMap deviceStatusResp = postCommandSyncWithRetry(statusCmd, rpcUri, "Shelly.GetStatus")
         Map deviceStatus = (deviceStatusResp instanceof Map && deviceStatusResp.containsKey('result')) ? deviceStatusResp.result : deviceStatusResp
 
-        // BLU Gateway: query dynamic components (blutrv) via Shelly.GetComponents
+        // BLU Gateway: discover dynamic blutrv components and query their full status
         // Dynamic components like blutrv:200 represent paired BLE devices and are NOT
-        // included in the standard Shelly.GetStatus response.
+        // included in the standard Shelly.GetStatus response. Shelly.GetComponents returns
+        // BLE link status (rssi, paired), BluTrv.GetStatus returns thermostat data.
         Boolean hasBlugw = deviceStatus?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }
         if (hasBlugw) {
             LinkedHashMap getComponentsCmd = [id: 0, src: 'discovery', method: 'Shelly.GetComponents', params: [dynamic_only: true, include: ['status']]]
@@ -5904,9 +5922,23 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
                 List<Map> dynamicComponents = componentsResp.result.components as List<Map>
                 dynamicComponents.each { Map comp ->
                     String compKey = comp.key?.toString()
-                    if (compKey?.startsWith('blutrv:') && comp.status) {
-                        deviceStatus[compKey] = comp.status
-                        logDebug("fetchAndStoreDeviceInfo: added dynamic component ${compKey} to deviceStatus")
+                    if (compKey?.startsWith('blutrv:')) {
+                        Integer trvId = compKey.split(':')[1] as Integer
+                        try {
+                            LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: trvId]]
+                            if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
+                            LinkedHashMap trvResp = postCommandSyncWithRetry(trvCmd, rpcUri, 'BluTrv.GetStatus')
+                            if (trvResp?.result) {
+                                deviceStatus[compKey] = trvResp.result
+                                logDebug("fetchAndStoreDeviceInfo: added blutrv ${compKey} with thermostat status")
+                            } else if (comp.status) {
+                                deviceStatus[compKey] = comp.status
+                                logDebug("fetchAndStoreDeviceInfo: added blutrv ${compKey} with link status only")
+                            }
+                        } catch (Exception trvEx) {
+                            logDebug("BluTrv.GetStatus failed for ${compKey}: ${trvEx.message}")
+                            if (comp.status) { deviceStatus[compKey] = comp.status }
+                        }
                     }
                 }
             }
