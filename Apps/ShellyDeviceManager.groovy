@@ -14886,7 +14886,7 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
  * @param method The TRV method to call (e.g., 'TRV.SetTarget')
  * @param methodParams Parameters for the TRV method
  */
-void sendBluTrvCommand(def gatewayDevice, Integer bluetrvComponentId, String method, Map methodParams) {
+void sendBluTrvCommand(com.hubitat.app.DeviceWrapper gatewayDevice, Integer bluetrvComponentId, String method, Map methodParams) {
     String gatewayIp = gatewayDevice.getDataValue('ipAddress')
     if (!gatewayIp) {
         logError("sendBluTrvCommand: no IP for gateway ${gatewayDevice.displayName}")
@@ -14937,39 +14937,37 @@ void bluTrvCommandCallback(AsyncResponse response, Map data = null) {
 /**
  * Refreshes status for a specific BLU TRV via the gateway.
  * Sends BluTrv.GetStatus to get cached TRV state (fast, local).
- * Distributes response fields to the TRV child device.
+ * Uses postCommandSync (with auth handling) and routes through
+ * the gateway parent's distributeStatus for event generation.
  *
  * @param gatewayDevice The BLU Gateway parent device
  * @param bluetrvComponentId The blutrv component ID (200-299)
  */
-void componentBluTrvRefresh(def gatewayDevice, Integer bluetrvComponentId) {
+void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper gatewayDevice, Integer bluetrvComponentId) {
     String gatewayIp = gatewayDevice.getDataValue('ipAddress')
     if (!gatewayIp) {
         logError("componentBluTrvRefresh: no IP for gateway ${gatewayDevice.displayName}")
         return
     }
 
-    logDebug("componentBluTrvRefresh: polling blutrv:${bluetrvComponentId} via ${gatewayIp}")
+    logInfo("componentBluTrvRefresh: polling blutrv:${bluetrvComponentId} via ${gatewayIp}")
 
     try {
-        Map rpcBody = [id: 1, method: 'BluTrv.GetStatus', params: [id: bluetrvComponentId]]
-        Map httpParams = [
-            uri: "http://${gatewayIp}/rpc",
-            contentType: 'application/json',
-            requestContentType: 'application/json',
-            body: rpcBody,
-            timeout: 10
-        ]
-        httpPost(httpParams) { resp ->
-            if (resp?.status == 200 && resp?.data) {
-                Map trvStatus = resp.data as Map
-                // Route to the gateway parent's distributeStatus with a synthetic key
-                Map syntheticStatus = [("blutrv:${bluetrvComponentId}".toString()): trvStatus]
-                gatewayDevice.distributeStatus(syntheticStatus)
-                logDebug("componentBluTrvRefresh: status distributed for blutrv:${bluetrvComponentId}")
-            } else {
-                logWarn("componentBluTrvRefresh: no data for blutrv:${bluetrvComponentId}")
-            }
+        String uri = "http://${gatewayIp}/rpc"
+        LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: bluetrvComponentId]]
+        if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
+        LinkedHashMap trvResp = postCommandSync(trvCmd, uri)
+        logInfo("componentBluTrvRefresh: raw response keys: ${trvResp?.keySet()}, result keys: ${trvResp?.result instanceof Map ? (trvResp.result as Map).keySet() : 'N/A'}")
+
+        if (trvResp?.result) {
+            Map trvStatus = trvResp.result as Map
+            logInfo("componentBluTrvRefresh: TRV status: ${trvStatus}")
+            String compKey = "blutrv:${bluetrvComponentId}".toString()
+            Map syntheticStatus = [(compKey): trvStatus]
+            gatewayDevice.distributeStatus(syntheticStatus)
+            logInfo("componentBluTrvRefresh: distributeStatus called on ${gatewayDevice.displayName} with key ${compKey}")
+        } else {
+            logWarn("componentBluTrvRefresh: no result in response for blutrv:${bluetrvComponentId}, full response: ${trvResp}")
         }
     } catch (Exception e) {
         logError("componentBluTrvRefresh exception: ${e.message}")

@@ -504,13 +504,14 @@ private Map parseWebhookPath(Map msg) {
  * @param status Map of component statuses from Shelly.GetStatus
  */
 void distributeStatus(Map status) {
-  logDebug("distributeStatus() called")
+  logInfo("distributeStatus() called with keys: ${status?.keySet()}")
   if (!status) { return }
 
   String scale = getLocationHelper()?.temperatureScale ?: 'F'
 
   status.each { k, v ->
     String key = k.toString()
+    logInfo("distributeStatus: processing key='${key}', isMap=${v instanceof Map}, value class=${v?.getClass()?.simpleName}")
     if (!key.contains(':') || !(v instanceof Map)) { return }
 
     String baseType = key.split(':')[0]
@@ -519,10 +520,11 @@ void distributeStatus(Map status) {
     if (baseType == 'blutrv') {
       String childDni = "${device.deviceNetworkId}-blutrv-${componentId}"
       com.hubitat.app.DeviceWrapper child = getChildDevice(childDni)
+      logInfo("distributeStatus: looking for child DNI='${childDni}', found=${child != null}")
       if (child) {
         distributeBluTrvStatus(child, v as Map, scale)
       } else {
-        logDebug("No TRV child for component ID ${componentId}")
+        logWarn("No TRV child for component ID ${componentId}, DNI: ${childDni}")
       }
     }
   }
@@ -538,6 +540,8 @@ void distributeStatus(Map status) {
  * @param scale Temperature scale ('F' or 'C')
  */
 private void distributeBluTrvStatus(com.hubitat.app.DeviceWrapper child, Map data, String scale) {
+  logInfo("distributeBluTrvStatus: child=${child.displayName}, scale=${scale}, data keys=${data?.keySet()}, data=${data}")
+
   // Current temperature
   if (data.current_C != null && data.current_C != 'null') {
     BigDecimal tempC = data.current_C as BigDecimal
