@@ -15,16 +15,24 @@
 // Model-specific driver overrides for Gen 1 devices that need dedicated drivers
 // instead of the generic generated driver name. Checked before generateDriverName().
 @Field static final Map<String, String> GEN1_MODEL_DRIVER_OVERRIDE = [
-    'SHPLG-1':  'Shelly Gen1 Plug',
-    'SHPLG-S':  'Shelly Gen1 Plug S',
-    'SHPLG-U1': 'Shelly Gen1 Plug S',
-    'SHBLB-1':  'Shelly Gen1 Bulb',
-    'SHCB-1':   'Shelly Gen1 Bulb',
-    'SHVIN-1':  'Shelly Gen1 Single Dimmer',
-    'SHBDUO-1': 'Shelly Gen1 Duo',
-    'SHGS-1':   'Shelly Gen1 Gas Sensor',
-    'SHSN-1':   'Shelly Gen1 Sense',
-    'SHUNI-1':  'Shelly Gen1 Uni Parent',
+    'SHPLG-1':   'Shelly Gen1 Plug',
+    'SHPLG-S':   'Shelly Gen1 Plug S',
+    'SHPLG-U1':  'Shelly Gen1 Plug S',
+    'SHPLG-UK1': 'Shelly Gen1 Plug S',   // UK variant
+    'SHPLG-IT1': 'Shelly Gen1 Plug S',   // Italy variant
+    'SHPLG-AU1': 'Shelly Gen1 Plug S',   // Australia variant
+    'SHPLG2-1':  'Shelly Gen1 Plug S',   // Plug 2
+    'SHBLB-1':   'Shelly Gen1 Bulb',
+    'SHCB-1':    'Shelly Gen1 Bulb',
+    'SHCL-255':  'Shelly Gen1 Bulb',     // Color Bulb variant
+    'SHVIN-1':   'Shelly Gen1 Single Dimmer',
+    'SHDIMW-1':  'Shelly Gen1 Single Dimmer', // Wall-mount dimmer
+    'SHBDUO-1':  'Shelly Gen1 Duo',
+    'SH2LED-1':  'Shelly Gen1 Duo',      // Dual-white LED controller
+    'SHSPOT-1':  'Shelly Gen1 Duo',      // Spot light
+    'SHGS-1':    'Shelly Gen1 Gas Sensor',
+    'SHSN-1':    'Shelly Gen1 Sense',
+    'SHUNI-1':   'Shelly Gen1 Uni Parent',
     // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
 ]
 
@@ -37,6 +45,7 @@
     'Shelly Autoconf Single Dimmer': 'UniversalDrivers/ShellySingleDimmer.groovy',
     'Shelly Autoconf Single Dimmer PM': 'UniversalDrivers/ShellySingleDimmerPM.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
+    'Shelly Autoconf THL Sensor': 'UniversalDrivers/ShellyTHLSensor.groovy',
     'Shelly Autoconf Flood Sensor': 'UniversalDrivers/ShellyFloodSensor.groovy',
     'Shelly Autoconf Smoke Sensor': 'UniversalDrivers/ShellySmokeSensor.groovy',
     'Shelly Autoconf PM Monitor': 'UniversalDrivers/ShellyPMMonitor.groovy',
@@ -51,7 +60,12 @@
     'Shelly Autoconf 2x Dimmer PM Parent': 'UniversalDrivers/Shelly2xDimmerPMParent.groovy',
     'Shelly Autoconf 4x Dimmer PM Parent': 'UniversalDrivers/Shelly4xDimmerPMParent.groovy',
     'Shelly Autoconf Single RGBW PM Parent': 'UniversalDrivers/ShellyRGBWParent.groovy',
-    // 'Shelly Autoconf Single CCT PM Parent': 'UniversalDrivers/ShellyCCTParent.groovy',  // TODO: not yet implemented
+    'Shelly Autoconf Single CCT PM Parent': 'UniversalDrivers/ShellyCCTParent.groovy',
+    'Shelly Autoconf Single CCT Parent': 'UniversalDrivers/ShellyCCTParent.groovy',
+    'Shelly Autoconf 2x CCT PM Parent': 'UniversalDrivers/Shelly2xCCTPMParent.groovy',
+    'Shelly Autoconf 5x Dimmer PM Parent': 'UniversalDrivers/Shelly5xDimmerPMParent.groovy',
+    'Shelly Autoconf Single Cover Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
+    'Shelly Autoconf Wall Display Parent': 'UniversalDrivers/ShellyWallDisplayParent.groovy',
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
     'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
 
@@ -109,9 +123,13 @@
     'SBBT-004CUS': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
     'SBDW-002C':   [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
     'SBHT-003C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
-    'SBHT-103C':   [driverName: null,                      friendlyModel: 'Shelly BLU H&T Display ZB', modelCode: 'SBHT-103C'],
+    'SBHT-103C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T Display',    modelCode: 'SBHT-103C'],
     'SBMO-003Z':   [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
-    'SBRC-005B':   [driverName: null,                      friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    'SBRC-005B':   [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    'SBBT-002CZ':  [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1 ZB',    modelCode: 'SBBT-002CZ'],
+    'SBDW-002CZ':  [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window ZB', modelCode: 'SBDW-002CZ'],
+    'SBHT-003CZ':  [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T ZB',         modelCode: 'SBHT-003CZ'],
+    'SBMO-003ZB':  [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion ZB',      modelCode: 'SBMO-003ZB'],
     'SBTR-001AEU': [driverName: null,                      friendlyModel: 'Shelly BLU TRV',            modelCode: 'SBTR-001AEU'],
     'SBWS-90CM':   [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
 ]
@@ -124,13 +142,13 @@
     0x0001: [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',       modelCode: 'SBBT-002C'],
     0x0002: [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
     0x0003: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
-    0x0005: [driverName: 'Shelly BLU Motion',       friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
+    0x0005: [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
     0x0006: [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBBT-004CEU'],
     0x0007: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
     0x0008: [driverName: null,                      friendlyModel: 'Shelly BLU TRV',            modelCode: 'SBTR-001AEU'],
-    0x0009: [driverName: null,                      friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    0x0009: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
     0x000B: [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
-    0x000C: [driverName: null,                      friendlyModel: 'Shelly BLU H&T Display ZB', modelCode: 'SBHT-103C'],
+    0x000C: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T Display',    modelCode: 'SBHT-103C'],
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -6758,6 +6776,13 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         return "${prefix} EM Parent"
     }
 
+    // Wall Display: switch + temperature + humidity + illuminance → dedicated driver
+    Boolean hasIlluminance = componentCounts.containsKey('illuminance')
+    if (!isGen1 && foundActuators.contains('switch') && foundSensors.contains('temperature')
+        && foundSensors.contains('humidity') && hasIlluminance) {
+        return "${prefix} Wall Display Parent"
+    }
+
     // Special case: Input-only devices (no actuators, only inputs)
     if (foundActuators.size() == 0 && inputCount > 1) {
         return "${prefix} ${inputCount}x Input Parent"
@@ -6817,7 +6842,9 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         Boolean hasTemp = foundSensors.contains('temperature')
         Boolean hasHumidity = foundSensors.contains('humidity')
 
-        if (hasTemp && hasHumidity) {
+        if (hasTemp && hasHumidity && foundSensors.contains('illuminance')) {
+            return "${prefix} THL Sensor${parentSuffix}"
+        } else if (hasTemp && hasHumidity) {
             return "${prefix} TH Sensor${parentSuffix}"
         } else if (foundSensors.contains('flood')) {
             return "${prefix} Flood Sensor${parentSuffix}"
@@ -14112,6 +14139,92 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             }
             break
 
+        // Light (dimmer) webhooks
+        case 'light_on':
+            events.add([name: 'switch', value: 'on', descriptionText: 'Light turned on'])
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            break
+        case 'light_off':
+            events.add([name: 'switch', value: 'off', descriptionText: 'Light turned off'])
+            break
+        case 'light_change':
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            break
+
+        // RGB webhooks
+        case 'rgb_on':
+            events.add([name: 'switch', value: 'on', descriptionText: 'RGB light turned on'])
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            break
+        case 'rgb_off':
+            events.add([name: 'switch', value: 'off', descriptionText: 'RGB light turned off'])
+            break
+        case 'rgb_change':
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            break
+
+        // RGBW webhooks
+        case 'rgbw_on':
+            events.add([name: 'switch', value: 'on', descriptionText: 'RGBW light turned on'])
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            break
+        case 'rgbw_off':
+            events.add([name: 'switch', value: 'off', descriptionText: 'RGBW light turned off'])
+            break
+        case 'rgbw_change':
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            break
+
+        // CCT webhooks
+        case 'cct_on':
+            events.add([name: 'switch', value: 'on', descriptionText: 'CCT light turned on'])
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            if (params.ct != null) {
+                events.add([name: 'colorTemperature', value: params.ct as Integer, unit: 'K'])
+            }
+            break
+        case 'cct_off':
+            events.add([name: 'switch', value: 'off', descriptionText: 'CCT light turned off'])
+            break
+        case 'cct_change':
+            if (params.brightness != null) {
+                events.add([name: 'level', value: params.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${params.brightness}%"])
+            }
+            if (params.ct != null) {
+                events.add([name: 'colorTemperature', value: params.ct as Integer, unit: 'K'])
+            }
+            break
+
+        // Input analog webhooks
+        case 'input_analog':
+            if (params.percent != null) {
+                events.add([name: 'percent', value: params.percent as BigDecimal,
+                    unit: '%', descriptionText: "Analog input is ${params.percent}%"])
+            }
+            break
+
         // Gas alarm webhooks (Gen 1 Shelly Gas SHGS-1)
         case 'gas_alarm_mild':
             events.add([name: 'naturalGas', value: 'detected', descriptionText: 'Gas alarm: mild level detected'])
@@ -14149,6 +14262,10 @@ private String dstToComponentType(String dst) {
     if (dst.startsWith('cover_')) { return 'cover' }
     if (dst.startsWith('smoke_')) { return 'smoke' }
     if (dst.startsWith('gas_')) { return 'gas' }
+    if (dst.startsWith('light_')) { return 'light' }
+    if (dst.startsWith('rgb_')) { return 'rgb' }
+    if (dst.startsWith('rgbw_')) { return 'rgbw' }
+    if (dst.startsWith('cct_')) { return 'cct' }
     switch (dst) {
         case 'switchmon': return 'switch'  // legacy
         case 'covermon': return 'cover'    // legacy
@@ -14163,6 +14280,10 @@ private String mapDstToComponentType(String dst, String baseType) {
     if (dst.startsWith('input_')) { return 'input' }
     if (dst.startsWith('smoke_')) { return 'smoke' }
     if (dst.startsWith('gas_')) { return 'gas' }
+    if (dst.startsWith('light_')) { return 'light' }
+    if (dst.startsWith('rgb_')) { return 'rgb' }
+    if (dst.startsWith('rgbw_')) { return 'rgbw' }
+    if (dst.startsWith('cct_')) { return 'cct' }
 
     // Legacy and passthrough dst types
     switch (dst) {
@@ -14174,6 +14295,10 @@ private String mapDstToComponentType(String dst, String baseType) {
             return 'cover'
         case 'lightmon':
             return 'light'
+        case 'rgbmon':
+            return 'rgb'
+        case 'rgbwmon':
+            return 'rgbw'
         case 'temperature':
         case 'humidity':
         case 'battery':
@@ -14294,6 +14419,19 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
                 Integer buttonNumber = 1
                 events.add([name: 'held', value: buttonNumber, isStateChange: true,
                     descriptionText: "Button ${buttonNumber} was held"])
+            }
+            break
+
+        case 'rgbmon':
+        case 'rgbwmon':
+            if (data.output != null) {
+                String switchState = data.output ? 'on' : 'off'
+                events.add([name: 'switch', value: switchState,
+                    descriptionText: "Switch turned ${switchState}"])
+            }
+            if (data.brightness != null) {
+                events.add([name: 'level', value: data.brightness as Integer,
+                    unit: '%', descriptionText: "Level is ${data.brightness}%"])
             }
             break
     }

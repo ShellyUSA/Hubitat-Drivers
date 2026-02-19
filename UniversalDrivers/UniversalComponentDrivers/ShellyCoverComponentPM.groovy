@@ -15,6 +15,7 @@ metadata {
     capability 'PowerMeter' //power - NUMBER, unit:W
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz
     capability 'EnergyMeter' //energy - NUMBER, unit:kWh
+    command 'resetEnergyMonitors'
 
     attribute 'lastUpdated', 'string'
   }
@@ -67,6 +68,11 @@ void stopPositionChange() {
 void refresh() {
   logDebug('refresh() called')
   parent?.componentRefresh(device)
+}
+
+void resetEnergyMonitors() {
+  logDebug('resetEnergyMonitors() called')
+  parent?.componentResetEnergyMonitors(device)
 }
 
 // ═══════════════════════════════════════════════════════════════

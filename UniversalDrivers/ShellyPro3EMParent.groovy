@@ -36,6 +36,7 @@ metadata {
     capability 'Refresh'
 
     command 'reinitialize'
+    command 'resetEnergyMonitors'
     attribute 'lastUpdated', 'string'
     attribute 'powerFactor', 'number'       // Weighted-average PF
     attribute 'reactivePower', 'number'     // Sum reactive power (VAR)
@@ -94,6 +95,14 @@ void refresh() {
 void reinitialize() {
   logDebug('reinitialize() called')
   parent?.reinitializeDevice(device)
+}
+
+/**
+ * Resets energy monitoring counters by delegating to the parent app.
+ */
+void resetEnergyMonitors() {
+  logDebug('resetEnergyMonitors() called')
+  parent?.componentResetEnergyMonitors(device)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

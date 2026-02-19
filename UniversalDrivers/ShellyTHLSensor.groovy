@@ -1,13 +1,13 @@
 /**
- * Shelly Autoconf TH Sensor
+ * Shelly Autoconf THL Sensor
  *
- * Pre-built standalone driver for Shelly temperature/humidity sensor devices.
- * Examples: Shelly H&T, Shelly Plus H&T
+ * Pre-built standalone driver for Shelly temperature/humidity/illuminance sensor devices.
+ * Examples: Shelly Pill (H&T Gen4 variant with illuminance)
  *
  * This is a battery-powered sensor device that sleeps most of the time.
- * It wakes briefly to send temperature/humidity updates via webhooks.
- * When a sensor notification arrives, the driver also requests a battery
- * level update from the parent app while the device is awake.
+ * It wakes briefly to send sensor updates via webhooks.
+ * When a sensor notification arrives, the driver also captures battery
+ * level from piggybacked supplemental tokens.
  *
  * This driver is installed directly by ShellyDeviceManager, bypassing the modular
  * assembly pipeline. Sensor data arrives via parse() from Shelly webhook notifications.
@@ -16,12 +16,15 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf TH Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf THL Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'TemperatureMeasurement'
     //Attributes: temperature - NUMBER
 
     capability 'RelativeHumidityMeasurement'
     //Attributes: humidity - NUMBER
+
+    capability 'IlluminanceMeasurement'
+    //Attributes: illuminance - NUMBER
 
     capability 'Battery'
     //Attributes: battery - NUMBER
@@ -32,8 +35,8 @@ metadata {
 
 preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level', options: ['trace':'Trace', 'debug':'Debug', 'info':'Info', 'warn':'Warning'], defaultValue: 'debug', required: true
-  input name: 'tempOffset', type: 'decimal', title: 'Temperature Offset', defaultValue: 0, required: false
-  input name: 'humidityOffset', type: 'decimal', title: 'Humidity Offset', defaultValue: 0, required: false
+  input name: 'tempOffset', type: 'decimal', title: 'Temperature Offset', defaultValue: 0, range: '-10..10'
+  input name: 'humidityOffset', type: 'decimal', title: 'Humidity Offset', defaultValue: 0, range: '-25..25'
 }
 
 
@@ -44,7 +47,6 @@ preferences {
 
 /**
  * Called when driver is first installed on a device.
- * Sets default log level if not already configured.
  */
 void installed() {
   logDebug('installed() called')
@@ -55,7 +57,6 @@ void installed() {
 
 /**
  * Called when device settings are saved.
- * Sets default log level if not already configured.
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
@@ -91,7 +92,6 @@ void parse(String description) {
 
 /**
  * Handles POST webhook notifications from Shelly scripts.
- * Parses JSON body and routes to webhook params handler.
  *
  * @param msg The parsed LAN message map containing a JSON body
  */
@@ -137,9 +137,6 @@ private void handleGetWebhook(Map msg) {
 
 /**
  * Parses webhook GET request path to extract routing and sensor data from path segments.
- * GET Action Webhooks encode all data in path segments
- * (e.g., /temperature/0/tC/22.5/tF/72.5/battPct/85).
- * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
  * @return Map with dst, cid, and any parsed path segment key/value pairs, or null if not parseable
@@ -148,14 +145,12 @@ private void handleGetWebhook(Map msg) {
 private Map parseWebhookPath(Map msg) {
   String requestLine = null
 
-  // Primary: search parsed headers Map for request line
   if (msg?.headers) {
     requestLine = ((Map)msg.headers).keySet()?.find { Object key ->
       key.toString().startsWith('GET ') || key.toString().startsWith('POST ')
     }?.toString()
   }
 
-  // Fallback: parse raw header string (singular msg.header)
   if (!requestLine && msg?.header) {
     String rawHeader = msg.header.toString()
     String[] lines = rawHeader.split('\n')
@@ -174,11 +169,9 @@ private Map parseWebhookPath(Map msg) {
   if (requestParts.length < 2) { return null }
   String pathAndQuery = requestParts[1]
 
-  // Strip leading slash
   String webhookPath = pathAndQuery.startsWith('/') ? pathAndQuery.substring(1) : pathAndQuery
   if (!webhookPath) { return null }
 
-  // Defensive: strip query string if somehow present
   int qMarkIdx = webhookPath.indexOf('?')
   if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
 
@@ -187,7 +180,6 @@ private Map parseWebhookPath(Map msg) {
 
   Map result = [dst: segments[0], cid: segments[1]]
 
-  // Parse key/value pairs from remaining path segments
   for (int i = 2; i + 1 < segments.length; i += 2) {
     result[segments[i]] = segments[i + 1]
   }
@@ -212,7 +204,6 @@ private static String convertHexToIP(String hex) {
 
 /**
  * Checks the source IP of an incoming LAN message against the stored device IP.
- * If different, updates the device data value and notifies the parent app.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
  */
@@ -230,9 +221,7 @@ private void checkAndUpdateSourceIp(Map msg) {
 
 /**
  * Routes parsed webhook path segment parameters to appropriate event handlers.
- * Handles temperature, humidity, and piggybacked battery data.
- * TH sensor dst values (temperature, humidity) did not change between legacy and new
- * webhook formats, so the same cases handle both.
+ * Handles temperature, humidity, illuminance, and piggybacked battery data.
  *
  * @param params The parsed path segment parameters including dst and sensor value fields
  */
@@ -246,11 +235,10 @@ private void routeWebhookParams(Map params) {
       } else if (params.tF != null) {
         temp = params.tF as BigDecimal
       } else if (params.tC != null) {
-        // Fahrenheit hub but only Celsius available — convert
         temp = (params.tC as BigDecimal) * 9 / 5 + 32
       }
       if (temp != null) {
-        BigDecimal offset = (settings.tempOffset as BigDecimal) ?: 0
+        BigDecimal offset = settings?.tempOffset != null ? settings.tempOffset as BigDecimal : 0
         temp = temp + offset
         sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
           descriptionText: "Temperature is ${temp}°${scale}")
@@ -261,7 +249,7 @@ private void routeWebhookParams(Map params) {
     case 'humidity':
       if (params.rh != null) {
         BigDecimal humidity = params.rh as BigDecimal
-        BigDecimal offset = (settings.humidityOffset as BigDecimal) ?: 0
+        BigDecimal offset = settings?.humidityOffset != null ? settings.humidityOffset as BigDecimal : 0
         humidity = humidity + offset
         sendEvent(name: 'humidity', value: humidity, unit: '%',
           descriptionText: "Humidity is ${humidity}%")
@@ -269,11 +257,19 @@ private void routeWebhookParams(Map params) {
       }
       break
 
+    case 'illuminance':
+      if (params.lux != null) {
+        Integer lux = params.lux as Integer
+        sendEvent(name: 'illuminance', value: lux, unit: 'lux',
+          descriptionText: "Illuminance is ${lux} lux")
+        logInfo("Illuminance: ${lux} lux")
+      }
+      break
+
     case 'ble':
-      // Fallback: forward BLE data to app if handlePostWebhook intercept was missed
       logDebug('BLE relay received via routeWebhookParams, forwarding to app')
       parent?.handleBleRelay(device, params)
-      return // don't update lastUpdated for relay-only traffic
+      return
 
     default:
       logDebug("routeWebhookParams: unhandled dst=${params.dst}")
@@ -296,29 +292,14 @@ private void routeWebhookParams(Map params) {
 
 
 
-
-
-
-
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  Logging Helpers                                             ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-/**
- * Returns the display label used in log messages.
- *
- * @return The device display name
- */
 String loggingLabel() {
   return "${device.displayName}"
 }
 
-/**
- * Determines whether a log message at the given level should be emitted.
- *
- * @param messageLevel The level of the log message (error, warn, info, debug, trace)
- * @return true if the message should be logged
- */
 private Boolean shouldLogLevel(String messageLevel) {
   if (messageLevel == 'error') { return true }
   else if (messageLevel == 'warn') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }

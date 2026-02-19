@@ -1,17 +1,22 @@
 /**
- * Shelly Autoconf Input Count - Component Driver
+ * Shelly Autoconf CCT - Component Driver
  *
- * Self-contained component driver for Shelly pulse counter input components.
- * Receives count updates pushed from the parent device.
+ * Self-contained component driver for Shelly CCT (color temperature) components.
+ * Delegates commands to parent via componentXxx() pattern.
+ * Used as a child device in multi-component parent-child architecture (e.g., 2x CCT parent).
  */
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf Input Count', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
-    capability 'Sensor'
+  definition (name: 'Shelly Autoconf CCT', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+    capability 'Light' //switch - ENUM ["on", "off"]
+    capability 'SwitchLevel' //level - NUMBER, unit:%
+    capability 'ChangeLevel'
+    capability 'ColorTemperature'
+    //Attributes: colorTemperature - NUMBER, colorName - STRING
+    //Commands: setColorTemperature(colortemperature, level, transitionTime)
     capability 'Refresh'
 
-    attribute 'count', 'number'
     attribute 'lastUpdated', 'string'
   }
 
@@ -19,6 +24,8 @@ metadata {
     input name: 'logLevel', type: 'enum', title: 'Logging Level',
       options: ['warn':'Warning', 'info':'Info', 'debug':'Debug', 'trace':'Trace'],
       defaultValue: 'info', required: true
+    input name: 'transitionDuration', type: 'number', title: 'Default Transition (ms, 0=instant)',
+      defaultValue: 0, required: false
   }
 }
 
@@ -26,10 +33,46 @@ metadata {
 
 void installed() {
   logDebug('installed() called')
+  initialize()
 }
 
 void updated() {
   logDebug('updated() called')
+  initialize()
+}
+
+void initialize() {
+  logDebug('initialize() called')
+}
+
+void on() {
+  logDebug('on() called')
+  parent?.componentCctOn(device)
+}
+
+void off() {
+  logDebug('off() called')
+  parent?.componentCctOff(device)
+}
+
+void setLevel(BigDecimal level, BigDecimal duration = null) {
+  logDebug("setLevel(${level}, ${duration}) called")
+  parent?.componentCctSetLevel(device, level as Integer, duration != null ? (duration * 1000) as Integer : null)
+}
+
+void setColorTemperature(BigDecimal colorTemp, BigDecimal level = null, BigDecimal transitionTime = null) {
+  logDebug("setColorTemperature(${colorTemp}, ${level}, ${transitionTime}) called")
+  parent?.componentSetColorTemperature(device, colorTemp as Integer, level != null ? level as Integer : null, transitionTime)
+}
+
+void startLevelChange(String direction) {
+  logDebug("startLevelChange(${direction}) called")
+  parent?.componentCctStartLevelChange(device, direction)
+}
+
+void stopLevelChange() {
+  logDebug('stopLevelChange() called')
+  parent?.componentCctStopLevelChange(device)
 }
 
 void refresh() {

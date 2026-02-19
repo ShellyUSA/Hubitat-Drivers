@@ -2560,6 +2560,9 @@
     },
     "rgbw": {
       "default": "ShellyRGBWComponent.groovy"
+    },
+    "cct": {
+      "default": "ShellyCCTComponent.groovy"
     }
   },
   "webhookDefinitions": {
@@ -2761,6 +2764,24 @@
         "name": "hubitat_sdm_rgbw_change",
         "urlParams": "brightness/${status[\"rgbw:__CID__\"].brightness}",
         "shellyComponent": "rgbw"
+      },
+      "cct.on": {
+        "dst": "cct_on",
+        "name": "hubitat_sdm_cct_on",
+        "urlParams": "brightness/${status[\"cct:__CID__\"].brightness}/ct/${status[\"cct:__CID__\"].ct}",
+        "shellyComponent": "cct"
+      },
+      "cct.off": {
+        "dst": "cct_off",
+        "name": "hubitat_sdm_cct_off",
+        "urlParams": "",
+        "shellyComponent": "cct"
+      },
+      "cct.change": {
+        "dst": "cct_change",
+        "name": "hubitat_sdm_cct_change",
+        "urlParams": "brightness/${status[\"cct:__CID__\"].brightness}/ct/${status[\"cct:__CID__\"].ct}",
+        "shellyComponent": "cct"
       }
     },
     "supplementalTokenGroups": {
