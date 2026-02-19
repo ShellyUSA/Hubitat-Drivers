@@ -34,6 +34,7 @@
     // Single-component standalone drivers
     'Shelly Autoconf Single Switch': 'UniversalDrivers/ShellySingleSwitch.groovy',
     'Shelly Autoconf Single Switch PM': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
+    'Shelly Autoconf Single Dimmer PM': 'UniversalDrivers/ShellySingleDimmerPM.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
 
     // Multi-component parent drivers (create driver-level children)
@@ -7599,6 +7600,30 @@ LinkedHashMap switchSetConfigCommandJson(
   return command
 }
 
+/**
+ * Builds a Light.SetConfig JSON-RPC command for Gen 2/3 dimmer configuration.
+ *
+ * @param jsonConfigToSend Map of Light config keys to set (e.g., initial_state, auto_off, transition_duration)
+ * @param lightId The light component ID (default 0)
+ * @return LinkedHashMap suitable for postCommandSync()
+ */
+@CompileStatic
+LinkedHashMap lightSetConfigCommandJson(
+  Map jsonConfigToSend,
+  Integer lightId = 0
+) {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : "lightSetConfig",
+    "method" : "Light.SetConfig",
+    "params" : [
+      "id" : lightId,
+      "config": jsonConfigToSend
+    ]
+  ]
+  return command
+}
+
 @CompileStatic
 LinkedHashMap switchSetConfigCommand(
   String initial_state,
@@ -14531,11 +14556,14 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Receives light settings from a standalone light/bulb driver.
+ * Receives light settings from a standalone light/bulb/dimmer driver.
  * Applies settings to Gen 1 devices via GET /settings/light/{id}.
+ * Applies settings to Gen 2/3 devices via Light.SetConfig JSON-RPC.
  *
- * @param childDevice The standalone light/bulb device
- * @param lightSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ * @param childDevice The standalone light/bulb/dimmer device
+ * @param lightSettings Map with optional keys: defaultState, autoOffTime, autoOnTime,
+ *   transitionDuration, minBrightnessOnToggle, nightModeEnable, nightModeBrightness,
+ *   buttonFadeRate (Gen 2/3 only: transitionDuration and beyond)
  */
 void componentUpdateLightSettings(def childDevice, Map lightSettings) {
     if (!childDevice || !lightSettings) { return }
@@ -14563,8 +14591,54 @@ void componentUpdateLightSettings(def childDevice, Map lightSettings) {
         if (result != null) {
             logInfo("Applied Gen1 light settings to ${childDevice.displayName}: ${params}")
         }
+    } else {
+        // Gen 2/3: JSON-RPC Light.SetConfig
+        Integer lightId = extractComponentId(childDevice, 'lightId') ?: 0
+        Map config = [:]
+        if (lightSettings.defaultState != null) {
+            String state = lightSettings.defaultState as String
+            config.initial_state = (state == 'restore') ? 'restore_last' : state
+        }
+        if (lightSettings.autoOffTime != null) {
+            BigDecimal seconds = lightSettings.autoOffTime as BigDecimal
+            config.auto_off = (seconds > 0)
+            config.auto_off_delay = seconds
+        }
+        if (lightSettings.autoOnTime != null) {
+            BigDecimal seconds = lightSettings.autoOnTime as BigDecimal
+            config.auto_on = (seconds > 0)
+            config.auto_on_delay = seconds
+        }
+        if (lightSettings.transitionDuration != null) {
+            config.transition_duration = lightSettings.transitionDuration as BigDecimal
+        }
+        if (lightSettings.minBrightnessOnToggle != null) {
+            config.min_brightness_on_toggle = lightSettings.minBrightnessOnToggle as Integer
+        }
+        if (lightSettings.nightModeEnable != null || lightSettings.nightModeBrightness != null) {
+            Map nightMode = [:]
+            if (lightSettings.nightModeEnable != null) {
+                nightMode.enable = lightSettings.nightModeEnable as Boolean
+            }
+            if (lightSettings.nightModeBrightness != null) {
+                nightMode.brightness = lightSettings.nightModeBrightness as Integer
+            }
+            config.night_mode = nightMode
+        }
+        if (lightSettings.buttonFadeRate != null) {
+            config.button_fade_rate = lightSettings.buttonFadeRate as Integer
+        }
+        if (!config) { return }
+
+        String rpcUri = "http://${ipAddress}/rpc"
+        LinkedHashMap command = lightSetConfigCommandJson(config, lightId)
+        LinkedHashMap response = postCommandSync(command, rpcUri)
+        if (response != null) {
+            logInfo("Applied Gen2+ light config to ${childDevice.displayName} light:${lightId}: ${config}")
+        } else {
+            logWarn("Failed to apply Gen2+ light config to ${childDevice.displayName}: no response")
+        }
     }
-    // Gen 2/3 light settings can be added here later
 }
 
 // ═══════════════════════════════════════════════════════════════
