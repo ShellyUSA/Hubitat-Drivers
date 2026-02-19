@@ -412,12 +412,10 @@ private String mapCoverState(String coverState) {
 // ║  Logging Helpers                                             ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-@CompileStatic
 String loggingLabel() {
   return "${device.displayName}"
 }
 
-@CompileStatic
 private Boolean shouldLogLevel(String messageLevel) {
   if (messageLevel == 'error') { return true }
   else if (messageLevel == 'warn') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }

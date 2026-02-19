@@ -914,7 +914,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // The parent driver will read these to create driver-level children
         List<String> components = []
         List<String> pmComponents = []
-        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity'] as Set
+        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity', 'blutrv'] as Set
 
         deviceStatus.each { k, v ->
             String key = k.toString()
@@ -6553,7 +6553,8 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Comprehensive set of recognized Shelly component types
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
-        'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat', 'adc'] as Set
+        'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat', 'adc',
+        'blugw', 'blutrv'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -6593,7 +6594,10 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             actuatorCounts[baseType] = (actuatorCounts[baseType] ?: 0) + 1
         }
     }
-    Boolean needsParentChild = actuatorCounts.any { String k, Integer v -> v > 1 } ||
+    // BLU Gateway always needs parent-child (TRVs are driver-level children)
+    Boolean hasBluGw = components.any { it.toString().startsWith('blugw') }
+    Boolean needsParentChild = hasBluGw ||
+        actuatorCounts.any { String k, Integer v -> v > 1 } ||
         actuatorCounts.size() > 1 ||
         actuatorCounts.containsKey('em') || actuatorCounts.containsKey('em1') ||
         actuatorCounts.containsKey('rgb') || actuatorCounts.containsKey('rgbw') ||
@@ -6736,9 +6740,10 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
     String parentSuffix = isParent ? " Parent" : ""
 
-    // BLU Gateway: has blutrv components (Gen2+ only)
-    Boolean hasBluTrv = componentCounts.containsKey('blutrv')
-    if (!isGen1 && hasBluTrv) {
+    // BLU Gateway: identified by blugw component (Gen2+ only)
+    // The gateway may or may not have blutrv:NNN children depending on TRV pairing
+    Boolean hasBluGw = componentCounts.containsKey('blugw')
+    if (!isGen1 && hasBluGw) {
         return "${prefix} BLU Gateway Parent"
     }
 

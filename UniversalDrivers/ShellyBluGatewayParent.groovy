@@ -37,7 +37,6 @@ preferences {
 
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
-import groovy.json.JsonSlurper
 import groovy.transform.Field
 
 
@@ -144,7 +143,7 @@ void reconcileChildDevices() {
   // Remove orphaned children (exist but shouldn't)
   existingDnis.each { String dni ->
     if (!desiredDnis.contains(dni)) {
-      def child = getChildDevice(dni)
+      com.hubitat.app.DeviceWrapper child = getChildDevice(dni)
       if (child) {
         logInfo("Removing orphaned child: ${child.displayName} (${dni})")
         deleteChildDevice(dni)
@@ -165,7 +164,7 @@ void reconcileChildDevices() {
     String driverName = 'Shelly Autoconf BLU TRV'
     String label = "${device.displayName} TRV ${compId}"
     try {
-      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', 'blutrv')
       child.updateDataValue('bluetrvId', compId.toString())
       logInfo("Created child: ${label} (${driverName})")
@@ -192,7 +191,7 @@ void reconcileChildDevices() {
  * @param childDevice The TRV child device requesting the command
  * @param tempC Target temperature in Celsius
  */
-void componentBluTrvSetTarget(def childDevice, BigDecimal tempC) {
+void componentBluTrvSetTarget(com.hubitat.app.DeviceWrapper childDevice, BigDecimal tempC) {
   Integer compId = childDevice.getDataValue('bluetrvId') as Integer
   logDebug("componentBluTrvSetTarget: ${tempC}°C on TRV ${compId}")
   parent?.sendBluTrvCommand(device, compId, 'TRV.SetTarget', [id: 0, target_C: tempC])
@@ -205,7 +204,7 @@ void componentBluTrvSetTarget(def childDevice, BigDecimal tempC) {
  * @param childDevice The TRV child device
  * @param position Valve position 0-100
  */
-void componentBluTrvSetPosition(def childDevice, Integer position) {
+void componentBluTrvSetPosition(com.hubitat.app.DeviceWrapper childDevice, Integer position) {
   Integer compId = childDevice.getDataValue('bluetrvId') as Integer
   logDebug("componentBluTrvSetPosition: pos=${position} on TRV ${compId}")
   parent?.sendBluTrvCommand(device, compId, 'TRV.SetPosition', [id: 0, pos: position])
@@ -217,7 +216,7 @@ void componentBluTrvSetPosition(def childDevice, Integer position) {
  * @param childDevice The TRV child device
  * @param durationSecs Boost duration in seconds
  */
-void componentBluTrvSetBoost(def childDevice, Integer durationSecs) {
+void componentBluTrvSetBoost(com.hubitat.app.DeviceWrapper childDevice, Integer durationSecs) {
   Integer compId = childDevice.getDataValue('bluetrvId') as Integer
   logDebug("componentBluTrvSetBoost: ${durationSecs}s on TRV ${compId}")
   parent?.sendBluTrvCommand(device, compId, 'TRV.SetBoost', [id: 0, duration: durationSecs])
@@ -228,7 +227,7 @@ void componentBluTrvSetBoost(def childDevice, Integer durationSecs) {
  *
  * @param childDevice The TRV child device
  */
-void componentBluTrvClearBoost(def childDevice) {
+void componentBluTrvClearBoost(com.hubitat.app.DeviceWrapper childDevice) {
   Integer compId = childDevice.getDataValue('bluetrvId') as Integer
   logDebug("componentBluTrvClearBoost: TRV ${compId}")
   parent?.sendBluTrvCommand(device, compId, 'TRV.ClearBoost', [id: 0])
@@ -240,7 +239,7 @@ void componentBluTrvClearBoost(def childDevice) {
  * @param childDevice The TRV child device
  * @param tempC External temperature in Celsius
  */
-void componentBluTrvSetExternalTemp(def childDevice, BigDecimal tempC) {
+void componentBluTrvSetExternalTemp(com.hubitat.app.DeviceWrapper childDevice, BigDecimal tempC) {
   Integer compId = childDevice.getDataValue('bluetrvId') as Integer
   logDebug("componentBluTrvSetExternalTemp: ${tempC}°C on TRV ${compId}")
   parent?.sendBluTrvCommand(device, compId, 'TRV.SetExternalTemperature', [id: 0, temp_C: tempC])
@@ -251,7 +250,7 @@ void componentBluTrvSetExternalTemp(def childDevice, BigDecimal tempC) {
  *
  * @param childDevice The TRV child device
  */
-void componentBluTrvCalibrate(def childDevice) {
+void componentBluTrvCalibrate(com.hubitat.app.DeviceWrapper childDevice) {
   Integer compId = childDevice.getDataValue('bluetrvId') as Integer
   logDebug("componentBluTrvCalibrate: TRV ${compId}")
   parent?.sendBluTrvCommand(device, compId, 'TRV.Calibrate', [id: 0])
@@ -263,7 +262,7 @@ void componentBluTrvCalibrate(def childDevice) {
  *
  * @param childDevice The TRV child device
  */
-void componentBluTrvRefresh(def childDevice) {
+void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper childDevice) {
   Integer compId = childDevice.getDataValue('bluetrvId') as Integer
   logDebug("componentBluTrvRefresh: TRV ${compId}")
   parent?.componentBluTrvRefresh(device, compId)
@@ -310,7 +309,7 @@ void parse(String description) {
  */
 private void handlePostWebhook(Map msg) {
   try {
-    Map json = new JsonSlurper().parseText(msg.body) as Map
+    Map json = new groovy.json.JsonSlurper().parseText(msg.body) as Map
     String dst = json?.dst?.toString()
     if (!dst) { logTrace('POST webhook: no dst in body'); return }
 
@@ -365,7 +364,7 @@ private void routeWebhookParams(Map params) {
 
   if (dst.startsWith('blutrv_')) {
     String childDni = "${device.deviceNetworkId}-blutrv-${componentId}"
-    def child = getChildDevice(childDni)
+    com.hubitat.app.DeviceWrapper child = getChildDevice(childDni)
     if (!child) {
       logDebug("No TRV child found for DNI: ${childDni}")
       return
@@ -519,7 +518,7 @@ void distributeStatus(Map status) {
 
     if (baseType == 'blutrv') {
       String childDni = "${device.deviceNetworkId}-blutrv-${componentId}"
-      def child = getChildDevice(childDni)
+      com.hubitat.app.DeviceWrapper child = getChildDevice(childDni)
       if (child) {
         distributeBluTrvStatus(child, v as Map, scale)
       } else {
@@ -538,7 +537,7 @@ void distributeStatus(Map status) {
  * @param data The blutrv status data map
  * @param scale Temperature scale ('F' or 'C')
  */
-private void distributeBluTrvStatus(def child, Map data, String scale) {
+private void distributeBluTrvStatus(com.hubitat.app.DeviceWrapper child, Map data, String scale) {
   // Current temperature
   if (data.current_C != null && data.current_C != 'null') {
     BigDecimal tempC = data.current_C as BigDecimal
@@ -661,7 +660,6 @@ private Object getLocationHelper() {
  *
  * @return The device display name
  */
-@CompileStatic
 String loggingLabel() {
   return "${device.displayName}"
 }

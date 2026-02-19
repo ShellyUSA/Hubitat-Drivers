@@ -810,7 +810,6 @@ private Object getLocationHelper() {
  *
  * @return The device display name
  */
-@CompileStatic
 String loggingLabel() {
   return "${device.displayName}"
 }
@@ -821,7 +820,6 @@ String loggingLabel() {
  * @param messageLevel The level of the log message (error, warn, info, debug, trace)
  * @return true if the message should be logged
  */
-@CompileStatic
 private Boolean shouldLogLevel(String messageLevel) {
   if (messageLevel == 'error') { return true }
   else if (messageLevel == 'warn') { return ['warn', 'info', 'debug', 'trace'].contains(settings.logLevel) }
