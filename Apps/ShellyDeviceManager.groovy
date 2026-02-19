@@ -42,7 +42,7 @@
     'Shelly Autoconf 2x Switch PM Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
     'Shelly Autoconf Single Cover PM Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
-    'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyAutoconfParent.groovy',
+    'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
 
     // Fallback parent driver for unknown/unsupported patterns
     'Shelly Autoconf Parent': 'UniversalDrivers/ShellyAutoconfParent.groovy',
@@ -903,9 +903,11 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
             parentDevice.updateDataValue('pmComponents', pmComponentStr)
         }
 
-        // For EM parent drivers: set switchId for relay control (relay:0 is on the parent)
+        // For EM parent drivers: set switchId for relay/contactor control
+        // Gen 1 EM has relay:0, Gen 2+ Pro 3EM has contactor switch:100
         if (parentDriverName.contains('EM Parent')) {
-            parentDevice.updateDataValue('switchId', '0')
+            String emSwitchId = parentDriverName.contains('Gen1') ? '0' : '100'
+            parentDevice.updateDataValue('switchId', emSwitchId)
         }
 
         logInfo("  Components: ${componentStr}")
