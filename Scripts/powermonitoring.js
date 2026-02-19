@@ -22,6 +22,17 @@ let HUBITAT_KVS_KEY = "hubitat_sdm_ip"; // store only the IP (no protocol/port) 
 let HUBITAT_DEFAULT_IP = "192.168.1.4"; // fallback if KVS lookup fails
 let HUBITAT_PORT = 39501;
 let HUBITAT_PROTO = "http://";
+
+// Change-detection thresholds: report only when change >= threshold from last sent value.
+// Set above the rounding step to filter real noise (e.g. THRESH_P=5 vs 1W rounding step).
+let THRESH_V = 1;      // voltage: report if change >= 1V
+let THRESH_C = 0.05;   // current: report if change >= 0.05A
+let THRESH_P = 5;      // power: report if change >= 5W
+let THRESH_E = 5;      // energy: report if change >= 5Wh
+let THRESH_F = 0.5;    // frequency: report if change >= 0.5Hz
+// Force a report every ~hour even if unchanged; timing is approximate if pm_ri changes at runtime
+let CHECKIN_SECS = 3600;
+
 // REMOTE_URL is built from KVS value (or fallback)
 let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 
@@ -119,13 +130,20 @@ function scheduleNextReport() {
   Timer.set(REPORT_INTERVAL * 1000, false, sendReport);
 }
 
-// Compute average of a numeric array, rounded to 2 decimal places
+// Compute average of a numeric array (raw — per-field rounding applied in sendPostReport)
 function average(arr) {
   if (arr.length === 0) return null;
   let sum = 0;
   for (let i = 0; i < arr.length; i++) sum += arr[i];
-  return Math.round((sum / arr.length) * 100) / 100;
+  return sum / arr.length;
 }
+
+// Field-specific rounding: voltage=1dp, current=2dp, power=0dp, energy=0dp, freq=1dp
+function roundV(val) { return val === null ? null : Math.round(val * 10) / 10; }
+function roundC(val) { return val === null ? null : Math.round(val * 100) / 100; }
+function roundP(val) { return val === null ? null : Math.round(val); }
+function roundE(val) { return val === null ? null : Math.round(val); }
+function roundF(val) { return val === null ? null : Math.round(val * 10) / 10; }
 
 // Get or create a component accumulator entry
 function getOrCreateComp(key, type, id) {
@@ -135,12 +153,12 @@ function getOrCreateComp(key, type, id) {
     c = {
       type: "em",
       id: id,
-      a: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null },
-      b: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null },
-      c: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null },
+      a: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
+      b: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
+      c: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
     };
   } else {
-    c = { type: type, id: id, vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null };
+    c = { type: type, id: id, vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 };
   }
   comps[key] = c;
   compKeys.push(key);
@@ -217,20 +235,39 @@ function onStatus(ev) {
   }
 }
 
-// Build and send a POST request with normalized power monitoring params as JSON body
+// Build and send a POST request with normalized power monitoring params as JSON body.
+// Applies per-field rounding and suppresses reports when no significant change occurred,
+// unless the hourly check-in interval has elapsed.
 function sendPostReport(compId, compType, phase, data) {
-  let v = average(data.vs);
-  let cur = average(data.cs);
-  let p = average(data.ps);
-  let f = average(data.fs);
+  let v = roundV(average(data.vs));
+  let cur = roundC(average(data.cs));
+  let p = roundP(average(data.ps));
+  let f = roundF(average(data.fs));
+  let e = roundE(data.e);
 
   // Fall back to last-known values when no deltas were received
-  if (v === null && data.lastV !== null) v = data.lastV;
-  if (cur === null && data.lastC !== null) cur = data.lastC;
-  if (p === null && data.lastP !== null) p = data.lastP;
-  if (f === null && data.lastF !== null) f = data.lastF;
+  if (v === null && data.lastV !== null) v = roundV(data.lastV);
+  if (cur === null && data.lastC !== null) cur = roundC(data.lastC);
+  if (p === null && data.lastP !== null) p = roundP(data.lastP);
+  if (f === null && data.lastF !== null) f = roundF(data.lastF);
 
-  if (v === null && cur === null && p === null && f === null && data.e === null) {
+  if (v === null && cur === null && p === null && f === null && e === null) {
+    return;
+  }
+
+  // Track cycles since last sent report
+  data.sentAge = (data.sentAge || 0) + 1;
+
+  // Check for significant change vs last-reported values
+  let changed = false;
+  if (v !== null && (data.sentV === null || Math.abs(v - data.sentV) >= THRESH_V)) changed = true;
+  if (cur !== null && (data.sentC === null || Math.abs(cur - data.sentC) >= THRESH_C)) changed = true;
+  if (p !== null && (data.sentP === null || Math.abs(p - data.sentP) >= THRESH_P)) changed = true;
+  if (e !== null && (data.sentE === null || Math.abs(e - data.sentE) >= THRESH_E)) changed = true;
+  if (f !== null && (data.sentF === null || Math.abs(f - data.sentF) >= THRESH_F)) changed = true;
+
+  // Skip if no significant change and hourly check-in not yet due
+  if (!changed && (data.sentAge * REPORT_INTERVAL) < CHECKIN_SECS) {
     return;
   }
 
@@ -239,14 +276,16 @@ function sendPostReport(compId, compType, phase, data) {
   if (v !== null) body.voltage = v;
   if (cur !== null) body.current = cur;
   if (p !== null) body.apower = p;
-  if (data.e !== null) body.aenergy = data.e;
+  if (e !== null) body.aenergy = e;
   if (f !== null) body.freq = f;
 
-  // Store reported values as last-known for next cycle
-  if (v !== null) data.lastV = v;
-  if (cur !== null) data.lastC = cur;
-  if (p !== null) data.lastP = p;
-  if (f !== null) data.lastF = f;
+  // Update last-known and last-sent tracking
+  if (v !== null) { data.lastV = v; data.sentV = v; }
+  if (cur !== null) { data.lastC = cur; data.sentC = cur; }
+  if (p !== null) { data.lastP = p; data.sentP = p; }
+  if (f !== null) { data.lastF = f; data.sentF = f; }
+  if (e !== null) data.sentE = e;
+  data.sentAge = 0;
 
   let url = REMOTE_URL + "/webhook/powermon/" + JSON.stringify(compId);
   Shelly.call(
