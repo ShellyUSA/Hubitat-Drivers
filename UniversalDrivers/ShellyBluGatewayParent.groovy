@@ -511,7 +511,7 @@ void distributeStatus(Map status) {
 
   status.each { k, v ->
     String key = k.toString()
-    logInfo("distributeStatus: processing key='${key}', isMap=${v instanceof Map}, value class=${v?.getClass()?.simpleName}")
+    logInfo("distributeStatus: processing key='${key}', isMap=${v instanceof Map}")
     if (!key.contains(':') || !(v instanceof Map)) { return }
 
     String baseType = key.split(':')[0]
