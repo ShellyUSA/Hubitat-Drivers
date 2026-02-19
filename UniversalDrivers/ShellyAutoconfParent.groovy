@@ -875,6 +875,14 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       events.add([name: 'smoke', value: 'detected',
         descriptionText: 'Smoke detected'])
       break
+    case 'smoke_alarm_off':
+      events.add([name: 'smoke', value: 'clear',
+        descriptionText: 'Smoke alarm cleared'])
+      break
+    case 'smoke_alarm_test':
+      events.add([name: 'smoke', value: 'tested',
+        descriptionText: 'Smoke alarm test'])
+      break
 
     // Legacy smoke (uses params for state)
     case 'smoke':

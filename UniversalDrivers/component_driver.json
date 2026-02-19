@@ -2648,6 +2648,18 @@
         "urlParams": "",
         "shellyComponent": "smoke"
       },
+      "smoke.alarm_off": {
+        "dst": "smoke_alarm_off",
+        "name": "hubitat_sdm_smoke_off",
+        "urlParams": "",
+        "shellyComponent": "smoke"
+      },
+      "smoke.alarm_test": {
+        "dst": "smoke_alarm_test",
+        "name": "hubitat_sdm_smoke_test",
+        "urlParams": "",
+        "shellyComponent": "smoke"
+      },
       "illuminance.change": {
         "dst": "illuminance",
         "name": "hubitat_sdm_illuminance",
