@@ -35,12 +35,6 @@ metadata {
     capability 'IlluminanceMeasurement'
     //Attributes: illuminance - NUMBER, unit:lux
 
-    capability 'Configuration'
-    //Commands: configure()
-
-    capability 'Refresh'
-    //Commands: refresh()
-
     attribute 'lastUpdated', 'string'
     attribute 'tilt', 'number'
     attribute 'voltage', 'number'
@@ -103,30 +97,6 @@ void updated() {
     device.updateSetting('logLevel', 'debug')
   }
   relayDeviceSettings()
-}
-
-/**
- * Re-reads configuration from the physical device by clearing the sync flag.
- * The next refresh will re-sync device settings to driver preferences.
- */
-void configure() {
-  logDebug('configure() called')
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-  // Clear sync flag so next refresh re-reads settings from device
-  device.removeDataValue('gen1SettingsSynced')
-  parent?.componentRefresh(device)
-}
-
-/**
- * Refreshes the device state. Note: battery device may be asleep.
- * Data will update on next wake-up (contact/vibration/lux event callback).
- */
-void refresh() {
-  logDebug('refresh() called — note: battery device may be asleep')
-  parent?.componentRefresh(device)
 }
 
 /**

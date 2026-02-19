@@ -26,12 +26,6 @@ metadata {
     capability 'PresenceSensor'
     //Attributes: presence - ENUM ["present", "not present"]
 
-    capability 'Initialize'
-    //Commands: initialize()
-
-    capability 'Configuration'
-    //Commands: configure()
-
     attribute 'lastUpdated', 'string'
   }
 }
@@ -63,17 +57,6 @@ void updated() {
 
 void initialize() {
   logDebug('initialize() called')
-}
-
-void configure() {
-  logDebug('configure() called')
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-  if (!settings.presenceTimeout) {
-    device.updateSetting('presenceTimeout', [type: 'number', value: 60])
-  }
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
