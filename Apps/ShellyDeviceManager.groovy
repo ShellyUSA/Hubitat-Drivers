@@ -37,7 +37,9 @@
     'Shelly Autoconf Single Dimmer': 'UniversalDrivers/ShellySingleDimmer.groovy',
     'Shelly Autoconf Single Dimmer PM': 'UniversalDrivers/ShellySingleDimmerPM.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
+    'Shelly Autoconf Flood Sensor': 'UniversalDrivers/ShellyFloodSensor.groovy',
     'Shelly Autoconf Smoke Sensor': 'UniversalDrivers/ShellySmokeSensor.groovy',
+    'Shelly Autoconf PM Monitor': 'UniversalDrivers/ShellyPMMonitor.groovy',
 
     // Multi-component parent drivers (create driver-level children)
     'Shelly Autoconf 2x Switch Parent': 'UniversalDrivers/Shelly2xSwitchParent.groovy',
@@ -47,6 +49,9 @@
     'Shelly Autoconf Single Cover PM Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
     'Shelly Autoconf 2x Cover PM Parent': 'UniversalDrivers/Shelly2xCoverPMParent.groovy',
     'Shelly Autoconf 2x Dimmer PM Parent': 'UniversalDrivers/Shelly2xDimmerPMParent.groovy',
+    'Shelly Autoconf 4x Dimmer PM Parent': 'UniversalDrivers/Shelly4xDimmerPMParent.groovy',
+    'Shelly Autoconf Single RGBW PM Parent': 'UniversalDrivers/ShellyRGBWParent.groovy',
+    // 'Shelly Autoconf Single CCT PM Parent': 'UniversalDrivers/ShellyCCTParent.groovy',  // TODO: not yet implemented
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
     'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
 
@@ -6524,7 +6529,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     Map<String, Boolean> componentPowerMonitoring = [:]
 
     // Comprehensive set of recognized Shelly component types
-    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'input', 'pm1', 'em', 'em1',
+    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
         'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat', 'adc'] as Set
 
@@ -6539,7 +6544,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         // Check if this component has power monitoring
         // em, em1, pm1 are inherently power monitoring components
         Boolean hasPM = (baseType == 'em' || baseType == 'em1' || baseType == 'pm1')
-        if (!hasPM && v instanceof Map && (baseType == 'switch' || baseType == 'cover' || baseType == 'light' || baseType == 'rgb' || baseType == 'rgbw')) {
+        if (!hasPM && v instanceof Map && (baseType == 'switch' || baseType == 'cover' || baseType == 'light' || baseType == 'rgb' || baseType == 'rgbw' || baseType == 'cct')) {
             hasPM = v.voltage != null || v.current != null || v.power != null ||
                     v.apower != null || v.aenergy != null
         }
@@ -6558,7 +6563,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     //   - 2+ instances of any single actuator type (e.g., switch:0 + switch:1)
     //   - Multiple different actuator types (e.g., em:0 + switch:100)
     //   - EM components present (each EM expands to 3 phase children)
-    Set<String> actuatorComponentTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'em', 'em1'] as Set
+    Set<String> actuatorComponentTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'em', 'em1'] as Set
     Map<String, Integer> actuatorCounts = [:]
     components.each { String comp ->
         String baseType = comp.contains(':') ? comp.split(':')[0] : comp
@@ -6569,7 +6574,8 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     Boolean needsParentChild = actuatorCounts.any { String k, Integer v -> v > 1 } ||
         actuatorCounts.size() > 1 ||
         actuatorCounts.containsKey('em') || actuatorCounts.containsKey('em1') ||
-        actuatorCounts.containsKey('rgb') || actuatorCounts.containsKey('rgbw')
+        actuatorCounts.containsKey('rgb') || actuatorCounts.containsKey('rgbw') ||
+        actuatorCounts.containsKey('cct')
 
     if (needsParentChild) {
         logInfo("Multi-component device detected: ${actuatorCounts} — using parent-child architecture")
@@ -6684,11 +6690,11 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     String prefix = isGen1 ? "Shelly Gen1" : "Shelly Autoconf"
 
     // Sensor and actuator type sets
-    Set<String> sensorTypes = ['temperature', 'humidity', 'illuminance', 'smoke', 'voltmeter'] as Set
-    Set<String> supportTypes = ['devicepower', 'input', 'pm1'] as Set
-    Set<String> actuatorTypes = ['switch', 'cover', 'light', 'rgb', 'rgbw'] as Set
-    // Gen 1 additional component types
-    Set<String> gen1SensorTypes = ['flood', 'em', 'contact', 'lux'] as Set
+    Set<String> sensorTypes = ['temperature', 'humidity', 'illuminance', 'smoke', 'voltmeter', 'flood'] as Set
+    Set<String> supportTypes = ['devicepower', 'input'] as Set
+    Set<String> actuatorTypes = ['switch', 'cover', 'light', 'rgb', 'rgbw', 'cct'] as Set
+    // Gen 1 additional component types (not in sensorTypes/actuatorTypes above)
+    Set<String> gen1SensorTypes = ['em', 'contact', 'lux'] as Set
 
     components.each { component ->
         String baseType = component.contains(':') ? component.split(':')[0] : component
@@ -6772,7 +6778,8 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
                 'cover': 'Cover',
                 'light': 'Dimmer',
                 'rgb': 'RGBW',
-                'rgbw': 'RGBW'
+                'rgbw': 'RGBW',
+                'cct': 'CCT'
             ]
             String typeName = typeNameMap[type] ?: type.capitalize()
 
@@ -6799,6 +6806,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
         }
     }
 
+    // PM-only device (e.g., Shelly PM Mini Gen3 — has only pm1:0, no actuators or sensors)
+    Boolean hasPm1 = componentCounts.containsKey('pm1')
+    if (hasPm1 && foundActuators.size() == 0 && foundSensors.size() == 0) {
+        return "${prefix} PM Monitor${parentSuffix}"
+    }
+
     // Sensor-only device
     if (foundSensors.size() > 0) {
         Boolean hasTemp = foundSensors.contains('temperature')
@@ -6806,6 +6819,8 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
 
         if (hasTemp && hasHumidity) {
             return "${prefix} TH Sensor${parentSuffix}"
+        } else if (foundSensors.contains('flood')) {
+            return "${prefix} Flood Sensor${parentSuffix}"
         } else if (foundSensors.contains('smoke')) {
             return "${prefix} Smoke Sensor${parentSuffix}"
         } else if (hasTemp) {
@@ -7044,8 +7059,8 @@ private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
     Boolean installed = false
     if (PREBUILT_DRIVERS.containsKey(baseName)) {
         installed = installPrebuiltDriver(baseName, components, pmMap, version)
-    } else if (baseName.startsWith('Shelly Autoconf')) {
-        // Fall back to generic autoconf parent for unrecognized Shelly Autoconf devices
+    } else if (baseName.startsWith('Shelly Autoconf') && baseName.contains('Parent')) {
+        // Fall back to generic autoconf parent for unrecognized parent device patterns
         logWarn("No prebuilt driver for '${baseName}'. Falling back to Shelly Autoconf Parent.")
         installed = installPrebuiltDriver('Shelly Autoconf Parent', components, pmMap, version)
     } else {
@@ -12317,8 +12332,8 @@ private void reinstallAllPrebuiltDrivers() {
             Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
             Boolean success = installPrebuiltDriver(baseName, components, pmMap, version)
             if (success) { updated++ } else { errors++ }
-        } else if (baseName.startsWith('Shelly Autoconf')) {
-            // Fall back to generic autoconf parent for unrecognized Shelly Autoconf devices
+        } else if (baseName.startsWith('Shelly Autoconf') && baseName.contains('Parent')) {
+            // Fall back to generic autoconf parent for unrecognized parent device patterns
             logWarn("No prebuilt driver for '${baseName}'. Falling back to Shelly Autoconf Parent.")
             List<String> components = (info.components ?: []) as List<String>
             Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>

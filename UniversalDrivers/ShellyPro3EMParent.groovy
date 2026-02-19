@@ -1,22 +1,24 @@
 /**
- * Shelly Pro 3EM Parent
+ * Shelly Autoconf EM Parent
  *
- * Dedicated parent driver for the Shelly Pro 3EM energy meter (Gen 2+).
- * Provides 3-phase energy monitoring with per-phase children and parent-level aggregation.
+ * Dedicated parent driver for Shelly energy meter devices (Gen 2+).
+ * Supports two layouts:
+ *   - 3-phase (Pro 3EM): em:0 with phase-prefixed fields (a_voltage, b_voltage, c_voltage)
+ *   - Per-channel (EM Gen3, Pro EM-50): em1:0 + em1:1, each with standard fields (voltage, current)
  *
  * Architecture:
  *   - App creates parent device with component data values
- *   - Parent creates 3 EM children (Phase A/B/C) in initialize()
- *   - Contactor relay (switch:100) controlled directly on parent via Switch capability
+ *   - Parent creates EM children in initialize() (3 phases for em:0, N channels for em1:N)
+ *   - Contactor relay (switch:100 or switch:0) controlled directly on parent via Switch capability
  *   - Internal device temperature exposed on parent via TemperatureMeasurement
  *   - Parent receives LAN traffic, parses locally, routes EM data to children
- *   - Parent aggregates total power/energy/current across all 3 phases
- *   - Commands: parent on()/off() -> app parentSendCommand() -> Shelly RPC Switch.Set id:100
+ *   - Parent aggregates total power/energy/current across all phases/channels
+ *   - Commands: parent on()/off() -> app parentSendCommand() -> Shelly RPC Switch.Set
  *
  * Data Sources:
- *   - POST webhooks from powermonitoring.js (per-phase EM data)
+ *   - POST webhooks from powermonitoring.js (per-phase/channel EM data)
  *   - GET webhooks from Shelly native events (switch_on/switch_off for contactor)
- *   - Shelly.GetStatus via refresh (em:0, emdata:0, switch:100, temperature:0)
+ *   - Shelly.GetStatus via refresh (em:0/em1:N, emdata:0/em1data:N, switch:N, temperature:0)
  *
  * Version: 1.0.0
  */
@@ -105,25 +107,57 @@ void reinitialize() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Reconciles driver-level child devices for 3-phase EM channels.
- * Creates 3 EM children (Phase A, B, C) using the existing Shelly Autoconf EM driver.
- * DNIs: {parentDNI}-em-0 (Phase A), {parentDNI}-em-1 (Phase B), {parentDNI}-em-2 (Phase C).
- * No switch children -- the contactor (switch:100) is controlled directly on the parent.
+ * Determines the EM layout from component data values.
+ * Returns 'em' for 3-phase (Pro 3EM with em:0) or 'em1' for per-channel (EM Gen3 with em1:N).
+ *
+ * @return 'em' or 'em1'
+ */
+private String getEmLayout() {
+  String componentStr = device.getDataValue('components') ?: ''
+  if (componentStr.contains('em1:')) { return 'em1' }
+  return 'em'
+}
+
+/**
+ * Returns the count of em1 channels from the components data value.
+ *
+ * @return Number of em1:N components found
+ */
+private Integer getEm1ChannelCount() {
+  String componentStr = device.getDataValue('components') ?: ''
+  return componentStr.split(',').findAll { it.trim().startsWith('em1:') }.size()
+}
+
+/**
+ * Reconciles driver-level child devices for EM channels.
+ * For 3-phase (em:0): creates 3 EM children (Phase A, B, C).
+ * For per-channel (em1:N): creates N EM children (Channel 0, 1, ...).
+ * No switch children -- the contactor is controlled directly on the parent.
  */
 void reconcileChildDevices() {
-  List<String> phaseLabels = ['A', 'B', 'C']
+  String layout = getEmLayout()
 
-  // Build set of DNIs that SHOULD exist (always 3 EM phases)
+  // Build set of DNIs that SHOULD exist
   Set<String> desiredDnis = [] as Set
-  for (int i = 0; i < 3; i++) {
-    desiredDnis.add("${device.deviceNetworkId}-em-${i}".toString())
+
+  if (layout == 'em') {
+    // 3-phase layout: always 3 phase children
+    for (int i = 0; i < 3; i++) {
+      desiredDnis.add("${device.deviceNetworkId}-em-${i}".toString())
+    }
+  } else {
+    // Per-channel layout: one child per em1:N component
+    Integer channelCount = getEm1ChannelCount()
+    for (int i = 0; i < channelCount; i++) {
+      desiredDnis.add("${device.deviceNetworkId}-em1-${i}".toString())
+    }
   }
 
   // Build set of DNIs that currently exist
   Set<String> existingDnis = [] as Set
   getChildDevices()?.each { child -> existingDnis.add(child.deviceNetworkId) }
 
-  logDebug("Child reconciliation: desired=${desiredDnis}, existing=${existingDnis}")
+  logDebug("Child reconciliation (layout=${layout}): desired=${desiredDnis}, existing=${existingDnis}")
 
   // Remove orphaned children (exist but shouldn't)
   existingDnis.each { String dni ->
@@ -136,20 +170,40 @@ void reconcileChildDevices() {
     }
   }
 
-  // Create missing children
-  for (int i = 0; i < 3; i++) {
-    String childDni = "${device.deviceNetworkId}-em-${i}"
-    if (getChildDevice(childDni)) { continue }
+  if (layout == 'em') {
+    // Create 3-phase children (Phase A, B, C)
+    List<String> phaseLabels = ['A', 'B', 'C']
+    for (int i = 0; i < 3; i++) {
+      String childDni = "${device.deviceNetworkId}-em-${i}"
+      if (getChildDevice(childDni)) { continue }
 
-    String label = "${device.displayName} Phase ${phaseLabels[i]}"
-    try {
-      def child = addChildDevice('ShellyUSA', 'Shelly Autoconf EM', childDni, [name: label, label: label])
-      child.updateDataValue('componentType', 'em')
-      child.updateDataValue('emId', '0')
-      child.updateDataValue('phase', phaseLabels[i].toLowerCase())
-      logInfo("Created child: ${label} (Shelly Autoconf EM)")
-    } catch (Exception e) {
-      logError("Failed to create child ${label}: ${e.message}")
+      String label = "${device.displayName} Phase ${phaseLabels[i]}"
+      try {
+        def child = addChildDevice('ShellyUSA', 'Shelly Autoconf EM', childDni, [name: label, label: label])
+        child.updateDataValue('componentType', 'em')
+        child.updateDataValue('emId', '0')
+        child.updateDataValue('phase', phaseLabels[i].toLowerCase())
+        logInfo("Created child: ${label} (Shelly Autoconf EM)")
+      } catch (Exception e) {
+        logError("Failed to create child ${label}: ${e.message}")
+      }
+    }
+  } else {
+    // Create per-channel children (Channel 0, 1, ...)
+    Integer channelCount = getEm1ChannelCount()
+    for (int i = 0; i < channelCount; i++) {
+      String childDni = "${device.deviceNetworkId}-em1-${i}"
+      if (getChildDevice(childDni)) { continue }
+
+      String label = "${device.displayName} Channel ${i}"
+      try {
+        def child = addChildDevice('ShellyUSA', 'Shelly Autoconf EM', childDni, [name: label, label: label])
+        child.updateDataValue('componentType', 'em1')
+        child.updateDataValue('em1Id', i.toString())
+        logInfo("Created child: ${label} (Shelly Autoconf EM)")
+      } catch (Exception e) {
+        logError("Failed to create child ${label}: ${e.message}")
+      }
     }
   }
 }
@@ -311,6 +365,21 @@ private void routeWebhookNotification(Map params) {
       return
     }
     String childDni = "${device.deviceNetworkId}-em-${phaseIdx}"
+    def child = getChildDevice(childDni)
+    if (child) {
+      events.each { Map evt ->
+        logTrace("Sending webhook event to ${child.displayName}: ${evt}")
+        child.sendEvent(evt)
+      }
+      child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+      logDebug("Routed ${events.size()} webhook events to ${child.displayName}")
+    } else {
+      logDebug("No child device found for DNI: ${childDni}")
+    }
+  } else if (dst == 'powermon' && params.comp == 'em1') {
+    // Per-channel EM1 power monitoring -> route to em1 child
+    Integer channelId = params.cid as Integer
+    String childDni = "${device.deviceNetworkId}-em1-${channelId}"
     def child = getChildDevice(childDni)
     if (child) {
       events.each { Map evt ->
@@ -507,34 +576,40 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
 void distributeStatus(Map deviceStatus) {
   if (!deviceStatus) { return }
 
-  Map emData = deviceStatus['em:0'] as Map
-  Map emdataData = deviceStatus['emdata:0'] as Map
-  Map switchData = deviceStatus['switch:100'] as Map
-  Map tempData = deviceStatus['temperature:0'] as Map
+  String layout = getEmLayout()
 
-  // Per-phase EM data -> route to children
-  if (emData) {
-    distributeEmToChildren(emData, emdataData)
+  if (layout == 'em') {
+    // 3-phase layout: em:0 with phase-prefixed fields
+    Map emData = deviceStatus['em:0'] as Map
+    Map emdataData = deviceStatus['emdata:0'] as Map
+
+    if (emData) {
+      distributeEmToChildren(emData, emdataData)
+    }
+    if (emData || emdataData) {
+      updateAggregatesFromStatus(emData, emdataData)
+    }
+  } else {
+    // Per-channel layout: em1:N with standard fields
+    distributeEm1ToChildren(deviceStatus)
+    updateAggregatesFromEm1Status(deviceStatus)
   }
 
-  // Contactor state -> parent switch attribute
+  // Contactor state -> parent switch attribute (check switch:100 first, then switch:0)
+  Map switchData = (deviceStatus['switch:100'] ?: deviceStatus['switch:0']) as Map
   if (switchData?.output != null) {
     String switchState = switchData.output ? 'on' : 'off'
     sendEvent(name: 'switch', value: switchState, descriptionText: "Contactor is ${switchState}")
   }
 
   // Internal temperature -> parent temperature attribute
+  Map tempData = deviceStatus['temperature:0'] as Map
   if (tempData) {
     String scale = location?.temperatureScale ?: 'F'
     BigDecimal temp = (scale == 'C' && tempData.tC != null) ? tempData.tC as BigDecimal : tempData.tF as BigDecimal
     if (temp != null) {
       sendEvent(name: 'temperature', value: temp, unit: "\u00B0${scale}")
     }
-  }
-
-  // Aggregate EM data on parent
-  if (emData || emdataData) {
-    updateAggregatesFromStatus(emData, emdataData)
   }
 
   sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
@@ -613,6 +688,117 @@ private void distributeEmToChildren(Map emData, Map emdataData) {
   }
 }
 
+/**
+ * Distributes per-channel em1:N data from Shelly.GetStatus to children.
+ * Each em1:N component has standard fields (voltage, current, act_power, etc.)
+ * without phase prefixes.
+ *
+ * @param deviceStatus The full device status map from Shelly.GetStatus
+ */
+private void distributeEm1ToChildren(Map deviceStatus) {
+  Integer channelCount = getEm1ChannelCount()
+
+  for (int i = 0; i < channelCount; i++) {
+    String em1Key = "em1:${i}".toString()
+    String em1dataKey = "em1data:${i}".toString()
+    Map em1Data = deviceStatus[em1Key] as Map
+    Map em1dataData = deviceStatus[em1dataKey] as Map
+
+    String childDni = "${device.deviceNetworkId}-em1-${i}"
+    def child = getChildDevice(childDni)
+    if (!child) { continue }
+
+    List<Map> events = []
+
+    if (em1Data) {
+      if (em1Data.act_power != null) {
+        events.add([name: 'power', value: em1Data.act_power as BigDecimal, unit: 'W'])
+      }
+      if (em1Data.voltage != null) {
+        events.add([name: 'voltage', value: em1Data.voltage as BigDecimal, unit: 'V'])
+      }
+      if (em1Data.current != null) {
+        events.add([name: 'amperage', value: em1Data.current as BigDecimal, unit: 'A'])
+      }
+      if (em1Data.pf != null) {
+        events.add([name: 'powerFactor', value: em1Data.pf as BigDecimal])
+      }
+      if (em1Data.freq != null) {
+        events.add([name: 'frequency', value: em1Data.freq as BigDecimal, unit: 'Hz'])
+      }
+    }
+
+    if (em1dataData) {
+      if (em1dataData.total_act_energy != null) {
+        BigDecimal energyKwh = (em1dataData.total_act_energy as BigDecimal) / 1000.0
+        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+      }
+      if (em1dataData.total_act_ret_energy != null) {
+        BigDecimal retKwh = (em1dataData.total_act_ret_energy as BigDecimal) / 1000.0
+        events.add([name: 'energyReturned', value: retKwh, unit: 'kWh'])
+      }
+    }
+
+    if (events) {
+      events.each { Map evt -> child.sendEvent(evt) }
+      child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+      logDebug("Distributed ${events.size()} status events to ${child.displayName}")
+    }
+  }
+}
+
+/**
+ * Updates parent aggregates from em1:N status data.
+ * Sums power/current/energy across all em1 channels.
+ *
+ * @param deviceStatus The full device status map from Shelly.GetStatus
+ */
+private void updateAggregatesFromEm1Status(Map deviceStatus) {
+  Integer channelCount = getEm1ChannelCount()
+
+  BigDecimal totalPower = 0
+  BigDecimal totalCurrent = 0
+  BigDecimal totalEnergy = 0
+  BigDecimal totalReturnedEnergy = 0
+  BigDecimal maxVoltage = 0
+  BigDecimal frequency = 0
+
+  for (int i = 0; i < channelCount; i++) {
+    String em1Key = "em1:${i}".toString()
+    String em1dataKey = "em1data:${i}".toString()
+    Map em1Data = deviceStatus[em1Key] as Map
+    Map em1dataData = deviceStatus[em1dataKey] as Map
+
+    if (em1Data) {
+      if (em1Data.act_power != null) { totalPower += em1Data.act_power as BigDecimal }
+      if (em1Data.current != null) { totalCurrent += em1Data.current as BigDecimal }
+      if (em1Data.voltage != null) {
+        BigDecimal v = em1Data.voltage as BigDecimal
+        if (v > maxVoltage) { maxVoltage = v }
+      }
+      if (em1Data.freq != null) { frequency = em1Data.freq as BigDecimal }
+    }
+
+    if (em1dataData) {
+      if (em1dataData.total_act_energy != null) {
+        totalEnergy += (em1dataData.total_act_energy as BigDecimal) / 1000.0
+      }
+      if (em1dataData.total_act_ret_energy != null) {
+        totalReturnedEnergy += (em1dataData.total_act_ret_energy as BigDecimal) / 1000.0
+      }
+    }
+  }
+
+  sendEvent(name: 'power', value: totalPower, unit: 'W')
+  sendEvent(name: 'energy', value: totalEnergy, unit: 'kWh')
+  sendEvent(name: 'amperage', value: totalCurrent, unit: 'A')
+  sendEvent(name: 'voltage', value: maxVoltage, unit: 'V')
+  sendEvent(name: 'energyReturned', value: totalReturnedEnergy, unit: 'kWh')
+  if (frequency > 0) {
+    sendEvent(name: 'frequency', value: frequency, unit: 'Hz')
+  }
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Status Distribution                                      ║
 // ╚══════════════════════════════════════════════════════════════╝
@@ -631,21 +817,24 @@ private void distributeEmToChildren(Map emData, Map emdataData) {
  */
 private void processWebhookPowerAggregation(Map params) {
   String dst = params.dst
-  if (dst != 'powermon' || params.comp != 'em') { return }
+  if (dst != 'powermon') { return }
+  String comp = params.comp as String
+  if (comp != 'em' && comp != 'em1') { return }
 
-  String phase = params.phase as String
-  if (!phase) { return }
+  // For em layout, key by phase; for em1 layout, key by channel id
+  String stateKey = (comp == 'em') ? (params.phase as String) : (params.cid as String)
+  if (!stateKey) { return }
 
   Map powerStates = state.powerStates ?: [:]
 
-  // Store per-phase power data
+  // Store per-phase/channel power data
   Map phasePower = [:]
   if (params.voltage != null) { phasePower.voltage = params.voltage as BigDecimal }
   if (params.current != null) { phasePower.current = params.current as BigDecimal }
   if (params.apower != null) { phasePower.apower = params.apower as BigDecimal }
   if (params.aenergy != null) { phasePower.aenergy = params.aenergy as BigDecimal }
   if (params.freq != null) { phasePower.freq = params.freq as BigDecimal }
-  powerStates[phase] = phasePower
+  powerStates[stateKey] = phasePower
   state.powerStates = powerStates
 
   // Re-aggregate totals across all phases
