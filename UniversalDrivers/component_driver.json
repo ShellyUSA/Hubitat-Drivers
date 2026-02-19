@@ -1985,7 +1985,8 @@
           "name": "setHeatingSetpoint"
         }
       ],
-      "id": "ThermostatHeatingSetpoint"
+      "id": "ThermostatHeatingSetpoint",
+      "shellyComponent": "blutrv"
     },
     {
       "attributes": [
@@ -2563,6 +2564,9 @@
     },
     "cct": {
       "default": "ShellyCCTComponent.groovy"
+    },
+    "blutrv": {
+      "default": "ShellyBluTRVComponent.groovy"
     }
   },
   "webhookDefinitions": {
@@ -2782,6 +2786,18 @@
         "name": "hubitat_sdm_cct_change",
         "urlParams": "brightness/${status[\"cct:__CID__\"].brightness}/ct/${status[\"cct:__CID__\"].ct}",
         "shellyComponent": "cct"
+      },
+      "blutrv.temperature_change": {
+        "dst": "blutrv_temperature_change",
+        "name": "hubitat_sdm_blutrv_temperature",
+        "urlParams": "tC/${status[\"blutrv:__CID__\"].current_C}/target/${status[\"blutrv:__CID__\"].target_C}/pos/${status[\"blutrv:__CID__\"].pos}/batt/${status[\"blutrv:__CID__\"].battery}",
+        "shellyComponent": "blutrv"
+      },
+      "blutrv.position_change": {
+        "dst": "blutrv_position_change",
+        "name": "hubitat_sdm_blutrv_position",
+        "urlParams": "pos/${status[\"blutrv:__CID__\"].pos}/tC/${status[\"blutrv:__CID__\"].current_C}/target/${status[\"blutrv:__CID__\"].target_C}",
+        "shellyComponent": "blutrv"
       }
     },
     "supplementalTokenGroups": {

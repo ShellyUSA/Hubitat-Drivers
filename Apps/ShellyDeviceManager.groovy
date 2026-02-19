@@ -69,6 +69,9 @@
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
     'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
 
+    // BLU Gateway parent driver (for BLU TRV and other gateway-paired BLE devices)
+    'Shelly Autoconf BLU Gateway Parent': 'UniversalDrivers/ShellyBluGatewayParent.groovy',
+
     // Fallback parent driver for unknown/unsupported patterns
     'Shelly Autoconf Parent': 'UniversalDrivers/ShellyAutoconfParent.groovy',
 
@@ -1859,7 +1862,7 @@ private void updateComponentDriversForDevice(Map config) {
     Set<String> updatedDrivers = [] as Set
 
     componentTypes.each { String baseType ->
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv'].contains(baseType)) { return }
 
         String compDriverName = getComponentDriverName(baseType, parentHasPM)
         if (!compDriverName || updatedDrivers.contains(compDriverName)) { return }
@@ -3008,6 +3011,7 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
         hasContact: componentTypes.contains('contact'),
         hasMotion: componentTypes.contains('motion'),
         hasThermostat: componentTypes.contains('thermostat'),
+        hasBluTrv: componentTypes.contains('blutrv'),
         supportedWebhookEvents: (deviceInfo.supportedWebhookEvents ?: []) as List<String>,
         storedAt: now()
     ]
@@ -6732,6 +6736,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     String pmSuffix = hasPowerMonitoring ? " PM" : ""
     String parentSuffix = isParent ? " Parent" : ""
 
+    // BLU Gateway: has blutrv components (Gen2+ only)
+    Boolean hasBluTrv = componentCounts.containsKey('blutrv')
+    if (!isGen1 && hasBluTrv) {
+        return "${prefix} BLU Gateway Parent"
+    }
+
     // Gen 1 special types: TRV (thermostat component)
     Boolean hasThermostat = componentCounts.containsKey('thermostat')
     if (isGen1 && hasThermostat) {
@@ -7129,7 +7139,8 @@ private String getComponentDriverFileName(String componentType, Boolean hasPower
         'em': [default: 'ShellyEMComponent.groovy'],
         'adc': [default: 'ShellyPollingVoltageSensorComponent.groovy'],
         'temperature': [default: 'ShellyTemperaturePeripheralComponent.groovy'],
-        'humidity': [default: 'ShellyHumidityPeripheralComponent.groovy']
+        'humidity': [default: 'ShellyHumidityPeripheralComponent.groovy'],
+        'blutrv': [default: 'ShellyBluTRVComponent.groovy']
     ]
 
     Map<String, String> typeMap = driverMap[componentType]
@@ -7160,7 +7171,8 @@ private String getComponentDriverName(String componentType, Boolean hasPowerMoni
         'em': [default: 'Shelly Autoconf EM'],
         'adc': [default: 'Shelly Autoconf Polling Voltage Sensor'],
         'temperature': [default: 'Shelly Autoconf Temperature Peripheral'],
-        'humidity': [default: 'Shelly Autoconf Humidity Peripheral']
+        'humidity': [default: 'Shelly Autoconf Humidity Peripheral'],
+        'blutrv': [default: 'Shelly Autoconf BLU TRV']
     ]
 
     Map<String, String> typeMap = nameMap[componentType]
@@ -7256,7 +7268,7 @@ private void installComponentDriversForDevice(Map deviceInfo) {
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv'].contains(baseType)) { return }
 
         Boolean hasPM = componentPowerMonitoring[key] ?: false
         String driverName = getComponentDriverName(baseType, hasPM)
@@ -14235,6 +14247,32 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
         case 'gas_alarm_off':
             events.add([name: 'naturalGas', value: 'clear', descriptionText: 'Gas alarm cleared'])
             break
+
+        // BLU TRV webhooks (via BLU Gateway Gen3)
+        case 'blutrv_temperature_change':
+        case 'blutrv_position_change':
+            String scale = getLocationHelper()?.temperatureScale ?: 'F'
+            if (params.tC != null && params.tC != 'null') {
+                BigDecimal tempC = params.tC as BigDecimal
+                BigDecimal temp = (scale == 'F') ? ((tempC * 9.0 / 5.0) + 32.0).setScale(1, BigDecimal.ROUND_HALF_UP) : tempC
+                events.add([name: 'temperature', value: temp, unit: "°${scale}",
+                    descriptionText: "Temperature is ${temp}°${scale}"])
+            }
+            if (params.target != null && params.target != 'null') {
+                BigDecimal targetC = params.target as BigDecimal
+                BigDecimal target = (scale == 'F') ? ((targetC * 9.0 / 5.0) + 32.0).setScale(1, BigDecimal.ROUND_HALF_UP) : targetC
+                events.add([name: 'heatingSetpoint', value: target, unit: "°${scale}",
+                    descriptionText: "Heating setpoint is ${target}°${scale}"])
+            }
+            if (params.pos != null && params.pos != 'null') {
+                Integer pos = params.pos as Integer
+                events.add([name: 'valvePosition', value: pos,
+                    descriptionText: "Valve position is ${pos}%"])
+                String valveState = pos > 0 ? 'open' : 'closed'
+                events.add([name: 'valve', value: valveState,
+                    descriptionText: "Valve is ${valveState}"])
+            }
+            break
     }
 
     // Battery data piggybacked on any webhook (from supplemental token groups)
@@ -14266,6 +14304,7 @@ private String dstToComponentType(String dst) {
     if (dst.startsWith('rgb_')) { return 'rgb' }
     if (dst.startsWith('rgbw_')) { return 'rgbw' }
     if (dst.startsWith('cct_')) { return 'cct' }
+    if (dst.startsWith('blutrv_')) { return 'blutrv' }
     switch (dst) {
         case 'switchmon': return 'switch'  // legacy
         case 'covermon': return 'cover'    // legacy
@@ -14284,6 +14323,7 @@ private String mapDstToComponentType(String dst, String baseType) {
     if (dst.startsWith('rgb_')) { return 'rgb' }
     if (dst.startsWith('rgbw_')) { return 'rgbw' }
     if (dst.startsWith('cct_')) { return 'cct' }
+    if (dst.startsWith('blutrv_')) { return 'blutrv' }
 
     // Legacy and passthrough dst types
     switch (dst) {
@@ -14755,6 +14795,110 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
         logInfo("Gen 1 TRV settings applied to ${childDevice.displayName}")
     } else {
         logWarn("Failed to apply Gen 1 TRV settings to ${childDevice.displayName} — device may be unreachable")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BLU TRV Commands (via BLU Gateway Gen3)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Sends a command to a BLU TRV via the BLU Gateway Gen3.
+ * Uses the BluTrv.Call RPC method which relays commands over BLE GATT.
+ * Commands are fire-and-forget (BLE relay can take 10-60s).
+ *
+ * @param gatewayDevice The BLU Gateway parent device (has the IP address)
+ * @param bluetrvComponentId The blutrv component ID (200-299)
+ * @param method The TRV method to call (e.g., 'TRV.SetTarget')
+ * @param methodParams Parameters for the TRV method
+ */
+void sendBluTrvCommand(def gatewayDevice, Integer bluetrvComponentId, String method, Map methodParams) {
+    String gatewayIp = gatewayDevice.getDataValue('ipAddress')
+    if (!gatewayIp) {
+        logError("sendBluTrvCommand: no IP for gateway ${gatewayDevice.displayName}")
+        return
+    }
+
+    Map rpcBody = [
+        id: 1,
+        method: 'BluTrv.Call',
+        params: [id: bluetrvComponentId, method: method, params: methodParams]
+    ]
+
+    logDebug("sendBluTrvCommand: ${method} via gateway ${gatewayIp} → blutrv:${bluetrvComponentId}, params: ${methodParams}")
+
+    try {
+        Map httpParams = [
+            uri: "http://${gatewayIp}/rpc",
+            contentType: 'application/json',
+            requestContentType: 'application/json',
+            body: rpcBody,
+            timeout: 10
+        ]
+        asynchttpPost('bluTrvCommandCallback', httpParams, [
+            gateway: gatewayDevice.displayName,
+            method: method,
+            componentId: bluetrvComponentId
+        ])
+    } catch (Exception e) {
+        logError("sendBluTrvCommand exception for ${gatewayDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Callback for async BLU TRV command responses.
+ * Commands are fire-and-forget; this logs success/failure for diagnostics.
+ *
+ * @param response The async HTTP response
+ * @param data Callback data with gateway name, method, and component ID
+ */
+void bluTrvCommandCallback(AsyncResponse response, Map data = null) {
+    if (response?.status == 200) {
+        logDebug("BluTrv.Call ${data?.method} succeeded on ${data?.gateway} (blutrv:${data?.componentId})")
+    } else {
+        logWarn("BluTrv.Call ${data?.method} failed on ${data?.gateway} (blutrv:${data?.componentId}): HTTP ${response?.status}")
+    }
+}
+
+/**
+ * Refreshes status for a specific BLU TRV via the gateway.
+ * Sends BluTrv.GetStatus to get cached TRV state (fast, local).
+ * Distributes response fields to the TRV child device.
+ *
+ * @param gatewayDevice The BLU Gateway parent device
+ * @param bluetrvComponentId The blutrv component ID (200-299)
+ */
+void componentBluTrvRefresh(def gatewayDevice, Integer bluetrvComponentId) {
+    String gatewayIp = gatewayDevice.getDataValue('ipAddress')
+    if (!gatewayIp) {
+        logError("componentBluTrvRefresh: no IP for gateway ${gatewayDevice.displayName}")
+        return
+    }
+
+    logDebug("componentBluTrvRefresh: polling blutrv:${bluetrvComponentId} via ${gatewayIp}")
+
+    try {
+        Map rpcBody = [id: 1, method: 'BluTrv.GetStatus', params: [id: bluetrvComponentId]]
+        Map httpParams = [
+            uri: "http://${gatewayIp}/rpc",
+            contentType: 'application/json',
+            requestContentType: 'application/json',
+            body: rpcBody,
+            timeout: 10
+        ]
+        httpPost(httpParams) { resp ->
+            if (resp?.status == 200 && resp?.data) {
+                Map trvStatus = resp.data as Map
+                // Route to the gateway parent's distributeStatus with a synthetic key
+                Map syntheticStatus = [("blutrv:${bluetrvComponentId}".toString()): trvStatus]
+                gatewayDevice.distributeStatus(syntheticStatus)
+                logDebug("componentBluTrvRefresh: status distributed for blutrv:${bluetrvComponentId}")
+            } else {
+                logWarn("componentBluTrvRefresh: no data for blutrv:${bluetrvComponentId}")
+            }
+        }
+    } catch (Exception e) {
+        logError("componentBluTrvRefresh exception: ${e.message}")
     }
 }
 
