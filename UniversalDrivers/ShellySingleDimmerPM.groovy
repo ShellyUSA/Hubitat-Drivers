@@ -298,11 +298,26 @@ private void routeWebhookParams(Map params) {
     // Discrete light webhooks — state is encoded in the dst name
     case 'light_on':
       sendEvent(name: 'switch', value: 'on', descriptionText: 'Light turned on')
-      logInfo('Light state changed to: on')
+      if (params.brightness != null) {
+        Integer level = params.brightness as Integer
+        sendEvent(name: 'level', value: level, unit: '%',
+          descriptionText: "Brightness is ${level}%")
+        logInfo("Light state changed to: on at ${level}%")
+      } else {
+        logInfo('Light state changed to: on')
+      }
       break
     case 'light_off':
       sendEvent(name: 'switch', value: 'off', descriptionText: 'Light turned off')
       logInfo('Light state changed to: off')
+      break
+    case 'light_change':
+      if (params.brightness != null) {
+        Integer level = params.brightness as Integer
+        sendEvent(name: 'level', value: level, unit: '%',
+          descriptionText: "Brightness is ${level}%")
+        logInfo("Brightness level changed to: ${level}%")
+      }
       break
 
     // Combined light monitoring webhook — output + brightness in params

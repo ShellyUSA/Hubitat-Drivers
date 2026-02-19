@@ -2554,6 +2554,12 @@
     },
     "input": {
       "default": "ShellyInputButtonComponent.groovy"
+    },
+    "rgb": {
+      "default": "ShellyRGBComponent.groovy"
+    },
+    "rgbw": {
+      "default": "ShellyRGBWComponent.groovy"
     }
   },
   "webhookDefinitions": {
@@ -2689,6 +2695,60 @@
         "name": "hubitat_sdm_input_analog_change",
         "urlParams": "percent/${ev.percent}",
         "shellyComponent": "input"
+      },
+      "light.on": {
+        "dst": "light_on",
+        "name": "hubitat_sdm_light_on",
+        "urlParams": "brightness/${status[\"light:__CID__\"].brightness}",
+        "shellyComponent": "light"
+      },
+      "light.off": {
+        "dst": "light_off",
+        "name": "hubitat_sdm_light_off",
+        "urlParams": "",
+        "shellyComponent": "light"
+      },
+      "light.change": {
+        "dst": "light_change",
+        "name": "hubitat_sdm_light_change",
+        "urlParams": "brightness/${status[\"light:__CID__\"].brightness}",
+        "shellyComponent": "light"
+      },
+      "rgb.on": {
+        "dst": "rgb_on",
+        "name": "hubitat_sdm_rgb_on",
+        "urlParams": "brightness/${status[\"rgb:__CID__\"].brightness}",
+        "shellyComponent": "rgb"
+      },
+      "rgb.off": {
+        "dst": "rgb_off",
+        "name": "hubitat_sdm_rgb_off",
+        "urlParams": "",
+        "shellyComponent": "rgb"
+      },
+      "rgb.change": {
+        "dst": "rgb_change",
+        "name": "hubitat_sdm_rgb_change",
+        "urlParams": "brightness/${status[\"rgb:__CID__\"].brightness}",
+        "shellyComponent": "rgb"
+      },
+      "rgbw.on": {
+        "dst": "rgbw_on",
+        "name": "hubitat_sdm_rgbw_on",
+        "urlParams": "brightness/${status[\"rgbw:__CID__\"].brightness}",
+        "shellyComponent": "rgbw"
+      },
+      "rgbw.off": {
+        "dst": "rgbw_off",
+        "name": "hubitat_sdm_rgbw_off",
+        "urlParams": "",
+        "shellyComponent": "rgbw"
+      },
+      "rgbw.change": {
+        "dst": "rgbw_change",
+        "name": "hubitat_sdm_rgbw_change",
+        "urlParams": "brightness/${status[\"rgbw:__CID__\"].brightness}",
+        "shellyComponent": "rgbw"
       }
     },
     "supplementalTokenGroups": {

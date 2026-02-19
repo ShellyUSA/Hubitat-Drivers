@@ -214,8 +214,18 @@ private void reconcileChildDevices() {
         break
 
       case 'light':
-        driverName = 'Shelly Autoconf Light'
+        driverName = 'Shelly Autoconf Dimmer'
         childData.lightId = compId.toString()
+        break
+
+      case 'rgb':
+        driverName = 'Shelly Autoconf RGB'
+        childData.rgbId = compId.toString()
+        break
+
+      case 'rgbw':
+        driverName = 'Shelly Autoconf RGBW'
+        childData.rgbwId = compId.toString()
         break
 
       case 'input':
@@ -532,6 +542,9 @@ private String dstToComponentType(String dst) {
   if (dst.startsWith('switch_')) { return 'switch' }
   if (dst.startsWith('cover_')) { return 'cover' }
   if (dst.startsWith('smoke_')) { return 'smoke' }
+  if (dst.startsWith('light_')) { return 'light' }
+  if (dst.startsWith('rgb_')) { return 'rgb' }
+  if (dst.startsWith('rgbw_')) { return 'rgbw' }
   switch (dst) {
     case 'switchmon': return 'switch'
     case 'covermon': return 'cover'
@@ -563,7 +576,8 @@ void distributeStatus(Map status) {
 
       if (child) {
         // Determine appropriate dst based on component type
-        String dst = baseType == 'switch' ? 'switchmon' : baseType == 'cover' ? 'covermon' : null
+        Map<String, String> dstMap = ['switch': 'switchmon', 'cover': 'covermon', 'light': 'lightmon', 'rgb': 'lightmon', 'rgbw': 'lightmon']
+        String dst = dstMap[baseType]
         if (dst) {
           List<Map> events = buildComponentEvents(dst, baseType, value as Map)
           events.each { evt ->
@@ -780,6 +794,49 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       }
       break
 
+    // Discrete light webhook events (from Shelly light.on/off/change webhooks)
+    case 'light_on':
+      events.add([name: 'switch', value: 'on',
+        descriptionText: 'Light turned on'])
+      if (params.brightness != null) {
+        events.add([name: 'level', value: params.brightness as Integer, unit: '%',
+          descriptionText: "Level is ${params.brightness}%"])
+      }
+      break
+    case 'light_off':
+      events.add([name: 'switch', value: 'off',
+        descriptionText: 'Light turned off'])
+      break
+    case 'light_change':
+      if (params.brightness != null) {
+        events.add([name: 'level', value: params.brightness as Integer, unit: '%',
+          descriptionText: "Level is ${params.brightness}%"])
+      }
+      break
+
+    // Discrete RGB/RGBW webhook events (from Shelly rgb.on/off/change webhooks)
+    case 'rgb_on':
+    case 'rgbw_on':
+      events.add([name: 'switch', value: 'on',
+        descriptionText: 'Light turned on'])
+      if (params.brightness != null) {
+        events.add([name: 'level', value: params.brightness as Integer, unit: '%',
+          descriptionText: "Level is ${params.brightness}%"])
+      }
+      break
+    case 'rgb_off':
+    case 'rgbw_off':
+      events.add([name: 'switch', value: 'off',
+        descriptionText: 'Light turned off'])
+      break
+    case 'rgb_change':
+    case 'rgbw_change':
+      if (params.brightness != null) {
+        events.add([name: 'level', value: params.brightness as Integer, unit: '%',
+          descriptionText: "Level is ${params.brightness}%"])
+      }
+      break
+
     // New prefix-based input toggle events (state derived from dst)
     case 'input_toggle_on':
       events.add([name: 'switch', value: 'on',
@@ -983,6 +1040,205 @@ void componentResetEnergyMonitors(def childDevice) {
   Integer switchId = childDevice.getDataValue('switchId') as Integer
   logDebug("componentResetEnergyMonitors() called by ${childDevice.displayName} (switch ${switchId})")
   parent?.parentSendCommand(device, 'Switch.ResetCounters', [id: switchId, type: ['aenergy']])
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Light/Dimmer Component Commands
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Handles on() command from child light/dimmer.
+ * Delegates to parent app's parentSendCommand with Light.Set method.
+ *
+ * @param childDevice The child device requesting the command
+ */
+void componentLightOn(def childDevice) {
+  Integer lightId = childDevice.getDataValue('lightId') as Integer
+  logDebug("componentLightOn() called by ${childDevice.displayName} (light ${lightId})")
+  parent?.parentSendCommand(device, 'Light.Set', [id: lightId, on: true])
+}
+
+/**
+ * Handles off() command from child light/dimmer.
+ * Delegates to parent app's parentSendCommand with Light.Set method.
+ *
+ * @param childDevice The child device requesting the command
+ */
+void componentLightOff(def childDevice) {
+  Integer lightId = childDevice.getDataValue('lightId') as Integer
+  logDebug("componentLightOff() called by ${childDevice.displayName} (light ${lightId})")
+  parent?.parentSendCommand(device, 'Light.Set', [id: lightId, on: false])
+}
+
+/**
+ * Handles setLevel() command from child light/dimmer.
+ * Delegates to parent app's parentSendCommand with Light.Set method.
+ *
+ * @param childDevice The child device requesting the command
+ * @param level Target brightness (0-100%)
+ * @param transitionMs Optional transition duration in milliseconds
+ */
+void componentSetLevel(def childDevice, Integer level, Integer transitionMs = null) {
+  Integer lightId = childDevice.getDataValue('lightId') as Integer
+  logDebug("componentSetLevel(${level}, ${transitionMs}) called by ${childDevice.displayName} (light ${lightId})")
+  Map params = [id: lightId, on: level > 0, brightness: level]
+  if (transitionMs != null) { params.transition_duration = (transitionMs / 1000.0) as BigDecimal }
+  parent?.parentSendCommand(device, 'Light.Set', params)
+}
+
+/**
+ * Handles startLevelChange() command from any light-type child (dimmer, RGB, RGBW).
+ * Uses the appropriate Shelly RPC method based on child component type.
+ *
+ * @param childDevice The child device requesting the command
+ * @param direction "up" or "down"
+ */
+void componentStartLevelChange(def childDevice, String direction) {
+  Map compInfo = getComponentInfo(childDevice)
+  logDebug("componentStartLevelChange(${direction}) called by ${childDevice.displayName} (${compInfo.type} ${compInfo.id})")
+  String dimMethod = direction == 'up' ? "${compInfo.rpcPrefix}.DimUp" : "${compInfo.rpcPrefix}.DimDown"
+  parent?.parentSendCommand(device, dimMethod, [id: compInfo.id as Integer])
+}
+
+/**
+ * Handles stopLevelChange() command from any light-type child (dimmer, RGB, RGBW).
+ * Sends the appropriate DimStop RPC to halt an in-progress brightness ramp.
+ *
+ * @param childDevice The child device requesting the command
+ */
+void componentStopLevelChange(def childDevice) {
+  Map compInfo = getComponentInfo(childDevice)
+  logDebug("componentStopLevelChange() called by ${childDevice.displayName} (${compInfo.type} ${compInfo.id})")
+  parent?.parentSendCommand(device, "${compInfo.rpcPrefix}.DimStop", [id: compInfo.id as Integer])
+}
+
+// ─────────────────────────────────────────────────────────────────
+// RGB/RGBW Component Commands
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Handles on() command from child RGB/RGBW device.
+ * Delegates to parent app's parentSendCommand with RGB.Set or RGBW.Set method.
+ *
+ * @param childDevice The child device requesting the command
+ */
+void componentRGBOn(def childDevice) {
+  Map compInfo = getComponentInfo(childDevice)
+  logDebug("componentRGBOn() called by ${childDevice.displayName} (${compInfo.type} ${compInfo.id})")
+  parent?.parentSendCommand(device, "${compInfo.rpcPrefix}.Set", [id: compInfo.id as Integer, on: true])
+}
+
+/**
+ * Handles off() command from child RGB/RGBW device.
+ *
+ * @param childDevice The child device requesting the command
+ */
+void componentRGBOff(def childDevice) {
+  Map compInfo = getComponentInfo(childDevice)
+  logDebug("componentRGBOff() called by ${childDevice.displayName} (${compInfo.type} ${compInfo.id})")
+  parent?.parentSendCommand(device, "${compInfo.rpcPrefix}.Set", [id: compInfo.id as Integer, on: false])
+}
+
+/**
+ * Handles setLevel() command from child RGB/RGBW device.
+ *
+ * @param childDevice The child device requesting the command
+ * @param level Target brightness (0-100%)
+ * @param transitionMs Optional transition duration in milliseconds
+ */
+void componentRGBSetLevel(def childDevice, Integer level, Integer transitionMs = null) {
+  Map compInfo = getComponentInfo(childDevice)
+  logDebug("componentRGBSetLevel(${level}) called by ${childDevice.displayName} (${compInfo.type} ${compInfo.id})")
+  Map params = [id: compInfo.id as Integer, on: level > 0, brightness: level]
+  if (transitionMs != null) { params.transition_duration = (transitionMs / 1000.0) as BigDecimal }
+  parent?.parentSendCommand(device, "${compInfo.rpcPrefix}.Set", params)
+}
+
+/**
+ * Handles setColor() command from child RGB/RGBW device.
+ * Converts Hubitat HSV color map to Shelly RGB values.
+ *
+ * @param childDevice The child device requesting the command
+ * @param colorMap Map with hue (0-100), saturation (0-100), level (0-100)
+ */
+void componentRGBSetColor(def childDevice, Map colorMap) {
+  Map compInfo = getComponentInfo(childDevice)
+  logDebug("componentRGBSetColor(${colorMap}) called by ${childDevice.displayName} (${compInfo.type} ${compInfo.id})")
+
+  // Convert Hubitat HSV (hue 0-100, sat 0-100, level 0-100) to RGB (0-255)
+  Integer hue = colorMap.hue as Integer
+  Integer saturation = colorMap.saturation as Integer
+  Integer level = colorMap.level as Integer
+
+  List<Integer> rgb = hsvToRgb(hue, saturation, level)
+
+  Map params = [id: compInfo.id as Integer, on: true, rgb: rgb, brightness: level]
+  parent?.parentSendCommand(device, "${compInfo.rpcPrefix}.Set", params)
+}
+
+/**
+ * Handles setWhiteLevel() command from child RGBW device.
+ * Sets the white channel brightness (0-100).
+ *
+ * @param childDevice The child device requesting the command
+ * @param level White channel level (0-100)
+ */
+void componentRGBSetWhiteLevel(def childDevice, Integer level) {
+  Map compInfo = getComponentInfo(childDevice)
+  logDebug("componentRGBSetWhiteLevel(${level}) called by ${childDevice.displayName} (${compInfo.type} ${compInfo.id})")
+  parent?.parentSendCommand(device, "${compInfo.rpcPrefix}.Set", [id: compInfo.id as Integer, on: level > 0, white: level])
+}
+
+/**
+ * Gets component info (type, id, rpcPrefix) from a child device's data values.
+ * Determines the correct Shelly RPC method prefix based on component type:
+ * lightId → Light, rgbId → RGB, rgbwId → RGBW.
+ *
+ * @param childDevice The child device
+ * @return Map with keys: type (String), id (Integer), rpcPrefix (String)
+ */
+private Map getComponentInfo(def childDevice) {
+  String lightId = childDevice.getDataValue('lightId')
+  if (lightId != null) { return [type: 'light', id: lightId as Integer, rpcPrefix: 'Light'] }
+  String rgbId = childDevice.getDataValue('rgbId')
+  if (rgbId != null) { return [type: 'rgb', id: rgbId as Integer, rpcPrefix: 'RGB'] }
+  String rgbwId = childDevice.getDataValue('rgbwId')
+  if (rgbwId != null) { return [type: 'rgbw', id: rgbwId as Integer, rpcPrefix: 'RGBW'] }
+  return [type: 'unknown', id: 0, rpcPrefix: 'Light']
+}
+
+/**
+ * Converts Hubitat HSV values to RGB array.
+ * Hubitat uses hue 0-100, saturation 0-100, value/level 0-100.
+ *
+ * @param hue Hue (0-100)
+ * @param saturation Saturation (0-100)
+ * @param value Brightness/value (0-100)
+ * @return List of [r, g, b] values (0-255)
+ */
+@CompileStatic
+private List<Integer> hsvToRgb(Integer hue, Integer saturation, Integer value) {
+  BigDecimal h = (hue * 3.6) // 0-100 → 0-360
+  BigDecimal s = saturation / 100.0
+  BigDecimal v = value / 100.0
+
+  BigDecimal c = v * s
+  BigDecimal x = c * (1 - ((h / 60) % 2 - 1).abs())
+  BigDecimal m = v - c
+
+  BigDecimal r1, g1, b1
+  if (h < 60) { r1 = c; g1 = x; b1 = 0 }
+  else if (h < 120) { r1 = x; g1 = c; b1 = 0 }
+  else if (h < 180) { r1 = 0; g1 = c; b1 = x }
+  else if (h < 240) { r1 = 0; g1 = x; b1 = c }
+  else if (h < 300) { r1 = x; g1 = 0; b1 = c }
+  else { r1 = c; g1 = 0; b1 = x }
+
+  return [
+    Math.round((r1 + m) * 255) as Integer,
+    Math.round((g1 + m) * 255) as Integer,
+    Math.round((b1 + m) * 255) as Integer
+  ]
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
