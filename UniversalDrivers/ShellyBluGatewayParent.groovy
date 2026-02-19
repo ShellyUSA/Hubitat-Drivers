@@ -118,7 +118,7 @@ void reinitializeDevice() {
 void reconcileChildDevices() {
   String componentStr = device.getDataValue('components')
   if (!componentStr) {
-    logWarn('No components data value found — skipping child reconciliation')
+    logDebug('No components data value found — skipping child reconciliation')
     return
   }
 

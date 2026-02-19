@@ -3907,7 +3907,24 @@ private Map queryDeviceStatus(String ipAddress) {
         LinkedHashMap command = shellyGetStatusCommand('deviceConfig')
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         LinkedHashMap json = postCommandSync(command, uri)
-        return json?.result as Map
+        Map status = json?.result as Map
+
+        // BLU Gateway: merge dynamic components (blutrv) from Shelly.GetComponents
+        if (status?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }) {
+            LinkedHashMap getComponentsCmd = [id: 0, src: 'deviceConfig', method: 'Shelly.GetComponents', params: [dynamic_only: true, include: ['status']]]
+            if (authIsEnabled() == true && getAuth().size() > 0) { getComponentsCmd.auth = getAuth() }
+            LinkedHashMap componentsResp = postCommandSync(getComponentsCmd, uri)
+            if (componentsResp?.result?.components) {
+                (componentsResp.result.components as List<Map>).each { Map comp ->
+                    String compKey = comp.key?.toString()
+                    if (compKey?.startsWith('blutrv:') && comp.status) {
+                        status[compKey] = comp.status
+                    }
+                }
+            }
+        }
+
+        return status
     } catch (Exception ex) {
         if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
             logDebug("Device at ${ipAddress} is unreachable: ${ex.message}")
@@ -5874,6 +5891,26 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         LinkedHashMap statusCmd = shellyGetStatusCommand('discovery')
         LinkedHashMap deviceStatusResp = postCommandSyncWithRetry(statusCmd, rpcUri, "Shelly.GetStatus")
         Map deviceStatus = (deviceStatusResp instanceof Map && deviceStatusResp.containsKey('result')) ? deviceStatusResp.result : deviceStatusResp
+
+        // BLU Gateway: query dynamic components (blutrv) via Shelly.GetComponents
+        // Dynamic components like blutrv:200 represent paired BLE devices and are NOT
+        // included in the standard Shelly.GetStatus response.
+        Boolean hasBlugw = deviceStatus?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }
+        if (hasBlugw) {
+            LinkedHashMap getComponentsCmd = [id: 0, src: 'discovery', method: 'Shelly.GetComponents', params: [dynamic_only: true, include: ['status']]]
+            if (authIsEnabled() == true && getAuth().size() > 0) { getComponentsCmd.auth = getAuth() }
+            LinkedHashMap componentsResp = postCommandSyncWithRetry(getComponentsCmd, rpcUri, 'Shelly.GetComponents')
+            if (componentsResp?.result?.components) {
+                List<Map> dynamicComponents = componentsResp.result.components as List<Map>
+                dynamicComponents.each { Map comp ->
+                    String compKey = comp.key?.toString()
+                    if (compKey?.startsWith('blutrv:') && comp.status) {
+                        deviceStatus[compKey] = comp.status
+                        logDebug("fetchAndStoreDeviceInfo: added dynamic component ${compKey} to deviceStatus")
+                    }
+                }
+            }
+        }
 
         // Query supported webhook events for filtering required actions
         LinkedHashMap webhookSupportedCmd = webhookListSupportedCommand('discovery')
