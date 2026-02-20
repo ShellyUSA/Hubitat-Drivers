@@ -14775,6 +14775,25 @@ void componentSetTrvHeatingSetpoint(def childDevice, BigDecimal tempC) {
 }
 
 /**
+ * Enables or disables auto temperature control (thermostat mode) via GET /thermostats/0.
+ * When enabled, the TRV controls the valve to maintain the target temperature.
+ * When disabled, the valve must be positioned manually via {@code componentSetTrvValvePosition}.
+ *
+ * @param childDevice The TRV child device
+ * @param enabled true to activate thermostat mode, false for manual valve-position mode
+ */
+void componentSetTrvThermostatEnabled(def childDevice, Boolean enabled) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) { logError("componentSetTrvThermostatEnabled: no IP for ${childDevice.displayName}"); return }
+        logDebug("componentSetTrvThermostatEnabled: setting target_t_enabled=${enabled} on ${childDevice.displayName}")
+        sendGen1Get(ip, 'thermostats/0', [target_t_enabled: enabled ? '1' : '0'])
+    } catch (Exception e) {
+        logError("componentSetTrvThermostatEnabled exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
  * Sets TRV valve position (0-100) via GET /thermostats/0.
  *
  * @param childDevice The TRV child device

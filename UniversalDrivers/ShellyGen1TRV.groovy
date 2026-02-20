@@ -29,6 +29,7 @@ metadata {
     capability 'Refresh'
     //Commands: refresh()
 
+    command 'setThermostatEnabled', [[name: 'Enabled', type: 'ENUM', constraints: ['true', 'false'], description: 'Enable/disable auto temperature control (thermostat mode). When disabled, the TRV operates in manual valve-position mode.']]
     command 'setValvePosition', [[name: 'Position', type: 'NUMBER', description: 'Valve position (0-100)']]
     command 'updateExternalTempReading', [[name: 'Temperature', type: 'NUMBER', description: 'External temperature reading']]
     command 'setBoostMinutes', [[name: 'Minutes', type: 'NUMBER', description: 'Boost duration in minutes (0 to cancel)']]
@@ -36,6 +37,7 @@ metadata {
     command 'windowOpen'
     command 'windowClose'
 
+    attribute 'thermostatEnabled', 'enum', ['true', 'false']
     attribute 'valvePosition', 'number'
     attribute 'boostMinutes', 'number'
     attribute 'windowOpen', 'enum', ['true', 'false']
@@ -337,6 +339,19 @@ void close() {
 }
 
 /**
+ * Enables or disables automatic temperature control (thermostat mode).
+ * When enabled, the TRV controls its own valve position to maintain the
+ * heating setpoint. When disabled, the valve must be positioned manually
+ * via {@link #setValvePosition}.
+ *
+ * @param enabled 'true' to activate thermostat mode, 'false' for manual mode
+ */
+void setThermostatEnabled(String enabled) {
+  logDebug("setThermostatEnabled(${enabled}) called")
+  parent?.componentSetTrvThermostatEnabled(device, enabled == 'true')
+}
+
+/**
  * Sets the TRV valve position to a specific percentage.
  *
  * @param position Valve position from 0 (closed) to 100 (fully open)
@@ -502,6 +517,13 @@ void distributeStatus(Map status) {
         sendEvent(name: 'valve', value: valveState,
           descriptionText: "Valve is ${valveState}")
         logInfo("Valve position: ${pos}%, state: ${valveState}")
+      }
+
+      // Thermostat (auto temperature control) mode
+      if (data.target_t_enabled != null) {
+        String tAutoState = data.target_t_enabled ? 'true' : 'false'
+        sendEvent(name: 'thermostatEnabled', value: tAutoState,
+          descriptionText: "Thermostat auto mode: ${tAutoState}")
       }
 
       // Heating setpoint (target temperature)
