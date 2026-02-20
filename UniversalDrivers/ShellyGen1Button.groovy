@@ -270,6 +270,9 @@ private void routeActionUrlCallback(Map params) {
   }
 
   sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+
+  // Device is awake right now — poll battery if stale
+  pollBatteryIfStale()
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -323,6 +326,7 @@ void distributeStatus(Map status) {
         sendEvent(name: 'battery', value: battery, unit: '%',
           descriptionText: "Battery is ${battery}%")
         logInfo("Battery: ${battery}%")
+        state.lastBatteryUpdate = now()
       }
       if (data.voltage != null) {
         BigDecimal voltage = data.voltage as BigDecimal
@@ -344,6 +348,92 @@ void distributeStatus(Map status) {
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Status Distribution                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Battery Polling on Wake                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/** Minimum interval between battery polls (24 hours in milliseconds). */
+@Field static final Long BATTERY_POLL_INTERVAL_MS = 24 * 60 * 60 * 1000L
+
+/**
+ * Polls the device for battery status if the last update is stale (>24 hours).
+ * Called immediately after processing a button webhook while the device is still awake.
+ * Gen1 Button devices sleep most of the time — this brief wake window after a button
+ * press is the only opportunity to query {@code GET /status} for battery data.
+ */
+private void pollBatteryIfStale() {
+  Long lastPoll = state.lastBatteryUpdate as Long ?: 0L
+  if (now() - lastPoll < BATTERY_POLL_INTERVAL_MS) {
+    logTrace("Battery poll skipped — last update ${((now() - lastPoll) / 3600000).setScale(1, BigDecimal.ROUND_HALF_UP)}h ago")
+    return
+  }
+
+  String ipAddress = device.getDataValue('ipAddress')
+  if (!ipAddress) {
+    logDebug('pollBatteryIfStale: no IP address stored for device')
+    return
+  }
+
+  logDebug("Polling battery status from ${ipAddress}/status")
+  // Mark optimistically to prevent duplicate polls from rapid button presses
+  state.lastBatteryUpdate = now()
+  asynchttpGet('handleBatteryPollResponse', [uri: "http://${ipAddress}/status"])
+}
+
+/**
+ * Async callback for the battery status poll.
+ * Parses the response and updates battery events.
+ *
+ * @param response The async HTTP response
+ * @param data Optional callback data (unused)
+ */
+void handleBatteryPollResponse(hubitat.scheduling.AsyncResponse response, Map data) {
+  if (response.status != 200) {
+    logDebug("handleBatteryPollResponse: HTTP ${response.status} — device may have gone back to sleep")
+    return
+  }
+  try {
+    Map statusData = new groovy.json.JsonSlurper().parseText(response.data) as Map
+    parseBatteryStatus(statusData)
+  } catch (Exception e) {
+    logDebug("handleBatteryPollResponse: parse error — ${e.message}")
+  }
+}
+
+/**
+ * Parses battery data from a raw Gen 1 {@code /status} response.
+ * Extracts {@code bat.value}, {@code bat.voltage}, and {@code charger} fields.
+ *
+ * @param statusData The raw Gen 1 /status response map
+ */
+private void parseBatteryStatus(Map statusData) {
+  Map batData = statusData?.bat as Map
+  if (batData?.value != null) {
+    Integer battery = batData.value as Integer
+    sendEvent(name: 'battery', value: battery, unit: '%',
+      descriptionText: "Battery is ${battery}%")
+    logInfo("Battery: ${battery}%")
+  }
+  if (batData?.voltage != null) {
+    BigDecimal voltage = batData.voltage as BigDecimal
+    sendEvent(name: 'voltage', value: voltage, unit: 'V',
+      descriptionText: "Battery voltage is ${voltage}V")
+    logInfo("Voltage: ${voltage}V")
+  }
+  if (statusData?.containsKey('charger')) {
+    String source = statusData.charger ? 'usb' : 'battery'
+    sendEvent(name: 'powerSource', value: source,
+      descriptionText: "Power source is ${source}")
+    logInfo("Power source: ${source}")
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Battery Polling on Wake                                  ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
