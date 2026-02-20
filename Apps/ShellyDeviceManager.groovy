@@ -374,14 +374,6 @@ Map mainPage() {
             }
         }
 
-        // Manual device discovery by IP/hostname
-        section() {
-            input name: 'manualDeviceIp', type: 'text', title: 'Add device by IP or hostname',
-                description: 'Enter an IP address (e.g., 192.168.1.100), hostname, or URL (e.g., http://192.168.1.100) to probe for a Shelly device.',
-                required: false, submitOnChange: false
-            input 'btnManualDiscover', 'button', title: 'Discover Device', submitOnChange: true
-        }
-
         // Delete confirmation (shown when user clicks delete on a device)
         if (state.pendingDeleteIp) {
             String deleteIp = state.pendingDeleteIp as String
@@ -439,6 +431,16 @@ Map mainPage() {
 
         section() {
             paragraph displayBleDeviceTable()
+        }
+
+        section("Manual Device Probe", hideable: true, hidden: true) {
+            paragraph "Devices are normally found automatically via mDNS and subnet scanning. " +
+                "Use this only if a device was not discovered automatically — it will immediately " +
+                "probe the address for a Shelly device and add it to the table above."
+            input name: 'manualDeviceIp', type: 'text', title: 'IP address or hostname',
+                description: 'e.g., 192.168.1.100, myshelly.local, or http://192.168.1.100',
+                required: false, submitOnChange: false
+            input 'btnManualDiscover', 'button', title: 'Probe Device', submitOnChange: true
         }
 
         section("Options", hideable: true) {
