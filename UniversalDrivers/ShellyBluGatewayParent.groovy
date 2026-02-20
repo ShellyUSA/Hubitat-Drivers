@@ -26,6 +26,7 @@ metadata {
     //Commands: refresh()
 
     command 'reinitializeDevice'
+    command 'distributeStatus', [[name: 'statusJson', type: 'JSON', description: 'Device status as JSON']]
   }
 }
 
@@ -498,13 +499,33 @@ private Map parseWebhookPath(Map msg) {
 }
 
 /**
+ * Command entry point for distributeStatus — accepts JSON string.
+ * Hubitat requires methods called from apps to be declared as commands.
+ * Parses JSON and delegates to the Map overload.
+ *
+ * @param statusJson JSON string of component statuses
+ */
+void distributeStatus(String statusJson) {
+  logInfo("distributeStatus(String) command called")
+  if (!statusJson) { return }
+  try {
+    Map status = new groovy.json.JsonSlurper().parseText(statusJson) as Map
+    distributeStatus(status)
+  } catch (Exception e) {
+    logError("distributeStatus JSON parse error: ${e.message}")
+  }
+}
+
+/**
  * Distributes status from Shelly.GetStatus query to TRV child devices.
- * Called by parent app after refresh() or during periodic status updates.
+ * Called by parent app (via command dispatch) or internally from driver code.
+ * The command declaration enables the app to call this method;
+ * Groovy's method overloading dispatches Map args here directly.
  *
  * @param status Map of component statuses from Shelly.GetStatus
  */
 void distributeStatus(Map status) {
-  logInfo("distributeStatus() called with keys: ${status?.keySet()}")
+  logInfo("distributeStatus(Map) called with keys: ${status?.keySet()}")
   if (!status) { return }
 
   String scale = getLocationHelper()?.temperatureScale ?: 'F'
