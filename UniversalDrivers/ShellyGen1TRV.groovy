@@ -45,25 +45,66 @@ metadata {
 }
 
 preferences {
-  // ── Thermostat Settings (synced to device) ──
+  // ── Temperature Limits (→ /settings/thermostats/0) ──
   input name: 'temperatureOffset', type: 'decimal',
-    title: 'Temperature offset (-10.0 to 10.0)',
-    description: 'Calibration offset for internal temperature sensor. Synced to/from device.',
+    title: 'Temperature Offset (-10.0 to 10.0 °C)',
+    description: 'Calibration offset applied to the internal temperature sensor reading.',
     range: '-10.0..10.0', required: false
 
   input name: 'minTemperature', type: 'decimal',
-    title: 'Minimum Temperature Limit (°C, 4.0 to 30.0)',
-    description: 'Minimum setpoint the TRV will allow. Synced to device.',
+    title: 'Minimum Temperature Limit (4.0 to 30.0 °C)',
+    description: 'Lowest setpoint the TRV will accept. Prevents setting below this value.',
     range: '4.0..30.0', required: false
 
   input name: 'maxTemperature', type: 'decimal',
-    title: 'Maximum Temperature Limit (°C, 5.0 to 31.0)',
-    description: 'Maximum setpoint the TRV will allow. Synced to device.',
+    title: 'Maximum Temperature Limit (5.0 to 31.0 °C)',
+    description: 'Highest setpoint the TRV will accept. Prevents setting above this value.',
     range: '5.0..31.0', required: false
 
+  // ── Heating Behavior (→ /settings/thermostats/0) ──
+  input name: 'scheduleProfile', type: 'enum',
+    title: 'Active Schedule Profile (1–5)',
+    description: 'Which of the five stored weekly schedules is used when schedule mode is on.',
+    options: ['1': 'Profile 1', '2': 'Profile 2', '3': 'Profile 3', '4': 'Profile 4', '5': 'Profile 5'],
+    required: false
+
+  input name: 'acceleratedHeating', type: 'bool',
+    title: 'Accelerated Heating',
+    description: 'Open valve wider temporarily to reach the target temperature faster.',
+    defaultValue: false, required: false
+
+  input name: 'valveMinPercent', type: 'decimal',
+    title: 'Minimum Valve Position (0.0 to 10.0 %)',
+    description: 'Keeps the valve slightly open even when the setpoint is satisfied. Useful for pipe frost protection.',
+    range: '0.0..10.0', required: false
+
+  input name: 'forceClose', type: 'bool',
+    title: 'Force Close',
+    description: 'Apply extra motor force when closing the valve shaft to prevent dripping.',
+    defaultValue: false, required: false
+
+  // ── External Temperature Sensor (→ /settings/thermostats/0) ──
   input name: 'externalSensorEnabled', type: 'bool',
     title: 'Enable External Temperature Sensor',
-    description: 'Use external sensor temperature data for room temperature. Enable for underfloor heating control.',
+    description: 'Use an external sensor reading (via updateExternalTempReading command) instead of the built-in sensor. Enable for underfloor heating control.',
+    defaultValue: false, required: false
+
+  // ── Display (→ /settings) ──
+  input name: 'displayBrightness', type: 'enum',
+    title: 'Display Brightness',
+    description: 'Backlight intensity of the TRV display.',
+    options: ['1': 'Low', '4': 'Normal', '7': 'High'],
+    required: false
+
+  input name: 'displayFlipped', type: 'bool',
+    title: 'Flip Display',
+    description: 'Rotate the display 180° — useful when the valve is mounted upside-down.',
+    defaultValue: false, required: false
+
+  // ── Safety (→ /settings) ──
+  input name: 'childLock', type: 'bool',
+    title: 'Child Lock',
+    description: 'Disable the physical buttons on the device to prevent accidental changes.',
     defaultValue: false, required: false
 
   // ── Logging ──
@@ -356,13 +397,17 @@ void setScheduleEnabled(String enabled) {
 }
 
 /**
- * Gathers TRV-specific settings and sends them to the parent app for
- * relay to the Shelly device via GET /settings/thermostats/0.
- * Only sends settings that have been configured (non-null).
+ * Collects all configured preferences and relays them to the parent app,
+ * which forwards them to the Shelly TRV via the appropriate endpoint.
+ * Settings are split by endpoint:
+ * <ul>
+ *   <li>Thermostat-level settings → {@code GET /settings/thermostats/0}</li>
+ *   <li>Device-level settings → {@code GET /settings}</li>
+ * </ul>
+ * Only non-null preferences are included; nothing is sent if no preferences have been set.
  *
  * Note: Cannot be @CompileStatic — accesses dynamic {@code settings} and
- * calls {@code parent?.componentUpdateGen1ThermostatSettings} which is
- * resolved at runtime by Hubitat.
+ * calls parent component methods resolved at runtime by Hubitat.
  */
 private void relayDeviceSettings() {
   // Validate min/max relationship before building the settings map
@@ -373,25 +418,49 @@ private void relayDeviceSettings() {
     return
   }
 
-  Map settingsMap = [:]
+  // ── /settings/thermostats/0 parameters ──
+  Map thermostatSettings = [:]
   if (settings.temperatureOffset != null) {
-    settingsMap.temperature_offset = (settings.temperatureOffset as BigDecimal).toString()
+    thermostatSettings.temperature_offset = (settings.temperatureOffset as BigDecimal).toString()
   }
-  if (minT != null) {
-    settingsMap.min_t = minT.toString()
+  if (minT != null) { thermostatSettings.min_t = minT.toString() }
+  if (maxT != null) { thermostatSettings.max_t = maxT.toString() }
+  if (settings.scheduleProfile != null) {
+    thermostatSettings.schedule_profile = settings.scheduleProfile.toString()
   }
-  if (maxT != null) {
-    settingsMap.max_t = maxT.toString()
+  if (settings.acceleratedHeating != null) {
+    thermostatSettings.accelerated_heating = (settings.acceleratedHeating as Boolean) ? '1' : '0'
+  }
+  if (settings.valveMinPercent != null) {
+    thermostatSettings.valve_min_percent = (settings.valveMinPercent as BigDecimal).toString()
+  }
+  if (settings.forceClose != null) {
+    thermostatSettings.force_close = (settings.forceClose as Boolean) ? '1' : '0'
   }
   if (settings.externalSensorEnabled != null) {
     // Gen 1 API uses bracket notation for nested objects: ext_t[enabled]=1
     // sendGen1Get only URL-encodes values, so bracket keys pass through literally.
-    Boolean extEnabled = settings.externalSensorEnabled as Boolean
-    settingsMap['ext_t[enabled]'] = extEnabled ? '1' : '0'
+    thermostatSettings['ext_t[enabled]'] = (settings.externalSensorEnabled as Boolean) ? '1' : '0'
   }
-  if (settingsMap) {
-    logDebug("Relaying TRV settings to parent: ${settingsMap}")
-    parent?.componentUpdateGen1ThermostatSettings(device, settingsMap)
+  if (thermostatSettings) {
+    logDebug("Relaying TRV thermostat settings to parent: ${thermostatSettings}")
+    parent?.componentUpdateGen1ThermostatSettings(device, thermostatSettings)
+  }
+
+  // ── /settings parameters ──
+  Map deviceSettings = [:]
+  if (settings.displayBrightness != null) {
+    deviceSettings.display_brightness = settings.displayBrightness.toString()
+  }
+  if (settings.displayFlipped != null) {
+    deviceSettings.display_flipped = (settings.displayFlipped as Boolean) ? '1' : '0'
+  }
+  if (settings.childLock != null) {
+    deviceSettings.child_lock = (settings.childLock as Boolean) ? '1' : '0'
+  }
+  if (deviceSettings) {
+    logDebug("Relaying TRV device settings to parent: ${deviceSettings}")
+    parent?.componentUpdateGen1Settings(device, deviceSettings)
   }
 }
 

@@ -5278,14 +5278,24 @@ private void syncGen1SenseSettings(String ipAddress, def childDevice, String gen
 }
 
 /**
- * Syncs device-side thermostat settings to driver preferences on first refresh.
- * Reads {@code /settings/thermostats/0} from the TRV and populates the following
- * driver preferences with the values reported by the device:
+ * Syncs device-side settings to driver preferences on first refresh.
+ * Fetches both {@code /settings/thermostats/0} and {@code /settings} and
+ * populates the following driver preferences:
+ * <p>From {@code /settings/thermostats/0}:</p>
  * <ul>
  *   <li>{@code temperatureOffset} — calibration offset</li>
- *   <li>{@code minTemperature} — minimum setpoint limit</li>
- *   <li>{@code maxTemperature} — maximum setpoint limit</li>
- *   <li>{@code externalSensorEnabled} — whether the external sensor is active</li>
+ *   <li>{@code minTemperature} / {@code maxTemperature} — setpoint limits</li>
+ *   <li>{@code scheduleProfile} — active schedule (1–5)</li>
+ *   <li>{@code acceleratedHeating} — aggressive ramp-to-setpoint mode</li>
+ *   <li>{@code valveMinPercent} — minimum valve opening</li>
+ *   <li>{@code forceClose} — extra closing force</li>
+ *   <li>{@code externalSensorEnabled} — external sensor active</li>
+ * </ul>
+ * <p>From {@code /settings}:</p>
+ * <ul>
+ *   <li>{@code displayBrightness} — display backlight level</li>
+ *   <li>{@code displayFlipped} — display rotation</li>
+ *   <li>{@code childLock} — physical button lock</li>
  * </ul>
  *
  * @param ipAddress The TRV's IP address
@@ -5304,6 +5314,7 @@ private void syncGen1TrvSettings(String ipAddress, def childDevice, String gen1T
     }
 
     try {
+        // ── /settings/thermostats/0 ──
         if (trvSettings.temperature_offset != null) {
             childDevice.updateSetting('temperatureOffset',
                 [type: 'decimal', value: trvSettings.temperature_offset as BigDecimal])
@@ -5316,11 +5327,44 @@ private void syncGen1TrvSettings(String ipAddress, def childDevice, String gen1T
             childDevice.updateSetting('maxTemperature',
                 [type: 'decimal', value: trvSettings.max_t as BigDecimal])
         }
+        if (trvSettings.schedule_profile != null) {
+            childDevice.updateSetting('scheduleProfile',
+                [type: 'enum', value: trvSettings.schedule_profile.toString()])
+        }
+        if (trvSettings.accelerated_heating != null) {
+            childDevice.updateSetting('acceleratedHeating',
+                [type: 'bool', value: trvSettings.accelerated_heating as Boolean])
+        }
+        if (trvSettings.valve_min_percent != null) {
+            childDevice.updateSetting('valveMinPercent',
+                [type: 'decimal', value: trvSettings.valve_min_percent as BigDecimal])
+        }
+        if (trvSettings.force_close != null) {
+            childDevice.updateSetting('forceClose',
+                [type: 'bool', value: trvSettings.force_close as Boolean])
+        }
         if (trvSettings.ext_t instanceof Map) {
             Map extT = trvSettings.ext_t as Map
             if (extT.enabled != null) {
                 childDevice.updateSetting('externalSensorEnabled',
                     [type: 'bool', value: extT.enabled as Boolean])
+            }
+        }
+
+        // ── /settings (device-level) ──
+        Map deviceSettings = sendGen1Get(ipAddress, 'settings', [:], 2)
+        if (deviceSettings) {
+            if (deviceSettings.display_brightness != null) {
+                childDevice.updateSetting('displayBrightness',
+                    [type: 'enum', value: deviceSettings.display_brightness.toString()])
+            }
+            if (deviceSettings.display_flipped != null) {
+                childDevice.updateSetting('displayFlipped',
+                    [type: 'bool', value: deviceSettings.display_flipped as Boolean])
+            }
+            if (deviceSettings.child_lock != null) {
+                childDevice.updateSetting('childLock',
+                    [type: 'bool', value: deviceSettings.child_lock as Boolean])
             }
         }
 
