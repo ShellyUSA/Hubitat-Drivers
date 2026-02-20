@@ -9612,37 +9612,35 @@ void shellyCommandCallback(AsyncResponse response, Map data = null) {
 /**
  * Receives BLE relay data from a WiFi gateway driver.
  * Called by Gen 2+ drivers when they receive a POST with dst='ble'.
- * Deduplicates by pid+mac, updates discovery state, and routes events to child devices.
+ *
+ * Accepts two formats:
+ *   - Envelope: {"dst":"ble", "messages":[{mac, pid, ...}, ...]} (from BLE helper script)
+ *   - Flat single-message: {"dst":"ble", "mac":"...", ...} (from routeWebhookParams fallback)
  *
  * @param gatewayDevice The gateway device that received the BLE advertisement
- * @param bleData Map of decoded BTHome fields (mac, pid, model, battery, temperature, etc.)
+ * @param bleData Map containing either a messages list (envelope) or flat BLE fields
  */
-void handleBleRelay(def gatewayDevice, Map bleData) {
-    String mac = bleData?.mac?.toString()?.toUpperCase()
-    if (!mac) {
-        logDebug('handleBleRelay: no MAC in BLE data')
-        return
-    }
-
-    Integer pid = bleData.pid != null ? bleData.pid as Integer : -1
-    String model = bleData.model?.toString() ?: ''
-    Integer modelId = bleData.modelId != null ? bleData.modelId as Integer : null
-    Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
+void handleBleRelay(Object gatewayDevice, Map bleData) {
     String gatewayName = gatewayDevice?.displayName ?: 'Unknown gateway'
 
-    logTrace("handleBleRelay: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName}")
-
-    // Dedup by pid per MAC
-    if (isBlePidDuplicate(mac, pid)) {
-        logTrace("handleBleRelay: duplicate pid ${pid} for ${mac}, skipping")
+    // Envelope format: unpack messages list
+    Object rawMessages = bleData?.messages
+    if (rawMessages instanceof List) {
+        List messages = (List) rawMessages
+        logTrace("handleBleRelay: processing ${messages.size()} messages from ${gatewayName}")
+        messages.each { Object item ->
+            if (item instanceof Map) {
+                processBleReport(gatewayName, (Map) item)
+            }
+        }
+    } else if (bleData?.mac) {
+        // Flat single-message fallback (e.g., from routeWebhookParams)
+        logTrace("handleBleRelay: processing single message from ${gatewayName}")
+        processBleReport(gatewayName, bleData)
+    } else {
+        logDebug("handleBleRelay: unrecognized format from ${gatewayName}")
         return
     }
-
-    // Update discovery state
-    updateBleDiscoveryState(mac, model, modelId, rssi, gatewayName, bleData)
-
-    // Route events to child device (if created)
-    routeBleEventToChild(mac, bleData)
 
     // Throttle BLE table SSR updates to avoid exceeding hub event rate limits.
     // At most once per 10 seconds — BLE advertisements arrive frequently.
@@ -9651,6 +9649,40 @@ void handleBleRelay(def gatewayDevice, Map bleData) {
         sendEvent(name: 'bleTable', value: 'update')
         state.lastBleTableUpdate = now()
     }
+}
+
+/**
+ * Processes a single BLE report from a gateway relay.
+ * Deduplicates by pid+mac, updates discovery state, and routes events to child devices.
+ *
+ * @param gatewayName Display name of the gateway that relayed this report
+ * @param bleData Map of decoded BTHome fields (mac, pid, model, battery, temperature, etc.)
+ */
+private void processBleReport(String gatewayName, Map bleData) {
+    String mac = bleData?.mac?.toString()?.toUpperCase()
+    if (!mac) {
+        logDebug('processBleReport: no MAC in BLE data')
+        return
+    }
+
+    Integer pid = bleData.pid != null ? bleData.pid as Integer : -1
+    String model = bleData.model?.toString() ?: ''
+    Integer modelId = bleData.modelId != null ? bleData.modelId as Integer : null
+    Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
+
+    logTrace("processBleReport: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName}")
+
+    // Dedup by pid per MAC
+    if (isBlePidDuplicate(mac, pid)) {
+        logTrace("processBleReport: duplicate pid ${pid} for ${mac}, skipping")
+        return
+    }
+
+    // Update discovery state
+    updateBleDiscoveryState(mac, model, modelId, rssi, gatewayName, bleData)
+
+    // Route events to child device (if created)
+    routeBleEventToChild(mac, bleData)
 }
 
 /**

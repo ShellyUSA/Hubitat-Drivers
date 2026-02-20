@@ -264,13 +264,15 @@ function isNewPid(mac, pid) {
 // === HTTP POST with concurrency control ===
 
 /**
- * Send a batch array of BLE reports via HTTP.POST.
- * Always sends as a JSON array (even for single reports).
+ * Send BLE reports via HTTP.POST wrapped in an envelope object.
+ * Format: {"dst":"ble","messages":[...reports...]}
+ * The gateway driver routes on dst; the app unpacks the messages list.
  */
 function doHttpPost(batch) {
   inflight++;
   let url = REMOTE_URL + "/webhook/ble/0";
-  let body = JSON.stringify(batch);
+  let envelope = { dst: "ble", messages: batch };
+  let body = JSON.stringify(envelope);
   Shelly.call(
     "HTTP.POST",
     { url: url, body: body, content_type: "application/json" },
@@ -350,9 +352,8 @@ function BLEScanCallback(event, result) {
   let pid = typeof decoded.pid !== "undefined" ? decoded.pid : -1;
   if (!isNewPid(mac, pid)) return;
 
-  // Build POST body with all decoded fields
+  // Build report with all decoded fields (dst is on the envelope, not each message)
   let body = {
-    dst: "ble",
     cid: 0,
     pid: pid,
     mac: mac,
