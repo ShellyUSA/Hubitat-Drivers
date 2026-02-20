@@ -14908,7 +14908,7 @@ void sendBluTrvCommand(com.hubitat.app.DeviceWrapper gatewayDevice, Integer blue
             contentType: 'application/json',
             requestContentType: 'application/json',
             body: rpcBody,
-            timeout: 10
+            timeout: 90
         ]
         asynchttpPost('bluTrvCommandCallback', httpParams, [
             gateway: gatewayDevice.displayName,
@@ -14922,16 +14922,20 @@ void sendBluTrvCommand(com.hubitat.app.DeviceWrapper gatewayDevice, Integer blue
 
 /**
  * Callback for async BLU TRV command responses.
- * Commands are fire-and-forget; this logs success/failure for diagnostics.
+ * BLE GATT relay can take 10-60s; timeouts (408) are common and usually
+ * mean the command was relayed but the acknowledgment was slow.
  *
  * @param response The async HTTP response
  * @param data Callback data with gateway name, method, and component ID
  */
 void bluTrvCommandCallback(AsyncResponse response, Map data = null) {
-    if (response?.status == 200) {
+    Integer status = response?.status
+    if (status == 200) {
         logDebug("BluTrv.Call ${data?.method} succeeded on ${data?.gateway} (blutrv:${data?.componentId})")
+    } else if (status == 408) {
+        logDebug("BluTrv.Call ${data?.method} on ${data?.gateway} (blutrv:${data?.componentId}): BLE timeout (command likely delivered)")
     } else {
-        logWarn("BluTrv.Call ${data?.method} failed on ${data?.gateway} (blutrv:${data?.componentId}): HTTP ${response?.status}")
+        logWarn("BluTrv.Call ${data?.method} failed on ${data?.gateway} (blutrv:${data?.componentId}): HTTP ${status}")
     }
 }
 
