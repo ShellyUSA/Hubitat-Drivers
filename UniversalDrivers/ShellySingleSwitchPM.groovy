@@ -56,19 +56,22 @@ preferences {
 
 /**
  * Called when driver is first installed on a device.
+ * Creates PLUGS_UI RGB child device if the Shelly has an LED indicator.
  */
 void installed() {
   logDebug("installed() called")
+  reconcilePlugsUiChild()
 }
 
 /**
  * Called when device settings are saved.
- * Pushes PM reporting interval to Shelly KVS and relays switch settings to the device.
+ * Pushes PM reporting interval to Shelly KVS, relays switch settings, and reconciles PLUGS_UI child.
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   sendPmReportingIntervalToKVS()
   relaySwitchSettings()
+  reconcilePlugsUiChild()
 }
 
 /**
@@ -85,12 +88,6 @@ private void relaySwitchSettings() {
   }
 }
 
-/**
- * Parses incoming LAN messages from the Shelly device.
- * Routes notifications to the appropriate handler based on the dst field.
- *
- * @param description Raw LAN message description string from Hubitat
- */
 /**
  * Parses incoming LAN messages from the Shelly device.
  * POST requests (from Shelly scripts) carry data in the JSON body.
@@ -457,6 +454,238 @@ void resetEnergyMonitors() {
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Power Monitoring Commands                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  PLUGS_UI LED Management                                     ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Ensures a PLUGS_UI RGB child device exists if this Shelly has an LED indicator.
+ * Checks the 'hasPlugsUi' data value set during discovery. If the child doesn't
+ * exist yet, creates it with default green color (matching Shelly factory default).
+ */
+private void reconcilePlugsUiChild() {
+  if (device.getDataValue('hasPlugsUi') != 'true') { return }
+
+  String childDni = "${device.deviceNetworkId}-plugsui-rgb".toString()
+  com.hubitat.app.DeviceWrapper existing = getChildDevice(childDni)
+  if (existing) { return }
+
+  logInfo("Creating PLUGS_UI RGB child device for LED control")
+  try {
+    com.hubitat.app.DeviceWrapper child = addChildDevice(
+      'ShellyUSA', 'Shelly PLUGS_UI RGB', childDni,
+      [name: 'Shelly PLUGS_UI RGB', label: "${device.displayName} LED"]
+    )
+    child.updateDataValue('plugsUiRgb', 'true')
+
+    // Set default state: green at full brightness (Shelly factory default)
+    // Compute RGB from hue=33 to stay consistent with stored state
+    List<Integer> defaultRgb = hsvToPlugsUiRgb(33, 100)
+    child.sendEvent(name: 'switch', value: 'on')
+    child.sendEvent(name: 'level', value: 100, unit: '%')
+    child.sendEvent(name: 'hue', value: 33)
+    child.sendEvent(name: 'saturation', value: 100)
+    child.sendEvent(name: 'colorMode', value: 'RGB')
+
+    // Store default color state
+    state.plugsUiRgb = defaultRgb
+    state.plugsUiBrightness = 100
+
+    // Send initial config to set LED to "switch" mode with default color
+    Map config = buildPlugsUiColorConfig(defaultRgb, 100)
+    parent?.parentSendCommand(device, 'PLUGS_UI.SetConfig', config)
+
+    logInfo("PLUGS_UI RGB child created: ${child.displayName}")
+  } catch (Exception e) {
+    logError("Failed to create PLUGS_UI RGB child: ${e.message}")
+  }
+}
+
+/**
+ * Turns the PLUGS_UI LED on with the last-used color and brightness.
+ * Sets leds.mode = "switch" with both on/off colors identical.
+ *
+ * @param childDevice The PLUGS_UI RGB child device
+ */
+void componentPlugsUiOn(com.hubitat.app.DeviceWrapper childDevice) {
+  logDebug("componentPlugsUiOn() called")
+  List<Integer> rgb = state.plugsUiRgb ?: [0, 100, 0]
+  Integer brightness = state.plugsUiBrightness ?: 100
+
+  Map config = buildPlugsUiColorConfig(rgb, brightness)
+  parent?.parentSendCommand(device, 'PLUGS_UI.SetConfig', config)
+
+  sendPlugsUiChildEvent(childDevice, [name: 'switch', value: 'on'])
+}
+
+/**
+ * Turns the PLUGS_UI LED off by setting leds.mode = "off".
+ * This completely disables the LED indicator.
+ *
+ * @param childDevice The PLUGS_UI RGB child device
+ */
+void componentPlugsUiOff(com.hubitat.app.DeviceWrapper childDevice) {
+  logDebug("componentPlugsUiOff() called")
+  Map config = [config: [leds: [mode: 'off']]]
+  parent?.parentSendCommand(device, 'PLUGS_UI.SetConfig', config)
+
+  sendPlugsUiChildEvent(childDevice, [name: 'switch', value: 'off'])
+}
+
+/**
+ * Sets the PLUGS_UI LED color from an HSV color map.
+ * Converts HSV to RGB (0-100 scale) and sends PLUGS_UI.SetConfig.
+ * Both the on/off LED states are set identically.
+ *
+ * @param childDevice The PLUGS_UI RGB child device
+ * @param colorMap Map with hue (0-100), saturation (0-100), and optionally level (0-100)
+ */
+void componentPlugsUiSetColor(com.hubitat.app.DeviceWrapper childDevice, Map colorMap) {
+  Integer hue = colorMap.hue != null ? colorMap.hue as Integer : 0
+  Integer saturation = colorMap.saturation != null ? colorMap.saturation as Integer : 100
+  Integer level = colorMap.level != null ? colorMap.level as Integer : (state.plugsUiBrightness ?: 100)
+  logDebug("componentPlugsUiSetColor() hue=${hue}, sat=${saturation}, level=${level}")
+
+  // Convert HSV to pure RGB color (brightness handled separately)
+  List<Integer> rgb = hsvToPlugsUiRgb(hue, saturation)
+
+  // Store state
+  state.plugsUiRgb = rgb
+  state.plugsUiBrightness = level
+
+  if (level == 0) {
+    componentPlugsUiOff(childDevice)
+    return
+  }
+
+  // Send config
+  Map config = buildPlugsUiColorConfig(rgb, level)
+  parent?.parentSendCommand(device, 'PLUGS_UI.SetConfig', config)
+
+  // Update child device attributes
+  sendPlugsUiChildEvent(childDevice, [name: 'hue', value: hue])
+  sendPlugsUiChildEvent(childDevice, [name: 'saturation', value: saturation, unit: '%'])
+  sendPlugsUiChildEvent(childDevice, [name: 'level', value: level, unit: '%'])
+  sendPlugsUiChildEvent(childDevice, [name: 'switch', value: 'on'])
+  sendPlugsUiChildEvent(childDevice, [name: 'colorMode', value: 'RGB'])
+
+  // Build hex RGB string for the RGB attribute (0-255 scale)
+  String hexR = String.format('%02X', Math.round(rgb[0] * 2.55) as Integer)
+  String hexG = String.format('%02X', Math.round(rgb[1] * 2.55) as Integer)
+  String hexB = String.format('%02X', Math.round(rgb[2] * 2.55) as Integer)
+  sendPlugsUiChildEvent(childDevice, [name: 'RGB', value: "${hexR}${hexG}${hexB}"])
+}
+
+/**
+ * Sets the PLUGS_UI LED brightness level.
+ * Level 0 turns the LED off; any other level turns it on with the stored color.
+ *
+ * @param childDevice The PLUGS_UI RGB child device
+ * @param level Brightness percentage (0-100)
+ */
+void componentPlugsUiSetLevel(com.hubitat.app.DeviceWrapper childDevice, Integer level) {
+  logDebug("componentPlugsUiSetLevel() level=${level}")
+  if (level <= 0) {
+    componentPlugsUiOff(childDevice)
+    sendPlugsUiChildEvent(childDevice, [name: 'level', value: 0, unit: '%'])
+    return
+  }
+
+  state.plugsUiBrightness = level
+  List<Integer> rgb = state.plugsUiRgb ?: [0, 100, 0]
+
+  Map config = buildPlugsUiColorConfig(rgb, level)
+  parent?.parentSendCommand(device, 'PLUGS_UI.SetConfig', config)
+
+  sendPlugsUiChildEvent(childDevice, [name: 'level', value: level, unit: '%'])
+  sendPlugsUiChildEvent(childDevice, [name: 'switch', value: 'on'])
+}
+
+/**
+ * Configures the PLUGS_UI night mode settings.
+ * Sends a partial PLUGS_UI.SetConfig with only the night_mode section.
+ *
+ * @param childDevice The PLUGS_UI RGB child device
+ * @param nightModeConfig Map with enable, brightness, startTime, endTime
+ */
+void componentPlugsUiSetNightMode(com.hubitat.app.DeviceWrapper childDevice, Map nightModeConfig) {
+  logDebug("componentPlugsUiSetNightMode() config=${nightModeConfig}")
+  Map config = [config: [leds: [night_mode: [
+    enable: nightModeConfig.enable ?: false,
+    brightness: nightModeConfig.brightness != null ? nightModeConfig.brightness as Integer : 10,
+    active_between: [nightModeConfig.startTime ?: '22:00', nightModeConfig.endTime ?: '06:00']
+  ]]]]
+  parent?.parentSendCommand(device, 'PLUGS_UI.SetConfig', config)
+}
+
+/**
+ * Converts Hubitat HSV (hue 0-100, saturation 0-100) to RGB on 0-100 scale.
+ * Computed at full value (V=1.0) to produce the pure color; brightness is
+ * handled separately by the PLUGS_UI brightness parameter.
+ *
+ * @param hue Hue value (0-100, where 0=red, 33=green, 67=blue)
+ * @param saturation Saturation value (0-100, 0=white, 100=full color)
+ * @return List of [red, green, blue] each 0-100
+ */
+@CompileStatic
+private static List<Integer> hsvToPlugsUiRgb(Integer hue, Integer saturation) {
+  BigDecimal h = (hue * 3.6)         // 0-100 -> 0-360
+  BigDecimal s = saturation / 100.0   // 0-100 -> 0-1
+  BigDecimal v = 1.0                  // Full brightness (separate from PLUGS_UI brightness)
+
+  BigDecimal c = v * s
+  BigDecimal x = c * (1 - ((h / 60) % 2 - 1).abs())
+  BigDecimal m = v - c
+
+  BigDecimal r1, g1, b1
+  if (h < 60)       { r1 = c; g1 = x; b1 = 0 }
+  else if (h < 120) { r1 = x; g1 = c; b1 = 0 }
+  else if (h < 180) { r1 = 0; g1 = c; b1 = x }
+  else if (h < 240) { r1 = 0; g1 = x; b1 = c }
+  else if (h < 300) { r1 = x; g1 = 0; b1 = c }
+  else              { r1 = c; g1 = 0; b1 = x }
+
+  return [
+    Math.round((r1 + m) * 100) as Integer,
+    Math.round((g1 + m) * 100) as Integer,
+    Math.round((b1 + m) * 100) as Integer
+  ]
+}
+
+/**
+ * Builds the nested config map for PLUGS_UI.SetConfig.
+ * Sets leds.mode = "switch" with both on/off colors identical so the LED
+ * shows the same color regardless of the plug's switch state.
+ *
+ * @param rgb List of [red, green, blue] values (0-100)
+ * @param brightness Brightness percentage (0-100)
+ * @return Map suitable as PLUGS_UI.SetConfig params
+ */
+@CompileStatic
+private static Map buildPlugsUiColorConfig(List<Integer> rgb, Integer brightness) {
+  Map colorEntry = [rgb: rgb, brightness: brightness]
+  return [config: [leds: [
+    mode: 'switch',
+    colors: ['switch:0': [on: colorEntry, off: colorEntry]]
+  ]]]
+}
+
+/**
+ * Sends an event to the PLUGS_UI RGB child device.
+ *
+ * @param childDevice The child device to send the event to
+ * @param event The event map (name, value, unit, etc.)
+ */
+private void sendPlugsUiChildEvent(com.hubitat.app.DeviceWrapper childDevice, Map event) {
+  childDevice.sendEvent(event)
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END PLUGS_UI LED Management                                 ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 

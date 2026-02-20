@@ -822,6 +822,14 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         // Store device component config for later reference (config page, capability checks)
         storeDeviceConfig(dni, deviceInfo, driverName)
 
+        // Detect PLUGS_UI component — tells the driver to create an RGB LED child
+        Map deviceStatus = deviceInfo.deviceStatus ?: [:]
+        Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') }
+        if (hasPlugsUi) {
+            childDevice.updateDataValue('hasPlugsUi', 'true')
+            logInfo("  PLUGS_UI detected — RGB LED child will be created")
+        }
+
         // Set device attributes
         childDevice.updateSetting('ipAddress', ipKey)
 
@@ -8880,41 +8888,6 @@ LinkedHashMap illuminanceGetStatusCommand(Integer id = 0, String src = 'illumina
 }
 
 @CompileStatic
-LinkedHashMap plugsUiGetConfigCommand(String src = 'plugsUiGetConfig') {
-  LinkedHashMap command = [
-    "id" : 0,
-    "src" : src,
-    "method" : "PLUGS_UI.GetConfig",
-    "params" : [:]
-  ]
-  return command
-}
-
-@CompileStatic
-LinkedHashMap plugsUiSetConfigCommand(LinkedHashMap plugsUiConfig, String src = 'plugsUiSetConfig') {
-  LinkedHashMap command = [
-    "id" : 0,
-    "src" : src,
-    "method" : "PLUGS_UI.SetConfig",
-    "params" : [
-      "config" : plugsUiConfig
-    ]
-  ]
-  return command
-}
-
-@CompileStatic
-LinkedHashMap plugsUiGetStatusCommand(String src = 'plugsUiGetStatus') {
-  LinkedHashMap command = [
-    "id" : 0,
-    "src" : src,
-    "method" : "PLUGS_UI.GetStatus",
-    "params" : [:]
-  ]
-  return command
-}
-
-@CompileStatic
 LinkedHashMap lightGetConfigCommand(Integer id = 0, src = 'lightGetConfig') {
   LinkedHashMap command = [
     "id" : 0,
@@ -10858,59 +10831,6 @@ ChildDeviceWrapper createChildIlluminance(Integer id) {
 }
 
 @CompileStatic
-ChildDeviceWrapper createChildPlugsUiRGB() {
-  String driverName = "Shelly Autoconf RGB"
-  String dni = "${getThisDeviceDNI()}-plugsui-rgb"
-  ChildDeviceWrapper child = getShellyDevice(dni)
-  if (child == null) {
-    String label = "${getAppLabel()} - LED RGB"
-    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
-    try {
-      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
-      child.updateDataValue('plugsUiRgb','true')
-      return child
-    }
-    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
-  } else { return child }
-}
-
-@CompileStatic
-ChildDeviceWrapper createChildPlugsUiRGBOn() {
-  String driverName = "Shelly Autoconf RGB"
-  String dni = "${getThisDeviceDNI()}-plugsui-rgb-on"
-  ChildDeviceWrapper child = getShellyDevice(dni)
-  if (child == null) {
-    String label = "${getAppLabel()} - LED RGB Power On"
-    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
-    try {
-      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
-      child.updateDataValue('plugsUiRgb','true')
-      child.updateDataValue('plugsUiRgbState','on')
-      return child
-    }
-    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
-  } else { return child }
-}
-
-@CompileStatic
-ChildDeviceWrapper createChildPlugsUiRGBOff() {
-  String driverName = "Shelly Autoconf RGB"
-  String dni = "${getThisDeviceDNI()}-plugsui-rgb-off"
-  ChildDeviceWrapper child = getShellyDevice(dni)
-  if (child == null) {
-    String label = "${getAppLabel()} - LED RGB Power Off"
-    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
-    try {
-      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
-      child.updateDataValue('plugsUiRgb','true')
-      child.updateDataValue('plugsUiRgbState','off')
-      return child
-    }
-    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
-  } else { return child }
-}
-
-@CompileStatic
 ChildDeviceWrapper createChildVoltage(Integer id) {
   String driverName = "Shelly Autoconf Polling Voltage Sensor"
   String dni = "${getThisDeviceDNI()}-adc${id}"
@@ -11224,24 +11144,6 @@ ChildDeviceWrapper getRGBWChildById(Integer id) {
 ChildDeviceWrapper getIlluminanceChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
   return allChildren.find{getChildDeviceIntegerDataValue(it,'illuminanceId') == id}
-}
-
-@CompileStatic
-ChildDeviceWrapper getPlugsUiRgbChild() {
-  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceDataValue(it,'plugsUiRgb') == 'true'}
-}
-
-@CompileStatic
-ChildDeviceWrapper getPlugsUiRgbOnChild() {
-  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceDataValue(it,'plugsUiRgbState') == 'on'}
-}
-
-@CompileStatic
-ChildDeviceWrapper getPlugsUiRgbOffChild() {
-  ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceDataValue(it,'plugsUiRgbState') == 'off'}
 }
 
 @CompileStatic
