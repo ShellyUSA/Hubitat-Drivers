@@ -26,19 +26,15 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER, unit:%
 
-    capability 'Initialize'
-    //Commands: initialize()
-
-    capability 'Configuration'
-    //Commands: configure()
-
     capability 'Refresh'
     //Commands: refresh()
 
     command 'setValvePosition', [[name: 'Position', type: 'NUMBER', description: 'Valve position (0-100)']]
-    command 'setExternalTemperature', [[name: 'Temperature', type: 'NUMBER', description: 'External temperature reading']]
+    command 'updateExternalTempReading', [[name: 'Temperature', type: 'NUMBER', description: 'External temperature reading']]
     command 'setBoostMinutes', [[name: 'Minutes', type: 'NUMBER', description: 'Boost duration in minutes (0 to cancel)']]
     command 'setScheduleEnabled', [[name: 'Enabled', type: 'ENUM', constraints: ['true', 'false'], description: 'Enable/disable schedule']]
+    command 'windowOpen'
+    command 'windowClose'
 
     attribute 'valvePosition', 'number'
     attribute 'boostMinutes', 'number'
@@ -51,9 +47,24 @@ metadata {
 preferences {
   // ── Thermostat Settings (synced to device) ──
   input name: 'temperatureOffset', type: 'decimal',
-    title: 'Temperature offset (-5.0 to 5.0)',
+    title: 'Temperature offset (-10.0 to 10.0)',
     description: 'Calibration offset for internal temperature sensor. Synced to/from device.',
-    range: '-5.0..5.0', required: false
+    range: '-10.0..10.0', required: false
+
+  input name: 'minTemperature', type: 'decimal',
+    title: 'Minimum Temperature Limit (°C, 4.0 to 30.0)',
+    description: 'Minimum setpoint the TRV will allow. Synced to device.',
+    range: '4.0..30.0', required: false
+
+  input name: 'maxTemperature', type: 'decimal',
+    title: 'Maximum Temperature Limit (°C, 5.0 to 31.0)',
+    description: 'Maximum setpoint the TRV will allow. Synced to device.',
+    range: '5.0..31.0', required: false
+
+  input name: 'externalSensorEnabled', type: 'bool',
+    title: 'Enable External Temperature Sensor',
+    description: 'Use external sensor temperature data for room temperature. Enable for underfloor heating control.',
+    defaultValue: false, required: false
 
   // ── Logging ──
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
@@ -69,12 +80,13 @@ preferences {
 
 void installed() {
   logDebug('installed() called')
-  initialize()
+  sendEvent(name: 'valve', value: 'closed', descriptionText: 'Initialized as closed')
+  sendEvent(name: 'valvePosition', value: 0, descriptionText: 'Initialized at position 0')
+  parent?.componentRefresh(device)
 }
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
   relayDeviceSettings()
 }
 
@@ -233,34 +245,8 @@ private void routeActionUrlCallback(Map params) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Initialize / Configure / Refresh Commands                   ║
+// ║  Refresh Command                                             ║
 // ╚══════════════════════════════════════════════════════════════╝
-
-/**
- * Initializes the TRV driver with safe defaults and requests a status refresh.
- * TRV is always awake so refresh will succeed immediately.
- */
-void initialize() {
-  logDebug('initialize() called')
-  sendEvent(name: 'valve', value: 'closed', descriptionText: 'Initialized as closed')
-  sendEvent(name: 'valvePosition', value: 0, descriptionText: 'Initialized at position 0')
-  parent?.componentRefresh(device)
-}
-
-/**
- * Configures the TRV driver. Sets default log level if missing and clears
- * the settings sync flag so next refresh re-reads settings from device.
- */
-void configure() {
-  logDebug('configure() called')
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-  // Clear sync flag so next refresh re-reads settings from device
-  device.removeDataValue('gen1SettingsSynced')
-  parent?.componentRefresh(device)
-}
 
 /**
  * Refreshes the TRV state by requesting a status poll from the parent app.
@@ -272,7 +258,7 @@ void refresh() {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Initialize / Configure / Refresh Commands               ║
+// ║  END Refresh Command                                         ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
@@ -325,10 +311,27 @@ void setValvePosition(BigDecimal position) {
  *
  * @param temp External temperature in the hub's configured scale
  */
-void setExternalTemperature(BigDecimal temp) {
-  logDebug("setExternalTemperature(${temp}) called")
+void updateExternalTempReading(BigDecimal temp) {
+  logDebug("updateExternalTempReading(${temp}) called")
   BigDecimal tempC = (location.temperatureScale == 'F') ? ((temp - 32) * 5 / 9) : temp
   parent?.componentSetTrvExternalTemp(device, tempC)
+}
+
+/**
+ * Signals the TRV that a window has been opened.
+ * The device reduces valve activity to avoid heating a room with an open window.
+ */
+void windowOpen() {
+  logDebug('windowOpen() called')
+  parent?.componentSetTrvWindowState(device, 'open')
+}
+
+/**
+ * Signals the TRV that the window has been closed, resuming normal operation.
+ */
+void windowClose() {
+  logDebug('windowClose() called')
+  parent?.componentSetTrvWindowState(device, 'close')
 }
 
 /**
@@ -356,11 +359,35 @@ void setScheduleEnabled(String enabled) {
  * Gathers TRV-specific settings and sends them to the parent app for
  * relay to the Shelly device via GET /settings/thermostats/0.
  * Only sends settings that have been configured (non-null).
+ *
+ * Note: Cannot be @CompileStatic — accesses dynamic {@code settings} and
+ * calls {@code parent?.componentUpdateGen1ThermostatSettings} which is
+ * resolved at runtime by Hubitat.
  */
 private void relayDeviceSettings() {
+  // Validate min/max relationship before building the settings map
+  BigDecimal minT = settings.minTemperature != null ? settings.minTemperature as BigDecimal : null
+  BigDecimal maxT = settings.maxTemperature != null ? settings.maxTemperature as BigDecimal : null
+  if (minT != null && maxT != null && minT >= maxT) {
+    logWarn("minTemperature (${minT}) must be less than maxTemperature (${maxT}) — TRV settings not sent")
+    return
+  }
+
   Map settingsMap = [:]
   if (settings.temperatureOffset != null) {
     settingsMap.temperature_offset = (settings.temperatureOffset as BigDecimal).toString()
+  }
+  if (minT != null) {
+    settingsMap.min_t = minT.toString()
+  }
+  if (maxT != null) {
+    settingsMap.max_t = maxT.toString()
+  }
+  if (settings.externalSensorEnabled != null) {
+    // Gen 1 API uses bracket notation for nested objects: ext_t[enabled]=1
+    // sendGen1Get only URL-encodes values, so bracket keys pass through literally.
+    Boolean extEnabled = settings.externalSensorEnabled as Boolean
+    settingsMap['ext_t[enabled]'] = extEnabled ? '1' : '0'
   }
   if (settingsMap) {
     logDebug("Relaying TRV settings to parent: ${settingsMap}")

@@ -5279,8 +5279,14 @@ private void syncGen1SenseSettings(String ipAddress, def childDevice, String gen
 
 /**
  * Syncs device-side thermostat settings to driver preferences on first refresh.
- * Reads /settings/thermostats/0 from the TRV and populates the driver's
- * temperatureOffset preference with the device value.
+ * Reads {@code /settings/thermostats/0} from the TRV and populates the following
+ * driver preferences with the values reported by the device:
+ * <ul>
+ *   <li>{@code temperatureOffset} — calibration offset</li>
+ *   <li>{@code minTemperature} — minimum setpoint limit</li>
+ *   <li>{@code maxTemperature} — maximum setpoint limit</li>
+ *   <li>{@code externalSensorEnabled} — whether the external sensor is active</li>
+ * </ul>
  *
  * @param ipAddress The TRV's IP address
  * @param childDevice The TRV child device
@@ -5301,6 +5307,21 @@ private void syncGen1TrvSettings(String ipAddress, def childDevice, String gen1T
         if (trvSettings.temperature_offset != null) {
             childDevice.updateSetting('temperatureOffset',
                 [type: 'decimal', value: trvSettings.temperature_offset as BigDecimal])
+        }
+        if (trvSettings.min_t != null) {
+            childDevice.updateSetting('minTemperature',
+                [type: 'decimal', value: trvSettings.min_t as BigDecimal])
+        }
+        if (trvSettings.max_t != null) {
+            childDevice.updateSetting('maxTemperature',
+                [type: 'decimal', value: trvSettings.max_t as BigDecimal])
+        }
+        if (trvSettings.ext_t instanceof Map) {
+            Map extT = trvSettings.ext_t as Map
+            if (extT.enabled != null) {
+                childDevice.updateSetting('externalSensorEnabled',
+                    [type: 'bool', value: extT.enabled as Boolean])
+            }
         }
 
         childDevice.updateDataValue('gen1SettingsSynced', 'true')
@@ -14741,6 +14762,26 @@ void componentSetTrvExternalTemp(def childDevice, BigDecimal tempC) {
         sendGen1Get(ip, 'ext_t', [temp: tempC.toString()])
     } catch (Exception e) {
         logError("componentSetTrvExternalTemp exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Triggers the window open or close endpoint on the Shelly Gen 1 TRV.
+ * Calling this with state="open" activates window-open mode on the device,
+ * which reduces valve activity to avoid heating a room with an open window.
+ * Calling with state="close" resumes normal thermostat operation.
+ *
+ * @param childDevice The child device representing the TRV
+ * @param windowState Either "open" or "close"
+ */
+void componentSetTrvWindowState(def childDevice, String windowState) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) { logError("componentSetTrvWindowState: no IP for ${childDevice.displayName}"); return }
+        logDebug("componentSetTrvWindowState: setting window ${windowState} on ${childDevice.displayName}")
+        sendGen1Get(ip, 'window', [state: windowState])
+    } catch (Exception e) {
+        logError("componentSetTrvWindowState exception for ${childDevice.displayName}: ${e.message}")
     }
 }
 
