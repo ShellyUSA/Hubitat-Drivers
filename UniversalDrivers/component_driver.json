@@ -1986,7 +1986,8 @@
         }
       ],
       "id": "ThermostatHeatingSetpoint",
-      "shellyComponent": "blutrv"
+      "shellyComponent": "blutrv",
+      "requiredScripts": ["bluetrvstatus.js"]
     },
     {
       "attributes": [

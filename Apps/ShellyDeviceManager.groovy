@@ -161,7 +161,8 @@
     'powermonitoring',
     'coverstatus',
     'lightstatus',
-    'HubitatBLEHelper'
+    'HubitatBLEHelper',
+    'bluetrvstatus'
 ]
 
 // ═══════════════════════════════════════════════════════════════
