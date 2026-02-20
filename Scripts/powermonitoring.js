@@ -142,7 +142,7 @@ function average(arr) {
 function roundV(val) { return val === null ? null : Math.round(val * 10) / 10; }
 function roundC(val) { return val === null ? null : Math.round(val * 100) / 100; }
 function roundP(val) { return val === null ? null : Math.round(val); }
-function roundE(val) { return val === null ? null : Math.round(val); }
+function roundE(val) { return val === null ? null : Math.round(val * 10) / 10; }
 function roundF(val) { return val === null ? null : Math.round(val * 10) / 10; }
 
 // Get or create a component accumulator entry
