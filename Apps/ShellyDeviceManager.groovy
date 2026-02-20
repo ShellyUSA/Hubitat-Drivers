@@ -2259,8 +2259,8 @@ private void clearGen1ActionUrls(String ipAddress) {
         }
     }
 
-    // Input components (Shelly i3)
-    if (typeCode == 'SHIX3-1') {
+    // Input components (Shelly i3 and Uni — both use settings/input/{cid})
+    if (typeCode == 'SHIX3-1' || typeCode == 'SHUNI-1') {
         deviceStatus.each { k, v ->
             String key = k.toString()
             if (key.startsWith('input:')) {
@@ -2496,8 +2496,9 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
 
     // Input action URLs for switch devices with inputs (SHSW-1, SHSW-PM, etc.)
     // For switch devices, input push URLs are configured on the relay endpoint (settings/relay/{cid})
+    // SHUNI-1 is excluded: its inputs are independent from the relay and use settings/input/{cid} instead
     Boolean hasSwitches = deviceStatus.keySet().any { Object k -> k.toString().startsWith('switch:') }
-    if (hasSwitches) {
+    if (hasSwitches && typeCode != 'SHUNI-1') {
         deviceStatus.each { k, v ->
             String key = k.toString()
             if (key.startsWith('input:')) {
@@ -2512,6 +2513,23 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
 
     // Shelly i3 input action URLs (pure input device — uses settings/input endpoint)
     if (typeCode == 'SHIX3-1') {
+        deviceStatus.each { k, v ->
+            String key = k.toString()
+            if (key.startsWith('input:')) {
+                Integer cid = key.split(':')[1] as Integer
+                actions.add([endpoint: "settings/input/${cid}", param: 'shortpush_url',
+                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push", configType: 'component'])
+                actions.add([endpoint: "settings/input/${cid}", param: 'longpush_url',
+                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push", configType: 'component'])
+                actions.add([endpoint: "settings/input/${cid}", param: 'double_shortpush_url',
+                    dst: 'input_double', cid: cid, name: "Input ${cid} Double Push", configType: 'component'])
+            }
+        }
+    }
+
+    // SHUNI-1 input action URLs — inputs are independent from the relay, use settings/input/{cid}
+    // Also supports double_shortpush_url for double-tap events
+    if (typeCode == 'SHUNI-1') {
         deviceStatus.each { k, v ->
             String key = k.toString()
             if (key.startsWith('input:')) {
@@ -15255,6 +15273,49 @@ void parentUpdateSwitchSettings(def parentDevice, Integer switchId, Map switchSe
 }
 
 /**
+ * Sets the input_type for each digital input on a Gen 1 device via GET /settings/input/N.
+ * Called by parent drivers (e.g., Gen1 Uni) when input mode preferences change.
+ *
+ * @param parentDevice The parent device
+ * @param inputModes Map of inputIndex (Integer) → type String ('button' or 'switch')
+ */
+void parentSetGen1InputTypes(def parentDevice, Map inputModes) {
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("parentSetGen1InputTypes: no IP for ${parentDevice.displayName}"); return }
+    inputModes.each { index, type ->
+        Map result = sendGen1Setting(ipAddress, "settings/input/${index}", [input_type: type.toString()])
+        if (result != null) {
+            logInfo("Set input:${index} type to '${type}' on ${parentDevice.displayName}")
+        } else {
+            logWarn("Failed to set input:${index} type on ${parentDevice.displayName}")
+        }
+    }
+}
+
+/**
+ * Applies ADC threshold settings to a Gen 1 device via GET /settings/adc/0.
+ * Called by parent drivers (e.g., Gen1 Uni) to configure ADC alert thresholds.
+ *
+ * @param parentDevice The parent device
+ * @param adcSettings Map with optional keys: lower_limit (V), upper_limit (V)
+ */
+void parentApplyGen1AdcSettings(def parentDevice, Map adcSettings) {
+    if (!adcSettings) { return }
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) { logError("parentApplyGen1AdcSettings: no IP for ${parentDevice.displayName}"); return }
+    Map params = [:]
+    if (adcSettings.lower_limit != null) { params.lower_limit = (adcSettings.lower_limit as BigDecimal).toString() }
+    if (adcSettings.upper_limit != null) { params.upper_limit = (adcSettings.upper_limit as BigDecimal).toString() }
+    if (!params) { return }
+    Map result = sendGen1Setting(ipAddress, 'settings/adc/0', params)
+    if (result != null) {
+        logInfo("Applied ADC settings to ${parentDevice.displayName}: ${params}")
+    } else {
+        logWarn("Failed to apply ADC settings to ${parentDevice.displayName}")
+    }
+}
+
+/**
  * Receives white channel settings from a parent driver on behalf of a child component.
  * Applies settings to the Gen 1 {@code /settings/white/{id}} endpoint.
  *
@@ -15356,6 +15417,12 @@ private void applyGen1SwitchSettings(String ipAddress, def device, Integer switc
     }
     if (switchSettings.btn_type != null) {
         params.btn_type = switchSettings.btn_type as String
+    }
+    if (switchSettings.btn_reverse != null) {
+        params.btn_reverse = switchSettings.btn_reverse.toString()
+    }
+    if (switchSettings.max_power != null) {
+        params.max_power = (switchSettings.max_power as BigDecimal).toString()
     }
     if (!params) { return }
 
@@ -15499,7 +15566,15 @@ private void syncGen1ConfigToPreferences(def targetDevice, Map relaySettings) {
         deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: relaySettings.auto_on])
     }
     if (relaySettings.btn_type) {
-        deviceUpdateSettingHelper(targetDevice, 'buttonType', [type: 'enum', value: relaySettings.btn_type.toString()])
+        deviceUpdateSettingHelper(targetDevice, 'relayBtnType', [type: 'enum', value: relaySettings.btn_type.toString()])
+    }
+    if (relaySettings.btn_reverse != null) {
+        deviceUpdateSettingHelper(targetDevice, 'relayBtnReverse',
+            [type: 'bool', value: relaySettings.btn_reverse.toString() != '0'])
+    }
+    if (relaySettings.max_power != null) {
+        deviceUpdateSettingHelper(targetDevice, 'relayMaxPower',
+            [type: 'decimal', value: relaySettings.max_power])
     }
 }
 

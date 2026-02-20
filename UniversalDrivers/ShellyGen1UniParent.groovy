@@ -2,7 +2,7 @@
  * Shelly Gen1 Uni Parent
  *
  * Parent driver for the Shelly Uni (SHUNI-1) — a mains-powered Gen 1 modular
- * IoT device with 2 relays, 2 digital inputs, 1 ADC channel (0-30V), and
+ * IoT device with 1 relay, 2 digital inputs, 1 ADC channel (0-30V), and
  * optional DS18B20 temperature / DHT22 humidity sensor add-ons.
  *
  * Architecture:
@@ -22,6 +22,7 @@ metadata {
     capability 'TemperatureMeasurement'
     capability 'VoltageMeasurement'
     capability 'PushableButton'
+    capability 'DoubleTapableButton'
     capability 'HoldableButton'
     capability 'Initialize'
     capability 'Configuration'
@@ -39,6 +40,27 @@ preferences {
   input name: 'switchAggregation', type: 'enum', title: 'Parent Switch State',
     options: ['anyOn':'Any Switch On -> Parent On', 'allOn':'All Switches On -> Parent On'],
     defaultValue: 'anyOn', required: true
+  input name: 'input0Mode', type: 'enum', title: 'Input 0 Mode',
+    options: ['button':'Button (push/hold events)', 'switch':'Switch (on/off state)'],
+    defaultValue: 'button', required: true
+  input name: 'input1Mode', type: 'enum', title: 'Input 1 Mode',
+    options: ['button':'Button (push/hold events)', 'switch':'Switch (on/off state)'],
+    defaultValue: 'button', required: true
+  input name: 'relayBtnType', type: 'enum', title: 'Relay Physical Button Type',
+    options: ['toggle':'Toggle','momentary':'Momentary','momentary_on_release':'Momentary on Release','detached':'Detached','action':'Action'],
+    defaultValue: 'toggle', required: false
+  input name: 'relayBtnReverse', type: 'bool', title: 'Reverse Relay Button Logic',
+    defaultValue: false, required: false
+  input name: 'relayMaxPower', type: 'decimal', title: 'Relay Max Power (W, 0 = disabled)',
+    defaultValue: 0, range: '0..3500', required: false
+  input name: 'adcLowerLimit', type: 'decimal', title: 'ADC Lower Threshold (V)',
+    range: '0.0..30.0', required: false
+  input name: 'adcUpperLimit', type: 'decimal', title: 'ADC Upper Threshold (V)',
+    range: '0.0..30.0', required: false
+  input name: 'longpushTime', type: 'number', title: 'Long-Push Duration Threshold (ms)',
+    defaultValue: 800, range: '200..5000', required: false
+  input name: 'ledStatusDisable', type: 'bool', title: 'Disable Network Status LED',
+    defaultValue: false, required: false
 }
 
 
@@ -54,6 +76,10 @@ void installed() {
 
 void updated() {
   logDebug('Parent device updated')
+  syncInputModes()
+  syncRelaySettings()
+  syncAdcSettings()
+  syncDeviceLevelSettings()
   initialize()
 }
 
@@ -70,6 +96,11 @@ void initialize() {
 
 void configure() {
   logDebug('configure() called')
+  syncInputModes()
+  syncRelaySettings()
+  syncAdcSettings()
+  syncDeviceLevelSettings()
+  reconcileChildDevices()
   parent?.componentConfigure(device)
 }
 
@@ -94,17 +125,21 @@ void reinitialize() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Maps a component type and ID to its child driver name.
+ * Maps a component type, ID, and current input mode settings to its child driver name.
  *
  * @param baseType The component type (switch, input, adc, temperature, humidity)
  * @param compId The component ID number
+ * @param mode0 The current mode for input:0 ('button' or 'switch')
+ * @param mode1 The current mode for input:1 ('button' or 'switch')
  * @return The Hubitat driver name for this component type
  */
 @CompileStatic
-private static String getChildDriverName(String baseType, Integer compId) {
+private static String getChildDriverName(String baseType, Integer compId, String mode0, String mode1) {
   switch (baseType) {
     case 'switch': return 'Shelly Autoconf Switch'
-    case 'input': return 'Shelly Autoconf Input Button'
+    case 'input':
+      String mode = (compId == 0) ? mode0 : mode1
+      return (mode == 'switch') ? 'Shelly Autoconf Input Switch' : 'Shelly Autoconf Input Button'
     case 'adc': return 'Shelly Autoconf Polling Voltage Sensor'
     case 'temperature': return 'Shelly Autoconf Temperature Peripheral'
     case 'humidity': return 'Shelly Autoconf Humidity Peripheral'
@@ -145,6 +180,11 @@ private static Boolean shouldCreateChild(String baseType, Integer compId) {
  * Reconciles driver-level child devices against the components data value.
  * Creates switch, input, ADC, and optional temperature/humidity peripheral children.
  * Skips temperature:0 (internal device temp — displayed on parent).
+ * <p>
+ * Input children are created with either 'Shelly Autoconf Input Button' or
+ * 'Shelly Autoconf Input Switch' depending on the input0Mode/input1Mode preferences.
+ * When the mode changes, the existing child is deleted and recreated with the correct driver.
+ * The installed driver name is stored as a data value on each input child to detect mismatches.
  */
 void reconcileChildDevices() {
   String componentStr = device.getDataValue('components')
@@ -153,36 +193,48 @@ void reconcileChildDevices() {
     return
   }
 
+  String mode0 = (settings?.input0Mode ?: 'button').toString()
+  String mode1 = (settings?.input1Mode ?: 'button').toString()
+
   List<String> components = componentStr.split(',').collect { it.trim() }
 
-  // Build set of DNIs that SHOULD exist
-  Set<String> desiredDnis = [] as Set
+  // Build desired DNI → driver name map
+  Map<String, String> desiredDriverMap = [:]
   components.each { String comp ->
     if (!comp.contains(':')) { return }
     String baseType = comp.split(':')[0]
     Integer compId = comp.split(':')[1] as Integer
     if (!shouldCreateChild(baseType, compId)) { return }
-    desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
+    String childDni = "${device.deviceNetworkId}-${baseType}-${compId}".toString()
+    String driverName = getChildDriverName(baseType, compId, mode0, mode1)
+    if (driverName) { desiredDriverMap[childDni] = driverName }
   }
 
-  // Build set of DNIs that currently exist
-  Set<String> existingDnis = [] as Set
-  getChildDevices()?.each { child -> existingDnis.add(child.deviceNetworkId) }
+  // Get existing children
+  Map<String, com.hubitat.app.DeviceWrapper> existingChildren = [:]
+  getChildDevices()?.each { com.hubitat.app.DeviceWrapper child ->
+    existingChildren[child.deviceNetworkId] = child
+  }
 
-  logDebug("Child reconciliation: desired=${desiredDnis}, existing=${existingDnis}")
+  logDebug("Child reconciliation: desired=${desiredDriverMap.keySet()}, existing=${existingChildren.keySet()}")
 
-  // Remove orphaned children
-  existingDnis.each { String dni ->
-    if (!desiredDnis.contains(dni)) {
-      def child = getChildDevice(dni)
-      if (child) {
-        logInfo("Removing orphaned child: ${child.displayName} (${dni})")
+  // Remove orphaned children and detect driver mismatches (input mode changes)
+  existingChildren.each { String dni, com.hubitat.app.DeviceWrapper child ->
+    if (!desiredDriverMap.containsKey(dni)) {
+      logInfo("Removing orphaned child: ${child.displayName} (${dni})")
+      deleteChildDevice(dni)
+    } else {
+      // Detect driver mismatch caused by input mode change — delete so it can be recreated
+      String installedDriver = child.getDataValue('installedDriverName')
+      String desiredDriver = desiredDriverMap[dni]
+      if (installedDriver && installedDriver != desiredDriver) {
+        logInfo("Input mode change detected for ${child.displayName}: was '${installedDriver}', should be '${desiredDriver}' — recreating")
         deleteChildDevice(dni)
       }
     }
   }
 
-  // Create missing children
+  // Create missing children (use live getChildDevice() check to avoid stale-map issues after deletion)
   components.each { String comp ->
     if (!comp.contains(':')) { return }
     String baseType = comp.split(':')[0]
@@ -190,19 +242,18 @@ void reconcileChildDevices() {
 
     if (!shouldCreateChild(baseType, compId)) { return }
 
-    String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
+    String childDni = "${device.deviceNetworkId}-${baseType}-${compId}".toString()
+    if (!desiredDriverMap.containsKey(childDni)) { return }
     if (getChildDevice(childDni)) { return }
 
-    String driverName = getChildDriverName(baseType, compId)
-    if (!driverName) { return }
-
+    String driverName = desiredDriverMap[childDni]
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
     try {
-      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue(getComponentIdKey(baseType), compId.toString())
-      // Input buttons need numberOfButtons set
-      if (baseType == 'input') {
+      child.updateDataValue('installedDriverName', driverName)
+      if (baseType == 'input' && driverName == 'Shelly Autoconf Input Button') {
         child.sendEvent(name: 'numberOfButtons', value: 1)
       }
       logInfo("Created child: ${label} (${driverName})")
@@ -361,7 +412,7 @@ private void routeActionUrlCallback(Map params) {
         descriptionText: "Switch turned ${isOn ? 'on' : 'off'}"]]
 
       String switchDni = "${device.deviceNetworkId}-switch-${componentId}"
-      def switchChild = getChildDevice(switchDni)
+      com.hubitat.app.DeviceWrapper switchChild = getChildDevice(switchDni)
       if (switchChild) {
         switchEvents.each { Map evt -> switchChild.sendEvent(evt) }
         switchChild.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
@@ -385,7 +436,7 @@ private void routeActionUrlCallback(Map params) {
 
       // Route to child input device
       String inputDni = "${device.deviceNetworkId}-input-${componentId}"
-      def inputChild = getChildDevice(inputDni)
+      com.hubitat.app.DeviceWrapper inputChild = getChildDevice(inputDni)
       if (inputChild) {
         inputChild.sendEvent(inputEvent)
         inputChild.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
@@ -396,6 +447,21 @@ private void routeActionUrlCallback(Map params) {
       sendEvent(name: 'numberOfButtons', value: 2)
       sendEvent(name: eventName, value: parentButton, isStateChange: true,
         descriptionText: "Button ${parentButton} was ${eventName == 'pushed' ? 'pushed' : 'held'}")
+      break
+
+    // Input double-tap events
+    case 'input_double':
+      String doubleDni = "${device.deviceNetworkId}-input-${componentId}"
+      com.hubitat.app.DeviceWrapper doubleChild = getChildDevice(doubleDni)
+      if (doubleChild) {
+        doubleChild.sendEvent(name: 'doubleTapped', value: 1, isStateChange: true,
+          descriptionText: 'Button was double tapped')
+        doubleChild.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+        logDebug("Routed double-tap event to ${doubleChild.displayName}")
+      }
+      sendEvent(name: 'numberOfButtons', value: 2)
+      sendEvent(name: 'doubleTapped', value: componentId + 1, isStateChange: true,
+        descriptionText: "Button ${componentId + 1} was double tapped")
       break
 
     // Over-power condition on relay
@@ -435,7 +501,7 @@ private void routeActionUrlCallback(Map params) {
  *
  * @param childDevice The switch child device requesting on
  */
-void componentOn(def childDevice) {
+void componentOn(com.hubitat.app.DeviceWrapper childDevice) {
   Integer switchId = childDevice.getDataValue('switchId') as Integer
   logDebug("componentOn() from switch ${switchId}")
   parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: true])
@@ -446,7 +512,7 @@ void componentOn(def childDevice) {
  *
  * @param childDevice The switch child device requesting off
  */
-void componentOff(def childDevice) {
+void componentOff(com.hubitat.app.DeviceWrapper childDevice) {
   Integer switchId = childDevice.getDataValue('switchId') as Integer
   logDebug("componentOff() from switch ${switchId}")
   parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: false])
@@ -457,7 +523,7 @@ void componentOff(def childDevice) {
  *
  * @param childDevice The child device requesting a refresh
  */
-void componentRefresh(def childDevice) {
+void componentRefresh(com.hubitat.app.DeviceWrapper childDevice) {
   logDebug("componentRefresh() from ${childDevice.displayName}")
   parent?.componentRefresh(device)
 }
@@ -468,7 +534,7 @@ void componentRefresh(def childDevice) {
  * @param childDevice The child device sending its settings
  * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
  */
-void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
+void componentUpdateSwitchSettings(com.hubitat.app.DeviceWrapper childDevice, Map switchSettings) {
   Integer switchId = childDevice.getDataValue('switchId')?.toInteger() ?: 0
   logDebug("componentUpdateSwitchSettings() from switch ${switchId}: ${switchSettings}")
   parent?.parentUpdateSwitchSettings(device, switchId, switchSettings)
@@ -490,7 +556,7 @@ void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
 void on() {
   logDebug('Parent on() — turning on all switches')
   Map newStates = state.switchStates ?: [:]
-  getChildDevices()?.findAll { it.deviceNetworkId.contains('-switch-') }.each { child ->
+  getChildDevices()?.findAll { it.deviceNetworkId.contains('-switch-') }.each { com.hubitat.app.DeviceWrapper child ->
     Integer switchId = child.getDataValue('switchId') as Integer
     parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: true])
     newStates["switch:${switchId}".toString()] = true
@@ -505,7 +571,7 @@ void on() {
 void off() {
   logDebug('Parent off() — turning off all switches')
   Map newStates = state.switchStates ?: [:]
-  getChildDevices()?.findAll { it.deviceNetworkId.contains('-switch-') }.each { child ->
+  getChildDevices()?.findAll { it.deviceNetworkId.contains('-switch-') }.each { com.hubitat.app.DeviceWrapper child ->
     Integer switchId = child.getDataValue('switchId') as Integer
     parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: false])
     newStates["switch:${switchId}".toString()] = false
@@ -582,7 +648,7 @@ void distributeStatus(Map deviceStatus) {
       }
 
       String childDni = "${device.deviceNetworkId}-switch-${componentId}"
-      def child = getChildDevice(childDni)
+      com.hubitat.app.DeviceWrapper child = getChildDevice(childDni)
       if (child) {
         events.each { Map evt -> child.sendEvent(evt) }
         child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
@@ -598,7 +664,7 @@ void distributeStatus(Map deviceStatus) {
 
         // Update ADC child
         String adcDni = "${device.deviceNetworkId}-adc-${componentId}"
-        def adcChild = getChildDevice(adcDni)
+        com.hubitat.app.DeviceWrapper adcChild = getChildDevice(adcDni)
         if (adcChild) {
           adcChild.sendEvent(name: 'voltage', value: voltage, unit: 'V')
           adcChild.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
@@ -612,7 +678,14 @@ void distributeStatus(Map deviceStatus) {
     // Internal device temperature → parent attribute
     if (key == 'temperature:0') {
       String scale = location?.temperatureScale ?: 'F'
-      BigDecimal temp = (scale == 'C' && data.tC != null) ? data.tC as BigDecimal : data.tF as BigDecimal
+      BigDecimal temp = null
+      if (scale == 'C' && data.tC != null) {
+        temp = data.tC as BigDecimal
+      } else if (data.tF != null) {
+        temp = data.tF as BigDecimal
+      } else if (data.tC != null) {
+        temp = (data.tC as BigDecimal) * 9 / 5 + 32
+      }
       if (temp != null) {
         sendEvent(name: 'temperature', value: temp, unit: "\u00B0${scale}")
       }
@@ -622,10 +695,17 @@ void distributeStatus(Map deviceStatus) {
     if (key.startsWith('temperature:') && key != 'temperature:0') {
       Integer sensorId = key.split(':')[1] as Integer
       String tempDni = "${device.deviceNetworkId}-temperature-${sensorId}"
-      def tempChild = getChildDevice(tempDni)
+      com.hubitat.app.DeviceWrapper tempChild = getChildDevice(tempDni)
       if (tempChild) {
         String scale = location?.temperatureScale ?: 'F'
-        BigDecimal temp = (scale == 'C' && data.tC != null) ? data.tC as BigDecimal : data.tF as BigDecimal
+        BigDecimal temp = null
+        if (scale == 'C' && data.tC != null) {
+          temp = data.tC as BigDecimal
+        } else if (data.tF != null) {
+          temp = data.tF as BigDecimal
+        } else if (data.tC != null) {
+          temp = (data.tC as BigDecimal) * 9 / 5 + 32
+        }
         if (temp != null) {
           tempChild.sendEvent(name: 'temperature', value: temp, unit: "\u00B0${scale}")
           tempChild.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
@@ -637,7 +717,7 @@ void distributeStatus(Map deviceStatus) {
     if (key.startsWith('humidity:')) {
       Integer sensorId = key.split(':')[1] as Integer
       String humDni = "${device.deviceNetworkId}-humidity-${sensorId}"
-      def humChild = getChildDevice(humDni)
+      com.hubitat.app.DeviceWrapper humChild = getChildDevice(humDni)
       if (humChild) {
         if (data.value != null) {
           humChild.sendEvent(name: 'humidity', value: data.value as BigDecimal, unit: '%')
@@ -656,6 +736,61 @@ void distributeStatus(Map deviceStatus) {
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Status Distribution                                      ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Settings Sync                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Pushes input_type to the device for input:0 and input:1.
+ * Maps Hubitat preference values ('button'/'switch') to Gen 1 API input types.
+ * Called during updated() and configure() when input mode preferences change.
+ */
+private void syncInputModes() {
+  String mode0 = (settings?.input0Mode ?: 'button').toString()
+  String mode1 = (settings?.input1Mode ?: 'button').toString()
+  parent?.parentSetGen1InputTypes(device, [0: mode0, 1: mode1])
+}
+
+/**
+ * Pushes relay btn_type, btn_reverse, and max_power settings to the device.
+ * Called during updated() and configure() when relay preference settings change.
+ */
+private void syncRelaySettings() {
+  Map relaySettings = [:]
+  if (settings?.relayBtnType != null) { relaySettings.btn_type = settings.relayBtnType.toString() }
+  if (settings?.relayBtnReverse != null) { relaySettings.btn_reverse = settings.relayBtnReverse ? 1 : 0 }
+  if (settings?.relayMaxPower != null) { relaySettings.max_power = settings.relayMaxPower }
+  if (relaySettings) { parent?.parentUpdateSwitchSettings(device, 0, relaySettings) }
+}
+
+/**
+ * Pushes ADC lower_limit and upper_limit threshold settings to the device.
+ * Called during updated() and configure() when ADC threshold preferences change.
+ */
+private void syncAdcSettings() {
+  Map adcSettings = [:]
+  if (settings?.adcLowerLimit != null) { adcSettings.lower_limit = settings.adcLowerLimit }
+  if (settings?.adcUpperLimit != null) { adcSettings.upper_limit = settings.adcUpperLimit }
+  if (adcSettings) { parent?.parentApplyGen1AdcSettings(device, adcSettings) }
+}
+
+/**
+ * Pushes device-level settings (longpush_time, led_status_disable) to the device.
+ * Called during updated() and configure() when device-level preferences change.
+ */
+private void syncDeviceLevelSettings() {
+  Map deviceSettings = [:]
+  if (settings?.longpushTime != null) { deviceSettings.longpush_time = settings.longpushTime.toString() }
+  if (settings?.ledStatusDisable != null) { deviceSettings.led_status_disable = settings.ledStatusDisable.toString() }
+  if (deviceSettings) { parent?.componentUpdateGen1Settings(device, deviceSettings) }
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END Settings Sync                                            ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
