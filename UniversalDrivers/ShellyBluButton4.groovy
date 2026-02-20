@@ -54,17 +54,11 @@ preferences {
 
 void installed() {
   logDebug('installed() called')
-  initialize()
+  sendEvent(name: 'numberOfButtons', value: 4)
 }
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
-}
-
-void initialize() {
-  logDebug('initialize() called')
-  sendEvent(name: 'numberOfButtons', value: 4)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

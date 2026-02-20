@@ -16,12 +16,6 @@ metadata {
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
 
-    capability 'Initialize'
-    //Commands: initialize()
-
-    capability 'Configuration'
-    //Commands: configure()
-
     capability 'Refresh'
     //Commands: refresh()
 
@@ -62,20 +56,17 @@ preferences {
 
 /**
  * Called when driver is first installed on a device.
- * Delegates to initialize() for initial setup.
  */
 void installed() {
   logDebug("installed() called")
-  initialize()
 }
 
 /**
  * Called when device settings are saved.
- * Delegates to initialize() to apply updated configuration.
+ * Pushes PM reporting interval to Shelly KVS and relays switch settings to the device.
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
   sendPmReportingIntervalToKVS()
   relaySwitchSettings()
 }
@@ -367,26 +358,6 @@ private void routeWebhookParams(Map params) {
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  Initialize / Configure / Refresh Commands                   ║
 // ╚══════════════════════════════════════════════════════════════╝
-
-/**
- * Initializes the device driver. Called on install and settings update.
- */
-void initialize() {
-  logDebug("initialize() called")
-}
-
-/**
- * Configures the device driver settings.
- * Sets default log level if not already configured.
- */
-void configure() {
-  logDebug("configure() called")
-  if (!settings.logLevel) {
-    logWarn("No log level set, defaulting to 'debug'")
-    device.updateSetting('logLevel', 'debug')
-  }
-  sendPmReportingIntervalToKVS()
-}
 
 /**
  * Sends the PM reporting interval setting to the device KVS via the parent app.

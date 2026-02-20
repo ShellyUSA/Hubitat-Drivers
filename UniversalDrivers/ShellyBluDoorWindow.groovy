@@ -49,16 +49,10 @@ preferences {
 
 void installed() {
   logDebug('installed() called')
-  initialize()
 }
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
-  initialize()
-}
-
-void initialize() {
-  logDebug('initialize() called')
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

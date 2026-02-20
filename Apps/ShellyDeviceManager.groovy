@@ -822,7 +822,6 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
 
         // Set device attributes
         childDevice.updateSetting('ipAddress', ipKey)
-        childDevice.initialize()
 
         // Install scripts and webhooks on the Shelly device
         reinitializeDevice(ipKey)
@@ -951,9 +950,8 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // Store device config (no child DNIs — parent manages driver-level children)
         storeDeviceConfig(parentDni, deviceInfo, parentDriverName, true, [])
 
-        // Initialize parent driver (triggers driver-level child creation)
+        // Set parent device IP address
         parentDevice.updateSetting('ipAddress', ipKey)
-        parentDevice.initialize()
 
         // Install scripts and webhooks on the Shelly device
         reinitializeDevice(ipKey)
@@ -1798,9 +1796,6 @@ void reinitializeDevice(String ipAddress) {
         // Step 5: Install/update all required webhooks (also removes obsolete scripts)
         installRequiredActionsForIp(ipAddress)
     }
-
-    // Step 6: Call the driver's initialize() to reset driver state
-    childDevice.initialize()
 
     logInfo("Reinitialization complete for ${ipAddress}")
     appendLog('info', "Reinitialization complete for ${ipAddress}")
@@ -9912,8 +9907,6 @@ private void createBleDevice(String mac) {
         bleInfo.hubDeviceLabel = deviceLabel
         discoveredBle[macKey] = bleInfo
         state.discoveredBleDevices = discoveredBle
-
-        childDevice.initialize()
 
     } catch (Exception e) {
         logError("createBleDevice: failed to create ${deviceLabel} — ${e.message}")
