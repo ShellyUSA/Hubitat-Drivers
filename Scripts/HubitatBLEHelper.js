@@ -50,10 +50,25 @@ let lastPids = {};
 // Per-MAC cached model identification (survives button-only advertisements)
 let knownModels = {};
 
-// HTTP response handler
+// === Concurrency control ===
+let MAX_INFLIGHT = 3;        // Max concurrent HTTP.POST calls (leave 2 slots for KVS, etc.)
+let inflight = 0;            // Currently in-flight HTTP.POST count
+let pendingBatch = [];       // Overflow reports accumulated while at capacity
+let drainTimerHandle = null;
+let DRAIN_INTERVAL = 5000;   // Safety drain interval (ms)
+
+// HTTP response handler — decrements inflight and flushes pending batch
 function onHTTPResponse(result, error_code, error_message) {
+  inflight--;
+  if (inflight < 0) inflight = 0;
   if (error_code !== 0) {
     print("BLE HTTP error:", error_code, error_message);
+  }
+  // Flush accumulated overflow batch now that a slot is open
+  if (pendingBatch.length > 0 && inflight < MAX_INFLIGHT) {
+    let batch = pendingBatch;
+    pendingBatch = [];
+    doHttpPost(batch);
   }
 }
 
@@ -246,18 +261,64 @@ function isNewPid(mac, pid) {
   return true;
 }
 
-// === Send decoded BLE data to Hubitat ===
-function sendBleReport(data) {
-  let url = REMOTE_URL + "/webhook/ble/0";
-  let body = JSON.stringify(data);
+// === HTTP POST with concurrency control ===
 
+/**
+ * Send a batch array of BLE reports via HTTP.POST.
+ * Always sends as a JSON array (even for single reports).
+ */
+function doHttpPost(batch) {
+  inflight++;
+  let url = REMOTE_URL + "/webhook/ble/0";
+  let body = JSON.stringify(batch);
   Shelly.call(
     "HTTP.POST",
     { url: url, body: body, content_type: "application/json" },
     onHTTPResponse,
   );
+  print("BLE send (" + batch.length + "):", url);
+}
 
-  print("BLE report:", url, body);
+/**
+ * Safety drain: resets stuck inflight counter and flushes pending batch.
+ * Runs on a repeating timer to recover from lost HTTP callbacks.
+ */
+function safetyDrain() {
+  if (pendingBatch.length > 0 && inflight >= MAX_INFLIGHT) {
+    // Callbacks for the reset calls may still arrive later; the inflight < 0
+    // guard in onHTTPResponse clamps them to 0 so no negative state accumulates.
+    print("BLE safety drain: resetting stuck inflight=" + inflight);
+    inflight = 0;
+  }
+  if (pendingBatch.length > 0 && inflight < MAX_INFLIGHT) {
+    let batch = pendingBatch;
+    pendingBatch = [];
+    doHttpPost(batch);
+  }
+}
+
+/**
+ * Starts the repeating safety drain timer (idempotent).
+ */
+function startDrainTimer() {
+  if (drainTimerHandle !== null) return;
+  drainTimerHandle = Timer.set(DRAIN_INTERVAL, true, safetyDrain);
+}
+
+/**
+ * Queues or immediately sends a BLE report.
+ * If an HTTP slot is available, sends immediately as [report].
+ * Otherwise, accumulates into pendingBatch for the next available slot.
+ */
+function sendBleReport(data) {
+  if (inflight < MAX_INFLIGHT) {
+    doHttpPost([data]);
+  } else {
+    pendingBatch.push(data);
+    print(
+      "BLE queued (pending=" + pendingBatch.length + " inflight=" + inflight + ")",
+    );
+  }
 }
 
 // === BLE Scanner Callback ===
@@ -382,6 +443,7 @@ function init() {
   }
 
   BLE.Scanner.Subscribe(BLEScanCallback);
+  startDrainTimer();
 }
 
 // Initialize hub URL from KVS
@@ -390,4 +452,6 @@ fetchRemoteUrlFromKVS();
 // Start BLE scanning
 init();
 
-print("Hubitat BLE Helper started: url=" + REMOTE_URL);
+print(
+  "Hubitat BLE Helper started: url=" + REMOTE_URL + " maxInflight=" + MAX_INFLIGHT,
+);

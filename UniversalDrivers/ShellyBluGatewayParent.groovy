@@ -310,19 +310,39 @@ void parse(String description) {
  */
 private void handlePostWebhook(Map msg) {
   try {
-    Map json = new groovy.json.JsonSlurper().parseText(msg.body) as Map
-    String dst = json?.dst?.toString()
+    Object json = new groovy.json.JsonSlurper().parseText(msg.body)
+
+    // Batched BLE reports: JSON array of messages from concurrency-controlled script
+    if (json instanceof List) {
+      List jsonList = (List) json
+      int forwarded = 0
+      jsonList.each { Object item ->
+        if (item instanceof Map) {
+          parent?.handleBleRelay(device, (Map) item)
+          forwarded++
+        } else {
+          logTrace("BLE batch: skipping non-Map item")
+        }
+      }
+      logDebug("BLE batch received (${jsonList.size()} reports, ${forwarded} forwarded)")
+      return
+    }
+
+    // Single message (backward compat / non-BLE webhooks)
+    if (!(json instanceof Map)) { logTrace('POST webhook: unexpected body type'); return }
+    Map jsonMap = (Map) json
+    String dst = jsonMap?.dst?.toString()
     if (!dst) { logTrace('POST webhook: no dst in body'); return }
 
     // BLE relay: forward to app for BLE device processing
     if (dst == 'ble') {
       logDebug('BLE relay received, forwarding to app')
-      parent?.handleBleRelay(device, json)
+      parent?.handleBleRelay(device, jsonMap)
       return
     }
 
     Map params = [:]
-    json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
+    jsonMap.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
 
     logDebug("POST webhook dst=${dst}, cid=${params.cid}")
     logTrace("POST webhook params: ${params}")
