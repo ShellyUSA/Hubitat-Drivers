@@ -338,13 +338,17 @@ private void handlePostWebhook(Map msg) {
  * @param msg The parsed LAN message map (no body)
  */
 private void handleGetWebhook(Map msg) {
-  Map params = parseWebhookPath(msg)
-  if (params?.dst) {
-    logDebug("GET webhook dst=${params.dst}, cid=${params.cid}")
-    logTrace("GET webhook params: ${params}")
-    routeWebhookParams(params)
-  } else {
-    logDebug("GET webhook: no dst found — headers keys: ${msg?.headers?.keySet()}, raw header present: ${msg?.header != null}")
+  try {
+    Map params = parseWebhookPath(msg)
+    if (params?.dst) {
+      logDebug("GET webhook dst=${params.dst}, cid=${params.cid}")
+      logTrace("GET webhook params: ${params}")
+      routeWebhookParams(params)
+    } else {
+      logDebug("GET webhook: no dst found — headers keys: ${msg?.headers?.keySet()}, raw header present: ${msg?.header != null}")
+    }
+  } catch (Exception e) {
+    logDebug("GET webhook parse error: ${e.message}")
   }
 }
 
