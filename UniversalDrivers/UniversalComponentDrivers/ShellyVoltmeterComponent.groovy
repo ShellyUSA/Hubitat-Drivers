@@ -1,18 +1,17 @@
 /**
- * Shelly Autoconf Input Count - Component Driver
+ * Shelly Autoconf Voltmeter - Component Driver
  *
- * Self-contained component driver for Shelly pulse counter input components.
- * Receives count updates pushed from the parent device.
+ * Self-contained component driver for Shelly voltmeter components (Gen2).
+ * Receives voltage readings pushed via webhooks from the parent device.
+ * Used by the Shelly Plus Uni's optional analog_in peripheral (voltmeter:N).
  */
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf Input Count', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
-    capability 'Sensor'
+  definition (name: 'Shelly Autoconf Voltmeter', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+    capability 'VoltageMeasurement' // voltage - NUMBER, unit:V
     capability 'Refresh'
 
-    attribute 'count', 'number'
-    attribute 'freq', 'number'
     attribute 'lastUpdated', 'string'
   }
 
@@ -50,7 +49,7 @@ private Boolean shouldLogLevel(String messageLevel) {
   return false
 }
 void logError(message) { log.error "${device.displayName}: ${message}" }
-void logWarn(message) { log.warn "${device.displayName}: ${message}" }
-void logInfo(message) { if (shouldLogLevel('info')) { log.info "${device.displayName}: ${message}" } }
+void logWarn(message)  { log.warn  "${device.displayName}: ${message}" }
+void logInfo(message)  { if (shouldLogLevel('info'))  { log.info  "${device.displayName}: ${message}" } }
 void logDebug(message) { if (shouldLogLevel('debug')) { log.debug "${device.displayName}: ${message}" } }
 void logTrace(message) { if (shouldLogLevel('trace')) { log.trace "${device.displayName}: ${message}" } }

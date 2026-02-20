@@ -114,7 +114,8 @@ void reinitialize() {
  * Reconciles driver-level child devices against the components data value.
  * Creates children that should exist but don't, and removes orphaned children
  * that exist but shouldn't. Children that already exist correctly are left untouched.
- * Expected: up to 4 switch PM children, 0-4 input children.
+ * Expected: up to 4 switch PM children, 0-4 input children, and optionally a
+ * POWERSTRIP_UI LED child (controlled by the 'hasPowerstripUi' data value).
  */
 void reconcileChildDevices() {
   String componentStr = device.getDataValue('components')
@@ -137,6 +138,8 @@ void reconcileChildDevices() {
   }
 
   Integer inputCount = componentCounts['input'] ?: 0
+  Boolean hasPowerstripUi = device.getDataValue('hasPowerstripUi') == 'true'
+  String powerstripUiDni = "${device.deviceNetworkId}-powerstripui".toString()
 
   // Build set of DNIs that SHOULD exist
   Set<String> desiredDnis = [] as Set
@@ -148,6 +151,7 @@ void reconcileChildDevices() {
     if (!['switch', 'input'].contains(baseType)) { return }
     desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
   }
+  if (hasPowerstripUi) { desiredDnis.add(powerstripUiDni) }
 
   // Build set of DNIs that currently exist
   Set<String> existingDnis = [] as Set
@@ -158,7 +162,7 @@ void reconcileChildDevices() {
   // Remove orphaned children (exist but shouldn't)
   existingDnis.each { String dni ->
     if (!desiredDnis.contains(dni)) {
-      def child = getChildDevice(dni)
+      com.hubitat.app.DeviceWrapper child = getChildDevice(dni)
       if (child) {
         logInfo("Removing orphaned child: ${child.displayName} (${dni})")
         deleteChildDevice(dni)
@@ -166,7 +170,7 @@ void reconcileChildDevices() {
     }
   }
 
-  // Create missing children (should exist but don't)
+  // Create missing switch/input children (should exist but don't)
   components.each { String comp ->
     if (!comp.contains(':')) { return }
     String baseType = comp.split(':')[0]
@@ -189,7 +193,7 @@ void reconcileChildDevices() {
 
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
     try {
-      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue("${baseType}Id", compId.toString())
       if (baseType == 'input') {
@@ -200,6 +204,51 @@ void reconcileChildDevices() {
     } catch (Exception e) {
       logError("Failed to create child ${label}: ${e.message}")
     }
+  }
+
+  // Create POWERSTRIP_UI LED child if needed
+  reconcilePowerstripUiChild()
+}
+
+/**
+ * Ensures a POWERSTRIP_UI LED child device exists if this device has the LED strip.
+ * Checks the 'hasPowerstripUi' data value set during discovery. If the child doesn't
+ * exist yet, creates it with default green color (matching Shelly factory default).
+ */
+private void reconcilePowerstripUiChild() {
+  if (device.getDataValue('hasPowerstripUi') != 'true') { return }
+
+  String childDni = "${device.deviceNetworkId}-powerstripui".toString()
+  com.hubitat.app.DeviceWrapper existing = getChildDevice(childDni)
+  if (existing) { return }
+
+  logInfo('Creating POWERSTRIP_UI LED child device for LED strip control')
+  try {
+    com.hubitat.app.DeviceWrapper child = addChildDevice(
+      'ShellyUSA', 'Shelly Autoconf PowerstripUI', childDni,
+      [name: 'Shelly Autoconf PowerstripUI', label: "${device.displayName} LED"]
+    )
+    child.updateDataValue('powerstripUi', 'true')
+
+    // Set default state: green at full brightness (Shelly factory default)
+    List<Integer> defaultRgb = hsvToPowerstripUiRgb(33, 100)
+    child.sendEvent(name: 'switch', value: 'on')
+    child.sendEvent(name: 'level', value: 100, unit: '%')
+    child.sendEvent(name: 'hue', value: 33)
+    child.sendEvent(name: 'saturation', value: 100)
+    child.sendEvent(name: 'colorMode', value: 'RGB')
+
+    // Store default color state on parent
+    state.powerstripUiRgb = defaultRgb
+    state.powerstripUiBrightness = 100
+
+    // Send initial config to set LED strip to "switch" mode with default color
+    Map config = buildPowerstripUiColorConfig(defaultRgb, 100)
+    parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
+
+    logInfo("POWERSTRIP_UI LED child created: ${child.displayName}")
+  } catch (Exception e) {
+    logError("Failed to create POWERSTRIP_UI LED child: ${e.message}")
   }
 }
 
@@ -667,15 +716,211 @@ void componentResetEnergyMonitors(def childDevice) {
 
 /**
  * Relays switch settings from a child component to the app.
+ * Handles both legacy fields (defaultState, autoOffTime, autoOnTime) and
+ * extended Gen2+ safety/input fields (power_limit, voltage_limit, undervoltage_limit,
+ * current_limit, in_mode, in_locked, autorecover_voltage_errors, reverse).
  *
  * @param childDevice The child device sending its settings
- * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ * @param switchSettings Map with switch configuration keys from the child preferences
  */
-void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
+void componentUpdateSwitchSettings(com.hubitat.app.DeviceWrapper childDevice, Map switchSettings) {
   Integer switchId = childDevice.getDataValue('switchId')?.toInteger() ?: 0
   logDebug("componentUpdateSwitchSettings() from switch ${switchId}: ${switchSettings}")
   parent?.parentUpdateSwitchSettings(device, switchId, switchSettings)
 }
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  POWERSTRIP_UI LED Management                                 ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Turns the POWERSTRIP_UI LED strip on with the specified mode and last-used color/brightness.
+ *
+ * @param childDevice The POWERSTRIP_UI LED child device
+ * @param ledMode The LED strip mode: 'switch' (outlet state), 'power' (consumption), or 'off'
+ */
+void componentPowerstripUiOn(com.hubitat.app.DeviceWrapper childDevice, String ledMode = 'switch') {
+  logDebug("componentPowerstripUiOn() ledMode=${ledMode}")
+  if (ledMode == 'off') {
+    // 'off' mode preference means keep the LED disabled
+    componentPowerstripUiOff(childDevice)
+    return
+  }
+  Map config
+  if (ledMode == 'power') {
+    config = [config: [leds: [mode: 'power']]]
+  } else {
+    List<Integer> rgb = state.powerstripUiRgb ?: [0, 100, 0]
+    Integer brightness = state.powerstripUiBrightness ?: 100
+    config = buildPowerstripUiColorConfig(rgb, brightness)
+  }
+  parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
+  sendPowerstripUiChildEvent(childDevice, [name: 'switch', value: 'on'])
+}
+
+/**
+ * Turns the POWERSTRIP_UI LED strip off by setting leds.mode = "off".
+ * This completely disables all LEDs on the strip.
+ *
+ * @param childDevice The POWERSTRIP_UI LED child device
+ */
+void componentPowerstripUiOff(com.hubitat.app.DeviceWrapper childDevice) {
+  logDebug("componentPowerstripUiOff() called")
+  Map config = [config: [leds: [mode: 'off']]]
+  parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
+  sendPowerstripUiChildEvent(childDevice, [name: 'switch', value: 'off'])
+}
+
+/**
+ * Sets the POWERSTRIP_UI LED strip color from an HSV color map.
+ * Converts HSV to RGB (0-100 scale) and sends POWERSTRIP_UI.SetConfig with mode 'switch'.
+ * Both on/off LED states are set identically so color is constant regardless of outlet state.
+ *
+ * @param childDevice The POWERSTRIP_UI LED child device
+ * @param colorMap Map with hue (0-100), saturation (0-100), and optionally level (0-100)
+ */
+void componentPowerstripUiSetColor(com.hubitat.app.DeviceWrapper childDevice, Map colorMap) {
+  Integer hue = colorMap.hue != null ? colorMap.hue as Integer : 0
+  Integer saturation = colorMap.saturation != null ? colorMap.saturation as Integer : 100
+  Integer level = colorMap.level != null ? colorMap.level as Integer : (state.powerstripUiBrightness ?: 100)
+  logDebug("componentPowerstripUiSetColor() hue=${hue}, sat=${saturation}, level=${level}")
+
+  List<Integer> rgb = hsvToPowerstripUiRgb(hue, saturation)
+  state.powerstripUiRgb = rgb
+  state.powerstripUiBrightness = level
+
+  if (level == 0) {
+    componentPowerstripUiOff(childDevice)
+    return
+  }
+
+  Map config = buildPowerstripUiColorConfig(rgb, level)
+  parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
+
+  sendPowerstripUiChildEvent(childDevice, [name: 'hue', value: hue])
+  sendPowerstripUiChildEvent(childDevice, [name: 'saturation', value: saturation, unit: '%'])
+  sendPowerstripUiChildEvent(childDevice, [name: 'level', value: level, unit: '%'])
+  sendPowerstripUiChildEvent(childDevice, [name: 'switch', value: 'on'])
+  sendPowerstripUiChildEvent(childDevice, [name: 'colorMode', value: 'RGB'])
+
+  String hexR = String.format('%02X', Math.round(rgb[0] * 2.55) as Integer)
+  String hexG = String.format('%02X', Math.round(rgb[1] * 2.55) as Integer)
+  String hexB = String.format('%02X', Math.round(rgb[2] * 2.55) as Integer)
+  sendPowerstripUiChildEvent(childDevice, [name: 'RGB', value: "${hexR}${hexG}${hexB}"])
+}
+
+/**
+ * Sets the POWERSTRIP_UI LED strip brightness level.
+ * Level 0 turns the strip off; any other level turns it on with the stored color.
+ *
+ * @param childDevice The POWERSTRIP_UI LED child device
+ * @param level Brightness percentage (0-100)
+ */
+void componentPowerstripUiSetLevel(com.hubitat.app.DeviceWrapper childDevice, Integer level) {
+  logDebug("componentPowerstripUiSetLevel() level=${level}")
+  if (level <= 0) {
+    componentPowerstripUiOff(childDevice)
+    sendPowerstripUiChildEvent(childDevice, [name: 'level', value: 0, unit: '%'])
+    return
+  }
+
+  state.powerstripUiBrightness = level
+  List<Integer> rgb = state.powerstripUiRgb ?: [0, 100, 0]
+
+  Map config = buildPowerstripUiColorConfig(rgb, level)
+  parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
+
+  sendPowerstripUiChildEvent(childDevice, [name: 'level', value: level, unit: '%'])
+  sendPowerstripUiChildEvent(childDevice, [name: 'switch', value: 'on'])
+}
+
+/**
+ * Configures the POWERSTRIP_UI night mode settings.
+ * Sends a partial POWERSTRIP_UI.SetConfig with only the night_mode section.
+ *
+ * @param childDevice The POWERSTRIP_UI LED child device
+ * @param nightModeConfig Map with enable, brightness, startTime, endTime
+ */
+void componentPowerstripUiSetNightMode(com.hubitat.app.DeviceWrapper childDevice, Map nightModeConfig) {
+  logDebug("componentPowerstripUiSetNightMode() config=${nightModeConfig}")
+  Map config = [config: [leds: [night_mode: [
+    enable: nightModeConfig.enable ?: false,
+    brightness: nightModeConfig.brightness != null ? nightModeConfig.brightness as Integer : 10,
+    active_between: [nightModeConfig.startTime ?: '22:00', nightModeConfig.endTime ?: '06:00']
+  ]]]]
+  parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
+}
+
+/**
+ * Converts Hubitat HSV (hue 0-100, saturation 0-100) to RGB on 0-100 scale.
+ * Computed at full value (V=1.0); brightness is handled separately via the
+ * POWERSTRIP_UI brightness parameter.
+ *
+ * @param hue Hue value (0-100, where 0=red, 33=green, 67=blue)
+ * @param saturation Saturation value (0-100, 0=white, 100=full color)
+ * @return List of [red, green, blue] each 0-100
+ */
+@CompileStatic
+private static List<Integer> hsvToPowerstripUiRgb(Integer hue, Integer saturation) {
+  BigDecimal h = (hue * 3.6)
+  BigDecimal s = saturation / 100.0
+  BigDecimal v = 1.0
+
+  BigDecimal c = v * s
+  BigDecimal x = c * (1 - ((h / 60) % 2 - 1).abs())
+  BigDecimal m = v - c
+
+  BigDecimal r1, g1, b1
+  if (h < 60)       { r1 = c; g1 = x; b1 = 0 }
+  else if (h < 120) { r1 = x; g1 = c; b1 = 0 }
+  else if (h < 180) { r1 = 0; g1 = c; b1 = x }
+  else if (h < 240) { r1 = 0; g1 = x; b1 = c }
+  else if (h < 300) { r1 = x; g1 = 0; b1 = c }
+  else              { r1 = c; g1 = 0; b1 = x }
+
+  return [
+    Math.round((r1 + m) * 100) as Integer,
+    Math.round((g1 + m) * 100) as Integer,
+    Math.round((b1 + m) * 100) as Integer
+  ]
+}
+
+/**
+ * Builds the nested config map for POWERSTRIP_UI.SetConfig in switch mode.
+ * Sets leds.mode = "switch" with both on/off colors identical so the strip
+ * shows the same color regardless of individual outlet states.
+ *
+ * @param rgb List of [red, green, blue] values (0-100)
+ * @param brightness Brightness percentage (0-100)
+ * @return Map suitable as POWERSTRIP_UI.SetConfig params
+ */
+@CompileStatic
+private static Map buildPowerstripUiColorConfig(List<Integer> rgb, Integer brightness) {
+  Map colorEntry = [rgb: rgb, brightness: brightness]
+  // Power Strip Gen4 has 4 outlets (switch:0–3); include all to ensure uniform color.
+  // The device ignores extra entries for unused outlets, so this is safe.
+  Map colors = [
+    'switch:0': [on: colorEntry, off: colorEntry],
+    'switch:1': [on: colorEntry, off: colorEntry],
+    'switch:2': [on: colorEntry, off: colorEntry],
+    'switch:3': [on: colorEntry, off: colorEntry]
+  ]
+  return [config: [leds: [mode: 'switch', colors: colors]]]
+}
+
+/**
+ * Sends an event to the POWERSTRIP_UI LED child device.
+ *
+ * @param childDevice The child device to send the event to
+ * @param event The event map (name, value, unit, etc.)
+ */
+private void sendPowerstripUiChildEvent(com.hubitat.app.DeviceWrapper childDevice, Map event) {
+  childDevice.sendEvent(event)
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  END POWERSTRIP_UI LED Management                             ║
+// ╚══════════════════════════════════════════════════════════════╝
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Component Commands                                       ║

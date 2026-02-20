@@ -2716,6 +2716,30 @@
         "urlParams": "percent/${ev.percent}",
         "shellyComponent": "input"
       },
+      "voltmeter.change": {
+        "dst": "voltmeter",
+        "name": "hubitat_sdm_voltmeter_change",
+        "urlParams": "voltage/${ev.voltage}",
+        "shellyComponent": "voltmeter"
+      },
+      "voltmeter.measurement": {
+        "dst": "voltmeter",
+        "name": "hubitat_sdm_voltmeter_measurement",
+        "urlParams": "voltage/${ev.voltage}",
+        "shellyComponent": "voltmeter"
+      },
+      "input.count_change": {
+        "dst": "input_count",
+        "name": "hubitat_sdm_input_count_change",
+        "urlParams": "total/${ev.counts.total}/freq/${ev.freq}",
+        "shellyComponent": "input"
+      },
+      "input.count_measurement": {
+        "dst": "input_count",
+        "name": "hubitat_sdm_input_count_measurement",
+        "urlParams": "total/${ev.counts.total}/freq/${ev.freq}",
+        "shellyComponent": "input"
+      },
       "light.on": {
         "dst": "light_on",
         "name": "hubitat_sdm_light_on",

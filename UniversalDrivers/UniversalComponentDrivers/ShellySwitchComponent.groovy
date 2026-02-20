@@ -26,6 +26,11 @@ metadata {
       defaultValue: 0, range: '0..86400', required: false
     input name: 'autoOnTime', type: 'decimal', title: 'Auto-On Timer (seconds, 0 = disabled)',
       defaultValue: 0, range: '0..86400', required: false
+    input name: 'in_mode', type: 'enum', title: 'Input Button Mode',
+      options: ['momentary':'Momentary', 'follow':'Follow', 'flip':'Flip', 'detached':'Detached', 'cycle':'Cycle', 'activate':'Activate'],
+      required: false
+    input name: 'in_locked', type: 'bool', title: 'Lock Physical Input (disable manual control)',
+      defaultValue: false, required: false
   }
 }
 
@@ -54,6 +59,8 @@ private void relaySwitchSettings() {
   if (settings.defaultState != null) { switchSettings.defaultState = settings.defaultState as String }
   if (settings.autoOffTime != null) { switchSettings.autoOffTime = settings.autoOffTime as BigDecimal }
   if (settings.autoOnTime != null) { switchSettings.autoOnTime = settings.autoOnTime as BigDecimal }
+  if (settings.in_mode != null) { switchSettings.in_mode = settings.in_mode as String }
+  if (settings.in_locked != null) { switchSettings.in_locked = settings.in_locked as Boolean }
   if (switchSettings) {
     logDebug("Relaying switch settings to parent: ${switchSettings}")
     parent?.componentUpdateSwitchSettings(device, switchSettings)

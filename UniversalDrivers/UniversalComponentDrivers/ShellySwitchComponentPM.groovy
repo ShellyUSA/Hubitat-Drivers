@@ -31,6 +31,23 @@ metadata {
       defaultValue: 0, range: '0..86400', required: false
     input name: 'autoOnTime', type: 'decimal', title: 'Auto-On Timer (seconds, 0 = disabled)',
       defaultValue: 0, range: '0..86400', required: false
+    input name: 'power_limit', type: 'decimal', title: 'Overload Protection Limit (W, blank = disabled)',
+      required: false
+    input name: 'voltage_limit', type: 'decimal', title: 'Overvoltage Protection Limit (V, blank = disabled)',
+      required: false
+    input name: 'undervoltage_limit', type: 'decimal', title: 'Undervoltage Protection Limit (V, blank = disabled)',
+      required: false
+    input name: 'current_limit', type: 'decimal', title: 'Overcurrent Protection Limit (A, blank = disabled)',
+      required: false
+    input name: 'in_mode', type: 'enum', title: 'Input Button Mode',
+      options: ['momentary':'Momentary', 'follow':'Follow', 'flip':'Flip', 'detached':'Detached', 'cycle':'Cycle', 'activate':'Activate'],
+      required: false
+    input name: 'in_locked', type: 'bool', title: 'Lock Physical Input (disable manual control)',
+      defaultValue: false, required: false
+    input name: 'autorecover_voltage_errors', type: 'bool', title: 'Auto-Recover from Voltage Errors',
+      defaultValue: false, required: false
+    input name: 'reverse', type: 'bool', title: 'Reverse Power Measurement (for solar/battery installs)',
+      defaultValue: false, required: false
   }
 }
 
@@ -59,6 +76,14 @@ private void relaySwitchSettings() {
   if (settings.defaultState != null) { switchSettings.defaultState = settings.defaultState as String }
   if (settings.autoOffTime != null) { switchSettings.autoOffTime = settings.autoOffTime as BigDecimal }
   if (settings.autoOnTime != null) { switchSettings.autoOnTime = settings.autoOnTime as BigDecimal }
+  if (settings.power_limit != null) { switchSettings.power_limit = settings.power_limit as BigDecimal }
+  if (settings.voltage_limit != null) { switchSettings.voltage_limit = settings.voltage_limit as BigDecimal }
+  if (settings.undervoltage_limit != null) { switchSettings.undervoltage_limit = settings.undervoltage_limit as BigDecimal }
+  if (settings.current_limit != null) { switchSettings.current_limit = settings.current_limit as BigDecimal }
+  if (settings.in_mode != null) { switchSettings.in_mode = settings.in_mode as String }
+  if (settings.in_locked != null) { switchSettings.in_locked = settings.in_locked as Boolean }
+  if (settings.autorecover_voltage_errors != null) { switchSettings.autorecover_voltage_errors = settings.autorecover_voltage_errors as Boolean }
+  if (settings.reverse != null) { switchSettings.reverse = settings.reverse as Boolean }
   if (switchSettings) {
     logDebug("Relaying switch settings to parent: ${switchSettings}")
     parent?.componentUpdateSwitchSettings(device, switchSettings)

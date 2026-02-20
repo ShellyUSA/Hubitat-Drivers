@@ -36,6 +36,12 @@
     // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
 ]
 
+// Model-specific driver overrides for Gen 2+ devices that need dedicated drivers.
+// Keyed by deviceApp (the 'app' field from Shelly.GetDeviceInfo / mDNS TXT record).
+@Field static final Map<String, String> GEN2_MODEL_DRIVER_OVERRIDE = [
+    'PlusUni': 'Shelly Autoconf Plus Uni Parent',
+]
+
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
 // New device types should be added here as prebuilt .groovy files.
 @Field static final Map<String, String> PREBUILT_DRIVERS = [
@@ -68,6 +74,7 @@
     'Shelly Autoconf Wall Display Parent': 'UniversalDrivers/ShellyWallDisplayParent.groovy',
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
     'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
+    'Shelly Autoconf Plus Uni Parent': 'UniversalDrivers/ShellyPlusUniParent.groovy',
 
     // BLU Gateway parent driver (for BLU TRV and other gateway-paired BLE devices)
     'Shelly Autoconf BLU Gateway Parent': 'UniversalDrivers/ShellyBluGatewayParent.groovy',
@@ -830,6 +837,13 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
             logInfo("  PLUGS_UI detected — RGB LED child will be created")
         }
 
+        // Detect POWERSTRIP_UI component — tells the driver to create an LED strip child
+        Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') }
+        if (hasPowerstripUi) {
+            childDevice.updateDataValue('hasPowerstripUi', 'true')
+            logInfo("  POWERSTRIP_UI detected — LED strip child will be created")
+        }
+
         // Set device attributes
         childDevice.updateSetting('ipAddress', ipKey)
 
@@ -950,6 +964,13 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         if (parentDriverName.contains('EM Parent')) {
             String emSwitchId = parentDriverName.contains('Gen1') ? '0' : '100'
             parentDevice.updateDataValue('switchId', emSwitchId)
+        }
+
+        // Detect POWERSTRIP_UI component — tells the driver to create an LED strip child
+        Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') }
+        if (hasPowerstripUi) {
+            parentDevice.updateDataValue('hasPowerstripUi', 'true')
+            logInfo("  POWERSTRIP_UI detected — LED strip child will be created")
         }
 
         logInfo("  Components: ${componentStr}")
@@ -1868,7 +1889,7 @@ private void updateComponentDriversForDevice(Map config) {
     Set<String> updatedDrivers = [] as Set
 
     componentTypes.each { String baseType ->
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'voltmeter'].contains(baseType)) { return }
 
         String compDriverName = getComponentDriverName(baseType, parentHasPM)
         if (!compDriverName || updatedDrivers.contains(compDriverName)) { return }
@@ -3575,6 +3596,11 @@ private Boolean isInputEventApplicable(String event, String inputType) {
     // Analog events require analog-type inputs
     if (event.contains('analog_')) {
         return inputType == 'analog'
+    }
+
+    // Count events require count-type inputs (e.g., input:2 on Plus Uni)
+    if (event.contains('count_')) {
+        return inputType == 'count'
     }
 
     return true
@@ -6691,10 +6717,12 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     Map<String, Boolean> componentPowerMonitoring = [:]
 
     // Comprehensive set of recognized Shelly component types
-    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'em', 'em1',
+    // 'pm' — Power Strip Gen4 uses pm:0-3 (not pm1:0-3); recognized to suppress unknown-component warnings
+    // 'powerstrip_ui' — LED strip indicator on Power Strip Gen4; child creation driven by hasPowerstripUi data value
+    Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'pm', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
         'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat', 'adc',
-        'blugw', 'blutrv'] as Set
+        'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -6758,12 +6786,17 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Determine driver name for discovered components and install prebuilt driver
     if (components.size() > 0) {
         Boolean isParent = needsParentChild
-        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.gen?.toString() == '1') : false
+        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.isGen1 as Boolean ?: false) : false
 
         // Model-specific driver override for Gen 1 devices (e.g., Plugs)
         String gen1TypeCode = ipKey ? state.discoveredShellys[ipKey]?.gen1Type?.toString() : null
         String driverName
-        if (gen1TypeCode && GEN1_MODEL_DRIVER_OVERRIDE.containsKey(gen1TypeCode)) {
+
+        // Model-specific driver override for Gen 2+ devices (e.g., Plus Uni)
+        String gen2AppName = (!isGen1 && ipKey) ? state.discoveredShellys[ipKey]?.deviceApp?.toString() : null
+        if (gen2AppName && GEN2_MODEL_DRIVER_OVERRIDE.containsKey(gen2AppName)) {
+            driverName = GEN2_MODEL_DRIVER_OVERRIDE[gen2AppName]
+        } else if (gen1TypeCode && GEN1_MODEL_DRIVER_OVERRIDE.containsKey(gen1TypeCode)) {
             driverName = GEN1_MODEL_DRIVER_OVERRIDE[gen1TypeCode]
         } else if (gen1TypeCode == 'SHRGBW2') {
             // RGBW2 mode-based driver selection (color vs white firmware mode)
@@ -6785,6 +6818,12 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             // White parent needs its child driver installed too
             if (driverName == 'Shelly Gen1 RGBW2 White Parent') {
                 installPrebuiltDriver('Shelly Gen1 White Channel', components, componentPowerMonitoring, version)
+            }
+
+            // Plus Uni needs all input variant and voltmeter component drivers installed upfront
+            // (user may change input modes at runtime, so all variants must be available)
+            if (driverName == 'Shelly Autoconf Plus Uni Parent') {
+                installPlusUniComponentDrivers()
             }
 
             // Store the driver name on the discovered device entry
@@ -7285,7 +7324,8 @@ private String getComponentDriverFileName(String componentType, Boolean hasPower
         'adc': [default: 'ShellyPollingVoltageSensorComponent.groovy'],
         'temperature': [default: 'ShellyTemperaturePeripheralComponent.groovy'],
         'humidity': [default: 'ShellyHumidityPeripheralComponent.groovy'],
-        'blutrv': [default: 'ShellyBluTRVComponent.groovy']
+        'blutrv': [default: 'ShellyBluTRVComponent.groovy'],
+        'voltmeter': [default: 'ShellyVoltmeterComponent.groovy']
     ]
 
     Map<String, String> typeMap = driverMap[componentType]
@@ -7317,7 +7357,8 @@ private String getComponentDriverName(String componentType, Boolean hasPowerMoni
         'adc': [default: 'Shelly Autoconf Polling Voltage Sensor'],
         'temperature': [default: 'Shelly Autoconf Temperature Peripheral'],
         'humidity': [default: 'Shelly Autoconf Humidity Peripheral'],
-        'blutrv': [default: 'Shelly Autoconf BLU TRV']
+        'blutrv': [default: 'Shelly Autoconf BLU TRV'],
+        'voltmeter': [default: 'Shelly Autoconf Voltmeter']
     ]
 
     Map<String, String> typeMap = nameMap[componentType]
@@ -7413,7 +7454,7 @@ private void installComponentDriversForDevice(Map deviceInfo) {
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'voltmeter'].contains(baseType)) { return }
 
         Boolean hasPM = componentPowerMonitoring[key] ?: false
         String driverName = getComponentDriverName(baseType, hasPM)
@@ -7428,6 +7469,29 @@ private void installComponentDriversForDevice(Map deviceInfo) {
             }
         } else {
             logDebug("Component driver already installed: ${driverName}")
+        }
+    }
+}
+
+/**
+ * Installs all component drivers that may be needed by the Shelly Plus Uni.
+ * Called immediately after installing the Plus Uni Parent driver to ensure
+ * all input-mode variants (button/switch/analog/count) and the voltmeter
+ * driver are present before the user changes input mode preferences.
+ */
+private void installPlusUniComponentDrivers() {
+    Map<String, String> drivers = [
+        'ShellyInputCountComponent.groovy'  : 'Shelly Autoconf Input Count',
+        'ShellyInputAnalogComponent.groovy' : 'Shelly Autoconf Input Analog',
+        'ShellyInputSwitchComponent.groovy' : 'Shelly Autoconf Input Switch',
+        'ShellyVoltmeterComponent.groovy'   : 'Shelly Autoconf Voltmeter',
+    ]
+
+    drivers.each { String fileName, String driverName ->
+        if (!isComponentDriverInstalled(driverName)) {
+            fetchAndInstallComponentDriver(fileName, driverName)
+        } else {
+            logDebug("Plus Uni component driver already installed: ${driverName}")
         }
     }
 }
@@ -15226,11 +15290,14 @@ void parentUpdateWhiteSettings(def parentDevice, Integer whiteId, Map whiteSetti
 
 /**
  * Applies switch settings to a Gen 2+ device via Switch.SetConfig RPC.
+ * Handles both legacy fields (defaultState, autoOffTime, autoOnTime) and
+ * extended safety/input fields (power_limit, voltage_limit, undervoltage_limit,
+ * current_limit, in_mode, in_locked, autorecover_voltage_errors, reverse).
  *
  * @param ipAddress The device IP address
  * @param device The Hubitat device
  * @param switchId The switch component ID
- * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
+ * @param switchSettings Map with switch configuration keys from child driver preferences
  */
 private void applyGen2SwitchSettings(String ipAddress, def device, Integer switchId, Map switchSettings) {
     Map config = [:]
@@ -15248,6 +15315,17 @@ private void applyGen2SwitchSettings(String ipAddress, def device, Integer switc
         config.auto_on = (seconds > 0)
         config.auto_on_delay = seconds
     }
+    // Safety limits — null values are omitted (device default applies)
+    if (switchSettings.power_limit != null) { config.power_limit = switchSettings.power_limit as BigDecimal }
+    if (switchSettings.voltage_limit != null) { config.voltage_limit = switchSettings.voltage_limit as BigDecimal }
+    if (switchSettings.undervoltage_limit != null) { config.undervoltage_limit = switchSettings.undervoltage_limit as BigDecimal }
+    if (switchSettings.current_limit != null) { config.current_limit = switchSettings.current_limit as BigDecimal }
+    // Input control
+    if (switchSettings.in_mode != null) { config.in_mode = switchSettings.in_mode as String }
+    if (switchSettings.in_locked != null) { config.in_locked = switchSettings.in_locked as Boolean }
+    // Voltage error recovery and measurement direction
+    if (switchSettings.autorecover_voltage_errors != null) { config.autorecover_voltage_errors = switchSettings.autorecover_voltage_errors as Boolean }
+    if (switchSettings.reverse != null) { config.reverse = switchSettings.reverse as Boolean }
     if (!config) { return }
 
     String rpcUri = "http://${ipAddress}/rpc"
@@ -15353,6 +15431,9 @@ private void syncSwitchConfigForParentChildren(String parentDni, String ipAddres
 
 /**
  * Maps Gen 2+ Switch.GetConfig response to Hubitat driver preferences.
+ * Syncs both legacy fields (initial_state, auto_off/on) and extended
+ * safety/input fields (power_limit, voltage_limit, undervoltage_limit,
+ * current_limit, in_mode, in_locked, autorecover_voltage_errors, reverse).
  *
  * @param targetDevice The device whose preferences to update
  * @param config The Switch.GetConfig response map
@@ -15369,6 +15450,33 @@ private void syncGen2ConfigToPreferences(def targetDevice, Map config) {
     if (config.auto_on_delay != null) {
         BigDecimal onTime = (config.auto_on == true) ? (config.auto_on_delay as BigDecimal) : 0
         deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: onTime])
+    }
+    // Safety limits
+    if (config.power_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'power_limit', [type: 'decimal', value: config.power_limit as BigDecimal])
+    }
+    if (config.voltage_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'voltage_limit', [type: 'decimal', value: config.voltage_limit as BigDecimal])
+    }
+    if (config.undervoltage_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'undervoltage_limit', [type: 'decimal', value: config.undervoltage_limit as BigDecimal])
+    }
+    if (config.current_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'current_limit', [type: 'decimal', value: config.current_limit as BigDecimal])
+    }
+    // Input control
+    if (config.in_mode != null) {
+        deviceUpdateSettingHelper(targetDevice, 'in_mode', [type: 'enum', value: config.in_mode.toString()])
+    }
+    if (config.in_locked != null) {
+        deviceUpdateSettingHelper(targetDevice, 'in_locked', [type: 'bool', value: config.in_locked as Boolean])
+    }
+    // Voltage error recovery and measurement direction
+    if (config.autorecover_voltage_errors != null) {
+        deviceUpdateSettingHelper(targetDevice, 'autorecover_voltage_errors', [type: 'bool', value: config.autorecover_voltage_errors as Boolean])
+    }
+    if (config.reverse != null) {
+        deviceUpdateSettingHelper(targetDevice, 'reverse', [type: 'bool', value: config.reverse as Boolean])
     }
 }
 
