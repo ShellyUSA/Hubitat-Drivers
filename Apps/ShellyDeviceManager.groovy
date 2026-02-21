@@ -7282,20 +7282,43 @@ private Boolean isDriverOnHub(String driverName, String namespace) {
 }
 
 /**
- * Queries the hub's installed driver list and returns the internal Hubitat ID
- * for the driver whose name exactly matches {@code driverName}. Returns {@code null}
- * if no matching driver is found.
+ * Queries the hub's installed driver list and returns the internal Hubitat ID for a
+ * ShellyUSA driver matching {@code driverName}. Tries exact name first, then falls
+ * back to base-name matching (strips version suffix) to tolerate version drift between
+ * {@code state.autoDrivers} and the hub's current driver list.
  *
- * @param driverName Exact driver display name to search for
- * @return Hubitat driver ID string, or null if the driver is not installed
+ * @param driverName Driver display name to search for (e.g. "Shelly Autoconf Single Switch PM v1.0.6")
+ * @return Hubitat driver ID string, or null if no matching driver is found on the hub
  */
 private String fetchHubitatDriverIdByName(String driverName) {
     String foundId = null
+    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
     try {
         httpGet([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
             if (resp?.status == 200) {
-                Map match = resp.data?.drivers?.find { it.name == driverName } as Map
-                foundId = match?.id?.toString()
+                List allDrivers = resp.data?.drivers as List ?: []
+                // 1. Exact match (fastest, most precise)
+                Map match = allDrivers.find { d ->
+                    d.type == 'usr' && d?.namespace == 'ShellyUSA' && d?.name == driverName
+                } as Map
+                // 2. Base-name fallback — handles cases where the hub has a different version installed
+                if (!match) {
+                    match = allDrivers.find { d ->
+                        d.type == 'usr' && d?.namespace == 'ShellyUSA' &&
+                        d?.name?.toString()?.replaceAll(/\s+v\d+(\.\d+)*$/, '') == baseName
+                    } as Map
+                    if (match) {
+                        logDebug("fetchHubitatDriverIdByName: '${driverName}' matched hub driver '${match.name}' by base name")
+                    }
+                }
+                if (match) {
+                    foundId = match.id?.toString()
+                    logDebug("fetchHubitatDriverIdByName: resolved '${driverName}' → id=${foundId}")
+                } else {
+                    logDebug("fetchHubitatDriverIdByName: '${driverName}' (base: '${baseName}') not found on hub")
+                }
+            } else {
+                logWarn("fetchHubitatDriverIdByName: /device/drivers returned HTTP ${resp?.status}")
             }
         }
     } catch (Exception e) {
@@ -13021,7 +13044,12 @@ private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) 
         String name = (info.name ?: '').toString()
         if (namesToCheck != null && !namesToCheck.contains(name)) { return }
         Integer count = (childDevices.count { it.typeName == name } ?: 0) as Integer
+        logDebug("deleteUnusedTrackedDrivers: '${name}' — ${count} device(s)")
         if (count == 0) { toDelete << name }
+    }
+    if (toDelete.isEmpty()) {
+        logDebug("deleteUnusedTrackedDrivers: no unused drivers found${namesToCheck != null ? ' in checked set' : ''}")
+        return
     }
 
     // Phase 2: Delete each unused driver from hub and tracking
