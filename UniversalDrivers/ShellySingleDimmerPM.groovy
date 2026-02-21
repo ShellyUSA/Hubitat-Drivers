@@ -90,9 +90,9 @@ preferences {
   input name: 'currentLimit', type: 'decimal', title: 'Overcurrent Limit (A, 0 = disabled)',
     required: false
   // ── WD_UI LED Settings (Shelly Plus WallDimmer only) ──
-  input name: 'sysLedEnable', type: 'bool', title: 'Enable System Activity LED',
+  input name: 'sysLedEnable', type: 'bool', title: 'Enable System Activity LED (WallDimmer only)',
     defaultValue: true, required: false
-  input name: 'powerLed', type: 'enum', title: 'Power LED Mode',
+  input name: 'powerLed', type: 'enum', title: 'Power LED Mode (WallDimmer only)',
     options: ['on':'Always On', 'off':'Always Off',
               'match_output':'On When Light Is On', 'inverted_output':'On When Light Is Off'],
     defaultValue: 'match_output', required: false

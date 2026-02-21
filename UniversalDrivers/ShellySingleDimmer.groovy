@@ -3,7 +3,10 @@
  *
  * Pre-built standalone driver for single-dimmer Shelly Gen 2/3 devices without
  * power monitoring.
- * Examples: Shelly Plus Wall Dimmer, Shelly Dimmer 0/1-10V Gen3 (S3DM-0A10NWW)
+ * Examples: Shelly Dimmer 0/1-10V Gen3 (S3DM-0A10NWW)
+ *
+ * Note: The Shelly Plus WallDimmer always reports power monitoring data and is
+ * therefore assigned to ShellySingleDimmerPM.groovy instead.
  *
  * This driver is installed directly by ShellyDeviceManager, bypassing the modular
  * assembly pipeline. Commands delegate to the parent app via componentLightOn/Off,
@@ -51,6 +54,19 @@ preferences {
     defaultValue: 50, range: '0..100', required: false
   input name: 'buttonFadeRate', type: 'number', title: 'Button Fade Rate (1=slow, 5=fast)',
     defaultValue: 3, range: '1..5', required: false
+  input name: 'inMode', type: 'enum', title: 'Input Mode',
+    options: ['dim':'Dim (short press toggle, hold to dim)', 'dual_dim':'Dual Dim (separate up/down inputs)',
+              'follow':'Follow (output mirrors input state)', 'flip':'Flip (toggle on each edge)',
+              'activate':'Activate (ON only)', 'detached':'Detached (input has no effect)'],
+    defaultValue: 'dim', required: false
+  input name: 'nightModeStart', type: 'time', title: 'Night Mode Start Time', required: false
+  input name: 'nightModeEnd', type: 'time', title: 'Night Mode End Time', required: false
+  input name: 'doubletapBrightness', type: 'number', title: 'Double-Tap Brightness Preset (0–100)',
+    defaultValue: 100, range: '0..100', required: false
+  input name: 'rangeMapMin', type: 'number', title: 'Output Range Min % (default 0)',
+    defaultValue: 0, range: '0..100', required: false
+  input name: 'rangeMapMax', type: 'number', title: 'Output Range Max % (default 100)',
+    defaultValue: 100, range: '0..100', required: false
 }
 
 
@@ -88,7 +104,13 @@ private void relayLightSettings() {
   if (settings.minBrightnessOnToggle != null) { lightSettings.minBrightnessOnToggle = settings.minBrightnessOnToggle as Integer }
   if (settings.nightModeEnable != null) { lightSettings.nightModeEnable = settings.nightModeEnable as Boolean }
   if (settings.nightModeBrightness != null) { lightSettings.nightModeBrightness = settings.nightModeBrightness as Integer }
-  if (settings.buttonFadeRate != null) { lightSettings.buttonFadeRate = settings.buttonFadeRate as Integer }
+  if (settings.buttonFadeRate != null)          { lightSettings.buttonFadeRate = settings.buttonFadeRate as Integer }
+  if (settings.inMode != null)                  { lightSettings.inMode = settings.inMode as String }
+  if (settings.nightModeStart != null)          { lightSettings.nightModeStart = settings.nightModeStart as String }
+  if (settings.nightModeEnd != null)            { lightSettings.nightModeEnd = settings.nightModeEnd as String }
+  if (settings.doubletapBrightness != null)     { lightSettings.doubletapBrightness = settings.doubletapBrightness as Integer }
+  if (settings.rangeMapMin != null)             { lightSettings.rangeMapMin = settings.rangeMapMin as Integer }
+  if (settings.rangeMapMax != null)             { lightSettings.rangeMapMax = settings.rangeMapMax as Integer }
   if (lightSettings) {
     logDebug("Relaying light settings to parent: ${lightSettings}")
     parent?.componentUpdateLightSettings(device, lightSettings)
