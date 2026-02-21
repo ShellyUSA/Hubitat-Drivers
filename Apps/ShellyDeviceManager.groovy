@@ -1029,7 +1029,7 @@ void updated() {
     unsubscribe()
     unschedule()
     initialize()
-    deleteUnusedTrackedDrivers()  // sweep for any drivers orphaned by external device deletion
+    sweepAllUnusedShellyHubDrivers()  // hub-centric sweep: deletes any unused ShellyUSA drivers regardless of tracking state
 }
 
 /**
@@ -7329,22 +7329,19 @@ private String fetchHubitatDriverIdByName(String driverName) {
 
 /**
  * Deletes an unused driver from the Hubitat hub and removes it from {@code state.autoDrivers}.
- * Best-effort: if the hub rejects the deletion, logs a warning and does not throw.
+ * Includes a final live-count safety guard using base-name matching so version drift between
+ * tracking state and device typeNames does not cause a false "0 devices" reading.
  *
- * <p>Includes a final live-count safety guard — if any child device still uses this
- * driver at call time, the deletion is aborted.</p>
- *
- * <p>Uses two endpoint paths matching Hubitat Package Manager behaviour:</p>
- * <ul>
- *   <li>Firmware ≥ 2.3.7.130: {@code GET /driver/editor/deleteJson/{id}} — JSON response</li>
- *   <li>Firmware &lt; 2.3.7.130: {@code POST /driver/editor/update} with {@code _action_delete=Delete}</li>
- * </ul>
- *
- * @param driverName Exact driver name as stored in {@code state.autoDrivers}
+ * @param driverName Driver name as stored in {@code state.autoDrivers}
  */
 private void deleteHubitatDriverFromHub(String driverName) {
-    // Final safety check: abort if any device still uses this driver
-    Integer currentCount = (getChildDevices()?.count { it.typeName == driverName } ?: 0) as Integer
+    // Safety check with base-name matching: a device whose typeName differs only in version suffix
+    // still counts as "using" this driver.
+    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+    Integer currentCount = (getChildDevices()?.count { dev ->
+        String tn = dev.typeName?.toString() ?: ''
+        return tn == driverName || tn.replaceAll(/\s+v\d+(\.\d+)*$/, '') == baseName
+    } ?: 0) as Integer
     if (currentCount > 0) {
         logDebug("deleteHubitatDriverFromHub: '${driverName}' still used by ${currentCount} device(s) — skipping")
         return
@@ -7358,6 +7355,24 @@ private void deleteHubitatDriverFromHub(String driverName) {
         return
     }
 
+    performHubDriverDelete(driverId, driverName)
+}
+
+/**
+ * Executes the Hubitat hub HTTP call to delete a driver by its internal ID.
+ * On success, removes the matching entry from {@code state.autoDrivers}.
+ * Best-effort — logs a warning on failure without throwing.
+ *
+ * <p>Uses two endpoint paths matching Hubitat Package Manager behaviour:</p>
+ * <ul>
+ *   <li>Firmware ≥ 2.3.7.130: {@code GET /driver/editor/deleteJson/{id}} — JSON response</li>
+ *   <li>Firmware &lt; 2.3.7.130: {@code POST /driver/editor/update} with {@code _action_delete=Delete}</li>
+ * </ul>
+ *
+ * @param driverId  Hubitat internal driver ID (from {@code /device/drivers} response)
+ * @param driverName Driver display name, used for logging and tracking cleanup
+ */
+private void performHubDriverDelete(String driverId, String driverName) {
     Boolean deleted = false
     try {
         if (location.hub.firmwareVersionString >= '2.3.7.130') {
@@ -7369,7 +7384,7 @@ private void deleteHubitatDriverFromHub(String driverName) {
             ]) { resp ->
                 deleted = (resp?.data?.status == true)
                 if (!deleted) {
-                    logWarn("deleteHubitatDriverFromHub: hub refused to delete '${driverName}' (status=${resp?.data?.status})")
+                    logWarn("performHubDriverDelete: hub refused to delete '${driverName}' (status=${resp?.data?.status})")
                 }
             }
         } else {
@@ -7384,15 +7399,14 @@ private void deleteHubitatDriverFromHub(String driverName) {
             ]) { resp ->
                 // Success = null body OR no MDL alert element in the HTML response
                 String body = resp?.data?.text?.replace('\n', '')?.replace('\r', '') ?: ''
-                Boolean hasAlert = body.contains('alert-close close')
-                deleted = !hasAlert
+                deleted = !body.contains('alert-close close')
                 if (!deleted) {
-                    logWarn("deleteHubitatDriverFromHub: hub refused to delete '${driverName}' (alert in response — driver may still be in use)")
+                    logWarn("performHubDriverDelete: hub refused to delete '${driverName}' (alert in response — driver may still be in use)")
                 }
             }
         }
     } catch (Exception e) {
-        logWarn("deleteHubitatDriverFromHub: could not delete '${driverName}': ${e.message}")
+        logWarn("performHubDriverDelete: could not delete '${driverName}': ${e.message}")
     }
 
     if (deleted) {
@@ -13043,7 +13057,13 @@ private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) 
     allTracked.each { String key, Map info ->
         String name = (info.name ?: '').toString()
         if (namesToCheck != null && !namesToCheck.contains(name)) { return }
-        Integer count = (childDevices.count { it.typeName == name } ?: 0) as Integer
+        // Use base-name matching so a device with typeName "Shelly Foo v1.0.34" correctly
+        // counts against a tracking entry named "Shelly Foo" (and vice-versa).
+        String baseName = name.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        Integer count = (childDevices.count { dev ->
+            String tn = dev.typeName?.toString() ?: ''
+            return tn == name || tn.replaceAll(/\s+v\d+(\.\d+)*$/, '') == baseName
+        } ?: 0) as Integer
         logDebug("deleteUnusedTrackedDrivers: '${name}' — ${count} device(s)")
         if (count == 0) { toDelete << name }
     }
@@ -13056,6 +13076,60 @@ private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) 
     toDelete.each { String name ->
         logInfo("deleteUnusedTrackedDrivers: '${name}' has 0 devices — deleting from hub")
         deleteHubitatDriverFromHub(name)
+    }
+}
+
+/**
+ * Hub-centric sweep: queries every ShellyUSA user driver installed on the hub and deletes
+ * any that are not currently assigned to a child device. Unlike {@link #deleteUnusedTrackedDrivers},
+ * this does not depend on {@code state.autoDrivers} — it acts on ground truth from the hub.
+ *
+ * <p>This catches drivers that are absent from tracking (older installs, manual installs,
+ * or name drift that left tracking stale) as well as the same version-mismatch cases that
+ * {@link #deleteUnusedTrackedDrivers} handles.</p>
+ *
+ * <p>Device count uses base-name matching: "Shelly Foo" and "Shelly Foo v1.0.34" are treated
+ * as the same driver for the purpose of determining whether it is in use.</p>
+ */
+private void sweepAllUnusedShellyHubDrivers() {
+    List<com.hubitat.app.DeviceWrapper> childDevices = getChildDevices() ?: []
+
+    // Build exact and base-name sets from all child device typeNames
+    Set<String> usedExact = [] as Set
+    Set<String> usedBase  = [] as Set
+    childDevices.each { dev ->
+        String tn = dev.typeName?.toString() ?: ''
+        if (tn) {
+            usedExact << tn
+            usedBase  << tn.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        }
+    }
+
+    try {
+        httpGet([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
+            if (resp?.status != 200) {
+                logWarn("sweepAllUnusedShellyHubDrivers: /device/drivers returned HTTP ${resp?.status}")
+                return
+            }
+            List allDrivers = resp.data?.drivers as List ?: []
+            allDrivers.each { d ->
+                if (d.type != 'usr' || d?.namespace != 'ShellyUSA') { return }
+                String driverName = d.name?.toString() ?: ''
+                String driverBase = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+                String driverId   = d.id?.toString() ?: ''
+                if (!driverId || !driverName) { return }
+
+                if (usedExact.contains(driverName) || usedBase.contains(driverBase)) {
+                    logDebug("sweepAllUnusedShellyHubDrivers: '${driverName}' is in use — skipping")
+                    return
+                }
+
+                logInfo("sweepAllUnusedShellyHubDrivers: '${driverName}' has 0 devices — deleting from hub")
+                performHubDriverDelete(driverId, driverName)
+            }
+        }
+    } catch (Exception e) {
+        logWarn("sweepAllUnusedShellyHubDrivers: failed: ${e.message}")
     }
 }
 
