@@ -1029,6 +1029,7 @@ void updated() {
     unsubscribe()
     unschedule()
     initialize()
+    deleteUnusedTrackedDrivers()  // sweep for any drivers orphaned by external device deletion
 }
 
 /**
@@ -2927,6 +2928,9 @@ private void removeDeviceByIp(String ip) {
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Map config = deviceConfigs[dni] as Map
 
+    // Collect driver names before deletion — device references may be invalid afterward
+    Set<String> deletedDriverNames = [] as Set
+
     // Step 1: Clean up all Hubitat resources on the Shelly device before removing from Hubitat
     // Gen 1 devices don't support RPC — skip webhook/script/KVS cleanup
     if (config?.gen?.toString() != '1') {
@@ -2942,6 +2946,7 @@ private void removeDeviceByIp(String ip) {
             def childDev = getChildDevice(childDni)
             if (childDev) {
                 String childName = childDev.displayName
+                if (childDev.typeName) { deletedDriverNames << childDev.typeName.toString() }
                 deleteChildDevice(childDni)
                 logInfo("Removed child device: ${childName} (${childDni})")
                 appendLog('info', "Removed child: ${childName}")
@@ -2950,6 +2955,7 @@ private void removeDeviceByIp(String ip) {
     }
 
     // Step 3: Remove the device from Hubitat
+    if (device.typeName) { deletedDriverNames << device.typeName.toString() }
     deleteChildDevice(dni)
     state.remove('hubDnisCachedAt') // Invalidate DNI cache after device removal
     logInfo("Removed device: ${name} (${dni})")
@@ -2977,6 +2983,9 @@ private void removeDeviceByIp(String ip) {
         cache[ip] = entry
         state.deviceStatusCache = cache
     }
+
+    // Step 6: Delete any drivers that are now unused after this device removal
+    if (deletedDriverNames) { deleteUnusedTrackedDrivers(deletedDriverNames) }
 }
 
 /**
@@ -7270,6 +7279,79 @@ private Boolean isDriverOnHub(String driverName, String namespace) {
         logError("Error checking hub drivers: ${e.message}")
     }
     return found
+}
+
+/**
+ * Queries the hub's installed driver list and returns the internal Hubitat ID
+ * for the driver whose name exactly matches {@code driverName}. Returns {@code null}
+ * if no matching driver is found.
+ *
+ * @param driverName Exact driver display name to search for
+ * @return Hubitat driver ID string, or null if the driver is not installed
+ */
+private String fetchHubitatDriverIdByName(String driverName) {
+    String foundId = null
+    try {
+        httpGet([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
+            if (resp?.status == 200) {
+                Map match = resp.data?.drivers?.find { it.name == driverName } as Map
+                foundId = match?.id?.toString()
+            }
+        }
+    } catch (Exception e) {
+        logWarn("fetchHubitatDriverIdByName: failed to list hub drivers: ${e.message}")
+    }
+    return foundId
+}
+
+/**
+ * Deletes an unused driver from the Hubitat hub and removes it from {@code state.autoDrivers}.
+ * Best-effort: if the hub rejects the deletion, logs a warning and does not throw.
+ *
+ * <p>Includes a final live-count safety guard — if any child device still uses this
+ * driver at call time, the deletion is aborted.</p>
+ *
+ * <p><b>NOTE:</b> The delete endpoint {@code /driver/ajax/delete} requires hardware
+ * verification. If the endpoint is wrong, this call fails gracefully and the driver
+ * is left in place.</p>
+ *
+ * @param driverName Exact driver name as stored in {@code state.autoDrivers}
+ */
+private void deleteHubitatDriverFromHub(String driverName) {
+    // Final safety check: abort if any device still uses this driver
+    Integer currentCount = (getChildDevices()?.count { it.typeName == driverName } ?: 0) as Integer
+    if (currentCount > 0) {
+        logDebug("deleteHubitatDriverFromHub: '${driverName}' still used by ${currentCount} device(s) — skipping")
+        return
+    }
+
+    String driverId = fetchHubitatDriverIdByName(driverName)
+    if (!driverId) {
+        // Driver already absent from hub — just clean up tracking state
+        logInfo("deleteHubitatDriverFromHub: '${driverName}' not found on hub, removing from tracking only")
+        removeDriverFromTracking(driverName)
+        return
+    }
+
+    try {
+        httpPost([
+            uri: 'http://127.0.0.1:8080',
+            path: '/driver/ajax/delete',
+            contentType: 'application/x-www-form-urlencoded',
+            requestContentType: 'application/x-www-form-urlencoded',
+            body: "id=${driverId}",
+            timeout: 10
+        ]) { resp ->
+            if (resp?.status in [200, 302]) {
+                logInfo("Deleted unused driver '${driverName}' from hub (id=${driverId})")
+                removeDriverFromTracking(driverName)
+            } else {
+                logWarn("deleteHubitatDriverFromHub: unexpected HTTP ${resp?.status} for '${driverName}'")
+            }
+        }
+    } catch (Exception e) {
+        logWarn("deleteHubitatDriverFromHub: could not delete '${driverName}': ${e.message}")
+    }
 }
 
 /**
@@ -12893,6 +12975,39 @@ private void pruneStaleDriverTracking() {
 }
 
 /**
+ * Removes from the Hubitat hub any tracked drivers in {@code state.autoDrivers} that are
+ * no longer used by any child device. Uses a two-phase collect-then-delete approach to
+ * avoid concurrent modification of the tracking map during iteration.
+ *
+ * <p>When {@code namesToCheck} is provided, only drivers with those names are inspected
+ * (targeted call from {@code removeDeviceByIp}). Passing {@code null} performs a full
+ * sweep of all tracked drivers (used from {@code updated()}).</p>
+ *
+ * @param namesToCheck Driver names to check, or null to sweep all tracked drivers
+ */
+private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) {
+    Map<String, Map> allTracked = state.autoDrivers as Map ?: [:]
+    if (allTracked.isEmpty()) { return }
+
+    List<com.hubitat.app.DeviceWrapper> childDevices = getChildDevices() ?: []
+
+    // Phase 1: Identify unused drivers (no mutation yet to avoid ConcurrentModificationException)
+    List<String> toDelete = []
+    allTracked.each { String key, Map info ->
+        String name = (info.name ?: '').toString()
+        if (namesToCheck != null && !namesToCheck.contains(name)) { return }
+        Integer count = (childDevices.count { it.typeName == name } ?: 0) as Integer
+        if (count == 0) { toDelete << name }
+    }
+
+    // Phase 2: Delete each unused driver from hub and tracking
+    toDelete.each { String name ->
+        logInfo("deleteUnusedTrackedDrivers: '${name}' has 0 devices — deleting from hub")
+        deleteHubitatDriverFromHub(name)
+    }
+}
+
+/**
  * Registers an auto-generated driver in the tracking system.
  * Stores the driver name, namespace, version, components it supports,
  * and timestamp of installation/update.
@@ -12937,6 +13052,25 @@ private void registerAutoDriver(String driverName, String namespace, String vers
   ]
 
   logInfo("Registered auto-generated driver: ${key} v${version} with components: ${components}")
+}
+
+/**
+ * Removes a driver entry from {@code state.autoDrivers} by matching its display name.
+ * This only updates local tracking state — it does not touch the Hubitat hub.
+ * Use {@link #deleteHubitatDriverFromHub} to delete from both the hub and tracking.
+ *
+ * @param driverName Exact driver name as stored in {@code state.autoDrivers[key].name}
+ */
+private void removeDriverFromTracking(String driverName) {
+    Map autoDrivers = state.autoDrivers as Map ?: [:]
+    String keyToRemove = autoDrivers.find { String k, Object v ->
+        (v as Map)?.name == driverName
+    }?.key?.toString()
+    if (keyToRemove) {
+        autoDrivers.remove(keyToRemove)
+        state.autoDrivers = autoDrivers
+        logDebug("removeDriverFromTracking: removed '${driverName}' from tracking")
+    }
 }
 
 /**
