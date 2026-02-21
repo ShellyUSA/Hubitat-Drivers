@@ -14716,6 +14716,12 @@ void componentRefresh(def childDevice) {
                 updateChildFromStatus(childDevice, componentType, componentData)
             }
             syncSwitchConfigToDriver(childDevice, ipAddress)
+            // Sync light config for dimmer devices (dimmers have light:N components, not switch:N)
+            String refreshTypeName = childDevice.typeName ?: ''
+            if (refreshTypeName.contains('Dimmer')) {
+                syncLightConfigToDriver(childDevice, ipAddress)
+                syncWdUiConfigToDriver(childDevice, ipAddress)
+            }
         }
     } catch (Exception e) {
         logError("componentRefresh exception for ${childDevice.displayName}: ${e.message}")
@@ -15099,6 +15105,20 @@ void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper gatewayDevice, Integer
 // ═══════════════════════════════════════════════════════════════
 
 /**
+ * Parses a Hubitat time input value (full ISO datetime string) to HH:MM format.
+ * Hubitat time inputs return strings like "2022-01-01T22:00:00.000-0500".
+ *
+ * @param timeStr The Hubitat time string
+ * @return HH:MM string (e.g. "22:00"), or null if not parseable
+ */
+@CompileStatic
+private static String parseHubitatTimeToHHMM(String timeStr) {
+    if (!timeStr) { return null }
+    java.util.regex.Matcher m = timeStr =~ /T(\d{2}:\d{2})/
+    return m.find() ? m.group(1) : null
+}
+
+/**
  * Receives light settings from a standalone light/bulb/dimmer driver.
  * Applies settings to Gen 1 devices via GET /settings/light/{id}.
  * Applies settings to Gen 2/3 devices via Light.SetConfig JSON-RPC.
@@ -15106,7 +15126,9 @@ void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper gatewayDevice, Integer
  * @param childDevice The standalone light/bulb/dimmer device
  * @param lightSettings Map with optional keys: defaultState, autoOffTime, autoOnTime,
  *   transitionDuration, minBrightnessOnToggle, nightModeEnable, nightModeBrightness,
- *   buttonFadeRate (Gen 2/3 only: transitionDuration and beyond)
+ *   buttonFadeRate, inMode, nightModeStart, nightModeEnd, doubletapBrightness,
+ *   rangeMapMin, rangeMapMax, powerLimit, voltageLimit, undervoltageLimit, currentLimit
+ *   (Gen 2/3 only: transitionDuration and beyond)
  */
 void componentUpdateLightSettings(def childDevice, Map lightSettings) {
     if (!childDevice || !lightSettings) { return }
@@ -15171,6 +15193,29 @@ void componentUpdateLightSettings(def childDevice, Map lightSettings) {
         if (lightSettings.buttonFadeRate != null) {
             config.button_fade_rate = lightSettings.buttonFadeRate as Integer
         }
+        if (lightSettings.inMode != null) {
+            config.in_mode = lightSettings.inMode as String
+        }
+        if (lightSettings.nightModeStart != null || lightSettings.nightModeEnd != null) {
+            // Merge into existing night_mode map (may already have enable/brightness set)
+            Map nightMode = (config.night_mode as Map) ?: [:]
+            String startHHMM = parseHubitatTimeToHHMM(lightSettings.nightModeStart?.toString())
+            String endHHMM   = parseHubitatTimeToHHMM(lightSettings.nightModeEnd?.toString())
+            if (startHHMM && endHHMM) {
+                nightMode.active_between = [startHHMM, endHHMM]
+                config.night_mode = nightMode
+            }
+        }
+        if (lightSettings.doubletapBrightness != null) {
+            config.button_presets = [button_doublepush: [brightness: lightSettings.doubletapBrightness as Integer]]
+        }
+        if (lightSettings.rangeMapMin != null && lightSettings.rangeMapMax != null) {
+            config.range_map = [lightSettings.rangeMapMin as Integer, lightSettings.rangeMapMax as Integer]
+        }
+        if (lightSettings.powerLimit != null)        { config.power_limit        = lightSettings.powerLimit as BigDecimal }
+        if (lightSettings.voltageLimit != null)      { config.voltage_limit      = lightSettings.voltageLimit as BigDecimal }
+        if (lightSettings.undervoltageLimit != null) { config.undervoltage_limit = lightSettings.undervoltageLimit as BigDecimal }
+        if (lightSettings.currentLimit != null)      { config.current_limit      = lightSettings.currentLimit as BigDecimal }
         if (!config) { return }
 
         String rpcUri = "http://${ipAddress}/rpc"
@@ -15181,6 +15226,133 @@ void componentUpdateLightSettings(def childDevice, Map lightSettings) {
         } else {
             logWarn("Failed to apply Gen2+ light config to ${childDevice.displayName}: no response")
         }
+    }
+}
+
+/**
+ * Receives WD_UI LED settings from a driver and applies them to the device
+ * via WD_UI.SetConfig JSON-RPC. Only functional on devices that support the
+ * WD_UI component (e.g. Shelly Plus WallDimmer). Silently succeeds on others.
+ *
+ * @param childDevice The standalone dimmer device
+ * @param wdUiSettings Map with optional keys: sysLedEnable (Boolean), powerLed (String)
+ */
+void componentUpdateWdUiSettings(def childDevice, Map wdUiSettings) {
+    if (!childDevice || !wdUiSettings) { return }
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("componentUpdateWdUiSettings: no IP for ${childDevice.displayName}")
+        return
+    }
+    Map config = [:]
+    if (wdUiSettings.sysLedEnable != null) { config.sys_led_enable = wdUiSettings.sysLedEnable as Boolean }
+    if (wdUiSettings.powerLed != null)     { config.power_led = wdUiSettings.powerLed as String }
+    if (!config) { return }
+
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = [id: 0, src: 'wdUiSetConfig', method: 'WD_UI.SetConfig', params: [config: config]]
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    if (response != null) {
+        logInfo("Applied WD_UI config to ${childDevice.displayName}: ${config}")
+    } else {
+        logWarn("Failed to apply WD_UI config to ${childDevice.displayName} (device may not support WD_UI)")
+    }
+}
+
+/**
+ * Queries Light.GetConfig from a Gen 2/3 dimmer device and updates the driver preferences.
+ * Called during componentRefresh for dimmer devices.
+ *
+ * @param targetDevice The dimmer device whose preferences should be updated
+ * @param ipAddress The device IP address
+ */
+private void syncLightConfigToDriver(def targetDevice, String ipAddress) {
+    Integer lightId = extractComponentId(targetDevice, 'lightId') ?: 0
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = lightGetConfigCommand(lightId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    if (response) {
+        Map config = response?.result as Map ?: [:]
+        if (config) { syncLightConfigToPreferences(targetDevice, config) }
+    }
+}
+
+/**
+ * Maps a Light.GetConfig response to Hubitat driver preferences.
+ * Reverse of the Gen 2/3 mapping in componentUpdateLightSettings.
+ * Night mode active_between is NOT synced back (time picker round-trip is lossy).
+ *
+ * @param targetDevice The device whose preferences to update
+ * @param config The Light.GetConfig result map (already extracted from response.result)
+ */
+private void syncLightConfigToPreferences(def targetDevice, Map config) {
+    if (config.in_mode != null) {
+        deviceUpdateSettingHelper(targetDevice, 'inMode', [type: 'enum', value: config.in_mode.toString()])
+    }
+    if (config.initial_state) {
+        String val = (config.initial_state == 'restore_last') ? 'restore' : config.initial_state.toString()
+        deviceUpdateSettingHelper(targetDevice, 'defaultState', [type: 'enum', value: val])
+    }
+    if (config.auto_off_delay != null) {
+        BigDecimal offTime = (config.auto_off == true) ? (config.auto_off_delay as BigDecimal) : 0
+        deviceUpdateSettingHelper(targetDevice, 'autoOffTime', [type: 'decimal', value: offTime])
+    }
+    if (config.auto_on_delay != null) {
+        BigDecimal onTime = (config.auto_on == true) ? (config.auto_on_delay as BigDecimal) : 0
+        deviceUpdateSettingHelper(targetDevice, 'autoOnTime', [type: 'decimal', value: onTime])
+    }
+    if (config.transition_duration != null) {
+        deviceUpdateSettingHelper(targetDevice, 'transitionDuration', [type: 'decimal', value: config.transition_duration as BigDecimal])
+    }
+    if (config.min_brightness_on_toggle != null) {
+        deviceUpdateSettingHelper(targetDevice, 'minBrightnessOnToggle', [type: 'number', value: config.min_brightness_on_toggle as Integer])
+    }
+    Map nightMode = config.night_mode as Map
+    if (nightMode) {
+        if (nightMode.enable != null) {
+            deviceUpdateSettingHelper(targetDevice, 'nightModeEnable', [type: 'bool', value: nightMode.enable as Boolean])
+        }
+        if (nightMode.brightness != null) {
+            deviceUpdateSettingHelper(targetDevice, 'nightModeBrightness', [type: 'number', value: nightMode.brightness as Integer])
+        }
+    }
+    if (config.button_fade_rate != null) {
+        deviceUpdateSettingHelper(targetDevice, 'buttonFadeRate', [type: 'number', value: config.button_fade_rate as Integer])
+    }
+    Map buttonPresets = config.button_presets as Map
+    if (buttonPresets?.button_doublepush != null) {
+        Integer dtb = (buttonPresets.button_doublepush as Map)?.brightness as Integer
+        if (dtb != null) { deviceUpdateSettingHelper(targetDevice, 'doubletapBrightness', [type: 'number', value: dtb]) }
+    }
+    List rangeMap = config.range_map as List
+    if (rangeMap?.size() == 2) {
+        deviceUpdateSettingHelper(targetDevice, 'rangeMapMin', [type: 'number', value: rangeMap[0] as Integer])
+        deviceUpdateSettingHelper(targetDevice, 'rangeMapMax', [type: 'number', value: rangeMap[1] as Integer])
+    }
+    if (config.power_limit != null)        { deviceUpdateSettingHelper(targetDevice, 'powerLimit',        [type: 'decimal', value: config.power_limit as BigDecimal]) }
+    if (config.voltage_limit != null)      { deviceUpdateSettingHelper(targetDevice, 'voltageLimit',      [type: 'decimal', value: config.voltage_limit as BigDecimal]) }
+    if (config.undervoltage_limit != null) { deviceUpdateSettingHelper(targetDevice, 'undervoltageLimit', [type: 'decimal', value: config.undervoltage_limit as BigDecimal]) }
+    if (config.current_limit != null)      { deviceUpdateSettingHelper(targetDevice, 'currentLimit',      [type: 'decimal', value: config.current_limit as BigDecimal]) }
+}
+
+/**
+ * Queries WD_UI.GetConfig and syncs LED settings back to driver preferences.
+ * Best-effort: silently no-ops if device doesn't support WD_UI.
+ *
+ * @param targetDevice The dimmer device whose preferences should be updated
+ * @param ipAddress The device IP address
+ */
+private void syncWdUiConfigToDriver(def targetDevice, String ipAddress) {
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = [id: 0, src: 'wdUiGetConfig', method: 'WD_UI.GetConfig', params: [:]]
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    if (!response) { return }
+    Map config = response?.result as Map ?: [:]
+    if (config.sys_led_enable != null) {
+        deviceUpdateSettingHelper(targetDevice, 'sysLedEnable', [type: 'bool', value: config.sys_led_enable as Boolean])
+    }
+    if (config.power_led != null) {
+        deviceUpdateSettingHelper(targetDevice, 'powerLed', [type: 'enum', value: config.power_led.toString()])
     }
 }
 

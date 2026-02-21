@@ -68,6 +68,34 @@ preferences {
     defaultValue: 50, range: '0..100', required: false
   input name: 'buttonFadeRate', type: 'number', title: 'Button Fade Rate (1=slow, 5=fast)',
     defaultValue: 3, range: '1..5', required: false
+  input name: 'inMode', type: 'enum', title: 'Input Mode',
+    options: ['dim':'Dim (short press toggle, hold to dim)', 'dual_dim':'Dual Dim (separate up/down inputs)',
+              'follow':'Follow (output mirrors input state)', 'flip':'Flip (toggle on each edge)',
+              'activate':'Activate (ON only)', 'detached':'Detached (input has no effect)'],
+    defaultValue: 'dim', required: false
+  input name: 'nightModeStart', type: 'time', title: 'Night Mode Start Time', required: false
+  input name: 'nightModeEnd', type: 'time', title: 'Night Mode End Time', required: false
+  input name: 'doubletapBrightness', type: 'number', title: 'Double-Tap Brightness Preset (0–100)',
+    defaultValue: 100, range: '0..100', required: false
+  input name: 'rangeMapMin', type: 'number', title: 'Output Range Min % (default 0)',
+    defaultValue: 0, range: '0..100', required: false
+  input name: 'rangeMapMax', type: 'number', title: 'Output Range Max % (default 100)',
+    defaultValue: 100, range: '0..100', required: false
+  input name: 'powerLimit', type: 'decimal', title: 'Max Power Limit (W, 0 = disabled)',
+    required: false
+  input name: 'voltageLimit', type: 'decimal', title: 'Overvoltage Limit (V, 0 = disabled)',
+    required: false
+  input name: 'undervoltageLimit', type: 'decimal', title: 'Undervoltage Limit (V, 0 = disabled)',
+    required: false
+  input name: 'currentLimit', type: 'decimal', title: 'Overcurrent Limit (A, 0 = disabled)',
+    required: false
+  // ── WD_UI LED Settings (Shelly Plus WallDimmer only) ──
+  input name: 'sysLedEnable', type: 'bool', title: 'Enable System Activity LED',
+    defaultValue: true, required: false
+  input name: 'powerLed', type: 'enum', title: 'Power LED Mode',
+    options: ['on':'Always On', 'off':'Always Off',
+              'match_output':'On When Light Is On', 'inverted_output':'On When Light Is Off'],
+    defaultValue: 'match_output', required: false
 }
 
 
@@ -91,6 +119,7 @@ void updated() {
   logDebug("updated() called with settings: ${settings}")
   sendPmReportingIntervalToKVS()
   relayLightSettings()
+  relayWdUiSettings()
 }
 
 /**
@@ -106,10 +135,35 @@ private void relayLightSettings() {
   if (settings.minBrightnessOnToggle != null) { lightSettings.minBrightnessOnToggle = settings.minBrightnessOnToggle as Integer }
   if (settings.nightModeEnable != null) { lightSettings.nightModeEnable = settings.nightModeEnable as Boolean }
   if (settings.nightModeBrightness != null) { lightSettings.nightModeBrightness = settings.nightModeBrightness as Integer }
-  if (settings.buttonFadeRate != null) { lightSettings.buttonFadeRate = settings.buttonFadeRate as Integer }
+  if (settings.buttonFadeRate != null)          { lightSettings.buttonFadeRate = settings.buttonFadeRate as Integer }
+  if (settings.inMode != null)                  { lightSettings.inMode = settings.inMode as String }
+  if (settings.nightModeStart != null)          { lightSettings.nightModeStart = settings.nightModeStart as String }
+  if (settings.nightModeEnd != null)            { lightSettings.nightModeEnd = settings.nightModeEnd as String }
+  if (settings.doubletapBrightness != null)     { lightSettings.doubletapBrightness = settings.doubletapBrightness as Integer }
+  if (settings.rangeMapMin != null)             { lightSettings.rangeMapMin = settings.rangeMapMin as Integer }
+  if (settings.rangeMapMax != null)             { lightSettings.rangeMapMax = settings.rangeMapMax as Integer }
+  if (settings.powerLimit != null)              { lightSettings.powerLimit = settings.powerLimit as BigDecimal }
+  if (settings.voltageLimit != null)            { lightSettings.voltageLimit = settings.voltageLimit as BigDecimal }
+  if (settings.undervoltageLimit != null)       { lightSettings.undervoltageLimit = settings.undervoltageLimit as BigDecimal }
+  if (settings.currentLimit != null)            { lightSettings.currentLimit = settings.currentLimit as BigDecimal }
   if (lightSettings) {
     logDebug("Relaying light settings to parent: ${lightSettings}")
     parent?.componentUpdateLightSettings(device, lightSettings)
+  }
+}
+
+/**
+ * Gathers WD_UI LED settings and sends them to the parent app for relay
+ * to the Shelly device via WD_UI.SetConfig RPC. Only applicable to the
+ * Shelly Plus WallDimmer; silently no-ops on other device types.
+ */
+private void relayWdUiSettings() {
+  Map wdUiSettings = [:]
+  if (settings.sysLedEnable != null) { wdUiSettings.sysLedEnable = settings.sysLedEnable as Boolean }
+  if (settings.powerLed != null)     { wdUiSettings.powerLed = settings.powerLed as String }
+  if (wdUiSettings) {
+    logDebug("Relaying WD_UI settings to parent: ${wdUiSettings}")
+    parent?.componentUpdateWdUiSettings(device, wdUiSettings)
   }
 }
 
