@@ -7311,9 +7311,11 @@ private String fetchHubitatDriverIdByName(String driverName) {
  * <p>Includes a final live-count safety guard — if any child device still uses this
  * driver at call time, the deletion is aborted.</p>
  *
- * <p><b>NOTE:</b> The delete endpoint {@code /driver/ajax/delete} requires hardware
- * verification. If the endpoint is wrong, this call fails gracefully and the driver
- * is left in place.</p>
+ * <p>Uses two endpoint paths matching Hubitat Package Manager behaviour:</p>
+ * <ul>
+ *   <li>Firmware ≥ 2.3.7.130: {@code GET /driver/editor/deleteJson/{id}} — JSON response</li>
+ *   <li>Firmware &lt; 2.3.7.130: {@code POST /driver/editor/update} with {@code _action_delete=Delete}</li>
+ * </ul>
  *
  * @param driverName Exact driver name as stored in {@code state.autoDrivers}
  */
@@ -7333,24 +7335,46 @@ private void deleteHubitatDriverFromHub(String driverName) {
         return
     }
 
+    Boolean deleted = false
     try {
-        httpPost([
-            uri: 'http://127.0.0.1:8080',
-            path: '/driver/ajax/delete',
-            contentType: 'application/x-www-form-urlencoded',
-            requestContentType: 'application/x-www-form-urlencoded',
-            body: "id=${driverId}",
-            timeout: 10
-        ]) { resp ->
-            if (resp?.status in [200, 302]) {
-                logInfo("Deleted unused driver '${driverName}' from hub (id=${driverId})")
-                removeDriverFromTracking(driverName)
-            } else {
-                logWarn("deleteHubitatDriverFromHub: unexpected HTTP ${resp?.status} for '${driverName}'")
+        if (location.hub.firmwareVersionString >= '2.3.7.130') {
+            // Modern path: GET /driver/editor/deleteJson/{id} → { "status": true }
+            httpGet([
+                uri: 'http://127.0.0.1:8080',
+                path: "/driver/editor/deleteJson/${driverId}",
+                timeout: 30
+            ]) { resp ->
+                deleted = (resp?.data?.status == true)
+                if (!deleted) {
+                    logWarn("deleteHubitatDriverFromHub: hub refused to delete '${driverName}' (status=${resp?.data?.status})")
+                }
+            }
+        } else {
+            // Legacy path: POST /driver/editor/update with _action_delete=Delete
+            httpPost([
+                uri: 'http://127.0.0.1:8080',
+                path: '/driver/editor/update',
+                requestContentType: 'application/x-www-form-urlencoded',
+                body: [id: driverId, '_action_delete': 'Delete'],
+                timeout: 30,
+                textParser: true
+            ]) { resp ->
+                // Success = null body OR no MDL alert element in the HTML response
+                String body = resp?.data?.text?.replace('\n', '')?.replace('\r', '') ?: ''
+                Boolean hasAlert = body.contains('alert-close close')
+                deleted = !hasAlert
+                if (!deleted) {
+                    logWarn("deleteHubitatDriverFromHub: hub refused to delete '${driverName}' (alert in response — driver may still be in use)")
+                }
             }
         }
     } catch (Exception e) {
         logWarn("deleteHubitatDriverFromHub: could not delete '${driverName}': ${e.message}")
+    }
+
+    if (deleted) {
+        logInfo("Deleted unused driver '${driverName}' from hub (id=${driverId})")
+        removeDriverFromTracking(driverName)
     }
 }
 
