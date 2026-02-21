@@ -14,7 +14,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Single Dimmer PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Single Dimmer PM', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Light'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()

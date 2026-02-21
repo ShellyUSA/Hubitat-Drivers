@@ -19,7 +19,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Gas Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Gas Sensor', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'GasDetector'
     //Attributes: naturalGas - ENUM ["clear", "tested", "detected"]
 

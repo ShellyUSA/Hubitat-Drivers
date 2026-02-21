@@ -21,7 +21,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Plus Uni Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Plus Uni Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'PowerMeter'
     capability 'EnergyMeter'
@@ -239,7 +239,7 @@ void reconcileChildDevices() {
     String driverName = desiredDriverMap[childDni]
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
     try {
-      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue("${baseType}Id", compId.toString())
       child.updateDataValue('installedDriverName', driverName)

@@ -15,7 +15,7 @@ import groovy.transform.Field
 import groovy.transform.CompileStatic
 
 metadata {
-  definition(name: 'Shelly Autoconf BLU TRV', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf BLU TRV', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'ThermostatHeatingSetpoint'
     //Attributes: heatingSetpoint - NUMBER; Commands: setHeatingSetpoint(temp)
 

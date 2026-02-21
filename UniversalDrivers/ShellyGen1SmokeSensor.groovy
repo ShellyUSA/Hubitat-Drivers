@@ -20,7 +20,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Smoke Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Smoke Sensor', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'SmokeDetector'
     //Attributes: smoke - ENUM ["detected", "clear", "tested"]
 

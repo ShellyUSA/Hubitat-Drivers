@@ -8,7 +8,7 @@
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf Input Switch', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Input Switch', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'Refresh'
 

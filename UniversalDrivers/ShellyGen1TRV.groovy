@@ -13,7 +13,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 TRV', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 TRV', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'ThermostatHeatingSetpoint'
     //Attributes: heatingSetpoint - NUMBER; Commands: setHeatingSetpoint(temp)
 

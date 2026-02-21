@@ -8,7 +8,7 @@
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf Cover PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Cover PM', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'WindowShade' //windowShade - ENUM ['opening', 'partially open', 'closed', 'open', 'closing', 'unknown'] //position - NUMBER, unit:%
     capability 'Refresh'
     capability 'CurrentMeter' //amperage - NUMBER, unit:A

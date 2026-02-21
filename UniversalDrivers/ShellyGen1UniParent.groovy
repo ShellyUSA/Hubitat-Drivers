@@ -17,7 +17,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Uni Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Uni Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'TemperatureMeasurement'
     capability 'VoltageMeasurement'
@@ -249,7 +249,7 @@ void reconcileChildDevices() {
     String driverName = desiredDriverMap[childDni]
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
     try {
-      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue(getComponentIdKey(baseType), compId.toString())
       child.updateDataValue('installedDriverName', driverName)

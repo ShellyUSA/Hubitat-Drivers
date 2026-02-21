@@ -11,7 +11,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Single Switch', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Single Switch', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()

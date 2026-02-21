@@ -17,7 +17,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 RGBW2 White Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 RGBW2 White Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'SwitchLevel'
     capability 'PowerMeter'
@@ -149,7 +149,7 @@ void reconcileChildDevices() {
     String driverName = 'Shelly Gen1 White Channel'
     String label = "${device.displayName} White ${compId}"
     try {
-      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      def child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', 'white')
       child.updateDataValue('whiteId', compId.toString())
       logInfo("Created child: ${label} (${driverName})")

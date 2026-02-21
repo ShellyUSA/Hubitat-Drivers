@@ -16,7 +16,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Single CCT PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Single CCT PM Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Light'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -191,7 +191,7 @@ void reconcileChildDevices() {
 
       String label = "${device.displayName} Input ${compId}"
       try {
-        def child = addChildDevice('ShellyUSA', 'Shelly Autoconf Input Button', childDni, [name: label, label: label])
+        def child = addChildDevice('ShellyDeviceManager', 'Shelly Autoconf Input Button', childDni, [name: label, label: label])
         child.updateDataValue('componentType', 'input')
         child.updateDataValue('inputId', compId.toString())
         child.sendEvent(name: 'numberOfButtons', value: 1)

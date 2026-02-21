@@ -9,7 +9,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Button', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Button', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'PushableButton'
     //Attributes: pushed - NUMBER, numberOfButtons - NUMBER
     //Commands: push(buttonNumber)

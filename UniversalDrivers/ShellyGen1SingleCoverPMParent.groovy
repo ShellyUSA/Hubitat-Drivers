@@ -14,7 +14,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Single Cover PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Single Cover PM Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'WindowShade'
     //Attributes: windowShade - ENUM ["opening", "partially open", "closed", "open", "closing", "unknown"]
     //            position - NUMBER, unit:%

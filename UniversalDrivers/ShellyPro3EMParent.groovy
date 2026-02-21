@@ -24,7 +24,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf EM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf EM Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'                 // Contactor relay (switch:100)
     capability 'TemperatureMeasurement' // Internal device temp (temperature:0)
     capability 'PowerMeter'             // Aggregated active power (W)
@@ -188,7 +188,7 @@ void reconcileChildDevices() {
 
       String label = "${device.displayName} Phase ${phaseLabels[i]}"
       try {
-        def child = addChildDevice('ShellyUSA', 'Shelly Autoconf EM', childDni, [name: label, label: label])
+        def child = addChildDevice('ShellyDeviceManager', 'Shelly Autoconf EM', childDni, [name: label, label: label])
         child.updateDataValue('componentType', 'em')
         child.updateDataValue('emId', '0')
         child.updateDataValue('phase', phaseLabels[i].toLowerCase())
@@ -206,7 +206,7 @@ void reconcileChildDevices() {
 
       String label = "${device.displayName} Channel ${i}"
       try {
-        def child = addChildDevice('ShellyUSA', 'Shelly Autoconf EM', childDni, [name: label, label: label])
+        def child = addChildDevice('ShellyDeviceManager', 'Shelly Autoconf EM', childDni, [name: label, label: label])
         child.updateDataValue('componentType', 'em1')
         child.updateDataValue('em1Id', i.toString())
         logInfo("Created child: ${label} (Shelly Autoconf EM)")

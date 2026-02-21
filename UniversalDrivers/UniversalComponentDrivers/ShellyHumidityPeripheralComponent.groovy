@@ -7,7 +7,7 @@
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf Humidity Peripheral', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Humidity Peripheral', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Refresh'
     capability 'RelativeHumidityMeasurement' //humidity - NUMBER, unit:%rh
 

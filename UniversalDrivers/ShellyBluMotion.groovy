@@ -13,7 +13,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly BLU Motion', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly BLU Motion', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'MotionSensor'
     //Attributes: motion - ENUM ["active", "inactive"]
 

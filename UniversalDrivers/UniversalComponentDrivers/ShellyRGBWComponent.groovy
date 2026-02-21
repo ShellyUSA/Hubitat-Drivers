@@ -9,7 +9,7 @@
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf RGBW', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf RGBW', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Light' //switch - ENUM ["on", "off"]
     capability 'SwitchLevel' //level - NUMBER, unit:%
     capability 'ChangeLevel'

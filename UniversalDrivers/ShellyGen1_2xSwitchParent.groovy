@@ -15,7 +15,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 2x Switch Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 2x Switch Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'PushableButton'
     capability 'HoldableButton'
@@ -141,7 +141,7 @@ void reconcileChildDevices() {
     String driverName = 'Shelly Autoconf Switch'
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
     try {
-      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      def child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue("${baseType}Id", compId.toString())
       logInfo("Created child: ${label} (${driverName})")

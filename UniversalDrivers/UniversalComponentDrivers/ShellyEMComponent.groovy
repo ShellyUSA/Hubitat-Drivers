@@ -7,7 +7,7 @@
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf EM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf EM', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Refresh'
     capability 'CurrentMeter' //amperage - NUMBER, unit:A
     capability 'PowerMeter' //power - NUMBER, unit:W

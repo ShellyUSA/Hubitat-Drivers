@@ -17,7 +17,7 @@ import groovy.transform.CompileStatic
 import groovy.transform.Field
 
 metadata {
-  definition(name: 'Shelly PLUGS_UI RGB', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly PLUGS_UI RGB', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Light'         // switch - ENUM ["on", "off"]
     capability 'SwitchLevel'   // level - NUMBER, unit:%
     capability 'ColorControl'

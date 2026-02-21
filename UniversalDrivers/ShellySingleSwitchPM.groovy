@@ -11,7 +11,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Single Switch PM', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Single Switch PM', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -477,7 +477,7 @@ private void reconcilePlugsUiChild() {
   logInfo("Creating PLUGS_UI RGB child device for LED control")
   try {
     com.hubitat.app.DeviceWrapper child = addChildDevice(
-      'ShellyUSA', 'Shelly PLUGS_UI RGB', childDni,
+      'ShellyDeviceManager', 'Shelly PLUGS_UI RGB', childDni,
       [name: 'Shelly PLUGS_UI RGB', label: "${device.displayName} LED"]
     )
     child.updateDataValue('plugsUiRgb', 'true')

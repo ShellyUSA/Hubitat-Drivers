@@ -15,7 +15,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf 4x Switch PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf 4x Switch PM Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'PowerMeter'
     capability 'EnergyMeter'
@@ -193,7 +193,7 @@ void reconcileChildDevices() {
 
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
     try {
-      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue("${baseType}Id", compId.toString())
       if (baseType == 'input') {
@@ -225,7 +225,7 @@ private void reconcilePowerstripUiChild() {
   logInfo('Creating POWERSTRIP_UI LED child device for LED strip control')
   try {
     com.hubitat.app.DeviceWrapper child = addChildDevice(
-      'ShellyUSA', 'Shelly Autoconf PowerstripUI', childDni,
+      'ShellyDeviceManager', 'Shelly Autoconf PowerstripUI', childDni,
       [name: 'Shelly Autoconf PowerstripUI', label: "${device.displayName} LED"]
     )
     child.updateDataValue('powerstripUi', 'true')

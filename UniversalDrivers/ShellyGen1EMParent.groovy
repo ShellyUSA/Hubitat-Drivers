@@ -15,7 +15,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 EM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 EM Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Switch'
     capability 'TemperatureMeasurement'
     capability 'PowerMeter'
@@ -226,7 +226,7 @@ void reconcileChildDevices() {
     String driverName = 'Shelly Autoconf EM'
     String label = "${device.displayName} Channel ${compId}"
     try {
-      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      def child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue('emId', compId.toString())
       // Propagate parent data values for forward compatibility

@@ -20,7 +20,7 @@ import groovy.transform.CompileStatic
 import groovy.transform.Field
 
 metadata {
-  definition(name: 'Shelly Autoconf PowerstripUI', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf PowerstripUI', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Light'         // switch - ENUM ["on", "off"]
     capability 'SwitchLevel'   // level - NUMBER, unit:%
     capability 'ColorControl'

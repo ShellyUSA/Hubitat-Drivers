@@ -15,7 +15,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf BLU Gateway Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf BLU Gateway Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Initialize'
     //Commands: initialize()
 
@@ -165,7 +165,7 @@ void reconcileChildDevices() {
     String driverName = 'Shelly Autoconf BLU TRV'
     String label = "${device.displayName} TRV ${compId}"
     try {
-      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      com.hubitat.app.DeviceWrapper child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', 'blutrv')
       child.updateDataValue('bluetrvId', compId.toString())
       logInfo("Created child: ${label} (${driverName})")

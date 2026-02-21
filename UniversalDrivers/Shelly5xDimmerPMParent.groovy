@@ -15,7 +15,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf 5x Dimmer PM Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf 5x Dimmer PM Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Light'
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
@@ -213,7 +213,7 @@ void reconcileChildDevices() {
 
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
     try {
-      def child = addChildDevice('ShellyUSA', driverName, childDni, [name: label, label: label])
+      def child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
       child.updateDataValue('componentType', baseType)
       child.updateDataValue("${baseType}Id", compId.toString())
       if (baseType == 'input') {

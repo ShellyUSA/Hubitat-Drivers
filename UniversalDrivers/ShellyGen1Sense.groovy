@@ -15,7 +15,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Gen1 Sense', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Gen1 Sense', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'MotionSensor'
     //Attributes: motion - ENUM ["inactive", "active"]
 

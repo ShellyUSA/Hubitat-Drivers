@@ -21,7 +21,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Smoke Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Smoke Sensor', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'SmokeDetector'
     //Attributes: smoke - ENUM ["clear", "tested", "detected"]
 

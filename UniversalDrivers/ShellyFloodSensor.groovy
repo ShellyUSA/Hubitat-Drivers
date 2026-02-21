@@ -21,7 +21,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Flood Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Flood Sensor', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'WaterSensor'
     //Attributes: water - ENUM ["wet", "dry"]
 

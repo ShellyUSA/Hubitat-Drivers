@@ -7,7 +7,7 @@
 import groovy.transform.Field
 
 metadata {
-  definition (name: 'Shelly Autoconf Input Count', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Autoconf Input Count', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Sensor'
     capability 'Refresh'
 

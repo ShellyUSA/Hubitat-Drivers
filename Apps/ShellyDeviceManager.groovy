@@ -269,7 +269,7 @@
 
 definition(
     name: "Shelly Device Manager",
-    namespace: "ShellyUSA",
+    namespace: "ShellyDeviceManager",
     author: "Daniel Winks",
     description: "Discover, configure, and manage Shelly WiFi devices on Hubitat",
     category: "Convenience",
@@ -817,14 +817,14 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     }
 
     try {
-        def childDevice = addChildDevice('ShellyUSA', driverName, dni, deviceProps)
+        def childDevice = addChildDevice('ShellyDeviceManager', driverName, dni, deviceProps)
         state.remove('hubDnisCachedAt') // Invalidate DNI cache after device creation
 
         logInfo("Created device: ${deviceLabel} using driver ${driverName}")
         appendLog('info', "Created: ${deviceLabel} (${driverName})")
 
         // Track this device against its driver
-        associateDeviceWithDriver(driverName, 'ShellyUSA', dni)
+        associateDeviceWithDriver(driverName, 'ShellyDeviceManager', dni)
 
         // Store device component config for later reference (config page, capability checks)
         storeDeviceConfig(dni, deviceInfo, driverName)
@@ -926,13 +926,13 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     ]
 
     try {
-        def parentDevice = addChildDevice('ShellyUSA', parentDriverName, parentDni, parentProps)
+        def parentDevice = addChildDevice('ShellyDeviceManager', parentDriverName, parentDni, parentProps)
         state.remove('hubDnisCachedAt') // Invalidate DNI cache after device creation
         logInfo("Created parent device: ${baseLabel} using driver ${parentDriverName}")
         appendLog('info', "Created parent: ${baseLabel} (${parentDriverName})")
 
         // Track parent device against its driver
-        associateDeviceWithDriver(parentDriverName, 'ShellyUSA', parentDni)
+        associateDeviceWithDriver(parentDriverName, 'ShellyDeviceManager', parentDni)
 
         // Step 4: Set components and pmComponents data values on parent
         // The parent driver will read these to create driver-level children
@@ -1029,7 +1029,7 @@ void updated() {
     unsubscribe()
     unschedule()
     initialize()
-    sweepAllUnusedShellyHubDrivers()  // hub-centric sweep: deletes any unused ShellyUSA drivers regardless of tracking state
+    sweepAllUnusedShellyHubDrivers()  // hub-centric sweep: deletes any unused ShellyDeviceManager drivers regardless of tracking state
 }
 
 /**
@@ -7138,7 +7138,7 @@ private Boolean installPrebuiltDriver(String driverName, List<String> components
         return false
     }
 
-    registerAutoDriver(driverNameWithVersion, 'ShellyUSA', version, components, componentPowerMonitoring)
+    registerAutoDriver(driverNameWithVersion, 'ShellyDeviceManager', version, components, componentPowerMonitoring)
 
     return true
 }
@@ -7163,7 +7163,7 @@ private Boolean installDriver(String sourceCode) {
             return false
         }
         String driverName = nameMatch.group(1)
-        String namespace = "ShellyUSA"
+        String namespace = "ShellyDeviceManager"
 
         // Strip version suffix (e.g. "Shelly Autoconf Single Switch PM v1.0.5" -> "Shelly Autoconf Single Switch PM")
         // so we can match against any previously installed version of the same driver
@@ -7262,7 +7262,7 @@ private Boolean installDriver(String sourceCode) {
  * Checks whether a driver with the given name and namespace is installed on the hub.
  *
  * @param driverName The exact driver name to look for (including version suffix)
- * @param namespace The driver namespace (e.g., 'ShellyUSA')
+ * @param namespace The driver namespace (e.g., 'ShellyDeviceManager')
  * @return true if the driver exists on the hub
  */
 private Boolean isDriverOnHub(String driverName, String namespace) {
@@ -7283,7 +7283,7 @@ private Boolean isDriverOnHub(String driverName, String namespace) {
 
 /**
  * Queries the hub's installed driver list and returns the internal Hubitat ID for a
- * ShellyUSA driver matching {@code driverName}. Tries exact name first, then falls
+ * ShellyDeviceManager driver matching {@code driverName}. Tries exact name first, then falls
  * back to base-name matching (strips version suffix) to tolerate version drift between
  * {@code state.autoDrivers} and the hub's current driver list.
  *
@@ -7299,12 +7299,12 @@ private String fetchHubitatDriverIdByName(String driverName) {
                 List allDrivers = resp.data?.drivers as List ?: []
                 // 1. Exact match (fastest, most precise)
                 Map match = allDrivers.find { d ->
-                    d.type == 'usr' && d?.namespace == 'ShellyUSA' && d?.name == driverName
+                    d.type == 'usr' && d?.namespace == 'ShellyDeviceManager' && d?.name == driverName
                 } as Map
                 // 2. Base-name fallback — handles cases where the hub has a different version installed
                 if (!match) {
                     match = allDrivers.find { d ->
-                        d.type == 'usr' && d?.namespace == 'ShellyUSA' &&
+                        d.type == 'usr' && d?.namespace == 'ShellyDeviceManager' &&
                         d?.name?.toString()?.replaceAll(/\s+v\d+(\.\d+)*$/, '') == baseName
                     } as Map
                     if (match) {
@@ -7425,7 +7425,7 @@ private void performHubDriverDelete(String driverId, String driverName) {
  * @return true if the driver is confirmed on the hub, false otherwise
  */
 private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
-    String namespace = 'ShellyUSA'
+    String namespace = 'ShellyDeviceManager'
     if (isDriverOnHub(driverName, namespace)) {
         logDebug("Driver '${driverName}' confirmed on hub")
         return true
@@ -7551,7 +7551,7 @@ private Boolean isComponentDriverInstalled(String driverName) {
             if (resp?.status == 200) {
                 found = resp.data?.drivers?.any { driver ->
                     driver.type == 'usr' &&
-                    driver?.namespace == 'ShellyUSA' &&
+                    driver?.namespace == 'ShellyDeviceManager' &&
                     driver?.name == driverName
                 } ?: false
             }
@@ -7584,11 +7584,11 @@ private void fetchAndInstallComponentDriver(String fileName, String driverName) 
 
     // Register in autoDrivers tracking as a component driver
     String version = getAppVersion()
-    String key = "ShellyUSA.${driverName}"
+    String key = "ShellyDeviceManager.${driverName}"
     initializeDriverTracking()
     state.autoDrivers[key] = [
         name: driverName,
-        namespace: 'ShellyUSA',
+        namespace: 'ShellyDeviceManager',
         version: version,
         isComponentDriver: true,
         installedAt: now(),
@@ -10178,12 +10178,12 @@ private void createBleDevice(String mac) {
     ]
 
     try {
-        def childDevice = addChildDevice('ShellyUSA', driverNameWithVersion, mac, deviceProps)
+        def childDevice = addChildDevice('ShellyDeviceManager', driverNameWithVersion, mac, deviceProps)
         logInfo("Created BLE device: ${deviceLabel} using driver ${driverNameWithVersion}")
         appendLog('info', "Created BLE device: ${deviceLabel}")
 
         // Track driver
-        associateDeviceWithDriver(driverNameWithVersion, 'ShellyUSA', mac)
+        associateDeviceWithDriver(driverNameWithVersion, 'ShellyDeviceManager', mac)
 
         // Store config
         Map deviceConfigs = state.deviceConfigs ?: [:]
@@ -10228,7 +10228,7 @@ private void removeBleDevice(String mac) {
         Map deviceConfigs = state.deviceConfigs ?: [:]
         Map config = deviceConfigs[macKey] as Map
         if (config?.driverName) {
-            String driverKey = "ShellyUSA.${config.driverName}".toString()
+            String driverKey = "ShellyDeviceManager.${config.driverName}".toString()
             Map allDrivers = state.autoDrivers ?: [:]
             Map driverEntry = allDrivers[driverKey] as Map
             if (driverEntry?.devicesUsing instanceof List) {
@@ -11139,7 +11139,7 @@ ChildDeviceWrapper createChildVoltage(Integer id) {
 }
 
 ChildDeviceWrapper addShellyDevice(String driverName, String dni, Map props) {
-  return addChildDevice('ShellyUSA', driverName, dni, props)
+  return addChildDevice('ShellyDeviceManager', driverName, dni, props)
 }
 
 ChildDeviceWrapper getShellyDevice(String dni) {return getChildDevice(dni)}
@@ -12891,12 +12891,12 @@ private Integer getAppCodeId(String cookie) {
         Integer codeId = null
         httpGet(params) { resp ->
             if (resp?.status == 200 && resp.data) {
-                def appEntry = resp.data.find { it.namespace == 'ShellyUSA' && (it.name == 'Shelly Device Manager' || it.name == 'Shelly mDNS Discovery') }
+                def appEntry = resp.data.find { it.namespace == 'ShellyDeviceManager' && (it.name == 'Shelly Device Manager' || it.name == 'Shelly mDNS Discovery') }
                 if (appEntry) {
                     codeId = appEntry.id as Integer
                     logDebug("Found app code ID: ${codeId}")
                 } else {
-                    logError("getAppCodeId: could not find ShellyUSA app in /hub2/userAppTypes (${resp.data.size()} entries)")
+                    logError("getAppCodeId: could not find ShellyDeviceManager app in /hub2/userAppTypes (${resp.data.size()} entries)")
                 }
             }
         }
@@ -13080,7 +13080,7 @@ private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) 
 }
 
 /**
- * Hub-centric sweep: queries every ShellyUSA user driver installed on the hub and deletes
+ * Hub-centric sweep: queries every ShellyDeviceManager user driver installed on the hub and deletes
  * any that are not currently assigned to a child device. Unlike {@link #deleteUnusedTrackedDrivers},
  * this does not depend on {@code state.autoDrivers} — it acts on ground truth from the hub.
  *
@@ -13113,7 +13113,7 @@ private void sweepAllUnusedShellyHubDrivers() {
             }
             List allDrivers = resp.data?.drivers as List ?: []
             allDrivers.each { d ->
-                if (d.type != 'usr' || d?.namespace != 'ShellyUSA') { return }
+                if (d.type != 'usr' || d?.namespace != 'ShellyDeviceManager') { return }
                 String driverName = d.name?.toString() ?: ''
                 String driverBase = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
                 String driverId   = d.id?.toString() ?: ''
@@ -13139,7 +13139,7 @@ private void sweepAllUnusedShellyHubDrivers() {
  * and timestamp of installation/update.
  *
  * @param driverName The name of the generated driver
- * @param namespace The driver namespace (e.g., 'ShellyUSA')
+ * @param namespace The driver namespace (e.g., 'ShellyDeviceManager')
  * @param version The semantic version of the driver
  * @param components List of Shelly components this driver supports
  * @param componentPowerMonitoring Map of component names to power monitoring capability

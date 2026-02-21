@@ -13,7 +13,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly BLU HT', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly BLU HT', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'TemperatureMeasurement'
     //Attributes: temperature - NUMBER
 

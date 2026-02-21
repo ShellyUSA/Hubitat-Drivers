@@ -14,7 +14,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf PM Monitor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf PM Monitor', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'CurrentMeter'
     //Attributes: amperage - NUMBER, unit:A
 

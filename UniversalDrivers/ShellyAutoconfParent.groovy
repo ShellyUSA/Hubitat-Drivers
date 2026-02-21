@@ -18,7 +18,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Initialize'
     //Commands: initialize()
 
@@ -179,7 +179,7 @@ private void reconcileChildDevices() {
         String label = "${device.displayName} EM${compId} Phase ${phaseLabels[phaseIdx]}"
         Map childData = [componentType: 'em', emId: compId.toString(), phase: phaseLabels[phaseIdx].toLowerCase()]
         try {
-          addChildDeviceHelper('ShellyUSA', 'Shelly Autoconf EM', childDni,
+          addChildDeviceHelper('ShellyDeviceManager', 'Shelly Autoconf EM', childDni,
             [name: label, label: label])
           def child = getChildDeviceHelper(childDni)
           if (child) {
@@ -246,7 +246,7 @@ private void reconcileChildDevices() {
       String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
 
       try {
-        addChildDeviceHelper('ShellyUSA', driverName, childDni,
+        addChildDeviceHelper('ShellyDeviceManager', driverName, childDni,
           [name: label, label: label])
         def child = getChildDeviceHelper(childDni)
         if (child) {

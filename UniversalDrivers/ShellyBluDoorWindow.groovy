@@ -14,7 +14,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly BLU DoorWindow', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly BLU DoorWindow', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'ContactSensor'
     //Attributes: contact - ENUM ["open", "closed"]
 

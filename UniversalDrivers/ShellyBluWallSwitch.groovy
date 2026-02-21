@@ -14,7 +14,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly BLU WallSwitch4', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly BLU WallSwitch4', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'PushableButton'
     //Attributes: pushed - NUMBER, numberOfButtons - NUMBER
 

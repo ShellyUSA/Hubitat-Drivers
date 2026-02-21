@@ -14,7 +14,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf 4x Input Parent', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf 4x Input Parent', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Initialize'
     //Commands: initialize()
 
@@ -164,7 +164,7 @@ private void reconcileChildDevices() {
     Map childData = [componentType: 'input', inputId: i.toString()]
 
     try {
-      addChildDeviceHelper('ShellyUSA', 'Shelly Autoconf Input Button', childDni,
+      addChildDeviceHelper('ShellyDeviceManager', 'Shelly Autoconf Input Button', childDni,
         [name: label, label: label])
       def child = getChildDeviceHelper(childDni)
       if (child) {

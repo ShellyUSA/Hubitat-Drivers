@@ -16,7 +16,7 @@
  */
 
 metadata {
-  definition(name: 'Shelly Autoconf THL Sensor', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition(name: 'Shelly Autoconf THL Sensor', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'TemperatureMeasurement'
     //Attributes: temperature - NUMBER
 
