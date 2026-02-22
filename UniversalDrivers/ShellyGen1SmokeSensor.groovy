@@ -32,6 +32,9 @@ metadata {
 
     attribute 'lastUpdated', 'string'
     attribute 'powerSource', 'string'
+    attribute 'syncStatus', 'string'   // "synced", "pending (N commands)", "error"
+
+    command 'cancelPendingCommands'
   }
 }
 
@@ -104,6 +107,7 @@ void parse(String description) {
     if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
 
     if (msg?.status != null) { return }
+    parent?.componentDeviceAwoke(device)
     checkAndUpdateSourceIp(msg)
 
     Map params = parseWebhookPath(msg)
@@ -324,6 +328,16 @@ void distributeStatus(Map status) {
 // ╚══════════════════════════════════════════════════════════════╝
 
 
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  Command Queue                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+/** Cancels all pending commands queued for this sleepy device. */
+void cancelPendingCommands() {
+  logInfo('Cancelling all pending commands')
+  parent?.componentCancelPendingCommands(device)
+}
 
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  Logging Helpers                                             ║

@@ -3,6 +3,17 @@
 @Field static ConcurrentHashMap<String, Boolean> foundDevices = new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
 
+// Command queue for sleepy battery devices — holds pending commands until the device wakes up.
+// Outer key: device DNI. Inner key: dedupKey. Inner value: queue entry map.
+@Field static ConcurrentHashMap<String, ConcurrentHashMap<String, Map>> commandQueues =
+    new java.util.concurrent.ConcurrentHashMap<String, ConcurrentHashMap<String, Map>>()
+// Tracks the most recent wake-up timestamp (epoch millis) per device DNI.
+@Field static ConcurrentHashMap<String, Long> lastWakeUpTimestamps =
+    new java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+@Field static final Integer MAX_COMMAND_RETRIES = 5
+@Field static final Long OPPORTUNISTIC_DRAIN_WINDOW_MS = 10000L
+
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into prebuilt drivers and to detect app updates for automatic driver updates.
@@ -2957,6 +2968,10 @@ private void removeDeviceByIp(String ip) {
             if (childDev) {
                 String childName = childDev.displayName
                 if (childDev.typeName) { deletedDriverNames << childDev.typeName.toString() }
+                // Clean up command queue for child before deletion
+                commandQueues.remove(childDni)
+                lastWakeUpTimestamps.remove(childDni)
+                if (state.commandQueues) { state.commandQueues.remove(childDni) }
                 deleteChildDevice(childDni)
                 logInfo("Removed child device: ${childName} (${childDni})")
                 appendLog('info', "Removed child: ${childName}")
@@ -2964,8 +2979,11 @@ private void removeDeviceByIp(String ip) {
         }
     }
 
-    // Step 3: Remove the device from Hubitat
+    // Step 3: Remove the device (and its command queue) from Hubitat
     if (device.typeName) { deletedDriverNames << device.typeName.toString() }
+    commandQueues.remove(dni)
+    lastWakeUpTimestamps.remove(dni)
+    if (state.commandQueues) { state.commandQueues.remove(dni) }
     deleteChildDevice(dni)
     state.remove('hubDnisCachedAt') // Invalidate DNI cache after device removal
     logInfo("Removed device: ${name} (${dni})")
@@ -4149,6 +4167,9 @@ void initialize() {
     state.remove('ipScanCurrentOctet')
     state.remove('ipScanSubnet')
     state.remove('ipScanResults')
+
+    // Restore command queues for sleepy battery devices from persistent state
+    loadCommandQueuesFromState()
 
     // BLE state initialization
     if (!state.discoveredBleDevices) { state.discoveredBleDevices = [:] }
@@ -15148,10 +15169,10 @@ void componentRefresh(def childDevice) {
                     childDevice.updateDataValue('gen1Type', resolvedGen1Type)
                 }
             }
-            // For battery devices: attempt pending action URL installation and settings on wake-up
+            // For battery devices: attempt pending action URL installation and drain command queue on wake-up
             if (isSleepyBatteryDevice(childDevice)) {
                 attemptGen1ActionUrlInstallOnWake(ipAddress)
-                applyPendingGen1Settings(childDevice, ipAddress)
+                drainCommandQueue(childDevice.deviceNetworkId)
             }
             pollGen1DeviceStatus(ipAddress)
             if (childDevice.getDataValue('isParentDevice') == 'true') {
@@ -15260,15 +15281,16 @@ void componentUpdateGen1Settings(def childDevice, Map settingsMap) {
     }
 
     if (isSleepyBatteryDevice(childDevice)) {
-        // Sleepy devices: try immediately, queue on failure for next wake-up
-        Map result = sendGen1Setting(ipAddress, 'settings', settingsMap)
-        if (result != null) {
-            logInfo("Gen 1 settings applied to ${childDevice.displayName}")
-            clearPendingGen1Settings(childDevice.deviceNetworkId)
-        } else {
-            logInfo("Device ${childDevice.displayName} is asleep — queuing settings for next wake-up")
-            queueGen1Settings(childDevice.deviceNetworkId, settingsMap)
-        }
+        // Sleepy devices: always queue — opportunistic drain handles "just woke up" case
+        queueCommand(childDevice.deviceNetworkId, [
+            dedupKey    : 'gen1_setting:settings'.toString(),
+            commandType : 'gen1_setting',
+            endpoint    : 'settings',
+            params      : settingsMap,
+            queuedAt    : now(),
+            retryCount  : 0
+        ])
+        logInfo("Queued Gen 1 settings for ${childDevice.displayName} (device may be asleep)")
         return
     }
 
@@ -15281,54 +15303,363 @@ void componentUpdateGen1Settings(def childDevice, Map settingsMap) {
     }
 }
 
-/**
- * Queues Gen 1 device settings for delivery on next wake-up.
- * Merges new settings with any already-queued settings for the same device.
- *
- * @param dni The device network ID
- * @param settingsMap Map of Gen 1 /settings query parameters to queue
- */
-private void queueGen1Settings(String dni, Map settingsMap) {
-    if (!state.pendingGen1Settings) { state.pendingGen1Settings = [:] }
-    Map existing = state.pendingGen1Settings[dni] as Map ?: [:]
-    existing.putAll(settingsMap)
-    state.pendingGen1Settings[dni] = existing
-    logDebug("Queued Gen 1 settings for ${dni}: ${existing}")
-}
+// ═══════════════════════════════════════════════════════════════
+// ║  Command Queue for Sleepy Battery Devices                    ║
+// ╚═══════════════════════════════════════════════════════════════╝
 
 /**
- * Clears any pending Gen 1 settings for a device after successful delivery.
+ * Adds or merges a command entry into the queue for a sleepy device.
+ * For {@code gen1_setting} commands, params are merged (accumulated) with any
+ * existing entry sharing the same dedupKey. For all other types, the latest
+ * entry replaces any existing one with the same dedupKey.
+ *
+ * After queuing, persists to {@code state}, updates the driver's {@code syncStatus}
+ * attribute, and attempts an opportunistic drain if the device woke up recently.
  *
  * @param dni The device network ID
+ * @param entry A command queue entry map with keys: dedupKey, commandType, endpoint, params, queuedAt, retryCount
  */
-private void clearPendingGen1Settings(String dni) {
-    if (state.pendingGen1Settings?.containsKey(dni)) {
-        state.pendingGen1Settings.remove(dni)
+private void queueCommand(String dni, Map entry) {
+    if (!dni || !entry?.dedupKey) { return }
+
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.computeIfAbsent(
+        dni, { String k -> new ConcurrentHashMap<String, Map>() }
+    )
+
+    String dedupKey = entry.dedupKey.toString()
+    if (entry.commandType == 'gen1_setting') {
+        // Merge params for settings — accumulates multiple preference changes
+        Map existing = deviceQueue.get(dedupKey)
+        if (existing) {
+            Map mergedParams = (existing.params as Map) ?: [:]
+            mergedParams.putAll(entry.params as Map)
+            existing.params = mergedParams
+            existing.queuedAt = entry.queuedAt
+            logDebug("Merged queued settings for ${dni}: ${mergedParams}")
+        } else {
+            deviceQueue.put(dedupKey, entry)
+            logDebug("Queued new settings for ${dni}: ${entry.params}")
+        }
+    } else {
+        // Replace — latest command wins
+        deviceQueue.put(dedupKey, entry)
+        logDebug("Queued command for ${dni}: ${entry.commandType} → ${entry.endpoint}")
+    }
+
+    persistCommandQueue(dni)
+    updateSyncStatus(dni)
+
+    // Opportunistic drain: if device woke up within the last 10 seconds, try sending now
+    Long lastWake = lastWakeUpTimestamps.get(dni)
+    if (lastWake != null && (now() - lastWake) < OPPORTUNISTIC_DRAIN_WINDOW_MS) {
+        logDebug("Device ${dni} woke up recently — attempting opportunistic drain")
+        drainCommandQueue(dni)
     }
 }
 
 /**
- * Applies any queued Gen 1 settings to a device that has just woken up.
- * Called during {@link #componentRefresh(def)} for sleepy battery devices.
- * On success, clears the queue; on failure, retains for the next wake-up.
+ * Removes a single command entry from the queue after successful delivery.
+ * Persists the updated queue and refreshes the driver's {@code syncStatus}.
+ *
+ * @param dni The device network ID
+ * @param dedupKey The de-duplication key of the entry to remove
+ */
+private void dequeueCommand(String dni, String dedupKey) {
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    if (deviceQueue) {
+        deviceQueue.remove(dedupKey)
+        if (deviceQueue.isEmpty()) { commandQueues.remove(dni) }
+    }
+    persistCommandQueue(dni)
+    updateSyncStatus(dni)
+}
+
+/**
+ * Clears all queued commands for a device. Used by {@code cancelPendingCommands}.
+ *
+ * @param dni The device network ID
+ */
+private void clearCommandQueue(String dni) {
+    commandQueues.remove(dni)
+    persistCommandQueue(dni)
+    updateSyncStatus(dni)
+    logInfo("Cleared command queue for ${dni}")
+}
+
+/**
+ * Returns the number of pending commands for a device.
+ *
+ * @param dni The device network ID
+ * @return The count of queued command entries
+ */
+private Integer getQueuedCommandCount(String dni) {
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    return deviceQueue ? deviceQueue.size() : 0
+}
+
+/**
+ * Persists the in-memory command queue for a device to {@code state.commandQueues}.
+ * Called after every queue mutation to ensure persistence across hub reboots.
+ *
+ * <p>NOTE: {@code state} writes from concurrent async callbacks may race. The
+ * {@code ConcurrentHashMap} is the authoritative in-memory source; {@code state} is
+ * best-effort persistence for hub reboot recovery. For idempotent Gen1 settings,
+ * a duplicate-send after reboot is harmless.</p>
+ *
+ * @param dni The device network ID
+ */
+private void persistCommandQueue(String dni) {
+    if (!state.commandQueues) { state.commandQueues = [:] }
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    if (deviceQueue && !deviceQueue.isEmpty()) {
+        state.commandQueues[dni] = deviceQueue.values().toList()
+    } else {
+        state.commandQueues.remove(dni)
+    }
+}
+
+/**
+ * Restores command queues from {@code state.commandQueues} into the in-memory
+ * static maps on app startup. Also migrates any legacy {@code state.pendingGen1Settings}
+ * entries into the new queue format.
+ */
+private void loadCommandQueuesFromState() {
+    // Restore persisted queues
+    Map persistedQueues = state.commandQueues as Map
+    if (persistedQueues) {
+        persistedQueues.each { String dni, Object entries ->
+            List<Map> entryList = entries as List<Map>
+            if (entryList) {
+                ConcurrentHashMap<String, Map> deviceQueue = new ConcurrentHashMap<String, Map>()
+                entryList.each { Map entry ->
+                    String dedupKey = entry.dedupKey?.toString()
+                    if (dedupKey) { deviceQueue.put(dedupKey, entry) }
+                }
+                if (!deviceQueue.isEmpty()) {
+                    commandQueues.put(dni, deviceQueue)
+                }
+            }
+        }
+        logDebug("Restored command queues for ${commandQueues.size()} devices from state")
+    }
+
+    // Migrate legacy state.pendingGen1Settings
+    Map legacySettings = state.pendingGen1Settings as Map
+    if (legacySettings) {
+        legacySettings.each { String dni, Object val ->
+            Map settingsMap = val as Map
+            if (settingsMap) {
+                queueCommand(dni, [
+                    dedupKey    : 'gen1_setting:settings'.toString(),
+                    commandType : 'gen1_setting',
+                    endpoint    : 'settings',
+                    params      : settingsMap,
+                    queuedAt    : now(),
+                    retryCount  : 0
+                ])
+            }
+        }
+        state.remove('pendingGen1Settings')
+        logInfo("Migrated ${legacySettings.size()} legacy Gen1 settings to command queue")
+    }
+
+    // Refresh syncStatus attributes for all devices with queued commands
+    commandQueues.keySet().each { String dni -> updateSyncStatus(dni) }
+}
+
+/**
+ * Updates the {@code syncStatus} attribute on a child device to reflect the
+ * current state of its command queue: "synced", "pending (N commands)", or "error".
+ *
+ * @param dni The device network ID
+ */
+private void updateSyncStatus(String dni) {
+    List<ChildDeviceWrapper> children = getChildDevices()
+    ChildDeviceWrapper child = children?.find { it.deviceNetworkId == dni }
+    if (!child) { return }
+    if (!deviceHasAttributeHelper(child, 'syncStatus')) { return }
+
+    // Single snapshot read to avoid TOCTOU race between size check and error scan
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    Integer count = deviceQueue ? deviceQueue.size() : 0
+    String status
+    if (count == 0) {
+        status = 'synced'
+    } else {
+        // Check if any entries have a permanent error or exceeded max retries
+        Boolean hasErrors = deviceQueue.values().any { Map entry ->
+            entry.permanentError == true || (entry.retryCount as Integer ?: 0) >= MAX_COMMAND_RETRIES
+        }
+        if (hasErrors) {
+            status = 'error'
+        } else {
+            String cmdWord = count == 1 ? 'command' : 'commands'
+            status = "pending (${count} ${cmdWord})".toString()
+        }
+    }
+    childSendEventHelper(child, [name: 'syncStatus', value: status, descriptionText: "Sync status: ${status}"])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Wake-Up Handling & Queue Drain
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Called by sleepy drivers from {@code parse()} when a webhook arrives,
+ * signalling the device has woken up. Records the wake-up timestamp and
+ * drains any pending commands while the device is still reachable.
  *
  * @param childDevice The child device that just woke up
- * @param ipAddress The device's IP address
  */
-private void applyPendingGen1Settings(def childDevice, String ipAddress) {
-    if (!childDevice || !ipAddress) { return }
+void componentDeviceAwoke(com.hubitat.app.DeviceWrapper childDevice) {
+    if (!childDevice) { return }
     String dni = childDevice.deviceNetworkId
-    Map pending = state.pendingGen1Settings?.get(dni) as Map
-    if (!pending) { return }
+    lastWakeUpTimestamps.put(dni, now())
 
-    logInfo("Applying queued settings to ${childDevice.displayName}: ${pending}")
-    Map result = sendGen1Setting(ipAddress, 'settings', pending)
-    if (result != null) {
-        logInfo("Queued Gen 1 settings applied to ${childDevice.displayName}")
-        clearPendingGen1Settings(dni)
-    } else {
-        logWarn("Failed to apply queued settings to ${childDevice.displayName} — will retry next wake-up")
+    // Drain any pending commands
+    Integer queueSize = getQueuedCommandCount(dni)
+    if (queueSize > 0) {
+        logInfo("Device ${childDevice.displayName} woke up with ${queueSize} pending commands — draining queue")
+        drainCommandQueue(dni)
     }
+}
+
+/**
+ * Dispatches all queued commands for a device via async HTTP.
+ * Gen1 commands use {@code asynchttpGet}, Gen2+ RPC commands use {@code asynchttpPost}.
+ * All requests are fire-and-forget; callbacks handle success/failure per entry.
+ *
+ * @param dni The device network ID
+ */
+private void drainCommandQueue(String dni) {
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    if (!deviceQueue || deviceQueue.isEmpty()) { return }
+
+    // Look up child device and IP address
+    List<ChildDeviceWrapper> children = getChildDevices()
+    ChildDeviceWrapper child = children?.find { it.deviceNetworkId == dni }
+    if (!child) {
+        logWarn("drainCommandQueue: no child device found for DNI ${dni}")
+        return
+    }
+    String ipAddress = child.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logWarn("drainCommandQueue: no IP address for ${child.displayName}")
+        return
+    }
+
+    // Sort entries by queuedAt (oldest first) to preserve order
+    List<Map> entries = deviceQueue.values().toList().sort { Map a, Map b ->
+        (a.queuedAt as Long ?: 0L) <=> (b.queuedAt as Long ?: 0L)
+    }
+
+    logDebug("Draining ${entries.size()} commands for ${child.displayName} at ${ipAddress}")
+
+    entries.each { Map entry ->
+        // Skip entries that permanently failed — user must cancel or re-queue
+        if (entry.permanentError == true) { return }
+
+        String commandType = entry.commandType?.toString() ?: ''
+        String endpoint = entry.endpoint?.toString() ?: ''
+        String dedupKey = entry.dedupKey?.toString() ?: ''
+        Map params = entry.params as Map ?: [:]
+
+        Map callbackData = [dni: dni, dedupKey: dedupKey, deviceName: child.displayName.toString()]
+
+        switch (commandType) {
+            case 'gen1_setting':
+            case 'gen1_action_url':
+                // Gen1: async GET with query params (also handles future action URL queuing)
+                // Gen1: async GET with query params
+                String queryString = params.collect { k, v ->
+                    "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}".toString()
+                }.join('&')
+                String uri = "http://${ipAddress}/${endpoint}".toString()
+                if (queryString) { uri += "?${queryString}" }
+
+                Map httpParams = [uri: uri, timeout: 10, contentType: 'application/json']
+                if (authIsEnabledGen1()) {
+                    String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
+                    String encoded = credentials.bytes.encodeBase64().toString()
+                    httpParams.headers = ['Authorization': "Basic ${encoded}".toString()]
+                }
+                asynchttpGet('commandQueueDrainCallback', httpParams, callbackData)
+                break
+
+            case 'gen2_rpc':
+                // Gen2+: async POST with JSON-RPC body
+                Map rpcBody = [id: 1, method: endpoint, params: params]
+                Map httpParams2 = [
+                    uri: "http://${ipAddress}/rpc".toString(),
+                    timeout: 10,
+                    contentType: 'application/json',
+                    requestContentType: 'application/json',
+                    body: groovy.json.JsonOutput.toJson(rpcBody)
+                ]
+                asynchttpPost('commandQueueDrainCallback', httpParams2, callbackData)
+                break
+
+            default:
+                logWarn("drainCommandQueue: unknown command type '${commandType}' for ${dedupKey}")
+        }
+    }
+}
+
+/**
+ * Async HTTP callback for command queue drain operations.
+ * On HTTP 200: dequeues the entry (success). On failure: increments retryCount
+ * and leaves the entry in the queue for the next wake-up cycle (up to {@link #MAX_COMMAND_RETRIES}).
+ * When max retries are exhausted, the entry is marked with {@code permanentError: true}
+ * and left in the queue so {@code syncStatus} shows "error" instead of falsely showing "synced".
+ *
+ * @param response The async HTTP response
+ * @param data Callback data containing dni, dedupKey, and deviceName
+ */
+void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map data) {
+    String dni = data?.dni?.toString() ?: ''
+    String dedupKey = data?.dedupKey?.toString() ?: ''
+    String deviceName = data?.deviceName?.toString() ?: dni
+
+    if (response?.status == 200) {
+        logInfo("Command delivered to ${deviceName}: ${dedupKey}")
+        dequeueCommand(dni, dedupKey)
+        return
+    }
+
+    Integer statusCode = response?.status ?: 0
+    String errorMsg = response?.getErrorMessage() ?: 'unknown error'
+    logWarn("Command delivery failed for ${deviceName} (${dedupKey}): HTTP ${statusCode} — ${errorMsg}")
+
+    // Increment retry count
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    if (deviceQueue) {
+        Map entry = deviceQueue.get(dedupKey)
+        if (entry) {
+            Integer retries = (entry.retryCount as Integer ?: 0) + 1
+            entry.retryCount = retries
+            if (retries >= MAX_COMMAND_RETRIES) {
+                logError("Command ${dedupKey} for ${deviceName} exceeded max retries (${MAX_COMMAND_RETRIES}) — marked as error")
+                entry.permanentError = true
+            }
+            persistCommandQueue(dni)
+            logDebug("Command ${dedupKey} for ${deviceName} retry count: ${retries}/${MAX_COMMAND_RETRIES}")
+        }
+    }
+    updateSyncStatus(dni)
+}
+
+/**
+ * Called by sleepy drivers when the user invokes the {@code cancelPendingCommands} command.
+ * Clears all queued commands for the device and resets {@code syncStatus} to "synced".
+ *
+ * @param childDevice The child device requesting cancellation
+ */
+void componentCancelPendingCommands(com.hubitat.app.DeviceWrapper childDevice) {
+    if (!childDevice) { return }
+    String dni = childDevice.deviceNetworkId
+    Integer count = getQueuedCommandCount(dni)
+    clearCommandQueue(dni)
+    logInfo("Cancelled ${count} pending commands for ${childDevice.displayName}")
 }
 
 // ═══════════════════════════════════════════════════════════════
