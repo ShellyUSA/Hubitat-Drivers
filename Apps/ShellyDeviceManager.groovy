@@ -370,44 +370,54 @@ Map mainPage() {
 
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
         section() {
+            // Hide the duplicate dialog title bar and tighten spacing — must be first element on the page
+            paragraph """<style>
+                #dialogCustomAppTitle { display: none !important; }
+                #dialogCustomApp { padding-top: 0 !important; }
+                .mdl-dialog__content { padding-top: 0 !important; }
+                .mdl-dialog__content > form > div:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+                .mdl-dialog__content h3, .mdl-dialog__content h2 { margin-top: 0 !important; padding-top: 0 !important; }
+                .mdl-dialog__content > form > div:first-child > div:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+                #app-form-container { margin-top: 0 !important; padding-top: 0 !important; }
+                .mdl-cell { margin-top: 0 !important; }
+            </style>"""
+            String extendBtn = buttonLink('btnExtendScan', 'Extend Scan (10 min)', '#1A77C9', '14px')
             if (state.discoveryRunning) {
-                paragraph "<b><span class='app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>"
+                paragraph "<div style='display:flex;align-items:center;gap:12px'>" +
+                    "<b><span class='app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>" +
+                    "<span>${extendBtn}</span>" +
+                    "</div>"
             } else {
-                paragraph "<b>Discovery has stopped.</b>"
+                paragraph "<div style='display:flex;align-items:center;gap:12px'>" +
+                    "<b>Discovery has stopped.</b>" +
+                    "<span>${extendBtn}</span>" +
+                    "</div>"
             }
-            input 'btnExtendScan', 'button', title: 'Extend Scan (10 min)', submitOnChange: true
             if (!state.discoveryRunning && !(state.discoveredShellys as Map)?.findAll { String k, v -> v }) {
                 paragraph "<b style='color:#FF9800'>No devices discovered.</b> If this is a new installation, a hub reboot is required before mDNS discovery will find devices. Go to <i>Settings > Reboot Hub</i>, then reopen this app."
             }
-        }
 
-        // Delete confirmation (shown when user clicks delete on a device)
-        if (state.pendingDeleteIp) {
-            String deleteIp = state.pendingDeleteIp as String
-            def deleteDevice = findChildDeviceByIp(deleteIp)
-            String deleteName = deleteDevice ? deleteDevice.displayName : deleteIp
-            section() {
+            // Delete confirmation (shown when user clicks delete on a device)
+            if (state.pendingDeleteIp) {
+                String deleteIp = state.pendingDeleteIp as String
+                def deleteDevice = findChildDeviceByIp(deleteIp)
+                String deleteName = deleteDevice ? deleteDevice.displayName : deleteIp
                 paragraph "<b style='color:#F44336'>Are you sure you want to remove '${deleteName}' (${deleteIp})?</b>"
                 input 'btnConfirmDelete', 'button', title: 'Yes, Remove Device', submitOnChange: true
                 input 'btnCancelDelete', 'button', title: 'Cancel', submitOnChange: true
             }
-        }
 
-        // Label editing input (shown when user clicks a label in the table)
-        if (state.pendingLabelEdit) {
-            String labelIp = state.pendingLabelEdit as String
-            def labelDevice = findChildDeviceByIp(labelIp)
-            String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelIp
-            section() {
+            // Label editing input (shown when user clicks a label in the table)
+            if (state.pendingLabelEdit) {
+                String labelIp = state.pendingLabelEdit as String
+                def labelDevice = findChildDeviceByIp(labelIp)
+                String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelIp
                 paragraph "<b>Editing label for device at ${labelIp}</b>"
                 input name: 'editLabelValue', type: 'text', title: "New label (current: ${currentLabel})",
                     defaultValue: currentLabel, required: false, submitOnChange: true
                 input 'btnCancelLabelEdit', 'button', title: 'Cancel', submitOnChange: true
             }
-        }
 
-        section() {
-            input 'btnRefreshAllStatus', 'button', title: 'Refresh All Status', submitOnChange: true
             paragraph displayDeviceConfigTable()
         }
 
@@ -564,10 +574,6 @@ void appButtonHandler(String buttonName) {
 
     // === Device Configuration Table Buttons ===
 
-    if (buttonName == 'btnRefreshAllStatus') {
-        runIn(1, 'refreshAllDeviceStatusAsync')
-        appendLog('info', 'Queued status refresh for all devices')
-    }
 
     if (buttonName.startsWith('createDev|')) {
         String targetIp = buttonName.minus('createDev|')
@@ -1789,28 +1795,6 @@ private Set<String> getHubDeviceDnis() {
         logWarn("getHubDeviceDnis failed — conflict detection unavailable: ${e.message}")
     }
     return dnis
-}
-
-/**
- * Asynchronously refreshes the status cache for all known devices.
- * Called via runIn() after the Refresh All Status button is clicked.
- * Fires an SSR event after each device to provide incremental table updates.
- */
-void refreshAllDeviceStatusAsync() {
-    logInfo("Refreshing status for all devices...")
-    appendLog('info', "Refreshing all device status...")
-    Set<String> allIps = getAllKnownDeviceIps()
-    allIps.each { String ip ->
-        try {
-            buildDeviceStatusCacheEntry(ip)
-        } catch (Exception ex) {
-            logError("Failed to refresh status for ${ip}: ${ex.message}")
-        }
-    }
-    // Fire single SSR update after all devices are refreshed
-    sendEvent(name: 'configTable', value: 'refreshAll')
-    logInfo("Status refresh complete for ${allIps.size()} device(s)")
-    appendLog('info', "Status refresh complete for ${allIps.size()} device(s)")
 }
 
 /**
