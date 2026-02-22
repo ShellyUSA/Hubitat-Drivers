@@ -26,7 +26,6 @@ metadata {
     //Commands: refresh()
 
     command 'reinitializeDevice'
-    command 'distributeStatus', [[name: 'statusJson', type: 'JSON', description: 'Device status as JSON']]
   }
 }
 
@@ -523,40 +522,21 @@ private Map parseWebhookPath(Map msg) {
 }
 
 /**
- * Command entry point for distributeStatus — accepts JSON string.
- * Hubitat requires methods called from apps to be declared as commands.
- * Parses JSON and delegates to the Map overload.
- *
- * @param statusJson JSON string of component statuses
- */
-void distributeStatus(String statusJson) {
-  logInfo("distributeStatus(String) command called")
-  if (!statusJson) { return }
-  try {
-    Map status = new groovy.json.JsonSlurper().parseText(statusJson) as Map
-    distributeStatus(status)
-  } catch (Exception e) {
-    logError("distributeStatus JSON parse error: ${e.message}")
-  }
-}
-
-/**
- * Distributes status from Shelly.GetStatus query to TRV child devices.
- * Called by parent app (via command dispatch) or internally from driver code.
- * The command declaration enables the app to call this method;
- * Groovy's method overloading dispatches Map args here directly.
+ * Distributes status from Shelly.GetStatus to TRV child devices.
+ * Called by the parent app after polling the gateway's status endpoint.
+ * Routes each blutrv:NNN component to the matching child device.
  *
  * @param status Map of component statuses from Shelly.GetStatus
  */
 void distributeStatus(Map status) {
-  logInfo("distributeStatus(Map) called with keys: ${status?.keySet()}")
+  logDebug("distributeStatus called with keys: ${status?.keySet()}")
   if (!status) { return }
 
   String scale = getLocationHelper()?.temperatureScale ?: 'F'
 
   status.each { k, v ->
     String key = k.toString()
-    logInfo("distributeStatus: processing key='${key}', isMap=${v instanceof Map}")
+    logTrace("distributeStatus: processing key='${key}', isMap=${v instanceof Map}")
     if (!key.contains(':') || !(v instanceof Map)) { return }
 
     String baseType = key.split(':')[0]
@@ -565,7 +545,7 @@ void distributeStatus(Map status) {
     if (baseType == 'blutrv') {
       String childDni = "${device.deviceNetworkId}-blutrv-${componentId}"
       com.hubitat.app.DeviceWrapper child = getChildDevice(childDni)
-      logInfo("distributeStatus: looking for child DNI='${childDni}', found=${child != null}")
+      logTrace("distributeStatus: looking for child DNI='${childDni}', found=${child != null}")
       if (child) {
         distributeBluTrvStatus(child, v as Map, scale)
       } else {
@@ -585,7 +565,7 @@ void distributeStatus(Map status) {
  * @param scale Temperature scale ('F' or 'C')
  */
 private void distributeBluTrvStatus(com.hubitat.app.DeviceWrapper child, Map data, String scale) {
-  logInfo("distributeBluTrvStatus: child=${child.displayName}, scale=${scale}, data keys=${data?.keySet()}, data=${data}")
+  logTrace("distributeBluTrvStatus: child=${child.displayName}, scale=${scale}, data keys=${data?.keySet()}, data=${data}")
 
   // Current temperature
   if (data.current_C != null && data.current_C != 'null') {
@@ -594,7 +574,7 @@ private void distributeBluTrvStatus(com.hubitat.app.DeviceWrapper child, Map dat
     temp = temp.setScale(1, BigDecimal.ROUND_HALF_UP)
     child.sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
       descriptionText: "Temperature is ${temp}°${scale}")
-    logInfo("TRV ${child.displayName}: temperature ${temp}°${scale}")
+    logDebug("TRV ${child.displayName}: temperature ${temp}°${scale}")
   }
 
   // Target temperature (heating setpoint)
@@ -604,7 +584,7 @@ private void distributeBluTrvStatus(com.hubitat.app.DeviceWrapper child, Map dat
     target = target.setScale(1, BigDecimal.ROUND_HALF_UP)
     child.sendEvent(name: 'heatingSetpoint', value: target, unit: "°${scale}",
       descriptionText: "Heating setpoint is ${target}°${scale}")
-    logInfo("TRV ${child.displayName}: setpoint ${target}°${scale}")
+    logDebug("TRV ${child.displayName}: setpoint ${target}°${scale}")
   }
 
   // Valve position
@@ -615,7 +595,7 @@ private void distributeBluTrvStatus(com.hubitat.app.DeviceWrapper child, Map dat
     String valveState = pos > 0 ? 'open' : 'closed'
     child.sendEvent(name: 'valve', value: valveState,
       descriptionText: "Valve is ${valveState}")
-    logInfo("TRV ${child.displayName}: valve ${valveState} (${pos}%)")
+    logDebug("TRV ${child.displayName}: valve ${valveState} (${pos}%)")
   }
 
   // Battery
@@ -734,7 +714,6 @@ void logInfo(message) { if (shouldLogLevel('info')) { log.info "${loggingLabel()
 void logDebug(message) { if (shouldLogLevel('debug')) { log.debug "${loggingLabel()}: ${message}" } }
 void logTrace(message) { if (shouldLogLevel('trace')) { log.trace "${loggingLabel()}: ${message}" } }
 
-@CompileStatic
 void logJson(Map message) {
   if (shouldLogLevel('trace')) {
     logTrace(JsonOutput.prettyPrint(JsonOutput.toJson(message)))
