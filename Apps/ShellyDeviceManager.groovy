@@ -1295,6 +1295,8 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
         hubDeviceName: null,
         hubDeviceId: null,
         isBatteryDevice: (info?.isBatteryDevice ?: false) as Boolean,
+        shellyHelperOnline: info?.shellyHelperOnline,
+        fwUpdateAvailable: info?.fwUpdateAvailable,
         isReachable: null,
         requiredScriptCount: null,
         installedScriptCount: null,
@@ -1323,27 +1325,51 @@ private String buildDeviceRow(Map entry) {
     Boolean isStale = lastRefreshed == null
 
     // Column 1: Action button (create, remove, or DNI conflict warning)
-    if (isCreated) {
+    if (isCreated && entry.shellyHelperOnline == false) {
+        // Device is created but offline — show disabled delete icon (can't clean up webhooks/scripts)
+        String disabledDeleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px;opacity:0.3'></iconify-icon>"
+        str.append("<td title='Device is offline — cannot remove until online (webhooks/scripts need cleanup)'>${disabledDeleteIcon}</td>")
+    } else if (isCreated) {
         String deleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px'></iconify-icon>"
         str.append("<td>${buttonLink("removeDev|${ip}", deleteIcon, '#F44336', '20px')}</td>")
     } else if (entry.hasDniConflict == true) {
         String conflictIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:20px'></iconify-icon>"
         str.append("<td title='DNI conflict — another device already uses this MAC'>${buttonLink("dniConflict|${ip}", conflictIcon, '#F44336', '20px')}</td>")
+    } else if (entry.shellyHelperOnline == false) {
+        // Device is known offline — show disabled add icon with tooltip
+        String disabledIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:20px;opacity:0.3'></iconify-icon>"
+        str.append("<td title='Device is offline — cannot create until online'>${disabledIcon}</td>")
     } else {
         String addIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:20px'></iconify-icon>"
         str.append("<td>${buttonLink("createDev|${ip}", addIcon, '#4CAF50', '20px')}</td>")
     }
 
-    // Column 2: Device name (linked if created) with generation badge
+    // Column 2: Device name (linked if created) with generation badge + status indicators
     Boolean isGen1 = entry.isGen1 as Boolean
     String genLabel = isGen1 ? 'Gen 1' : "Gen${entry.deviceGen ?: '2'}+"
     String genColor = isGen1 ? '#FF9800' : '#1976D2'
     String genBadge = " <span style='font-size:10px;background:${genColor};color:white;padding:1px 4px;border-radius:3px;vertical-align:middle'>${genLabel}</span>"
+
+    // Online status dot (green=online, gray=offline, hidden if unknown)
+    String onlineDot = ''
+    if (entry.shellyHelperOnline == true) {
+        onlineDot = " <span title='Online' style='display:inline-block;width:10px;height:10px;background:#4CAF50;border-radius:50%;vertical-align:middle'></span>"
+    } else if (entry.shellyHelperOnline == false) {
+        onlineDot = " <span title='Offline' style='display:inline-block;width:10px;height:10px;background:#9E9E9E;border-radius:50%;vertical-align:middle'></span>"
+    }
+
+    // Firmware update icon (orange icon if update available)
+    String fwIcon = ''
+    if (entry.fwUpdateAvailable == true) {
+        fwIcon = " <iconify-icon icon='material-symbols:system-update-alt' title='Firmware update available' style='color:#FF9800;font-size:14px;vertical-align:middle'></iconify-icon>"
+    }
+
+    String indicators = "${genBadge}${onlineDot}${fwIcon}"
     if (isCreated && entry.hubDeviceId) {
         String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${entry.hubDeviceName}'>${entry.hubDeviceName}</a>"
-        str.append("<td class='device-link'>${devLink}${genBadge}</td>")
+        str.append("<td class='device-link'>${devLink}${indicators}</td>")
     } else {
-        str.append("<td>${entry.shellyName ?: 'Unknown'}${genBadge}</td>")
+        str.append("<td>${entry.shellyName ?: 'Unknown'}${indicators}</td>")
     }
 
     // Column 2: Device label (click to edit for created devices)
@@ -4241,6 +4267,10 @@ void startDiscovery(Boolean resetFound = false) {
     // Re-register listeners to trigger fresh mDNS queries on the network
     startMdnsDiscovery()
 
+    // Instant seed from ShellyHelper (local API, no network I/O) — populates table
+    // immediately before the 10-second mDNS delay
+    processShellyHelperDiscovery()
+
     unschedule('stopDiscovery')
     unschedule('updateDiscoveryTimer')
     unschedule('updateRecentLogs')
@@ -4271,6 +4301,9 @@ void extendDiscovery(Integer seconds) {
         runIn(1, 'updateDiscoveryTimer')
         runIn(2, 'processMdnsDiscovery')
     }
+
+    // Supplement with ShellyHelper data (instant, no network I/O)
+    processShellyHelperDiscovery()
 
     Long currentEnd = state.discoveryEndTime ? (state.discoveryEndTime as Long) : now()
     Long newEnd = Math.max(currentEnd, now()) + (seconds * 1000L)
@@ -4304,6 +4337,23 @@ void startMdnsDiscovery() {
         logTrace('Registered mDNS listener: _http._tcp')
     } catch (Exception e) {
         logWarn("mDNS listener registration failed for _http._tcp: ${e.message}")
+    }
+}
+
+/**
+ * Retrieves Shelly device entries from Hubitat's built-in ShellyHelper API.
+ * This API provides device data collected via the hub's mDNS listener when the
+ * built-in Shelly integration is installed. Returns an empty list on older firmware
+ * where the helper class is not available.
+ *
+ * @return List of device info maps, or empty list if unavailable
+ */
+private List getShellyHelperEntries() {
+    try {
+        return hubitat.helper.ShellyHelper.getDeviceInfoEntries() ?: []
+    } catch (Exception e) {
+        logTrace("ShellyHelper not available: ${e.message}")
+        return []
     }
 }
 
@@ -4528,6 +4578,10 @@ void processMdnsDiscovery() {
         logWarn("Error processing mDNS entries: ${e.message}")
     }
 
+    // Supplement with ShellyHelper data to catch devices the built-in integration
+    // discovers after our scan started (local API, negligible overhead)
+    processShellyHelperDiscovery()
+
     if (state.discoveryRunning && getRemainingDiscoverySeconds() > 0) {
         runIn(getMdnsPollSeconds(), 'processMdnsDiscovery')
     }
@@ -4559,11 +4613,163 @@ void sendFoundShellyEvents() {
             if (infoMap.isBatteryDevice == true && existing.isBatteryDevice != true) {
                 existing.isBatteryDevice = true
             }
+            if (infoMap.shellyHelperOnline != null) {
+                existing.shellyHelperOnline = infoMap.shellyHelperOnline
+            }
+            if (infoMap.fwUpdateAvailable != null) {
+                existing.fwUpdateAvailable = infoMap.fwUpdateAvailable
+            }
             cache[ip] = existing
         }
     }
     state.deviceStatusCache = cache
     sendEvent(name: 'configTable', value: 'discovery')
+}
+
+/**
+ * Processes device entries from Hubitat's built-in ShellyHelper API as a supplemental
+ * discovery source. Follows the same merge pattern as {@link #processMdnsDiscovery()}:
+ * maps ShellyHelper fields to our standard deviceEntry format, preserves enriched fields
+ * from prior probes, marks IPs in ipScanResults, and schedules async fetches for new devices.
+ * <p>
+ * This is a local API call with no network I/O, making it effectively instant. It is
+ * especially useful when the built-in Shelly integration "hogs" the mDNS listener,
+ * causing our {@code getMDNSEntries()} calls to return incomplete results.
+ */
+void processShellyHelperDiscovery() {
+    try {
+        List entries = getShellyHelperEntries()
+        if (!entries) {
+            logTrace('processShellyHelperDiscovery: no ShellyHelper entries available')
+            return
+        }
+
+        logTrace("processShellyHelperDiscovery: processing ${entries.size()} ShellyHelper entries")
+        Integer beforeCount = (state.discoveredShellys as Map)?.size() ?: 0
+        Boolean statusChanged = false
+
+        for (Object entry : entries) {
+            // ShellyHelper returns ShellyDevice objects, not Maps — use dynamic property access
+            if (entry == null) { continue }
+
+            // Skip unknown/stub entries and those without an IP
+            if (entry.unknown == true) { continue }
+            String ip4 = entry.ipAddress?.toString()
+            if (!ip4) { continue }
+
+            String deviceName = (entry.name ?: "Shelly ${ip4}") as String
+            String mac = normalizeMac(entry.macAddress?.toString())
+            String gen = entry.generation?.toString() ?: ''
+
+            String key = ip4
+            Boolean isNewToState = !state.discoveredShellys.containsKey(key)
+            Boolean alreadyLogged = foundDevices.containsKey(key)
+            Map existingEntry = isNewToState ? null : (state.discoveredShellys[key] as Map)
+
+            if (isNewToState && !alreadyLogged) {
+                logDebug("Found NEW Shelly (ShellyHelper): ${deviceName} at ${ip4} (gen=${gen}, mac=${mac})")
+                foundDevices.put(key, true)
+            }
+
+            Map deviceEntry = [
+                name: deviceName,
+                ipAddress: ip4,
+                port: 80,
+                gen: gen,
+                ts: now()
+            ]
+
+            // Set MAC if available from ShellyHelper (unlike mDNS which doesn't provide it)
+            if (mac) { deviceEntry.mac = mac }
+
+            // Online status — only trust it when the check has actually been performed
+            if (entry.onlineCheckDone == true) {
+                deviceEntry.shellyHelperOnline = entry.online as Boolean
+            }
+
+            // Firmware update availability
+            if (entry.firmwareUpdateAvailable != null) {
+                deviceEntry.fwUpdateAvailable = entry.firmwareUpdateAvailable as Boolean
+            }
+
+            // Gen 1 identification from hostname (same logic as processMdnsDiscovery)
+            if (!gen || gen == '1') {
+                String gen1Type = extractGen1TypeFromHostname(deviceName)
+                if (gen1Type) {
+                    String typeKey = gen1Type.toString()
+                    deviceEntry.gen = '1'
+                    deviceEntry.gen1Type = typeKey
+                    deviceEntry.model = GEN1_TYPE_TO_MODEL.get(typeKey) ?: typeKey
+                    deviceEntry.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeKey)
+                } else if (!gen) {
+                    // If ShellyHelper didn't provide gen and hostname doesn't match Gen1,
+                    // leave gen empty — the async fetch will determine it
+                }
+            }
+
+            // Preserve enriched fields from prior /shelly probe or REST/RPC fetch
+            if (existingEntry) {
+                // Detect online/fw status changes to trigger UI refresh even when no new devices found
+                if (deviceEntry.shellyHelperOnline != null && deviceEntry.shellyHelperOnline != existingEntry.shellyHelperOnline) {
+                    statusChanged = true
+                }
+                if (deviceEntry.fwUpdateAvailable != null && deviceEntry.fwUpdateAvailable != existingEntry.fwUpdateAvailable) {
+                    statusChanged = true
+                }
+
+                for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice', 'deviceInfo',
+                                     'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
+                                     'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents',
+                                     'deviceApp', 'ver']) {
+                    if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
+                        deviceEntry[field] = existingEntry[field]
+                    }
+                }
+                // Preserve gen from prior enrichment if ShellyHelper didn't provide one
+                if (!deviceEntry.gen && existingEntry.gen) {
+                    deviceEntry.gen = existingEntry.gen
+                }
+                // Preserve existing online/fw status if ShellyHelper didn't provide new data
+                if (deviceEntry.shellyHelperOnline == null && existingEntry.shellyHelperOnline != null) {
+                    deviceEntry.shellyHelperOnline = existingEntry.shellyHelperOnline
+                }
+                if (deviceEntry.fwUpdateAvailable == null && existingEntry.fwUpdateAvailable != null) {
+                    deviceEntry.fwUpdateAvailable = existingEntry.fwUpdateAvailable
+                }
+            }
+
+            state.discoveredShellys[key] = deviceEntry
+
+            // Mark this IP as a known Shelly in ipScanResults (5-min cooldown for IP scanner)
+            Map scanResults = state.ipScanResults ?: [:]
+            scanResults[key] = [scannedAt: now(), result: 'shelly']
+            state.ipScanResults = scanResults
+
+            // Schedule async device info fetch for new or unidentified devices,
+            // but skip known-offline devices to avoid wasting HTTP requests.
+            // Note: offline devices without a model won't get probed until they come back online
+            // and are re-discovered via mDNS or a subsequent ShellyHelper poll with online=true.
+            Boolean isOffline = (deviceEntry.shellyHelperOnline == false)
+            Boolean needsIdentification = !isNewToState && (!existingEntry?.model || existingEntry?.model == 'Unknown')
+            if ((isNewToState || needsIdentification) && !isOffline) {
+                scheduleAsyncDeviceInfoFetch(key)
+            }
+        }
+
+        Integer afterCount = (state.discoveredShellys as Map)?.size() ?: 0
+        Boolean hasNewDevices = afterCount > beforeCount
+        if (hasNewDevices || statusChanged) {
+            if (hasNewDevices) {
+                logDebug("ShellyHelper found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
+            }
+            if (statusChanged) {
+                logDebug('ShellyHelper detected online/firmware status change, refreshing UI')
+            }
+            sendFoundShellyEvents()
+        }
+    } catch (Exception e) {
+        logWarn("Error processing ShellyHelper entries: ${e.message}")
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -4586,6 +4792,18 @@ static String stripMdnsDomainSuffix(String serverName) {
     return (dotIndex > 0) ? serverName.substring(0, dotIndex) : serverName
 }
 
+/**
+ * Normalizes a MAC address by removing separators and converting to uppercase.
+ * Handles colon, dash, and dot separators commonly found in MAC address formats.
+ *
+ * @param mac The raw MAC address string (e.g. {@code AA:BB:CC:DD:EE:FF}, {@code aabbccddeeff})
+ * @return Uppercase MAC with no separators (e.g. {@code AABBCCDDEEFF}), or empty string if null/blank
+ */
+@CompileStatic
+static String normalizeMac(String mac) {
+    if (!mac) { return '' }
+    return mac.replaceAll(/[:\-.]/, '').toUpperCase()
+}
 
 /**
  * Determines whether a discovered device is likely a Gen 1 Shelly based on mDNS TXT fields.
@@ -4718,13 +4936,42 @@ void watchdogProcessResults() {
             }
         }
 
+        // Also check ShellyHelper for IP changes — it provides MAC directly,
+        // so we don't need the hostname→MAC lookup that mDNS requires
+        List shellyHelperEntries = getShellyHelperEntries()
+        for (Object shEntry : shellyHelperEntries) {
+            // ShellyHelper returns ShellyDevice objects, not Maps — use dynamic property access
+            if (shEntry == null) { continue }
+            String shIp = shEntry.ipAddress?.toString()
+            String shMac = normalizeMac(shEntry.macAddress?.toString())
+            if (!shIp || !shMac) { continue }
+
+            Object child = getChildDevice(shMac)
+            if (!child) { continue }
+
+            String currentIp = child.getDataValue('ipAddress')
+            if (currentIp && currentIp != shIp) {
+                logInfo("watchdogProcessResults: IP changed for ${child.displayName} (${shMac}) via ShellyHelper: ${currentIp} -> ${shIp}")
+                child.updateDataValue('ipAddress', shIp)
+                updatedCount++
+
+                // Also update discoveredShellys if the old IP is a key
+                if (state.discoveredShellys?.containsKey(currentIp)) {
+                    Map deviceEntry = state.discoveredShellys.remove(currentIp) as Map
+                    deviceEntry.ipAddress = shIp
+                    deviceEntry.ts = now()
+                    state.discoveredShellys[shIp] = deviceEntry
+                }
+            }
+        }
+
         if (updatedCount > 0) {
             logInfo("watchdogProcessResults: updated ${updatedCount} device IP(s)")
         } else {
             logTrace('watchdogProcessResults: all device IPs are current')
         }
     } catch (Exception e) {
-        logWarn("watchdogProcessResults: error processing mDNS entries: ${e.message}")
+        logWarn("watchdogProcessResults: error processing entries: ${e.message}")
     }
 }
 
