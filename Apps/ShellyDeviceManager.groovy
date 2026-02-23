@@ -10187,7 +10187,7 @@ private void processBleReport(String gatewayName, Map bleData) {
     Integer modelId = bleData.modelId != null ? bleData.modelId as Integer : null
     Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
 
-    logTrace("processBleReport: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName}")
+    logTrace("processBleReport: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName} fields=${bleData.keySet()}")
 
     // Dedup by pid per MAC
     if (isBlePidDuplicate(mac, pid)) {
@@ -10544,7 +10544,8 @@ private void routeBleEventToChild(String mac, Map bleData) {
     deviceConfigs[macKey] = config
     state.deviceConfigs = deviceConfigs
 
-    logTrace("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}")
+    List<String> eventSummary = events.collect { Map evt -> "${evt.name}=${evt.value}" } as List<String>
+    logTrace("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}: ${eventSummary}")
 }
 
 /**
@@ -10592,14 +10593,14 @@ private List<Map> buildBleEvents(Map bleData) {
     // Motion (0=inactive, 1=active)
     if (bleData.motion != null) {
         String motionVal = (bleData.motion as Integer) == 1 ? 'active' : 'inactive'
-        events.add([name: 'motion', value: motionVal,
+        events.add([name: 'motion', value: motionVal, isStateChange: true,
             descriptionText: "Motion is ${motionVal}"])
     }
 
     // Window/Door contact (0=closed, 1=open)
     if (bleData.window != null) {
         String contactVal = (bleData.window as Integer) == 1 ? 'open' : 'closed'
-        events.add([name: 'contact', value: contactVal,
+        events.add([name: 'contact', value: contactVal, isStateChange: true,
             descriptionText: "Contact is ${contactVal}"])
     }
 
@@ -15570,7 +15571,6 @@ private void drainCommandQueue(String dni) {
             case 'gen1_setting':
             case 'gen1_action_url':
                 // Gen1: async GET with query params (also handles future action URL queuing)
-                // Gen1: async GET with query params
                 String queryString = params.collect { k, v ->
                     "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}".toString()
                 }.join('&')

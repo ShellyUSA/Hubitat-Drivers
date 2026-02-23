@@ -27,22 +27,96 @@ let DT_U16 = 2;
 let DT_I16 = 3;
 let DT_U24 = 4;
 let DT_I24 = 5;
+let DT_U32 = 6;
 
 // BTHome object ID definitions: [name, dataType, factor]
 // factor is applied as multiplication to raw value (0 = no factor)
+// Names prefixed with "_" are decoded for correct byte-skipping but
+// filtered out before sending to Hubitat (not currently used).
 let BTH = {};
+// --- Sensor data ---
 BTH[0x00] = ["pid", DT_U8, 0];
 BTH[0x01] = ["battery", DT_U8, 0];
 BTH[0x02] = ["temperature", DT_I16, 0.01];
 BTH[0x03] = ["humidity", DT_U16, 0.01];
+BTH[0x04] = ["_pressure", DT_U24, 0.01];
 BTH[0x05] = ["illuminance", DT_U24, 0.01];
+BTH[0x06] = ["_massKg", DT_U16, 0.01];
+BTH[0x07] = ["_massLb", DT_U16, 0.01];
+BTH[0x08] = ["_dewpoint", DT_I16, 0.01];
+BTH[0x09] = ["_count8", DT_U8, 0];
+BTH[0x0A] = ["_energy24", DT_U24, 0.001];
+BTH[0x0B] = ["_power24", DT_U24, 0.01];
+BTH[0x0C] = ["_voltage16", DT_U16, 0.001];
+BTH[0x0D] = ["_pm25", DT_U16, 0];
+BTH[0x0E] = ["_pm10", DT_U16, 0];
+// --- Binary sensors ---
+BTH[0x0F] = ["_genericBool", DT_U8, 0];
+BTH[0x10] = ["_powerState", DT_U8, 0];
+BTH[0x11] = ["_opening", DT_U8, 0];
+BTH[0x12] = ["_co2", DT_U16, 0];
+BTH[0x13] = ["_tvoc", DT_U16, 0];
+BTH[0x14] = ["_moisture16", DT_U16, 0.01];
+BTH[0x15] = ["_batteryState", DT_U8, 0];
+BTH[0x16] = ["_batteryCharging", DT_U8, 0];
+BTH[0x17] = ["_carbonMonoxide", DT_U8, 0];
+BTH[0x18] = ["_cold", DT_U8, 0];
+BTH[0x19] = ["_connectivity", DT_U8, 0];
+BTH[0x1A] = ["_door", DT_U8, 0];
+BTH[0x1B] = ["_garageDoor", DT_U8, 0];
+BTH[0x1C] = ["_gasState", DT_U8, 0];
+BTH[0x1D] = ["_heat", DT_U8, 0];
+BTH[0x1E] = ["_light", DT_U8, 0];
+BTH[0x1F] = ["_lock", DT_U8, 0];
+BTH[0x20] = ["_moistureState", DT_U8, 0];
 BTH[0x21] = ["motion", DT_U8, 0];
-BTH[0x2d] = ["window", DT_U8, 0];
-BTH[0x2e] = ["humidity", DT_U8, 0];
-BTH[0x3a] = ["button", DT_U8, 0];
-BTH[0x3f] = ["rotation", DT_I16, 0.1];
+BTH[0x22] = ["_moving", DT_U8, 0];
+BTH[0x23] = ["_occupancy", DT_U8, 0];
+BTH[0x24] = ["_plug", DT_U8, 0];
+BTH[0x25] = ["_presence", DT_U8, 0];
+BTH[0x26] = ["_problem", DT_U8, 0];
+BTH[0x27] = ["_running", DT_U8, 0];
+BTH[0x28] = ["_safety", DT_U8, 0];
+BTH[0x29] = ["_smoke", DT_U8, 0];
+BTH[0x2A] = ["_sound", DT_U8, 0];
+BTH[0x2B] = ["_tamper", DT_U8, 0];
+BTH[0x2C] = ["_vibration", DT_U8, 0];
+BTH[0x2D] = ["window", DT_U8, 0];
+BTH[0x2E] = ["humidity", DT_U8, 0];
+BTH[0x2F] = ["_moisture8", DT_U8, 0];
+// --- Events ---
+BTH[0x3A] = ["button", DT_U8, 0];
+BTH[0x3C] = ["_dimmer", DT_U16, 0];
+BTH[0x3D] = ["_count16", DT_U16, 0];
+BTH[0x3E] = ["_count32", DT_U32, 0];
+BTH[0x3F] = ["rotation", DT_I16, 0.1];
+// --- Extended sensors ---
+BTH[0x40] = ["_distMm", DT_U16, 0];
+BTH[0x41] = ["_distM", DT_U16, 0.1];
+BTH[0x42] = ["_duration", DT_U24, 0.001];
+BTH[0x43] = ["_current16", DT_U16, 0.001];
+BTH[0x44] = ["_speed", DT_U16, 0.01];
 BTH[0x45] = ["temperature", DT_I16, 0.1];
+BTH[0x46] = ["_uvIndex", DT_U8, 0.1];
+BTH[0x47] = ["_volume16d1", DT_U16, 0.1];
+BTH[0x48] = ["_volume16", DT_U16, 0];
+BTH[0x49] = ["_volumeFlowRate", DT_U16, 0.001];
+BTH[0x4A] = ["_voltage16d1", DT_U16, 0.1];
+BTH[0x4B] = ["_gas24", DT_U24, 0.001];
+BTH[0x4C] = ["_gas32", DT_U32, 0.001];
+BTH[0x4D] = ["_energy32", DT_U32, 0.001];
+BTH[0x4E] = ["_volume32", DT_U32, 0.001];
+BTH[0x4F] = ["_water32", DT_U32, 0.001];
+BTH[0x50] = ["_timestamp", DT_U32, 0];
+BTH[0x51] = ["_acceleration", DT_U16, 0.001];
+BTH[0x52] = ["_gyroscope", DT_U16, 0.001];
+// 0x53 (text) and 0x54 (raw) are variable-length — cannot be decoded here
+BTH[0x55] = ["_volumeStorage", DT_U32, 0.001];
+BTH[0x56] = ["_conductivity", DT_U16, 0];
+// --- Device info ---
 BTH[0xF0] = ["device_type_id", DT_U16, 0];
+BTH[0xF1] = ["_fwVersion32", DT_U32, 0];
+BTH[0xF2] = ["_fwVersion24", DT_U24, 0];
 
 // === Internal state ===
 // Per-MAC last packet ID for deduplication
@@ -121,6 +195,7 @@ function getByteSize(type) {
   if (type === DT_U8 || type === DT_I8) return 1;
   if (type === DT_U16 || type === DT_I16) return 2;
   if (type === DT_U24 || type === DT_I24) return 3;
+  if (type === DT_U32) return 4;
   return 255;
 }
 
@@ -155,6 +230,12 @@ function getInt24LE(buffer) {
   return utoi(getUInt24LE(buffer), 24);
 }
 
+function getUInt32LE(buffer) {
+  return (
+    ((buffer.at(3) << 24) | (buffer.at(2) << 16) | (buffer.at(1) << 8) | buffer.at(0)) >>> 0
+  );
+}
+
 function getBufValue(type, buffer) {
   if (buffer.length < getByteSize(type)) return null;
   if (type === DT_U8) return getUInt8(buffer);
@@ -163,6 +244,7 @@ function getBufValue(type, buffer) {
   if (type === DT_I16) return getInt16LE(buffer);
   if (type === DT_U24) return getUInt24LE(buffer);
   if (type === DT_I24) return getInt24LE(buffer);
+  if (type === DT_U32) return getUInt32LE(buffer);
   return null;
 }
 
@@ -185,7 +267,10 @@ function decodeBTHome(buffer) {
   while (buffer.length > 0) {
     let objId = buffer.at(0);
     let def = BTH[objId];
-    if (typeof def === "undefined") break;
+    if (typeof def === "undefined") {
+      print("BTHome: unknown obj ID 0x" + objId.toString(16) + ", stopping decode");
+      break;
+    }
 
     buffer = buffer.slice(1);
     let raw = getBufValue(def[1], buffer);
@@ -408,9 +493,9 @@ function BLEScanCallback(event, result) {
     body.rssi = result.rssi;
   }
 
-  // Copy all decoded BTHome fields (except pid and device_type_id which are metadata)
+  // Copy decoded BTHome fields (skip metadata and _-prefixed internal fields)
   for (let key in decoded) {
-    if (key !== "pid" && key !== "device_type_id") {
+    if (key !== "pid" && key !== "device_type_id" && key.indexOf("_") !== 0) {
       body[key] = decoded[key];
     }
   }
