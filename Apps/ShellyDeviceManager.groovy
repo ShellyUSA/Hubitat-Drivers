@@ -559,7 +559,7 @@ Map mainPage() {
  * @param buttonName The name of the button that was clicked
  */
 void appButtonHandler(String buttonName) {
-    if (buttonName == 'btnExtendScan') { extendDiscovery(600) }
+    if (buttonName == 'btnExtendScan') { extendDiscovery(60) }
 
     if (buttonName == 'btnManualDiscover') {
         String rawInput = settings?.manualDeviceIp?.toString()?.trim()
@@ -7947,9 +7947,9 @@ private Integer getRemainingDiscoverySeconds() {
 /**
  * Returns the configured discovery duration.
  *
- * @return Discovery duration in seconds (default: 600)
+ * @return Discovery duration in seconds (default: 60)
  */
-private Integer getDiscoveryDurationSeconds() { 600 }
+private Integer getDiscoveryDurationSeconds() { 60 }
 
 /**
  * Returns the mDNS polling interval.
