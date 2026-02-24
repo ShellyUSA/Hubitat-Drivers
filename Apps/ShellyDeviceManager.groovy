@@ -5339,37 +5339,7 @@ void manualDiscoverDevice(String rawInput) {
 // Device Info / Config / Status Fetching (Gen2+ RPC over HTTP)
 // ═══════════════════════════════════════════════════════════════
 
-/**
- * Sends a JSON-RPC command to a Shelly device with retry logic.
- * Retries up to 3 times with increasing delays (2s, 4s) between attempts.
- * Logs failures at debug level for retries and error level only on final failure.
- *
- * @param command The JSON-RPC command map to send
- * @param uri The target device RPC URI
- * @param commandName Human-readable command name for logging
- * @param maxRetries Maximum number of attempts (default 3)
- * @return The response LinkedHashMap, or null if all attempts failed
- */
-private LinkedHashMap postCommandSyncWithRetry(LinkedHashMap command, String uri, String commandName, int maxRetries = 3) {
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            LinkedHashMap result = postCommandSync(command, uri)
-            if (attempt > 1) {
-                logDebug("${commandName} succeeded on attempt ${attempt} for ${uri}")
-            }
-            return result
-        } catch (Exception e) {
-            if (attempt < maxRetries) {
-                int delaySecs = attempt * 2
-                logDebug("${commandName} attempt ${attempt}/${maxRetries} failed for ${uri}: ${e.message} — retrying in ${delaySecs}s")
-                pauseExecution(delaySecs * 1000)
-            } else {
-                logError("${commandName} failed after ${maxRetries} attempts for ${uri}: ${e.message}")
-            }
-        }
-    }
-    return null
-}
+// postCommandSyncWithRetry removed — retry logic moved to processAsyncDeviceInfoFetch scheduling layer
 
 // ═══════════════════════════════════════════════════════════════
 // Gen 1 REST HTTP Communication
@@ -5378,54 +5348,43 @@ private LinkedHashMap postCommandSyncWithRetry(LinkedHashMap command, String uri
 /**
  * Sends an HTTP GET request to a Gen 1 Shelly device and returns the parsed JSON response.
  * Handles HTTP Basic Auth when the device has authentication enabled.
- * Includes retry logic with increasing delays between attempts.
  *
  * @param ipAddress The device IP address
  * @param path The URL path (e.g. {@code "relay/0"}, {@code "settings"}, {@code "status"})
  * @param queryParams Optional query parameters (e.g. {@code [turn: "on"]})
- * @param maxRetries Maximum number of attempts (default 2)
- * @param suppressErrors If true, suppresses the final {@code logError} on exhausted retries
+ * @param suppressErrors If true, suppresses {@code logError} on failure
  *        (useful for expected failures like polling sleeping battery devices)
- * @return The parsed JSON response map, or null if all attempts failed
+ * @return The parsed JSON response map, or null on failure
  */
-private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], int maxRetries = 2, Boolean suppressErrors = false) {
+private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], Boolean suppressErrors = false) {
     String queryString = queryParams.collect { k, v -> "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}" }.join('&')
     String uri = "http://${ipAddress}/${path}"
     if (queryString) { uri += "?${queryString}" }
 
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            Map result = null
-            Map params = [uri: uri, timeout: 10, contentType: 'application/json']
+    try {
+        Map result = null
+        Map params = [uri: uri, timeout: 10, contentType: 'application/json']
 
-            // Add Basic Auth if device password is configured
-            // Gen 1 devices always use username 'admin'
-            if (authIsEnabledGen1()) {
-                String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
-                String encoded = credentials.bytes.encodeBase64().toString()
-                params.headers = ['Authorization': "Basic ${encoded}"]
-            }
+        // Add Basic Auth if device password is configured
+        // Gen 1 devices always use username 'admin'
+        if (authIsEnabledGen1()) {
+            String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
+            String encoded = credentials.bytes.encodeBase64().toString()
+            params.headers = ['Authorization': "Basic ${encoded}"]
+        }
 
-            httpGetHelper(params) { resp ->
-                if (resp?.status == 200 && resp.data) {
-                    result = resp.data as Map
-                }
-            }
-            if (attempt > 1) {
-                logDebug("Gen 1 GET ${path} succeeded on attempt ${attempt} for ${ipAddress}")
-            }
-            return result
-        } catch (Exception e) {
-            if (attempt < maxRetries) {
-                int delaySecs = attempt * 2
-                logDebug("Gen 1 GET ${path} attempt ${attempt}/${maxRetries} failed for ${ipAddress}: ${e.message} — retrying in ${delaySecs}s")
-                pauseExecution(delaySecs * 1000)
-            } else if (!suppressErrors) {
-                logError("Gen 1 GET ${path} failed after ${maxRetries} attempts for ${ipAddress}: ${e.message}")
+        httpGetHelper(params) { resp ->
+            if (resp?.status == 200 && resp.data) {
+                result = resp.data as Map
             }
         }
+        return result
+    } catch (Exception e) {
+        if (!suppressErrors) {
+            logError("Gen 1 GET ${path} failed for ${ipAddress}: ${e.message}")
+        }
+        return null
     }
-    return null
 }
 
 /**
@@ -5439,7 +5398,7 @@ private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], in
  * @return The parsed JSON response map, or null on failure
  */
 private Map sendGen1Setting(String ipAddress, String path, Map params = [:]) {
-    return sendGen1Get(ipAddress, path, params, 2)
+    return sendGen1Get(ipAddress, path, params)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -5464,7 +5423,7 @@ private void pollGen1DeviceStatus(String ipAddress) {
     Map gen1Settings = deviceInfo.gen1Settings as Map ?: [:]
 
     // Query device status (suppress errors — failures are expected for sleeping devices)
-    Map gen1Status = sendGen1Get(ipAddress, 'status', [:], 1, true)
+    Map gen1Status = sendGen1Get(ipAddress, 'status', [:], true)
     if (!gen1Status) {
         // Increment failure counter (get/put avoids BiFunction SAM coercion issues in Hubitat sandbox)
         Integer failCount = ((gen1PollFailureCounts.get(ipAddress) ?: 0) as Integer) + 1
@@ -5515,7 +5474,7 @@ private void syncGen1MotionSettings(String ipAddress, def childDevice, String ge
     if (gen1Type != 'SHMOS-01' && gen1Type != 'SHMOS-02') { return }
 
     // Try live fetch first; fall back to cached discovery data if device is asleep
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -5572,7 +5531,7 @@ private void syncGen1MotionSettings(String ipAddress, def childDevice, String ge
 private void syncGen1SenseSettings(String ipAddress, def childDevice, String gen1Type) {
     if (!childDevice || gen1Type != 'SHSN-1') { return }
 
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -5629,7 +5588,7 @@ private void syncGen1TrvSettings(String ipAddress, def childDevice, String gen1T
     if (gen1Type != 'SHTRV-01') { return }
 
     // TRV is always awake, so live fetch should succeed
-    Map trvSettings = sendGen1Get(ipAddress, 'settings/thermostats/0', [:], 2)
+    Map trvSettings = sendGen1Get(ipAddress, 'settings/thermostats/0')
     if (!trvSettings) {
         logDebug("syncGen1TrvSettings: could not read settings from ${ipAddress}")
         return
@@ -5674,7 +5633,7 @@ private void syncGen1TrvSettings(String ipAddress, def childDevice, String gen1T
         }
 
         // ── /settings (device-level) ──
-        Map deviceSettings = sendGen1Get(ipAddress, 'settings', [:], 2)
+        Map deviceSettings = sendGen1Get(ipAddress, 'settings')
         if (deviceSettings) {
             if (deviceSettings.display_brightness != null) {
                 childDevice.updateSetting('displayBrightness',
@@ -5714,7 +5673,7 @@ private void syncGen1ButtonSettings(String ipAddress, def childDevice, String ge
     if (gen1Type != 'SHBTN-1' && gen1Type != 'SHBTN-2') { return }
 
     // Try live fetch first; fall back to cached discovery data if device is asleep
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -5767,7 +5726,7 @@ private void syncGen1FloodSettings(String ipAddress, def childDevice, String gen
     if (!childDevice || gen1Type != 'SHWT-1') { return }
 
     // Try live fetch first; fall back to cached discovery data if device is asleep
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -5813,7 +5772,7 @@ private void syncGen1DWSettings(String ipAddress, def childDevice, String gen1Ty
     if (!childDevice || (gen1Type != 'SHDW-1' && gen1Type != 'SHDW-2')) { return }
 
     // Try live fetch first; fall back to cached discovery data if device is asleep
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -5882,7 +5841,7 @@ private void syncGen1SmokeSettings(String ipAddress, def childDevice, String gen
     if (!childDevice || gen1Type != 'SHSM-01') { return }
 
     // Try live fetch first; fall back to cached discovery data if device is asleep
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -5925,7 +5884,7 @@ private void syncGen1SmokeSettings(String ipAddress, def childDevice, String gen
 private void syncGen1GasSettings(String ipAddress, def childDevice, String gen1Type) {
     if (!childDevice || gen1Type != 'SHGS-1') { return }
 
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -5969,7 +5928,7 @@ private void syncGen1HTSettings(String ipAddress, def childDevice, String gen1Ty
     if (!childDevice || gen1Type != 'SHHT-1') { return }
 
     // Try live fetch first; fall back to cached discovery data if device is asleep
-    Map gen1Settings = sendGen1Get(ipAddress, 'settings', [:], 1)
+    Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
         Map deviceInfo = state.discoveredShellys?.get(ipAddress)
         gen1Settings = deviceInfo?.gen1Settings as Map
@@ -6135,18 +6094,20 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
 }
 
 /**
- * Callback handler for async device info fetch.
+ * Callback handler for async device info fetch with non-blocking retry.
  * Called by runInMillis after scheduled delay. Fetches device info in the background
- * and updates discovery state. If the fetch fails due to timeout (sleepy device),
- * marks it as unreachable but doesn't retry to avoid blocking.
+ * and updates discovery state. On failure, schedules a retry via runInMillis with
+ * increasing delay (2s, 4s, 6s) instead of blocking the thread.
  *
- * @param data Map containing ipKey
+ * @param data Map containing ipKey and optional attempt counter
  */
 void processAsyncDeviceInfoFetch(Map data) {
     String ipKey = data?.ipKey
     if (!ipKey) { return }
+    Integer attempt = (data.attempt ?: 1) as Integer
+    Integer maxAttempts = 3
 
-    logDebug("Processing async device info fetch for ${ipKey}")
+    logDebug("Processing async device info fetch for ${ipKey} (attempt ${attempt}/${maxAttempts})")
 
     // Update queue status
     Map queueEntry = state.asyncFetchQueue[ipKey] as Map
@@ -6157,7 +6118,6 @@ void processAsyncDeviceInfoFetch(Map data) {
     }
 
     try {
-        // Attempt to fetch device info (with retries built into fetchAndStoreDeviceInfo)
         fetchAndStoreDeviceInfo(ipKey)
 
         // Mark as completed
@@ -6170,8 +6130,15 @@ void processAsyncDeviceInfoFetch(Map data) {
         logDebug("Async fetch completed for ${ipKey}")
 
     } catch (Exception e) {
-        // Log but don't block on errors (likely sleepy device or network timeout)
-        logDebug("Async fetch failed for ${ipKey}: ${e.message}")
+        if (attempt < maxAttempts) {
+            Integer delayMs = attempt * 2000
+            logDebug("Async fetch attempt ${attempt}/${maxAttempts} failed for ${ipKey}: ${e.message} — retrying in ${delayMs}ms")
+            runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, attempt: attempt + 1]])
+            return  // Skip cleanup — retry is pending
+        }
+
+        // Final attempt failed
+        logDebug("Async fetch failed for ${ipKey} after ${maxAttempts} attempts: ${e.message}")
 
         if (queueEntry) {
             queueEntry.status = 'failed'
@@ -6287,7 +6254,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
     try {
         // Query device info, config, and status with retry logic
         LinkedHashMap deviceInfoCmd = shellyGetDeviceInfoCommand(true, 'discovery')
-        LinkedHashMap deviceInfoResp = postCommandSyncWithRetry(deviceInfoCmd, rpcUri, "Shelly.GetDeviceInfo")
+        LinkedHashMap deviceInfoResp = postCommandSync(deviceInfoCmd, rpcUri)
         Map deviceInfo = (deviceInfoResp instanceof Map && deviceInfoResp.containsKey('result')) ? deviceInfoResp.result : deviceInfoResp
         if (!deviceInfo) {
             appendLog('warn', "No device info returned from ${ip} — device may be offline or not Gen2+")
@@ -6295,11 +6262,11 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         }
 
         LinkedHashMap configCmd = shellyGetConfigCommand('discovery')
-        LinkedHashMap deviceConfigResp = postCommandSyncWithRetry(configCmd, rpcUri, "Shelly.GetConfig")
+        LinkedHashMap deviceConfigResp = postCommandSync(configCmd, rpcUri)
         Map deviceConfig = (deviceConfigResp instanceof Map && deviceConfigResp.containsKey('result')) ? deviceConfigResp.result : deviceConfigResp
 
         LinkedHashMap statusCmd = shellyGetStatusCommand('discovery')
-        LinkedHashMap deviceStatusResp = postCommandSyncWithRetry(statusCmd, rpcUri, "Shelly.GetStatus")
+        LinkedHashMap deviceStatusResp = postCommandSync(statusCmd, rpcUri)
         Map deviceStatus = (deviceStatusResp instanceof Map && deviceStatusResp.containsKey('result')) ? deviceStatusResp.result : deviceStatusResp
 
         // BLU Gateway: discover dynamic blutrv components and query their full status
@@ -6310,7 +6277,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         if (hasBlugw) {
             LinkedHashMap getComponentsCmd = [id: 0, src: 'discovery', method: 'Shelly.GetComponents', params: [dynamic_only: true, include: ['status']]]
             if (authIsEnabled() == true && getAuth().size() > 0) { getComponentsCmd.auth = getAuth() }
-            LinkedHashMap componentsResp = postCommandSyncWithRetry(getComponentsCmd, rpcUri, 'Shelly.GetComponents')
+            LinkedHashMap componentsResp = postCommandSync(getComponentsCmd, rpcUri)
             if (componentsResp?.result?.components) {
                 List<Map> dynamicComponents = componentsResp.result.components as List<Map>
                 dynamicComponents.each { Map comp ->
@@ -6320,7 +6287,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
                         try {
                             LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: trvId]]
                             if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
-                            LinkedHashMap trvResp = postCommandSyncWithRetry(trvCmd, rpcUri, 'BluTrv.GetStatus')
+                            LinkedHashMap trvResp = postCommandSync(trvCmd, rpcUri)
                             if (trvResp?.result) {
                                 deviceStatus[compKey] = trvResp.result
                                 logDebug("fetchAndStoreDeviceInfo: added blutrv ${compKey} with thermostat status")
@@ -6339,7 +6306,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
         // Query supported webhook events for filtering required actions
         LinkedHashMap webhookSupportedCmd = webhookListSupportedCommand('discovery')
-        LinkedHashMap webhookSupportedResp = postCommandSyncWithRetry(webhookSupportedCmd, rpcUri, "Webhook.ListSupported")
+        LinkedHashMap webhookSupportedResp = postCommandSync(webhookSupportedCmd, rpcUri)
         List<String> supportedWebhookEvents = []
         if (webhookSupportedResp?.result?.types) {
             supportedWebhookEvents = (webhookSupportedResp.result.types as Map).keySet().collect { it.toString() }
@@ -6493,7 +6460,7 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
         if (shellyInfo.auth != null) { device.auth_en = shellyInfo.auth }
 
         // Step 2: /settings — device configuration (may require auth)
-        Map gen1Settings = sendGen1Get(ip, 'settings', [:], 1)
+        Map gen1Settings = sendGen1Get(ip, 'settings')
         if (!gen1Settings) {
             logDebug("fetchGen1DeviceInfo: /settings query returned no data for ${ip}")
         }
@@ -6502,7 +6469,7 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
         Map gen1Status = null
         if (!device.isBatteryDevice) {
             // Battery devices are usually asleep — skip /status to avoid timeout
-            gen1Status = sendGen1Get(ip, 'status', [:], 1)
+            gen1Status = sendGen1Get(ip, 'status')
             if (!gen1Status) {
                 logDebug("fetchGen1DeviceInfo: /status query returned no data for ${ip}")
             }
