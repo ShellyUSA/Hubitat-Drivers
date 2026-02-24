@@ -7133,7 +7133,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             installPrebuiltDriver(fallbackName, components, componentPowerMonitoring, version)
             String fallbackWithVersion = "${fallbackName} v${version}"
             if (ipKey && state.discoveredShellys[ipKey]) {
-                state.discoveredShellys[ipKey].generatedDriverName = driverNameWithVersion
+                state.discoveredShellys[ipKey].generatedDriverName = fallbackWithVersion
                 state.discoveredShellys[ipKey].installedDriverName = fallbackWithVersion
             }
         } else {
@@ -7510,12 +7510,27 @@ private Boolean installDriver(String sourceCode) {
                 requestContentType: 'application/x-www-form-urlencoded'
             ]
 
+            Boolean shouldVerify = false
             httpPost(params) { resp ->
-                if (resp?.status == 200 || resp?.status == 302) {
-                    logInfo("✓ Driver created successfully!")
+                if (resp?.status == 302) {
+                    logInfo("Driver save returned 302 redirect — compilation likely succeeded")
+                    shouldVerify = true
+                } else if (resp?.status == 200) {
+                    logWarn("Driver save returned HTTP 200 — possible compilation error (form re-rendered with errors)")
+                    shouldVerify = true
+                } else {
+                    logError("✗ Unexpected HTTP status ${resp?.status} from driver save")
+                }
+            }
+
+            // Post-installation verification: confirm the driver actually exists on the hub
+            if (shouldVerify) {
+                pauseExecution(500)
+                if (fetchHubitatDriverIdByName(driverName) != null) {
+                    logInfo("✓ Driver verified on hub after installation: ${driverName}")
                     success = true
                 } else {
-                    logError("✗ HTTP error ${resp?.status}")
+                    logError("✗ Driver '${driverName}' not found on hub after installation — likely compilation error in driver source")
                 }
             }
         }
@@ -7849,7 +7864,11 @@ private void fetchAndInstallComponentDriver(String fileName, String driverName) 
         return
     }
 
-    installDriver(sourceCode)
+    Boolean installed = installDriver(sourceCode)
+    if (!installed) {
+        logError("Failed to install component driver '${driverName}' — skipping registration")
+        return
+    }
 
     // Register in autoDrivers tracking as a component driver
     String version = getAppVersion()
@@ -13447,7 +13466,7 @@ private void registerAutoDriver(String driverName, String namespace, String vers
     devicesUsing: existingDevices
   ]
 
-  logInfo("Registered auto-generated driver: ${key} v${version} with components: ${components}")
+  logInfo("Registered auto-generated driver: ${key} with components: ${components}")
 }
 
 /**
