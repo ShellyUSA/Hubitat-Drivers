@@ -10,6 +10,10 @@
 // Tracks the most recent wake-up timestamp (epoch millis) per device DNI.
 @Field static ConcurrentHashMap<String, Long> lastWakeUpTimestamps =
     new java.util.concurrent.ConcurrentHashMap<String, Long>()
+// Tracks consecutive Gen 1 status poll failures per device IP address.
+// Resets to zero on success; cleaned up on device removal. In-memory only.
+@Field static ConcurrentHashMap<String, Integer> gen1PollFailureCounts =
+    new java.util.concurrent.ConcurrentHashMap<String, Integer>()
 
 @Field static final Integer MAX_COMMAND_RETRIES = 5
 @Field static final Long OPPORTUNISTIC_DRAIN_WINDOW_MS = 10000L
@@ -2983,6 +2987,7 @@ private void removeDeviceByIp(String ip) {
     if (device.typeName) { deletedDriverNames << device.typeName.toString() }
     commandQueues.remove(dni)
     lastWakeUpTimestamps.remove(dni)
+    gen1PollFailureCounts.remove(ip)
     if (state.commandQueues) { state.commandQueues.remove(dni) }
     deleteChildDevice(dni)
     state.remove('hubDnisCachedAt') // Invalidate DNI cache after device removal
@@ -5379,9 +5384,11 @@ private LinkedHashMap postCommandSyncWithRetry(LinkedHashMap command, String uri
  * @param path The URL path (e.g. {@code "relay/0"}, {@code "settings"}, {@code "status"})
  * @param queryParams Optional query parameters (e.g. {@code [turn: "on"]})
  * @param maxRetries Maximum number of attempts (default 2)
+ * @param suppressErrors If true, suppresses the final {@code logError} on exhausted retries
+ *        (useful for expected failures like polling sleeping battery devices)
  * @return The parsed JSON response map, or null if all attempts failed
  */
-private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], int maxRetries = 2) {
+private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], int maxRetries = 2, Boolean suppressErrors = false) {
     String queryString = queryParams.collect { k, v -> "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}" }.join('&')
     String uri = "http://${ipAddress}/${path}"
     if (queryString) { uri += "?${queryString}" }
@@ -5413,7 +5420,7 @@ private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], in
                 int delaySecs = attempt * 2
                 logDebug("Gen 1 GET ${path} attempt ${attempt}/${maxRetries} failed for ${ipAddress}: ${e.message} — retrying in ${delaySecs}s")
                 pauseExecution(delaySecs * 1000)
-            } else {
+            } else if (!suppressErrors) {
                 logError("Gen 1 GET ${path} failed after ${maxRetries} attempts for ${ipAddress}: ${e.message}")
             }
         }
@@ -5456,12 +5463,22 @@ private void pollGen1DeviceStatus(String ipAddress) {
     String typeCode = deviceInfo.gen1Type?.toString() ?: ''
     Map gen1Settings = deviceInfo.gen1Settings as Map ?: [:]
 
-    // Query device status
-    Map gen1Status = sendGen1Get(ipAddress, 'status', [:], 1)
+    // Query device status (suppress errors — failures are expected for sleeping devices)
+    Map gen1Status = sendGen1Get(ipAddress, 'status', [:], 1, true)
     if (!gen1Status) {
-        logDebug("pollGen1DeviceStatus: device at ${ipAddress} did not respond")
+        // Increment failure counter (get/put avoids BiFunction SAM coercion issues in Hubitat sandbox)
+        Integer failCount = ((gen1PollFailureCounts.get(ipAddress) ?: 0) as Integer) + 1
+        gen1PollFailureCounts.put(ipAddress, failCount)
+        if (failCount == 1 || failCount % 10 == 0) {
+            logWarn("pollGen1DeviceStatus: ${failCount} consecutive status refresh(es) have failed for device at ${ipAddress}")
+        } else {
+            logDebug("pollGen1DeviceStatus: ${failCount} consecutive status refresh(es) have failed for device at ${ipAddress}")
+        }
         return
     }
+
+    // Reset failure counter on success
+    gen1PollFailureCounts.remove(ipAddress)
 
     // Normalize to internal component format
     Map normalizedStatus = normalizeGen1Status(gen1Status, gen1Settings, typeCode)
