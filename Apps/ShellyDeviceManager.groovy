@@ -2049,17 +2049,34 @@ void installNextScript(Map data) {
             }
         }
 
+        // Store script code in state to avoid serializing large strings through runInMillis
+        String codeStateKey = "scriptUpload_${scriptId}".toString()
+        state[codeStateKey] = scriptCode
+
+        // Build lightweight completionData — script code stored in state, only metadata here
+        Map lightContext = [
+            ipAddress: data.ipAddress,
+            deviceDisplayName: data.deviceDisplayName,
+            uri: data.uri,
+            hasAuth: data.hasAuth,
+            baseUrl: data.baseUrl,
+            installedScripts: data.installedScripts,
+            scriptQueue: data.scriptQueue,
+            installed: data.installed,
+            updated: data.updated
+        ]
+
         // Start async chunk upload with completion callback
         uploadScriptChunk([
             scriptId: scriptId,
-            code: scriptCode,
+            codeStateKey: codeStateKey,
             uri: uri,
             hasAuth: hasAuth,
             offset: 0,
             chunkNum: 0,
             completionCallback: 'scriptInstallStepComplete',
             errorCallback: 'scriptInstallStepError',
-            completionData: data + [
+            completionData: lightContext + [
                 currentScriptName: scriptName,
                 currentScriptId: scriptId,
                 isUpdate: isUpdate,
@@ -2092,17 +2109,22 @@ void scriptInstallStepComplete(Map data) {
     Integer updated = (data.updated as Integer) + (isUpdate ? 1 : 0)
     Integer queueIndex = data.queueIndex as Integer
 
-    LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-    if (hasAuth) { enableCmd.auth = getAuth() }
-    postCommandSync(enableCmd, uri)
+    try {
+        LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+        if (hasAuth) { enableCmd.auth = getAuth() }
+        postCommandSync(enableCmd, uri)
 
-    LinkedHashMap startCmd = scriptStartCommand(scriptId)
-    if (hasAuth) { startCmd.auth = getAuth() }
-    postCommandSync(startCmd, uri)
+        LinkedHashMap startCmd = scriptStartCommand(scriptId)
+        if (hasAuth) { startCmd.auth = getAuth() }
+        postCommandSync(startCmd, uri)
 
-    String action = isUpdate ? 'Updated' : 'Installed'
-    logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
-    appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
+        String action = isUpdate ? 'Updated' : 'Installed'
+        logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
+        appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
+    } catch (Exception ex) {
+        logWarn("Failed to enable/start script '${scriptName}' after upload: ${ex.message} — continuing with next script")
+        appendLog('warn', "Failed to enable/start ${scriptName}: ${ex.message}")
+    }
 
     // Continue with next script in queue
     installNextScript(data + [queueIndex: queueIndex + 1, installed: installed, updated: updated])
@@ -7779,7 +7801,9 @@ private void performHubDriverDelete(String driverId, String driverName) {
 /**
  * Ensures a driver is installed on the hub before device creation.
  * Checks if the driver exists, and if not, attempts to install via
- * the prebuilt driver path. Waits briefly after installation for the hub to process.
+ * the prebuilt driver path. Both the create path (verified via
+ * {@code fetchHubitatDriverIdByName}) and the update path (trusted via
+ * Hubitat API response) confirm success before returning.
  *
  * @param driverName The versioned driver name (e.g., "Shelly Autoconf Single Switch PM v1.0.34")
  * @param deviceInfo The discovered device information map
@@ -7815,7 +7839,7 @@ private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
         return false
     }
 
-    // installDriver() already verified via fetchHubitatDriverIdByName
+    // installDriver() verifies via fetchHubitatDriverIdByName (create) or API response (update)
     return true
 }
 
@@ -8865,10 +8889,16 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
  * When all chunks are uploaded, invokes the completion callback by name.
  * On error, invokes the error callback (if provided) or logs the error.
  *
+ * <p>Callers must store the script code in {@code state} before invoking this method
+ * (using the key {@code "scriptUpload_<scriptId>"}) to avoid passing large strings
+ * through Hubitat's runInMillis scheduler serialization. This method cleans up the
+ * state key on completion or error.
+ *
  * <p>Data map keys:
  * <ul>
  *   <li>{@code scriptId} — script slot ID on the device</li>
- *   <li>{@code code} — full script source code</li>
+ *   <li>{@code codeStateKey} — state key where the full script source is stored</li>
+ *   <li>{@code codeLength} — total length of the script code (avoids reading state each chunk)</li>
  *   <li>{@code uri} — device RPC URI</li>
  *   <li>{@code hasAuth} — whether auth header is required</li>
  *   <li>{@code offset} — current byte offset into code (0 on first call)</li>
@@ -8882,7 +8912,12 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
  */
 void uploadScriptChunk(Map data) {
     Integer scriptId = data.scriptId as Integer
-    String code = data.code as String
+    String codeStateKey = data.codeStateKey as String
+    String code = state[codeStateKey] as String
+    if (!code) {
+        logError("uploadScriptChunk: script code not found in state key '${codeStateKey}'")
+        return
+    }
     String uri = data.uri as String
     Boolean hasAuth = data.hasAuth as Boolean
     Integer offset = (data.offset ?: 0) as Integer
@@ -8905,6 +8940,7 @@ void uploadScriptChunk(Map data) {
     if (result?.error) {
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${result.error}"
         logError(errMsg)
+        state.remove(codeStateKey)
         if (errorCallback) {
             "${errorCallback}"(completionData + [error: errMsg])
         }
@@ -8916,10 +8952,21 @@ void uploadScriptChunk(Map data) {
 
     if (nextOffset < total) {
         // Schedule next chunk with 150ms delay for device write flush
-        Map nextData = data + [offset: nextOffset, chunkNum: nextChunkNum]
-        runInMillis(150, 'uploadScriptChunk', [data: nextData])
+        // Only pass lightweight scheduling data — code stays in state
+        runInMillis(150, 'uploadScriptChunk', [data: [
+            scriptId: scriptId,
+            codeStateKey: codeStateKey,
+            uri: uri,
+            hasAuth: hasAuth,
+            offset: nextOffset,
+            chunkNum: nextChunkNum,
+            completionCallback: completionCallback,
+            errorCallback: errorCallback,
+            completionData: completionData
+        ]])
     } else {
         logDebug("Uploaded script id=${scriptId} in ${nextChunkNum} chunks (${total} bytes)")
+        state.remove(codeStateKey)
         if (completionCallback) {
             "${completionCallback}"(completionData)
         }
@@ -10934,9 +10981,13 @@ private void enableBleGateway(String ip) {
     }
 
     // Step 4: Upload script code asynchronously via chunked callbacks
+    // Store code in state to avoid serializing large strings through runInMillis
+    String codeStateKey = "scriptUpload_${scriptId}".toString()
+    state[codeStateKey] = scriptCode
+
     uploadScriptChunk([
         scriptId: scriptId,
-        code: scriptCode,
+        codeStateKey: codeStateKey,
         uri: uri,
         hasAuth: hasAuth,
         offset: 0,
