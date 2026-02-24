@@ -7525,7 +7525,6 @@ private Boolean installDriver(String sourceCode) {
 
             // Post-installation verification: confirm the driver actually exists on the hub
             if (shouldVerify) {
-                pauseExecution(500)
                 if (fetchHubitatDriverIdByName(driverName) != null) {
                     logInfo("✓ Driver verified on hub after installation: ${driverName}")
                     success = true
@@ -7738,12 +7737,8 @@ private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
         return false
     }
 
-    pauseExecution(2000)
-    Boolean confirmed = isDriverOnHub(driverName, namespace)
-    if (!confirmed) {
-        logError("Driver '${driverName}' still not found on hub after installation")
-    }
-    return confirmed
+    // installDriver() already verified via fetchHubitatDriverIdByName
+    return true
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -10450,9 +10445,6 @@ private void createBleDevice(String mac) {
         appendLog('error', "Failed to install BLE driver: ${driverName}")
         return
     }
-
-    // Brief pause for driver registration
-    pauseExecution(2000)
 
     String deviceLabel = "${friendlyModel} ${mac[-4..-1]}"
     Map deviceProps = [
