@@ -633,27 +633,31 @@ void componentPlugsUiSetNightMode(com.hubitat.app.DeviceWrapper childDevice, Map
  */
 @CompileStatic
 private static List<Integer> hsvToPlugsUiRgb(Integer hue, Integer saturation) {
-  BigDecimal h = (hue * 3.6)         // 0-100 -> 0-360
-  BigDecimal s = saturation / 100.0   // 0-100 -> 0-1
-  BigDecimal v = 1.0                  // Full brightness (separate from PLUGS_UI brightness)
+  BigDecimal h = new BigDecimal(hue) * 3.6      // 0-100 -> 0-360
+  BigDecimal s = new BigDecimal(saturation) / 100.0  // 0-100 -> 0-1
+  BigDecimal v = 1.0                             // Full brightness (separate from PLUGS_UI brightness)
 
   BigDecimal c = v * s
-  BigDecimal x = c * (1 - ((h / 60) % 2 - 1).abs())
+  BigDecimal hSector = h / 60.0
+  BigDecimal mod2 = hSector.remainder(new BigDecimal(2))
+  BigDecimal x = c * (1.0 - (mod2 - 1.0).abs())
   BigDecimal m = v - c
 
-  BigDecimal r1, g1, b1
-  if (h < 60)       { r1 = c; g1 = x; b1 = 0 }
-  else if (h < 120) { r1 = x; g1 = c; b1 = 0 }
-  else if (h < 180) { r1 = 0; g1 = c; b1 = x }
-  else if (h < 240) { r1 = 0; g1 = x; b1 = c }
-  else if (h < 300) { r1 = x; g1 = 0; b1 = c }
-  else              { r1 = c; g1 = 0; b1 = x }
+  BigDecimal r1
+  BigDecimal g1
+  BigDecimal b1
+  if (h < 60.0)       { r1 = c; g1 = x; b1 = 0.0 }
+  else if (h < 120.0) { r1 = x; g1 = c; b1 = 0.0 }
+  else if (h < 180.0) { r1 = 0.0; g1 = c; b1 = x }
+  else if (h < 240.0) { r1 = 0.0; g1 = x; b1 = c }
+  else if (h < 300.0) { r1 = x; g1 = 0.0; b1 = c }
+  else                 { r1 = c; g1 = 0.0; b1 = x }
 
   return [
-    Math.round((r1 + m) * 100) as Integer,
-    Math.round((g1 + m) * 100) as Integer,
-    Math.round((b1 + m) * 100) as Integer
-  ]
+    Math.round(((r1 + m) * 100.0).doubleValue()) as Integer,
+    Math.round(((g1 + m) * 100.0).doubleValue()) as Integer,
+    Math.round(((b1 + m) * 100.0).doubleValue()) as Integer
+  ] as List<Integer>
 }
 
 /**
