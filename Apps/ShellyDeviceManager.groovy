@@ -1932,13 +1932,13 @@ private void updateComponentDriversForDevice(Map config) {
 
 /**
  * Installs required scripts on a device identified by IP address.
- * Wrapper around the script installation logic that finds the device by IP
- * instead of relying on the selectedConfigDevice setting.
+ * Sets up a script queue and begins async sequential installation via
+ * {@link #installNextScript} → chunk upload → {@link #scriptInstallStepComplete}.
  *
  * @param ipAddress The IP address of the Shelly device
  */
 private void installRequiredScriptsForIp(String ipAddress) {
-    def device = findChildDeviceByIp(ipAddress)
+    Object device = findChildDeviceByIp(ipAddress)
     if (!device) {
         logError("installRequiredScriptsForIp: no child device found for ${ipAddress}")
         return
@@ -1957,81 +1957,192 @@ private void installRequiredScriptsForIp(String ipAddress) {
         appendLog('error', "Cannot read scripts from ${device.displayName}")
         return
     }
+
     String branch = GITHUB_BRANCH
     String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts"
     String uri = "http://${ipAddress}/rpc"
-    Integer installed = 0
-
-    Integer updated = 0
     Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
-    requiredScripts.each { String scriptFile ->
-        String scriptName = stripJsExtension(scriptFile)
+    // Build the script queue as a list of file names
+    List<String> scriptQueue = requiredScripts.toList()
 
-        // Download latest script code from GitHub
-        String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
-        if (!scriptCode) {
-            logError("Failed to download ${scriptFile} from GitHub")
-            appendLog('error', "Failed to download ${scriptFile}")
-            return
-        }
+    Map context = [
+        ipAddress: ipAddress,
+        deviceDisplayName: device.displayName.toString(),
+        uri: uri,
+        hasAuth: hasAuth,
+        baseUrl: baseUrl,
+        installedScripts: installedScripts,
+        scriptQueue: scriptQueue,
+        queueIndex: 0,
+        installed: 0,
+        updated: 0
+    ]
 
-        // Check if script already exists on device
-        Map existingScript = installedScripts.find { (it.name ?: '') == scriptName }
+    installNextScript(context)
+}
 
-        try {
-            Integer scriptId
-            if (existingScript) {
-                // Update existing script: stop → putCode → enable → start
-                scriptId = existingScript.id as Integer
-                logInfo("Updating script '${scriptName}' (id: ${scriptId}) on ${ipAddress}...")
-                appendLog('info', "Updating ${scriptName} on ${device.displayName}...")
+/**
+ * Processes the next script in the installation queue.
+ * Downloads script code from GitHub, creates or stops the existing script slot,
+ * then starts an async chunk upload. When the queue is exhausted, calls
+ * {@link #finalizeScriptInstallation}.
+ *
+ * @param data Map containing queue state (scriptQueue, queueIndex, uri, etc.)
+ */
+void installNextScript(Map data) {
+    List<String> scriptQueue = data.scriptQueue as List<String>
+    Integer queueIndex = data.queueIndex as Integer
 
-                LinkedHashMap stopCmd = scriptStopCommand(scriptId)
-                if (hasAuth) { stopCmd.auth = getAuth() }
-                postCommandSync(stopCmd, uri)
-            } else {
-                // Create new script
-                logInfo("Installing script '${scriptName}' on ${ipAddress}...")
-                appendLog('info', "Installing ${scriptName} on ${device.displayName}...")
-
-                LinkedHashMap createCmd = scriptCreateCommand(scriptName)
-                if (hasAuth) { createCmd.auth = getAuth() }
-                LinkedHashMap createResult = postCommandSync(createCmd, uri)
-                scriptId = createResult?.result?.id as Integer
-
-                if (scriptId == null) {
-                    logError("Failed to create script '${scriptName}' on device")
-                    appendLog('error', "Failed to create ${scriptName}")
-                    return
-                }
-            }
-
-            uploadScriptInChunks(scriptId, scriptCode, uri, hasAuth)
-
-            LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-            if (hasAuth) { enableCmd.auth = getAuth() }
-            postCommandSync(enableCmd, uri)
-
-            LinkedHashMap startCmd = scriptStartCommand(scriptId)
-            if (hasAuth) { startCmd.auth = getAuth() }
-            postCommandSync(startCmd, uri)
-
-            String action = existingScript ? 'Updated' : 'Installed'
-            logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
-            appendLog('info', "${action} ${scriptName} on ${device.displayName}")
-            installed++
-            if (existingScript) { updated++ }
-        } catch (Exception ex) {
-            String action = existingScript ? 'update' : 'install'
-            logError("Failed to ${action} script '${scriptName}': ${ex.message}")
-            appendLog('error', "Failed to ${action} ${scriptName}: ${ex.message}")
-        }
+    if (queueIndex >= scriptQueue.size()) {
+        finalizeScriptInstallation(data)
+        return
     }
+
+    String scriptFile = scriptQueue[queueIndex]
+    String scriptName = stripJsExtension(scriptFile)
+    String ipAddress = data.ipAddress as String
+    String uri = data.uri as String
+    Boolean hasAuth = data.hasAuth as Boolean
+    String baseUrl = data.baseUrl as String
+    List<Map> installedScripts = data.installedScripts as List<Map>
+    String deviceDisplayName = data.deviceDisplayName as String
+
+    // Download latest script code from GitHub
+    String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
+    if (!scriptCode) {
+        logError("Failed to download ${scriptFile} from GitHub")
+        appendLog('error', "Failed to download ${scriptFile}")
+        // Skip this script and continue with next
+        installNextScript(data + [queueIndex: queueIndex + 1])
+        return
+    }
+
+    // Check if script already exists on device
+    Map existingScript = installedScripts.find { (it.name ?: '') == scriptName }
+    Boolean isUpdate = (existingScript != null)
+
+    try {
+        Integer scriptId
+        if (isUpdate) {
+            scriptId = existingScript.id as Integer
+            logInfo("Updating script '${scriptName}' (id: ${scriptId}) on ${ipAddress}...")
+            appendLog('info', "Updating ${scriptName} on ${deviceDisplayName}...")
+
+            LinkedHashMap stopCmd = scriptStopCommand(scriptId)
+            if (hasAuth) { stopCmd.auth = getAuth() }
+            postCommandSync(stopCmd, uri)
+        } else {
+            logInfo("Installing script '${scriptName}' on ${ipAddress}...")
+            appendLog('info', "Installing ${scriptName} on ${deviceDisplayName}...")
+
+            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
+            if (hasAuth) { createCmd.auth = getAuth() }
+            LinkedHashMap createResult = postCommandSync(createCmd, uri)
+            scriptId = createResult?.result?.id as Integer
+
+            if (scriptId == null) {
+                logError("Failed to create script '${scriptName}' on device")
+                appendLog('error', "Failed to create ${scriptName}")
+                installNextScript(data + [queueIndex: queueIndex + 1])
+                return
+            }
+        }
+
+        // Start async chunk upload with completion callback
+        uploadScriptChunk([
+            scriptId: scriptId,
+            code: scriptCode,
+            uri: uri,
+            hasAuth: hasAuth,
+            offset: 0,
+            chunkNum: 0,
+            completionCallback: 'scriptInstallStepComplete',
+            errorCallback: 'scriptInstallStepError',
+            completionData: data + [
+                currentScriptName: scriptName,
+                currentScriptId: scriptId,
+                isUpdate: isUpdate,
+                queueIndex: queueIndex
+            ]
+        ])
+    } catch (Exception ex) {
+        String action = isUpdate ? 'update' : 'install'
+        logError("Failed to ${action} script '${scriptName}': ${ex.message}")
+        appendLog('error', "Failed to ${action} ${scriptName}: ${ex.message}")
+        installNextScript(data + [queueIndex: queueIndex + 1])
+    }
+}
+
+/**
+ * Completion callback after a script's chunk upload finishes successfully.
+ * Enables and starts the script, updates counters, then calls {@link #installNextScript}
+ * for the next script in the queue.
+ *
+ * @param data Map containing queue state plus currentScriptId, currentScriptName, isUpdate
+ */
+void scriptInstallStepComplete(Map data) {
+    Integer scriptId = data.currentScriptId as Integer
+    String scriptName = data.currentScriptName as String
+    Boolean isUpdate = data.isUpdate as Boolean
+    String uri = data.uri as String
+    Boolean hasAuth = data.hasAuth as Boolean
+    String deviceDisplayName = data.deviceDisplayName as String
+    Integer installed = (data.installed as Integer) + 1
+    Integer updated = (data.updated as Integer) + (isUpdate ? 1 : 0)
+    Integer queueIndex = data.queueIndex as Integer
+
+    LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+    if (hasAuth) { enableCmd.auth = getAuth() }
+    postCommandSync(enableCmd, uri)
+
+    LinkedHashMap startCmd = scriptStartCommand(scriptId)
+    if (hasAuth) { startCmd.auth = getAuth() }
+    postCommandSync(startCmd, uri)
+
+    String action = isUpdate ? 'Updated' : 'Installed'
+    logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
+    appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
+
+    // Continue with next script in queue
+    installNextScript(data + [queueIndex: queueIndex + 1, installed: installed, updated: updated])
+}
+
+/**
+ * Error callback when a script's chunk upload fails.
+ * Logs the error and continues with the next script in the queue.
+ *
+ * @param data Map containing queue state plus error message
+ */
+void scriptInstallStepError(Map data) {
+    String scriptName = data.currentScriptName as String
+    Boolean isUpdate = data.isUpdate as Boolean
+    String error = data.error as String
+    Integer queueIndex = data.queueIndex as Integer
+
+    String action = isUpdate ? 'update' : 'install'
+    logError("Failed to ${action} script '${scriptName}': ${error}")
+    appendLog('error', "Failed to ${action} ${scriptName}: ${error}")
+
+    // Continue with next script in queue
+    installNextScript(data + [queueIndex: queueIndex + 1])
+}
+
+/**
+ * Called when all scripts in the queue have been processed.
+ * Logs a summary and writes the Hubitat IP to device KVS if any scripts were installed.
+ *
+ * @param data Map containing ipAddress, deviceDisplayName, installed count, updated count
+ */
+void finalizeScriptInstallation(Map data) {
+    String ipAddress = data.ipAddress as String
+    String deviceDisplayName = data.deviceDisplayName as String
+    Integer installed = (data.installed ?: 0) as Integer
+    Integer updated = (data.updated ?: 0) as Integer
 
     Integer newlyInstalled = installed - updated
     logInfo("Script installation complete: ${newlyInstalled} installed, ${updated} updated on ${ipAddress}")
-    appendLog('info', "Script installation complete: ${newlyInstalled} installed, ${updated} updated on ${device.displayName}")
+    appendLog('info', "Script installation complete: ${newlyInstalled} installed, ${updated} updated on ${deviceDisplayName}")
 
     // Write Hubitat IP to KVS after installing/updating scripts
     if (installed > 0) {
@@ -8749,46 +8860,70 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
 }
 
 /**
- * Uploads script code to a Shelly device in chunks to avoid 413 Payload Too Large errors.
- * Shelly Script.PutCode has a per-request size limit; this sends the code in 768-byte chunks.
- * First chunk uses append=false to overwrite, subsequent chunks use append=true.
- * Includes inter-chunk delay and response validation for reliable transfers.
+ * Uploads one chunk of a script to a Shelly Gen2+ device and schedules the next
+ * chunk via {@code runInMillis(150)} to avoid blocking the hub thread.
+ * When all chunks are uploaded, invokes the completion callback by name.
+ * On error, invokes the error callback (if provided) or logs the error.
  *
- * @param scriptId The script ID on the device
- * @param code The full script source code
- * @param uri The device RPC URI (e.g. http://192.168.1.x/rpc)
- * @param hasAuth Whether authentication is required
+ * <p>Data map keys:
+ * <ul>
+ *   <li>{@code scriptId} — script slot ID on the device</li>
+ *   <li>{@code code} — full script source code</li>
+ *   <li>{@code uri} — device RPC URI</li>
+ *   <li>{@code hasAuth} — whether auth header is required</li>
+ *   <li>{@code offset} — current byte offset into code (0 on first call)</li>
+ *   <li>{@code chunkNum} — current chunk counter (0 on first call)</li>
+ *   <li>{@code completionCallback} — method name to invoke when upload finishes</li>
+ *   <li>{@code errorCallback} — method name to invoke on failure (optional)</li>
+ *   <li>{@code completionData} — arbitrary map passed through to callbacks</li>
+ * </ul>
+ *
+ * @param data Map containing upload state (see above)
  */
-private void uploadScriptInChunks(Integer scriptId, String code, String uri, Boolean hasAuth) {
-  Integer chunkSize = 768
-  Integer offset = 0
-  Integer total = code.length()
-  Boolean first = true
-  Integer chunkNum = 0
+void uploadScriptChunk(Map data) {
+    Integer scriptId = data.scriptId as Integer
+    String code = data.code as String
+    String uri = data.uri as String
+    Boolean hasAuth = data.hasAuth as Boolean
+    Integer offset = (data.offset ?: 0) as Integer
+    Integer chunkNum = (data.chunkNum ?: 0) as Integer
+    Integer chunkSize = 768
+    String completionCallback = data.completionCallback as String
+    String errorCallback = data.errorCallback as String
+    Map completionData = (data.completionData ?: [:]) as Map
 
-  while (offset < total) {
+    Integer total = code.length()
+    Boolean first = (offset == 0)
     Integer end = Math.min(offset + chunkSize, total) as Integer
     String chunk = code.substring(offset, end)
+
     LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, chunk, !first)
     if (hasAuth) { putCmd.auth = getAuth() }
 
     LinkedHashMap result = postCommandSync(putCmd, uri)
 
-    // Check for Shelly RPC-level error in the response
     if (result?.error) {
-      String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${result.error}"
-      logError(errMsg)
-      throw new Exception(errMsg)
+        String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${result.error}"
+        logError(errMsg)
+        if (errorCallback) {
+            "${errorCallback}"(completionData + [error: errMsg])
+        }
+        return
     }
 
-    chunkNum++
-    first = false
-    offset = end
+    Integer nextOffset = end
+    Integer nextChunkNum = chunkNum + 1
 
-    // Brief pause between chunks to let the device flush writes
-    if (offset < total) { pauseExecution(150) }
-  }
-  logDebug("Uploaded script id=${scriptId} in ${chunkNum} chunks (${total} bytes)")
+    if (nextOffset < total) {
+        // Schedule next chunk with 150ms delay for device write flush
+        Map nextData = data + [offset: nextOffset, chunkNum: nextChunkNum]
+        runInMillis(150, 'uploadScriptChunk', [data: nextData])
+    } else {
+        logDebug("Uploaded script id=${scriptId} in ${nextChunkNum} chunks (${total} bytes)")
+        if (completionCallback) {
+            "${completionCallback}"(completionData)
+        }
+    }
 }
 
 /**
@@ -10727,6 +10862,8 @@ void checkBlePresence() {
 /**
  * Toggles BLE gateway mode on a WiFi Shelly device.
  * Enables or disables the HubitatBLEHelper script and BLE scanning.
+ * Enable is async (script upload uses non-blocking chunk callbacks);
+ * disable is synchronous.
  *
  * @param ip The IP address of the WiFi gateway device
  */
@@ -10735,24 +10872,23 @@ private void toggleBleGateway(String ip) {
     if (bleGateways.contains(ip)) {
         disableBleGateway(ip)
         bleGateways.remove(ip)
+        state.bleGateways = bleGateways
         appendLog('info', "BLE gateway disabled on ${ip}")
     } else {
-        if (enableBleGateway(ip)) {
-            bleGateways.add(ip)
-            appendLog('info', "BLE gateway enabled on ${ip}")
-        }
+        // enableBleGateway is async — gateway list update happens in enableBleGatewayComplete
+        enableBleGateway(ip)
     }
-    state.bleGateways = bleGateways
 }
 
 /**
- * Enables BLE gateway mode on a device.
- * Enables Bluetooth, downloads and installs the HubitatBLEHelper script,
- * and writes the hub IP to device KVS.
+ * Enables BLE gateway mode on a device (async).
+ * Steps 1-3 (enable BT, download script, create/stop script) run synchronously.
+ * Step 4 (chunk upload) runs asynchronously via {@link #uploadScriptChunk}.
+ * Steps 5-6 (enable, start, KVS write, state update) run in {@link #enableBleGatewayComplete}.
  *
  * @param ip The IP address of the Shelly device
  */
-private Boolean enableBleGateway(String ip) {
+private void enableBleGateway(String ip) {
     String uri = "http://${ip}/rpc"
     Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
@@ -10769,7 +10905,7 @@ private Boolean enableBleGateway(String ip) {
     if (!scriptCode) {
         logError("enableBleGateway: failed to download HubitatBLEHelper.js from GitHub")
         appendLog('error', "Failed to download BLE script for ${ip}")
-        return false
+        return
     }
 
     // Step 3: Check if script exists, create or update
@@ -10793,18 +10929,35 @@ private Boolean enableBleGateway(String ip) {
         if (scriptId == null) {
             logError("enableBleGateway: failed to create script on ${ip}")
             appendLog('error', "Failed to create BLE script on ${ip}")
-            return false
+            return
         }
     }
 
-    // Step 4: Upload script code (chunked)
-    try {
-        uploadScriptInChunks(scriptId, scriptCode, uri, hasAuth)
-    } catch (Exception e) {
-        logError("enableBleGateway: script upload failed on ${ip} — ${e.message}")
-        appendLog('error', "Failed to upload BLE script to ${ip}: ${e.message}")
-        return false
-    }
+    // Step 4: Upload script code asynchronously via chunked callbacks
+    uploadScriptChunk([
+        scriptId: scriptId,
+        code: scriptCode,
+        uri: uri,
+        hasAuth: hasAuth,
+        offset: 0,
+        chunkNum: 0,
+        completionCallback: 'enableBleGatewayComplete',
+        errorCallback: 'enableBleGatewayError',
+        completionData: [ip: ip, scriptId: scriptId, uri: uri, hasAuth: hasAuth]
+    ])
+}
+
+/**
+ * Completion callback after BLE gateway script upload finishes successfully.
+ * Enables and starts the script, writes hub IP to KVS, and updates the gateway list.
+ *
+ * @param data Map containing ip, scriptId, uri, hasAuth
+ */
+void enableBleGatewayComplete(Map data) {
+    String ip = data.ip as String
+    Integer scriptId = data.scriptId as Integer
+    String uri = data.uri as String
+    Boolean hasAuth = data.hasAuth as Boolean
 
     // Step 5: Enable and start
     LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
@@ -10818,8 +10971,27 @@ private Boolean enableBleGateway(String ip) {
     // Step 6: Write hub IP to KVS
     writeHubitatIpToKVS(ip)
 
+    // Update gateway list (was previously done in toggleBleGateway)
+    List bleGateways = (state.bleGateways ?: []) as List
+    if (!bleGateways.contains(ip)) {
+        bleGateways.add(ip)
+        state.bleGateways = bleGateways
+    }
+
     logInfo("BLE gateway enabled on ${ip}")
-    return true
+    appendLog('info', "BLE gateway enabled on ${ip}")
+}
+
+/**
+ * Error callback when BLE gateway script upload fails.
+ *
+ * @param data Map containing ip and error message
+ */
+void enableBleGatewayError(Map data) {
+    String ip = data.ip as String
+    String error = data.error as String
+    logError("enableBleGateway: script upload failed on ${ip} — ${error}")
+    appendLog('error', "Failed to upload BLE script to ${ip}: ${error}")
 }
 
 /**
