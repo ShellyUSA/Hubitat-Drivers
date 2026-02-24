@@ -579,12 +579,14 @@ void appButtonHandler(String buttonName) {
         Map allDrivers = state.autoDrivers ?: [:]
         if (allDrivers.isEmpty()) {
             appendLog('warn', 'No tracked drivers to update')
-            return
+        } else {
+            logInfo("Manual force update of all drivers requested")
+            appendLog('info', "Updating ${allDrivers.size()} driver(s)...")
+            state.lastAutoconfVersion = getAppVersion()
+            reinstallAllPrebuiltDrivers()
         }
-        logInfo("Manual force update of all drivers requested")
-        appendLog('info', "Updating ${allDrivers.size()} driver(s)...")
-        state.lastAutoconfVersion = getAppVersion()
-        reinstallAllPrebuiltDrivers()
+        // Sweep orphaned ShellyDeviceManager drivers (catches both tracked + manually uploaded test drivers)
+        sweepAllUnusedShellyHubDrivers()
     }
 
     // === Device Configuration Table Buttons ===
