@@ -1121,10 +1121,6 @@ void logInfo(message) { if (shouldLogLevel('info')) { log.info "${loggingLabel()
 void logDebug(message) { if (shouldLogLevel('debug')) { log.debug "${loggingLabel()}: ${message}" } }
 void logTrace(message) { if (shouldLogLevel('trace')) { log.trace "${loggingLabel()}: ${message}" } }
 
-void logClass(obj) {
-  logInfo("Object Class Name: ${obj?.getClass()?.name}")
-}
-
 @CompileStatic
 void logJson(Map message) {
   if (shouldLogLevel('trace')) {
@@ -1159,7 +1155,6 @@ String prettyJson(Map jsonInput) {
 // ╚══════════════════════════════════════════════════════════════╝
 import groovy.transform.CompileStatic
 import groovy.json.JsonOutput
-import groovy.transform.Field
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Imports And Fields                                       ║
 // ╚══════════════════════════════════════════════════════════════╝

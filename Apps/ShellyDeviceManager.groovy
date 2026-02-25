@@ -12984,10 +12984,6 @@ void logException(message) {log.error "${loggingLabel()}: ${message}"}
 // void logDebug(message) {if (settings.logEnable == true && settings.debugLogEnable) {log.debug "${loggingLabel()}: ${message}"}}
 // void logTrace(message) {if (settings.logEnable == true && settings.traceLogEnable) {log.trace "${loggingLabel()}: ${message}"}}
 
-void logClass(obj) {
-  logInfo("Object Class Name: ${getObjectClassName(obj)}")
-}
-
 void logJson(Map message) {
   if (settings.logEnable && settings.traceLogEnable) {
     String prettyJson = prettyJson(message)
