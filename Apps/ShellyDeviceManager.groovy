@@ -856,6 +856,10 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         Map deviceStatus = deviceInfo.deviceStatus ?: [:]
         Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') }
         if (hasPlugsUi) {
+            // Install the PLUGS_UI RGB component driver so the parent can create the child
+            if (!isComponentDriverInstalled('Shelly PLUGS_UI RGB')) {
+                fetchAndInstallComponentDriver('ShellyPlugsUiRGBComponent.groovy', 'Shelly PLUGS_UI RGB')
+            }
             childDevice.updateDataValue('hasPlugsUi', 'true')
             logInfo("  PLUGS_UI detected — RGB LED child will be created")
         }
@@ -863,6 +867,10 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         // Detect POWERSTRIP_UI component — tells the driver to create an LED strip child
         Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') }
         if (hasPowerstripUi) {
+            // Install the Powerstrip UI component driver so the parent can create the child
+            if (!isComponentDriverInstalled('Shelly Autoconf PowerstripUI')) {
+                fetchAndInstallComponentDriver('ShellyPowerstripUiComponent.groovy', 'Shelly Autoconf PowerstripUI')
+            }
             childDevice.updateDataValue('hasPowerstripUi', 'true')
             logInfo("  POWERSTRIP_UI detected — LED strip child will be created")
         }
@@ -989,9 +997,24 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
             parentDevice.updateDataValue('switchId', emSwitchId)
         }
 
+        // Detect PLUGS_UI component — tells the driver to create an RGB LED child
+        Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') }
+        if (hasPlugsUi) {
+            // Install the PLUGS_UI RGB component driver so the parent can create the child
+            if (!isComponentDriverInstalled('Shelly PLUGS_UI RGB')) {
+                fetchAndInstallComponentDriver('ShellyPlugsUiRGBComponent.groovy', 'Shelly PLUGS_UI RGB')
+            }
+            parentDevice.updateDataValue('hasPlugsUi', 'true')
+            logInfo("  PLUGS_UI detected — RGB LED child will be created")
+        }
+
         // Detect POWERSTRIP_UI component — tells the driver to create an LED strip child
         Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') }
         if (hasPowerstripUi) {
+            // Install the Powerstrip UI component driver so the parent can create the child
+            if (!isComponentDriverInstalled('Shelly Autoconf PowerstripUI')) {
+                fetchAndInstallComponentDriver('ShellyPowerstripUiComponent.groovy', 'Shelly Autoconf PowerstripUI')
+            }
             parentDevice.updateDataValue('hasPowerstripUi', 'true')
             logInfo("  POWERSTRIP_UI detected — LED strip child will be created")
         }
