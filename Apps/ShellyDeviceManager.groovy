@@ -13109,18 +13109,20 @@ private void reinstallAllPrebuiltDrivers() {
     initializeDriverTracking()
 
     String version = getAppVersion()
-    Map allDrivers = state.autoDrivers ?: [:]
-    if (allDrivers.isEmpty()) {
+    // Defensive snapshot: registerAutoDriver() mutates state.autoDrivers during each iteration,
+    // so we must iterate over a detached copy to avoid ConcurrentModificationException.
+    Map driverSnapshot = new LinkedHashMap((state.autoDrivers ?: [:]) as Map)
+    if (driverSnapshot.isEmpty()) {
         logInfo("No tracked drivers to update")
         return
     }
 
-    logInfo("Updating ${allDrivers.size()} driver(s) to v${version}...")
-    appendLog('info', "Updating ${allDrivers.size()} driver(s) to v${version}...")
+    logInfo("Updating ${driverSnapshot.size()} driver(s) to v${version}...")
+    appendLog('info', "Updating ${driverSnapshot.size()} driver(s) to v${version}...")
 
     int updated = 0
     int errors = 0
-    allDrivers.each { key, info ->
+    driverSnapshot.each { key, info ->
         String baseName = (info.name ?: '').replaceAll(/\s+v\d+(\.\d+)*$/, '')
         Boolean isComponent = info.isComponentDriver ?: false
 
@@ -13622,7 +13624,8 @@ private void registerAutoDriver(String driverName, String namespace, String vers
   // The base name is the driver name without the version suffix (e.g., "Shelly Autoconf Single Switch PM")
   String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
   List<String> keysToRemove = []
-  state.autoDrivers.each { k, v ->
+  // Snapshot keys to avoid ConcurrentModificationException from concurrent state mutations
+  new LinkedHashMap((state.autoDrivers ?: [:]) as Map).each { k, v ->
     if (k != key && k.toString().contains(baseName)) {
       keysToRemove.add(k.toString())
     }
