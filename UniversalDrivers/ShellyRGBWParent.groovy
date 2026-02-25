@@ -347,23 +347,31 @@ void setSaturation(BigDecimal saturation) {
  */
 @CompileStatic
 private static List<Integer> hsvToRgb(Integer hue, Integer saturation, Integer value) {
-  float h = (hue / 100.0f) * 360.0f
-  float s = saturation / 100.0f
-  float v = value / 100.0f
+  BigDecimal h = new BigDecimal(hue) * 3.6
+  BigDecimal s = new BigDecimal(saturation) / 100.0
+  BigDecimal v1 = new BigDecimal(value) / 100.0
 
-  float c = v * s
-  float x = c * (1.0f - Math.abs((h / 60.0f) % 2.0f - 1.0f))
-  float m = v - c
+  BigDecimal c = v1 * s
+  BigDecimal hSector = h / 60.0
+  BigDecimal mod2 = hSector.remainder(new BigDecimal(2))
+  BigDecimal x = c * (1.0 - (mod2 - 1.0).abs())
+  BigDecimal m = v1 - c
 
-  float r, g, b
-  if (h < 60)       { r = c; g = x; b = 0 }
-  else if (h < 120) { r = x; g = c; b = 0 }
-  else if (h < 180) { r = 0; g = c; b = x }
-  else if (h < 240) { r = 0; g = x; b = c }
-  else if (h < 300) { r = x; g = 0; b = c }
-  else              { r = c; g = 0; b = x }
+  BigDecimal r1
+  BigDecimal g1
+  BigDecimal b1
+  if      (h < 60.0)  { r1 = c; g1 = x; b1 = 0.0 }
+  else if (h < 120.0) { r1 = x; g1 = c; b1 = 0.0 }
+  else if (h < 180.0) { r1 = 0.0; g1 = c; b1 = x }
+  else if (h < 240.0) { r1 = 0.0; g1 = x; b1 = c }
+  else if (h < 300.0) { r1 = x; g1 = 0.0; b1 = c }
+  else                { r1 = c; g1 = 0.0; b1 = x }
 
-  return [(int)((r + m) * 255), (int)((g + m) * 255), (int)((b + m) * 255)]
+  return [
+    Math.round(((r1 + m) * 255.0).doubleValue()) as Integer,
+    Math.round(((g1 + m) * 255.0).doubleValue()) as Integer,
+    Math.round(((b1 + m) * 255.0).doubleValue()) as Integer
+  ] as List<Integer>
 }
 
 /**

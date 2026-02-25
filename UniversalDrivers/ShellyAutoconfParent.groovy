@@ -628,9 +628,12 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
       if (data.apower != null) {
         events.add([name: 'power', value: data.apower as BigDecimal, unit: 'W'])
       }
-      if (data.aenergy?.total != null) {
-        BigDecimal energyKwh = (data.aenergy.total as BigDecimal) / 1000
-        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+      if (data.aenergy != null) {
+        Map aenergyMap = data.aenergy as Map
+        if (aenergyMap.total != null) {
+          BigDecimal energyKwh = (aenergyMap.total as BigDecimal) / 1000
+          events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+        }
       }
       break
 
@@ -653,10 +656,13 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
       if (data.apower != null) {
         events.add([name: 'power', value: data.apower as BigDecimal, unit: 'W'])
       }
-      if (data.aenergy?.total != null) {
-        BigDecimal energyWh = data.aenergy.total as BigDecimal
-        BigDecimal energyKwh = energyWh / 1000
-        events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+      if (data.aenergy != null) {
+        Map aenergyMap = data.aenergy as Map
+        if (aenergyMap.total != null) {
+          BigDecimal energyWh = aenergyMap.total as BigDecimal
+          BigDecimal energyKwh = energyWh / 1000
+          events.add([name: 'energy', value: energyKwh, unit: 'kWh'])
+        }
       }
       break
 
@@ -1224,28 +1230,32 @@ private Map getComponentInfo(def childDevice) {
  * @return List of [r, g, b] values (0-255)
  */
 @CompileStatic
-private List<Integer> hsvToRgb(Integer hue, Integer saturation, Integer value) {
-  BigDecimal h = (hue * 3.6) // 0-100 → 0-360
-  BigDecimal s = saturation / 100.0
-  BigDecimal v = value / 100.0
+private static List<Integer> hsvToRgb(Integer hue, Integer saturation, Integer value) {
+  BigDecimal h = new BigDecimal(hue) * 3.6
+  BigDecimal s = new BigDecimal(saturation) / 100.0
+  BigDecimal v = new BigDecimal(value) / 100.0
 
   BigDecimal c = v * s
-  BigDecimal x = c * (1 - ((h / 60) % 2 - 1).abs())
+  BigDecimal hSector = h / 60.0
+  BigDecimal mod2 = hSector.remainder(new BigDecimal(2))
+  BigDecimal x = c * (1.0 - (mod2 - 1.0).abs())
   BigDecimal m = v - c
 
-  BigDecimal r1, g1, b1
-  if (h < 60) { r1 = c; g1 = x; b1 = 0 }
-  else if (h < 120) { r1 = x; g1 = c; b1 = 0 }
-  else if (h < 180) { r1 = 0; g1 = c; b1 = x }
-  else if (h < 240) { r1 = 0; g1 = x; b1 = c }
-  else if (h < 300) { r1 = x; g1 = 0; b1 = c }
-  else { r1 = c; g1 = 0; b1 = x }
+  BigDecimal r1
+  BigDecimal g1
+  BigDecimal b1
+  if      (h < 60.0)  { r1 = c; g1 = x; b1 = 0.0 }
+  else if (h < 120.0) { r1 = x; g1 = c; b1 = 0.0 }
+  else if (h < 180.0) { r1 = 0.0; g1 = c; b1 = x }
+  else if (h < 240.0) { r1 = 0.0; g1 = x; b1 = c }
+  else if (h < 300.0) { r1 = x; g1 = 0.0; b1 = c }
+  else                { r1 = c; g1 = 0.0; b1 = x }
 
   return [
-    Math.round((r1 + m) * 255) as Integer,
-    Math.round((g1 + m) * 255) as Integer,
-    Math.round((b1 + m) * 255) as Integer
-  ]
+    Math.round(((r1 + m) * 255.0).doubleValue()) as Integer,
+    Math.round(((g1 + m) * 255.0).doubleValue()) as Integer,
+    Math.round(((b1 + m) * 255.0).doubleValue()) as Integer
+  ] as List<Integer>
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

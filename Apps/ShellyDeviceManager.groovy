@@ -31,7 +31,7 @@
 // instead of the generic generated driver name. Checked before generateDriverName().
 @Field static final Map<String, String> GEN1_MODEL_DRIVER_OVERRIDE = [
     'SHPLG-1':   'Shelly Gen1 Plug',
-    'SHPLG-S':   'Shelly Gen1 Plug S',
+    'SHPLG-S':   'Shelly Gen1 Plug S',  
     'SHPLG-U1':  'Shelly Gen1 Plug S',
     'SHPLG-UK1': 'Shelly Gen1 Plug S',   // UK variant
     'SHPLG-IT1': 'Shelly Gen1 Plug S',   // Italy variant
@@ -7720,15 +7720,13 @@ private String fetchHubitatDriverIdByName(String driverName) {
  * @param driverName Driver name as stored in {@code state.autoDrivers}
  */
 private void deleteHubitatDriverFromHub(String driverName) {
-    // Safety check with base-name matching: a device whose typeName differs only in version suffix
-    // still counts as "using" this driver.
-    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
-    Integer currentCount = (getChildDevices()?.count { dev ->
-        String tn = dev.typeName?.toString() ?: ''
-        return tn == driverName || tn.replaceAll(/\s+v\d+(\.\d+)*$/, '') == baseName
-    } ?: 0) as Integer
-    if (currentCount > 0) {
-        logDebug("deleteHubitatDriverFromHub: '${driverName}' still used by ${currentCount} device(s) — skipping")
+    // Safety check: verify the driver is not used by any device (including component children)
+    List<Set<String>> usedNames = collectAllManagedDeviceTypeNames()
+    Set<String> usedExact = usedNames[0]
+    Set<String> usedBase  = usedNames[1]
+    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '').toString()
+    if (usedExact.contains(driverName) || usedBase.contains(baseName)) {
+        logDebug("deleteHubitatDriverFromHub: '${driverName}' still in use — skipping")
         return
     }
 
@@ -13521,22 +13519,19 @@ private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) 
     Map<String, Map> allTracked = state.autoDrivers as Map ?: [:]
     if (allTracked.isEmpty()) { return }
 
-    List<com.hubitat.app.DeviceWrapper> childDevices = getChildDevices() ?: []
+    List<Set<String>> usedNames = collectAllManagedDeviceTypeNames()
+    Set<String> usedExact = usedNames[0]
+    Set<String> usedBase  = usedNames[1]
 
     // Phase 1: Identify unused drivers (no mutation yet to avoid ConcurrentModificationException)
     List<String> toDelete = []
     allTracked.each { String key, Map info ->
         String name = (info.name ?: '').toString()
         if (namesToCheck != null && !namesToCheck.contains(name)) { return }
-        // Use base-name matching so a device with typeName "Shelly Foo v1.0.34" correctly
-        // counts against a tracking entry named "Shelly Foo" (and vice-versa).
-        String baseName = name.replaceAll(/\s+v\d+(\.\d+)*$/, '')
-        Integer count = (childDevices.count { dev ->
-            String tn = dev.typeName?.toString() ?: ''
-            return tn == name || tn.replaceAll(/\s+v\d+(\.\d+)*$/, '') == baseName
-        } ?: 0) as Integer
-        logDebug("deleteUnusedTrackedDrivers: '${name}' — ${count} device(s)")
-        if (count == 0) { toDelete << name }
+        String baseName = name.replaceAll(/\s+v\d+(\.\d+)*$/, '').toString()
+        Boolean inUse = usedExact.contains(name) || usedBase.contains(baseName)
+        logDebug("deleteUnusedTrackedDrivers: '${name}' — ${inUse ? 'in use' : 'unused'}")
+        if (!inUse) { toDelete << name }
     }
     if (toDelete.isEmpty()) {
         logDebug("deleteUnusedTrackedDrivers: no unused drivers found${namesToCheck != null ? ' in checked set' : ''}")
@@ -13551,30 +13546,66 @@ private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) 
 }
 
 /**
+ * Collects type names from all devices managed by this app, including both
+ * direct children (parent Shelly devices) and their component children
+ * (grandchildren created by parent drivers via {@code addChildDevice()}).
+ *
+ * <p>Component children are invisible to the app's {@code getChildDevices()}
+ * because they belong to the device, not the app. This helper traverses
+ * both levels to build a complete picture of which drivers are actually in use.</p>
+ *
+ * @return List of two Sets: {@code [usedExact, usedBase]} where usedExact contains
+ *         exact type names and usedBase contains version-stripped base names
+ */
+private List<Set<String>> collectAllManagedDeviceTypeNames() {
+    Set<String> usedExact = [] as Set<String>
+    Set<String> usedBase  = [] as Set<String>
+
+    List<com.hubitat.app.DeviceWrapper> directChildren = getChildDevices() ?: []
+    directChildren.each { com.hubitat.app.DeviceWrapper dev ->
+        String tn = dev.typeName?.toString() ?: ''
+        if (tn) {
+            usedExact << tn.toString()
+            usedBase  << tn.replaceAll(/\s+v\d+(\.\d+)*$/, '').toString()
+        }
+        // Traverse component children (grandchildren of the app)
+        try {
+            List grandchildren = dev.getChildDevices() ?: []
+            grandchildren.each { Object gc ->
+                String gcTn = gc.typeName?.toString() ?: ''
+                if (gcTn) {
+                    usedExact << gcTn.toString()
+                    usedBase  << gcTn.replaceAll(/\s+v\d+(\.\d+)*$/, '').toString()
+                }
+            }
+        } catch (Exception e) {
+            logDebug("collectAllManagedDeviceTypeNames: could not get children of '${dev.displayName}': ${e.message}")
+        }
+    }
+    return [usedExact, usedBase]
+}
+
+/**
  * Hub-centric sweep: queries every ShellyDeviceManager user driver installed on the hub and deletes
- * any that are not currently assigned to a child device. Unlike {@link #deleteUnusedTrackedDrivers},
+ * any that are not currently assigned to a device. Unlike {@link #deleteUnusedTrackedDrivers},
  * this does not depend on {@code state.autoDrivers} — it acts on ground truth from the hub.
  *
  * <p>This catches drivers that are absent from tracking (older installs, manual installs,
  * or name drift that left tracking stale) as well as the same version-mismatch cases that
  * {@link #deleteUnusedTrackedDrivers} handles.</p>
  *
- * <p>Device count uses base-name matching: "Shelly Foo" and "Shelly Foo v1.0.34" are treated
- * as the same driver for the purpose of determining whether it is in use.</p>
+ * <p>Includes component children (grandchildren of the app) via
+ * {@link #collectAllManagedDeviceTypeNames()} so that component drivers like
+ * "Shelly Autoconf Input Button" are correctly recognized as in use.</p>
+ *
+ * <p>When duplicate drivers exist for the same base name (e.g., unversioned "Shelly Foo"
+ * alongside versioned "Shelly Foo v1.0.36"), keeps only the ones with an exact type-name
+ * match and deletes stale copies.</p>
  */
 private void sweepAllUnusedShellyHubDrivers() {
-    List<com.hubitat.app.DeviceWrapper> childDevices = getChildDevices() ?: []
-
-    // Build exact and base-name sets from all child device typeNames
-    Set<String> usedExact = [] as Set
-    Set<String> usedBase  = [] as Set
-    childDevices.each { dev ->
-        String tn = dev.typeName?.toString() ?: ''
-        if (tn) {
-            usedExact << tn
-            usedBase  << tn.replaceAll(/\s+v\d+(\.\d+)*$/, '')
-        }
-    }
+    List<Set<String>> usedNames = collectAllManagedDeviceTypeNames()
+    Set<String> usedExact = usedNames[0]
+    Set<String> usedBase  = usedNames[1]
 
     try {
         httpGet([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
@@ -13583,20 +13614,54 @@ private void sweepAllUnusedShellyHubDrivers() {
                 return
             }
             List allDrivers = resp.data?.drivers as List ?: []
-            allDrivers.each { d ->
+
+            // Group ShellyDeviceManager drivers by base name to detect duplicates
+            Map<String, List<Map>> byBase = [:].withDefault { [] }
+            allDrivers.each { Object d ->
                 if (d.type != 'usr' || d?.namespace != 'ShellyDeviceManager') { return }
                 String driverName = d.name?.toString() ?: ''
-                String driverBase = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
                 String driverId   = d.id?.toString() ?: ''
                 if (!driverId || !driverName) { return }
+                String driverBase = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '').toString()
+                byBase[driverBase] << [name: driverName, id: driverId, base: driverBase]
+            }
 
-                if (usedExact.contains(driverName) || usedBase.contains(driverBase)) {
-                    logDebug("sweepAllUnusedShellyHubDrivers: '${driverName}' is in use — skipping")
-                    return
+            byBase.each { String baseName, List<Map> group ->
+                if (group.size() == 1) {
+                    // Single driver — standard logic: keep if exact or base match
+                    Map d = group[0]
+                    if (usedExact.contains(d.name) || usedBase.contains(d.base)) {
+                        logDebug("sweepAllUnusedShellyHubDrivers: '${d.name}' is in use — skipping")
+                    } else {
+                        logInfo("sweepAllUnusedShellyHubDrivers: '${d.name}' has 0 devices — deleting from hub")
+                        performHubDriverDelete(d.id as String, d.name as String)
+                    }
+                } else {
+                    // Multiple drivers with same base name (duplicates)
+                    List<Map> exactMatches = group.findAll { usedExact.contains(it.name) }
+                    if (exactMatches) {
+                        // Keep exact matches, delete the rest (stale duplicates)
+                        group.each { Map d ->
+                            if (usedExact.contains(d.name)) {
+                                logDebug("sweepAllUnusedShellyHubDrivers: '${d.name}' is in use (exact match) — skipping")
+                            } else {
+                                logInfo("sweepAllUnusedShellyHubDrivers: '${d.name}' is a stale duplicate of '${exactMatches[0].name}' — deleting from hub")
+                                performHubDriverDelete(d.id as String, d.name as String)
+                            }
+                        }
+                    } else if (usedBase.contains(baseName)) {
+                        // Base name matches but no exact match — version drift, keep all (safe)
+                        group.each { Map d ->
+                            logDebug("sweepAllUnusedShellyHubDrivers: '${d.name}' matches base '${baseName}' in use — skipping (version drift)")
+                        }
+                    } else {
+                        // No match at all — delete all
+                        group.each { Map d ->
+                            logInfo("sweepAllUnusedShellyHubDrivers: '${d.name}' has 0 devices — deleting from hub")
+                            performHubDriverDelete(d.id as String, d.name as String)
+                        }
+                    }
                 }
-
-                logInfo("sweepAllUnusedShellyHubDrivers: '${driverName}' has 0 devices — deleting from hub")
-                performHubDriverDelete(driverId, driverName)
             }
         }
     } catch (Exception e) {
