@@ -21,7 +21,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into prebuilt drivers and to detect app updates for automatic driver updates.
-@Field static final String APP_VERSION = "1.0.35"
+@Field static final String APP_VERSION = "1.0.36"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
