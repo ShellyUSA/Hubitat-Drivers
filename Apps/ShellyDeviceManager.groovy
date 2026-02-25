@@ -10326,7 +10326,7 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
     Object rawMessages = bleData?.messages
     if (rawMessages instanceof List) {
         List messages = (List) rawMessages
-        logTrace("handleBleRelay: processing ${messages.size()} messages from ${gatewayName}")
+        // logTrace("handleBleRelay: processing ${messages.size()} messages from ${gatewayName}")
         messages.each { Object item ->
             if (item instanceof Map) {
                 processBleReport(gatewayName, (Map) item)
@@ -10334,7 +10334,7 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
         }
     } else if (bleData?.mac) {
         // Flat single-message fallback (e.g., from routeWebhookParams)
-        logTrace("handleBleRelay: processing single message from ${gatewayName}")
+        // logTrace("handleBleRelay: processing single message from ${gatewayName}")
         processBleReport(gatewayName, bleData)
     } else {
         logDebug("handleBleRelay: unrecognized format from ${gatewayName}")
@@ -10369,11 +10369,11 @@ private void processBleReport(String gatewayName, Map bleData) {
     Integer modelId = bleData.modelId != null ? bleData.modelId as Integer : null
     Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
 
-    logTrace("processBleReport: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName} fields=${bleData.keySet()}")
+    // logTrace("processBleReport: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName} fields=${bleData.keySet()}")
 
     // Dedup by pid per MAC
     if (isBlePidDuplicate(mac, pid)) {
-        logTrace("processBleReport: duplicate pid ${pid} for ${mac}, skipping")
+        // logTrace("processBleReport: duplicate pid ${pid} for ${mac}, skipping")
         return
     }
 
@@ -10724,7 +10724,7 @@ private void routeBleEventToChild(String mac, Map bleData) {
     state.deviceConfigs = deviceConfigs
 
     List<String> eventSummary = events.collect { Map evt -> "${evt.name}=${evt.value}" } as List<String>
-    logTrace("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}: ${eventSummary}")
+    // logTrace("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}: ${eventSummary}")
 }
 
 /**
