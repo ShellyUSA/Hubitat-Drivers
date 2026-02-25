@@ -31,7 +31,7 @@
 // instead of the generic generated driver name. Checked before generateDriverName().
 @Field static final Map<String, String> GEN1_MODEL_DRIVER_OVERRIDE = [
     'SHPLG-1':   'Shelly Gen1 Plug',
-    'SHPLG-S':   'Shelly Gen1 Plug S',  
+    'SHPLG-S':   'Shelly Gen1 Plug S',
     'SHPLG-U1':  'Shelly Gen1 Plug S',
     'SHPLG-UK1': 'Shelly Gen1 Plug S',   // UK variant
     'SHPLG-IT1': 'Shelly Gen1 Plug S',   // Italy variant
@@ -2172,6 +2172,22 @@ void finalizeScriptInstallation(Map data) {
     if (installed > 0) {
         writeHubitatIpToKVS(ipAddress)
     }
+
+    // Update cache directly with known script status — no HTTP round-trip needed
+    // since we know exactly what was installed, enabled, and started
+    List<String> scriptQueue = data.scriptQueue as List<String>
+    Map cache = state.deviceStatusCache ?: [:]
+    Map entry = cache[ipAddress] as Map
+    if (entry) {
+        entry.requiredScriptCount = scriptQueue.size()
+        entry.installedScriptCount = installed
+        entry.activeScriptCount = installed
+        cache[ipAddress] = entry
+        state.deviceStatusCache = cache
+    }
+
+    // Fire SSR update event directly — this IS the completion event, no timer needed
+    sendEvent(name: 'configTable', value: 'update')
 }
 
 /**
