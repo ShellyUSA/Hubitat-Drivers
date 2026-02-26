@@ -54,7 +54,7 @@
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into prebuilt drivers and to detect app updates for automatic driver updates.
-@Field static final String APP_VERSION = "1.0.37"
+@Field static final String APP_VERSION = "1.0.38"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -10807,7 +10807,7 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
 
     // Skip unknown devices that don't have a child device already created.
     if (!driverInfo && !isCreated) {
-        logInfo("BLE discovery: ignoring unknown device ${mac} (model=${model}, modelId=${modelId})")
+        logTrace("BLE discovery: ignoring unknown device ${mac} (model=${model}, modelId=${modelId})")
         if (discoveredBle.containsKey(macKey)) {
             discoveredBle.remove(macKey)
             state.discoveredBleDevices = discoveredBle
