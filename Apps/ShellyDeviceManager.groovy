@@ -623,6 +623,15 @@ void appButtonHandler(String buttonName) {
         app.updateSetting('enableAutoUpdate', [type: 'bool', value: !current])
     }
 
+    if (buttonName == 'btnSetUpdateTime') {
+        String timeVal = settings?.btnSetUpdateTime?.toString()?.trim()
+        if (timeVal && timeVal ==~ /\d{2}:\d{2}/) {
+            state.autoUpdateTime = timeVal
+            logInfo("Auto-update time set to ${formatTimeForDisplay(timeVal)}")
+        }
+        app.removeSetting('btnSetUpdateTime')
+    }
+
     if (buttonName == 'btnForceUpdateApp') {
         logInfo('Manual force update of app requested')
         appendLog('info', 'Checking for app updates...')
@@ -3526,9 +3535,9 @@ List<Map> listDeviceScripts(String ipAddress) {
 }
 
 /**
- * Renders the auto-update settings table with checkbox toggles and action buttons.
- * Shows a compact MDL table with rows for driver and app auto-update settings,
- * using Iconify checkbox icons as clickable toggles.
+ * Renders the auto-update settings table with checkbox toggles, a schedule
+ * time picker, and action buttons. The time picker uses a JavaScript prompt
+ * with a buttonLink-style hidden form field to submit the chosen time.
  *
  * @return HTML string for the auto-update settings table
  */
@@ -3546,28 +3555,79 @@ private String renderAutoUpdateSettingsHtml() {
         autoApp ? checkedIcon : uncheckedIcon,
         autoApp ? '#4CAF50' : '#9E9E9E', '22px')
 
+    // Schedule time display (stored as "HH:MM" in state, default 03:00)
+    String scheduleTime = (state.autoUpdateTime ?: '03:00') as String
+    String displayTime = formatTimeForDisplay(scheduleTime)
+
+    // Time picker: buttonLink-style hidden inputs + clickable display that opens a JS prompt
+    String timeButton = "<div class='form-group'><input type='hidden' name='btnSetUpdateTime.type' value='button'></div>" +
+        "<div style='display:inline-block'><div class='submitOnChange' " +
+        "onclick='editAutoUpdateTime(\"${scheduleTime}\", this)' " +
+        "style='color:#1A77C9;cursor:pointer;font-weight:500;font-size:14px'>${displayTime}</div></div>" +
+        "<input type='hidden' name='settings[btnSetUpdateTime]' id='autoUpdateTimeVal' value=''>"
+
     StringBuilder sb = new StringBuilder()
+
+    // JavaScript for the time prompt
+    sb.append("""<script>
+    function editAutoUpdateTime(current, element) {
+        var time = prompt('Enter auto-update time (HH:MM, 24-hour format):', current);
+        if (time != null) {
+            var match = time.match(/^(\\d{1,2}):(\\d{2})\$/);
+            if (match) {
+                var h = parseInt(match[1]), m = parseInt(match[2]);
+                if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+                    var padded = (h < 10 ? '0' + h : '' + h) + ':' + (m < 10 ? '0' + m : '' + m);
+                    document.getElementById('autoUpdateTimeVal').value = padded;
+                    buttonClick(element);
+                    return;
+                }
+            }
+            alert('Invalid time format. Please use HH:MM (24-hour), e.g. 03:00 or 14:30');
+        }
+    }
+    </script>""")
+
     sb.append("<div style='overflow-x:auto;margin-bottom:12px'><table class='mdl-data-table'>")
     sb.append('<thead><tr>')
     sb.append("<th style='text-align:left'>Target</th>")
     sb.append('<th>Auto-Update</th>')
+    sb.append('<th>Schedule</th>')
     sb.append('<th>Action</th>')
     sb.append('</tr></thead><tbody>')
 
     sb.append('<tr>')
     sb.append("<td style='text-align:left;font-weight:500'>Drivers</td>")
     sb.append("<td>${driverToggle}</td>")
+    sb.append("<td><span style='color:#9E9E9E'>&mdash;</span></td>")
     sb.append("<td>${buttonLink('btnForceRebuildDrivers', 'Update All', '#1A77C9', '14px')}</td>")
     sb.append('</tr>')
 
     sb.append('<tr>')
     sb.append("<td style='text-align:left;font-weight:500'>App</td>")
     sb.append("<td>${appToggle}</td>")
+    sb.append("<td>${timeButton}</td>")
     sb.append("<td>${buttonLink('btnForceUpdateApp', 'Update', '#1A77C9', '14px')}</td>")
     sb.append('</tr>')
 
     sb.append('</tbody></table></div>')
     return sb.toString()
+}
+
+/**
+ * Formats a "HH:MM" time string to 12-hour display (e.g., "3:00 AM").
+ *
+ * @param timeStr Time in "HH:MM" 24-hour format
+ * @return Formatted 12-hour time string
+ */
+@CompileStatic
+private static String formatTimeForDisplay(String timeStr) {
+    String[] parts = timeStr.split(':')
+    int h = parts[0] as int
+    int m = parts[1] as int
+    int displayHour = h == 0 ? 12 : (h > 12 ? h - 12 : h)
+    String amPm = h < 12 ? 'AM' : 'PM'
+    return String.format('%d:%02d %s', displayHour, m, amPm)
 }
 
 /**
@@ -4568,10 +4628,18 @@ void initialize() {
         schedule('0 */15 * ? * *', 'watchdogScan')
     }
 
-    // Schedule daily auto-update check at 3AM
+    // Schedule daily auto-update check at configured time (default 3AM)
     if (settings?.enableAutoUpdate != false) {
-        schedule('0 0 3 ? * *', 'checkForAppUpdate')
-        logDebug("App auto-update scheduled for 3AM daily")
+        int updateHour = 3
+        int updateMinute = 0
+        String storedTime = state.autoUpdateTime as String
+        if (storedTime && storedTime ==~ /\d{2}:\d{2}/) {
+            String[] parts = storedTime.split(':')
+            updateHour = parts[0] as int
+            updateMinute = parts[1] as int
+        }
+        schedule("0 ${updateMinute} ${updateHour} ? * *", 'checkForAppUpdate')
+        logDebug("App auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', updateHour, updateMinute))} daily")
     } else {
         unschedule('checkForAppUpdate')
     }
@@ -10972,14 +11040,14 @@ private static List<Map> buildBleEvents(Map bleData, String tempScale) {
 
     // Humidity
     if (bleData.humidity != null) {
-        Integer humidity = Math.round(bleData.humidity as BigDecimal) as Integer
+        Integer humidity = (bleData.humidity as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP).intValue()
         events.add([name: 'humidity', value: humidity, unit: '%rh',
             descriptionText: "Humidity is ${humidity}%".toString()])
     }
 
     // Illuminance
     if (bleData.illuminance != null) {
-        Integer lux = Math.round(bleData.illuminance as BigDecimal) as Integer
+        Integer lux = (bleData.illuminance as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP).intValue()
         events.add([name: 'illuminance', value: lux, unit: 'lux',
             descriptionText: "Illuminance is ${lux} lux".toString()])
     }
@@ -13543,7 +13611,7 @@ private String getAppVersion() { return APP_VERSION }
 /**
  * Checks for a newer version of this app on GitHub Releases and updates
  * the installed app code if a newer version is available. Scheduled daily
- * at 3AM when auto-update is enabled.
+ * at the user-configured time (default 3AM) when auto-update is enabled.
  */
 void checkForAppUpdate() {
     logInfo("Checking for app updates...")
