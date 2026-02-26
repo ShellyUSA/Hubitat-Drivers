@@ -45,7 +45,7 @@ preferences {
     defaultValue: 'any', required: true
   input name: 'pmReportingInterval', type: 'number', title: 'Power Monitoring Reporting Interval (seconds)',
     required: false, defaultValue: 60, range: '5..3600'
-  if (device.getDataValue('hasPowerstripUi') == 'true') {
+  if (device?.getDataValue('hasPowerstripUi') == 'true') {
     input name: 'enableLedControl', type: 'bool', title: 'Create LED Control Device',
       defaultValue: true, required: false
   }

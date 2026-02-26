@@ -46,7 +46,7 @@ preferences {
     defaultValue: 0, range: '0..86400', required: false
   input name: 'autoOnTime', type: 'decimal', title: 'Auto-On Timer (seconds, 0 = disabled)',
     defaultValue: 0, range: '0..86400', required: false
-  if (device.getDataValue('hasPlugsUi') == 'true') {
+  if (device?.getDataValue('hasPlugsUi') == 'true') {
     input name: 'enableLedControl', type: 'bool', title: 'Create LED Control Device',
       defaultValue: true, required: false
   }
