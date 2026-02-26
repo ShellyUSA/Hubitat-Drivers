@@ -80,15 +80,6 @@ void parse(String description) {
     Map msg = parseLanMessage(description)
     if (msg?.status != null) { return }
 
-    // Fast BLE relay path: skip IP check, JSON parsing, and logging
-    if (msg?.body != null) {
-      String body = msg.body as String
-      if (body.startsWith('{"dst":"ble"')) {
-        parent?.handleBleRelayRaw(device, body)
-        return
-      }
-    }
-
     if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
     parent?.componentDeviceAwoke(device)
     checkAndUpdateSourceIp(msg)
@@ -271,11 +262,6 @@ private void routeWebhookParams(Map params) {
         logInfo("Illuminance: ${lux} lux")
       }
       break
-
-    case 'ble':
-      logDebug('BLE relay received via routeWebhookParams, forwarding to app')
-      parent?.handleBleRelay(device, params)
-      return
 
     default:
       logDebug("routeWebhookParams: unhandled dst=${params.dst}")

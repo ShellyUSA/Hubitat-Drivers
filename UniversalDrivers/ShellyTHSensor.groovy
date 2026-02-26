@@ -79,15 +79,6 @@ void parse(String description) {
     Map msg = parseLanMessage(description)
     if (msg?.status != null) { return }
 
-    // Fast BLE relay path: skip IP check, JSON parsing, and logging
-    if (msg?.body != null) {
-      String body = msg.body as String
-      if (body.startsWith('{"dst":"ble"')) {
-        parent?.handleBleRelayRaw(device, body)
-        return
-      }
-    }
-
     if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
     parent?.componentDeviceAwoke(device)
     checkAndUpdateSourceIp(msg)
@@ -274,12 +265,6 @@ private void routeWebhookParams(Map params) {
         logInfo("Humidity: ${humidity}%")
       }
       break
-
-    case 'ble':
-      // Fallback: forward BLE data to app if handlePostWebhook intercept was missed
-      logDebug('BLE relay received via routeWebhookParams, forwarding to app')
-      parent?.handleBleRelay(device, params)
-      return // don't update lastUpdated for relay-only traffic
 
     default:
       logDebug("routeWebhookParams: unhandled dst=${params.dst}")
