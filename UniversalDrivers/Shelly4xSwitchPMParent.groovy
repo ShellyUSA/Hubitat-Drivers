@@ -45,8 +45,10 @@ preferences {
     defaultValue: 'any', required: true
   input name: 'pmReportingInterval', type: 'number', title: 'Power Monitoring Reporting Interval (seconds)',
     required: false, defaultValue: 60, range: '5..3600'
-  // Hidden preference — toggled by the app to trigger updated() -> reconcilePowerstripUiChild()
-  input name: 'reconcileUi', type: 'bool', title: '', defaultValue: false, required: false
+  if (device.getDataValue('hasPowerstripUi') == 'true') {
+    input name: 'enableLedControl', type: 'bool', title: 'Create LED Control Device',
+      defaultValue: true, required: false
+  }
 }
 
 
@@ -153,7 +155,11 @@ void reconcileChildDevices() {
     if (!['switch', 'input'].contains(baseType)) { return }
     desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
   }
-  if (hasPowerstripUi) { desiredDnis.add(powerstripUiDni) }
+  if (hasPowerstripUi) {
+    // null treated as true (fresh install before user saves prefs)
+    Boolean enableLed = settings.enableLedControl != false
+    if (enableLed) { desiredDnis.add(powerstripUiDni) }
+  }
 
   // Build set of DNIs that currently exist
   Set<String> existingDnis = [] as Set
@@ -213,12 +219,21 @@ void reconcileChildDevices() {
 }
 
 /**
- * Ensures a POWERSTRIP_UI LED child device exists if this device has the LED strip.
- * Checks the 'hasPowerstripUi' data value set during discovery. If the child doesn't
- * exist yet, creates it with default green color (matching Shelly factory default).
+ * Reconciles the POWERSTRIP_UI LED child device based on the enableLedControl preference.
+ * Creates the child when enabled (or on first install when preference is null),
+ * removes state when disabled. Actual child deletion is handled by the orphan removal
+ * logic in reconcileChildDevices() via the desiredDnis set.
  */
 private void reconcilePowerstripUiChild() {
   if (device.getDataValue('hasPowerstripUi') != 'true') { return }
+
+  // null treated as true (fresh install before user saves prefs)
+  Boolean enabled = settings.enableLedControl != false
+  if (!enabled) {
+    state.remove('powerstripUiRgb')
+    state.remove('powerstripUiBrightness')
+    return
+  }
 
   String childDni = "${device.deviceNetworkId}-powerstripui".toString()
   com.hubitat.app.DeviceWrapper existing = getChildDevice(childDni)

@@ -1881,10 +1881,11 @@ void reinitializeDevice(String ipAddress) {
     }
 
     // Step 6: Trigger driver to reconcile UI children (PLUGS_UI, POWERSTRIP_UI).
-    // Toggling the declared 'reconcileUi' preference triggers updated(), which
-    // calls reconcilePlugsUiChild() / reconcilePowerstripUiChild() in the driver.
+    // Setting enableLedControl to true triggers updated(), which calls
+    // reconcilePlugsUiChild() / reconcilePowerstripUiChild() in the driver.
+    // This resets the preference to ON, re-enabling LED control after reinit.
     if (hasPlugsUi || hasPowerstripUi) {
-        childDevice.updateSetting('reconcileUi', [type: 'bool', value: true])
+        childDevice.updateSetting('enableLedControl', [type: 'bool', value: true])
     }
 
     logInfo("Reinitialization complete for ${ipAddress}")

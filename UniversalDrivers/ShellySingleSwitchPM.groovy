@@ -46,8 +46,10 @@ preferences {
     defaultValue: 0, range: '0..86400', required: false
   input name: 'autoOnTime', type: 'decimal', title: 'Auto-On Timer (seconds, 0 = disabled)',
     defaultValue: 0, range: '0..86400', required: false
-  // Hidden preference — toggled by the app to trigger updated() -> reconcilePlugsUiChild()
-  input name: 'reconcileUi', type: 'bool', title: '', defaultValue: false, required: false
+  if (device.getDataValue('hasPlugsUi') == 'true') {
+    input name: 'enableLedControl', type: 'bool', title: 'Create LED Control Device',
+      defaultValue: true, required: false
+  }
 }
 
 
@@ -465,16 +467,32 @@ void resetEnergyMonitors() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
- * Ensures a PLUGS_UI RGB child device exists if this Shelly has an LED indicator.
- * Checks the 'hasPlugsUi' data value set during discovery. If the child doesn't
- * exist yet, creates it with default green color (matching Shelly factory default).
+ * Reconciles the PLUGS_UI RGB child device based on the enableLedControl preference.
+ * Creates the child when enabled (or on first install when preference is null),
+ * removes it and cleans up state when disabled.
  */
 private void reconcilePlugsUiChild() {
   if (device.getDataValue('hasPlugsUi') != 'true') { return }
 
   String childDni = "${device.deviceNetworkId}-plugsui-rgb".toString()
-  com.hubitat.app.DeviceWrapper existing = getChildDevice(childDni)
-  if (existing) { return }
+  // null treated as true (fresh install before user saves prefs)
+  Boolean enabled = settings.enableLedControl != false
+
+  if (enabled) {
+    createPlugsUiChild(childDni)
+  } else {
+    removePlugsUiChild(childDni)
+  }
+}
+
+/**
+ * Creates the PLUGS_UI RGB child device if it doesn't already exist.
+ * Sets default green color at full brightness (matching Shelly factory default).
+ *
+ * @param childDni The device network ID for the child
+ */
+private void createPlugsUiChild(String childDni) {
+  if (getChildDevice(childDni)) { return }
 
   logInfo("Creating PLUGS_UI RGB child device for LED control")
   try {
@@ -505,6 +523,25 @@ private void reconcilePlugsUiChild() {
   } catch (Exception e) {
     logError("Failed to create PLUGS_UI RGB child: ${e.message}")
   }
+}
+
+/**
+ * Removes the PLUGS_UI RGB child device and cleans up associated state.
+ *
+ * @param childDni The device network ID of the child to remove
+ */
+private void removePlugsUiChild(String childDni) {
+  com.hubitat.app.DeviceWrapper existing = getChildDevice(childDni)
+  if (existing) {
+    logInfo("Removing PLUGS_UI RGB child device: ${existing.displayName}")
+    try {
+      deleteChildDevice(childDni)
+    } catch (Exception e) {
+      logError("Failed to remove PLUGS_UI RGB child: ${e.message}")
+    }
+  }
+  state.remove('plugsUiRgb')
+  state.remove('plugsUiBrightness')
 }
 
 /**
