@@ -348,6 +348,19 @@ Map mainPage() {
     app.removeSetting('selectedToRemove')
     app.removeSetting('selectedConfigDevice')
 
+    // Clear schedule time edit state after the time picker has been shown for one render
+    if (state.editingScheduleTime && state.scheduleEditRendered == true) {
+        state.remove('editingScheduleTime')
+        state.remove('scheduleEditRendered')
+    }
+
+    // Migrate single autoUpdateTime to separate driver/app time settings
+    if (settings?.autoUpdateTime && !settings?.driverUpdateTime && !settings?.appUpdateTime) {
+        app.updateSetting('driverUpdateTime', [type: 'time', value: settings.autoUpdateTime])
+        app.updateSetting('appUpdateTime', [type: 'time', value: settings.autoUpdateTime])
+        app.removeSetting('autoUpdateTime')
+    }
+
     // Requirement: scanning should start (or restart) when app page is opened.
     Integer remainingSecs = getRemainingDiscoverySeconds()
     if (!state.discoveryRunning || remainingSecs <= 0) {
@@ -520,11 +533,21 @@ Map mainPage() {
                 required: false
         }
 
-        section("Driver Management", hideable: true, hidden: true) {
+        section("App and Driver Updates", hideable: true) {
             paragraph renderAutoUpdateSettingsHtml()
-            input name: 'autoUpdateTime', type: 'time', title: 'Auto-update time',
-                description: 'Daily time for automatic update checks',
-                defaultValue: '2000-01-01T03:00:00.000+0000', required: false, submitOnChange: true
+
+            // Conditionally show time picker when user clicks a schedule time in the table
+            if (state.editingScheduleTime == 'drivers') {
+                input name: 'driverUpdateTime', type: 'time', title: 'Driver auto-update time',
+                    description: 'Daily time to check for and install driver updates',
+                    defaultValue: '2000-01-01T03:00:00.000+0000', required: false, submitOnChange: true
+                state.scheduleEditRendered = true
+            } else if (state.editingScheduleTime == 'app') {
+                input name: 'appUpdateTime', type: 'time', title: 'App auto-update time',
+                    description: 'Daily time to check for app updates',
+                    defaultValue: '2000-01-01T03:00:00.000+0000', required: false, submitOnChange: true
+                state.scheduleEditRendered = true
+            }
 
             String driverMgmtHtml = renderDriverManagementHtml()
             paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${driverMgmtHtml}</span>"
@@ -630,6 +653,16 @@ void appButtonHandler(String buttonName) {
         logInfo('Manual force update of app requested')
         appendLog('info', 'Checking for app updates...')
         checkForAppUpdate()
+    }
+
+    if (buttonName == 'btnEditDriverTime') {
+        state.editingScheduleTime = 'drivers'
+        state.remove('scheduleEditRendered')
+    }
+
+    if (buttonName == 'btnEditAppTime') {
+        state.editingScheduleTime = 'app'
+        state.remove('scheduleEditRendered')
     }
 
     if (buttonName.startsWith('btnUpdateDriver|')) {
@@ -3529,9 +3562,9 @@ List<Map> listDeviceScripts(String ipAddress) {
 }
 
 /**
- * Renders the auto-update settings table with checkbox toggles, a read-only
- * schedule time display, and action buttons. The schedule time is controlled
- * by the native Hubitat {@code autoUpdateTime} time input rendered below this table.
+ * Renders the auto-update settings table with checkbox toggles, clickable
+ * schedule times, and action buttons. Each row (Drivers / App) has its own
+ * independent schedule time that opens a native Hubitat time picker on click.
  *
  * @return HTML string for the auto-update settings table
  */
@@ -3549,15 +3582,11 @@ private String renderAutoUpdateSettingsHtml() {
         autoApp ? checkedIcon : uncheckedIcon,
         autoApp ? '#4CAF50' : '#9E9E9E', '22px')
 
-    // Parse schedule time from Hubitat time input (ISO datetime) or default to 03:00
-    int scheduleHour = 3
-    int scheduleMinute = 0
-    if (settings?.autoUpdateTime) {
-        Date updateTime = toDateTime(settings.autoUpdateTime as String)
-        scheduleHour = updateTime.format('H') as int
-        scheduleMinute = updateTime.format('m') as int
-    }
-    String displayTime = formatTimeForDisplay(String.format('%02d:%02d', scheduleHour, scheduleMinute))
+    // Clickable schedule times (read from separate settings)
+    String driverDisplayTime = parseScheduleDisplayTime(settings?.driverUpdateTime as String)
+    String appDisplayTime = parseScheduleDisplayTime(settings?.appUpdateTime as String)
+    String driverTimeLink = buttonLink('btnEditDriverTime', driverDisplayTime, '#1A77C9', '14px')
+    String appTimeLink = buttonLink('btnEditAppTime', appDisplayTime, '#1A77C9', '14px')
 
     StringBuilder sb = new StringBuilder()
 
@@ -3572,19 +3601,37 @@ private String renderAutoUpdateSettingsHtml() {
     sb.append('<tr>')
     sb.append("<td style='text-align:left;font-weight:500'>Drivers</td>")
     sb.append("<td>${driverToggle}</td>")
-    sb.append("<td><span style='color:#9E9E9E'>&mdash;</span></td>")
+    sb.append("<td>${driverTimeLink}</td>")
     sb.append("<td>${buttonLink('btnForceRebuildDrivers', 'Update All', '#1A77C9', '14px')}</td>")
     sb.append('</tr>')
 
     sb.append('<tr>')
     sb.append("<td style='text-align:left;font-weight:500'>App</td>")
     sb.append("<td>${appToggle}</td>")
-    sb.append("<td><span style='font-weight:500'>${displayTime}</span></td>")
+    sb.append("<td>${appTimeLink}</td>")
     sb.append("<td>${buttonLink('btnForceUpdateApp', 'Update', '#1A77C9', '14px')}</td>")
     sb.append('</tr>')
 
     sb.append('</tbody></table></div>')
     return sb.toString()
+}
+
+/**
+ * Parses a Hubitat time input setting (ISO datetime) and formats for display.
+ * Falls back to "3:00 AM" if the setting is null or empty.
+ *
+ * @param timeSettingValue Raw value from a Hubitat time input setting
+ * @return Formatted 12-hour time string (e.g., "3:00 AM")
+ */
+private String parseScheduleDisplayTime(String timeSettingValue) {
+    int scheduleHour = 3
+    int scheduleMinute = 0
+    if (timeSettingValue) {
+        Date updateTime = toDateTime(timeSettingValue)
+        scheduleHour = updateTime.format('H') as int
+        scheduleMinute = updateTime.format('m') as int
+    }
+    return formatTimeForDisplay(String.format('%02d:%02d', scheduleHour, scheduleMinute))
 }
 
 /**
@@ -4601,21 +4648,35 @@ void initialize() {
         schedule('0 */15 * ? * *', 'watchdogScan')
     }
 
-    // Schedule daily auto-update check at configured time (default 3AM)
-    if (settings?.enableAutoUpdate != false) {
-        int updateHour = 3
-        int updateMinute = 0
-        if (settings?.autoUpdateTime) {
-            Date updateTime = toDateTime(settings.autoUpdateTime as String)
-            updateHour = updateTime.format('H') as int
-            updateMinute = updateTime.format('m') as int
+    // Schedule daily driver auto-update at configured time (default 3AM)
+    if (settings?.rebuildOnUpdate != false) {
+        int driverHour = 3
+        int driverMinute = 0
+        if (settings?.driverUpdateTime) {
+            Date driverTime = toDateTime(settings.driverUpdateTime as String)
+            driverHour = driverTime.format('H') as int
+            driverMinute = driverTime.format('m') as int
         }
-        schedule("0 ${updateMinute} ${updateHour} ? * *", 'checkForAppUpdate')
-        logDebug("App auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', updateHour, updateMinute))} daily")
+        schedule("0 ${driverMinute} ${driverHour} ? * *", 'scheduledDriverUpdate')
+        logDebug("Driver auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', driverHour, driverMinute))} daily")
+    } else {
+        unschedule('scheduledDriverUpdate')
+    }
+
+    // Schedule daily app auto-update check at configured time (default 3AM)
+    if (settings?.enableAutoUpdate != false) {
+        int appHour = 3
+        int appMinute = 0
+        if (settings?.appUpdateTime) {
+            Date appTime = toDateTime(settings.appUpdateTime as String)
+            appHour = appTime.format('H') as int
+            appMinute = appTime.format('m') as int
+        }
+        schedule("0 ${appMinute} ${appHour} ? * *", 'checkForAppUpdate')
+        logDebug("App auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', appHour, appMinute))} daily")
     } else {
         unschedule('checkForAppUpdate')
     }
-
 
     // Schedule BLE presence check every 5 minutes (only when BLE is active)
     if (state.bleGateways || state.discoveredBleDevices) {
@@ -13597,6 +13658,37 @@ private void reinstallAllTrackedDrivers() {
  * drivers, their versions, and which devices are using them.
  */
 private String getAppVersion() { return APP_VERSION }
+
+// ═══════════════════════════════════════════════════════════════
+// ║  Scheduled Driver Auto-Update                                ║
+// ╚═══════════════════════════════════════════════════════════════╝
+
+/**
+ * Scheduled daily function that checks for and installs driver updates.
+ * Compares tracked driver versions against the current app version and
+ * rebuilds any outdated drivers. Runs independently of the app auto-update.
+ */
+void scheduledDriverUpdate() {
+    if (settings?.rebuildOnUpdate == false) {
+        logDebug('Scheduled driver update skipped — auto-update disabled')
+        return
+    }
+
+    Map allDrivers = state.autoDrivers ?: [:]
+    String currentVersion = getAppVersion()
+    Boolean hasOutdated = allDrivers.any { String key, Object info -> (info as Map).version != currentVersion }
+
+    if (hasOutdated) {
+        logInfo("Scheduled driver update: found outdated drivers, rebuilding...")
+        appendLog('info', 'Scheduled driver auto-update starting...')
+        state.lastAutoconfVersion = currentVersion
+        reinstallAllTrackedDrivers()
+    } else {
+        logDebug("Scheduled driver update: all ${allDrivers.size()} driver(s) up to date (v${currentVersion})")
+    }
+
+    sweepAllUnusedShellyHubDrivers()
+}
 
 // ═══════════════════════════════════════════════════════════════
 // ║  App Auto-Update                                            ║
