@@ -497,7 +497,10 @@ Map mainPage() {
 
             String driverMgmtHtml = renderDriverManagementHtml()
             paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${driverMgmtHtml}</span>"
-            input 'btnForceRebuildDrivers', 'button', title: 'Force Update All Drivers', submitOnChange: true
+            paragraph "<div style='display:flex;align-items:center;gap:12px;margin-top:8px'>" +
+                buttonLink('btnForceRebuildDrivers', 'Force Update All Drivers', '#1A77C9', '15px') +
+                buttonLink('btnForceUpdateApp', 'Force Update App', '#1A77C9', '15px') +
+                "</div>"
         }
 
         section("Logging", hideable: true) {
@@ -583,6 +586,12 @@ void appButtonHandler(String buttonName) {
         }
         // Sweep orphaned ShellyDeviceManager drivers (catches both tracked + manually uploaded test drivers)
         sweepAllUnusedShellyHubDrivers()
+    }
+
+    if (buttonName == 'btnForceUpdateApp') {
+        logInfo('Manual force update of app requested')
+        appendLog('info', 'Checking for app updates...')
+        checkForAppUpdate()
     }
 
     // === Device Configuration Table Buttons ===
@@ -13175,12 +13184,14 @@ void checkForAppUpdate() {
     String latestVersion = getLatestGitHubReleaseVersion()
     if (!latestVersion) {
         logDebug("Could not determine latest release version from GitHub")
+        appendLog('warn', 'Could not check for updates — GitHub unreachable')
         return
     }
 
     String currentVersion = getAppVersion()
     if (!isNewerVersion(latestVersion, currentVersion)) {
         logDebug("App is up to date (current: ${currentVersion}, latest: ${latestVersion})")
+        appendLog('info', "App is already up to date (v${currentVersion})")
         return
     }
 
