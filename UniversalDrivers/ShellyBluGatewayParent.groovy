@@ -287,9 +287,18 @@ void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper childDevice) {
 void parse(String description) {
   try {
     Map msg = parseLanMessage(description)
-    if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
-
     if (msg?.status != null) { return }
+
+    // Fast BLE relay path: skip IP check, JSON parsing, and logging
+    if (msg?.body != null) {
+      String body = msg.body as String
+      if (body.startsWith('{"dst":"ble"')) {
+        parent?.handleBleRelayRaw(device, body)
+        return
+      }
+    }
+
+    if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
     checkAndUpdateSourceIp(msg)
 
     if (msg?.body) {
@@ -309,39 +318,12 @@ void parse(String description) {
  */
 private void handlePostWebhook(Map msg) {
   try {
-    Object json = new groovy.json.JsonSlurper().parseText(msg.body)
-
-    // Batched BLE reports: JSON array of messages from concurrency-controlled script
-    if (json instanceof List) {
-      List jsonList = (List) json
-      int forwarded = 0
-      jsonList.each { Object item ->
-        if (item instanceof Map) {
-          parent?.handleBleRelay(device, (Map) item)
-          forwarded++
-        } else {
-          logTrace("BLE batch: skipping non-Map item")
-        }
-      }
-      logDebug("BLE batch received (${jsonList.size()} reports, ${forwarded} forwarded)")
-      return
-    }
-
-    // Single message (backward compat / non-BLE webhooks)
-    if (!(json instanceof Map)) { logTrace('POST webhook: unexpected body type'); return }
-    Map jsonMap = (Map) json
-    String dst = jsonMap?.dst?.toString()
+    Map json = new groovy.json.JsonSlurper().parseText(msg.body) as Map
+    String dst = json?.dst?.toString()
     if (!dst) { logTrace('POST webhook: no dst in body'); return }
 
-    // BLE relay: forward to app for BLE device processing
-    if (dst == 'ble') {
-      logDebug('BLE relay received, forwarding to app')
-      parent?.handleBleRelay(device, jsonMap)
-      return
-    }
-
     Map params = [:]
-    jsonMap.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
+    json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
 
     logDebug("POST webhook dst=${dst}, cid=${params.cid}")
     logTrace("POST webhook params: ${params}")

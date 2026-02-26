@@ -10560,6 +10560,28 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
 }
 
 /**
+ * Handles raw BLE relay body strings forwarded from device drivers.
+ * Parses JSON in the app context (avoiding per-message JsonSlurper allocation in drivers)
+ * and delegates to the existing BLE processing pipeline.
+ *
+ * @param gatewayDevice The device that relayed the BLE data
+ * @param rawBody The raw JSON body string from the HTTP POST
+ */
+void handleBleRelayRaw(Object gatewayDevice, String rawBody) {
+    String gatewayName = gatewayDevice?.displayName ?: 'Unknown gateway'
+    try {
+        Object parsed = new groovy.json.JsonSlurper().parseText(rawBody)
+        if (parsed instanceof Map) {
+            handleBleRelay(gatewayDevice, (Map) parsed)
+        } else {
+            logDebug("handleBleRelayRaw: unexpected JSON type from ${gatewayName}")
+        }
+    } catch (Exception e) {
+        log.error "handleBleRelayRaw: JSON parse error from ${gatewayName}: ${e.message}"
+    }
+}
+
+/**
  * Processes a single BLE report from a gateway relay.
  * Deduplicates by pid+mac, updates discovery state, and routes events to child devices.
  *

@@ -90,9 +90,18 @@ void updated() {
 void parse(String description) {
   try {
     Map msg = parseLanMessage(description)
-    if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
-
     if (msg?.status != null) { return }
+
+    // Fast BLE relay path: skip IP check, JSON parsing, and logging
+    if (msg?.body != null) {
+      String body = msg.body as String
+      if (body.startsWith('{"dst":"ble"')) {
+        parent?.handleBleRelayRaw(device, body)
+        return
+      }
+    }
+
+    if (shouldLogLevel('trace')) { parent?.componentLogParsedMessage(device, msg) }
     parent?.componentDeviceAwoke(device)
     checkAndUpdateSourceIp(msg)
 
@@ -117,13 +126,6 @@ private void handlePostWebhook(Map msg) {
     Map json = new groovy.json.JsonSlurper().parseText(msg.body) as Map
     String dst = json?.dst?.toString()
     if (!dst) { logTrace('POST webhook: no dst in body'); return }
-
-    // BLE relay: forward to app for BLE device processing
-    if (dst == 'ble') {
-      logDebug('BLE relay received, forwarding to app')
-      parent?.handleBleRelay(device, json)
-      return
-    }
 
     Map params = [:]
     json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
