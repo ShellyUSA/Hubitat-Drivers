@@ -811,9 +811,15 @@ void appButtonHandler(String buttonName) {
     if (buttonName.startsWith('toggleBleGw|')) {
         String targetIp = buttonName.minus('toggleBleGw|')
         logInfo("Toggling BLE gateway for ${targetIp}")
+        List bleGatewaysBefore = (state.bleGateways ?: []) as List
+        Boolean wasEnabled = bleGatewaysBefore.contains(targetIp)
         toggleBleGateway(targetIp)
-        buildDeviceStatusCacheEntry(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
+        if (wasEnabled) {
+            // Disable is synchronous — safe to refresh cache immediately
+            buildDeviceStatusCacheEntry(targetIp)
+            runInMillis(500, 'fireConfigTableSSR')
+        }
+        // Enable is async (chunked upload) — cache refresh deferred to enableBleGatewayComplete/Error
     }
 }
 
@@ -11513,6 +11519,10 @@ void enableBleGatewayComplete(Map data) {
 
     bleLogInfo("BLE gateway enabled on ${ip}")
     appendLog('info', "BLE gateway enabled on ${ip}")
+
+    // Refresh config table now that async upload is complete
+    buildDeviceStatusCacheEntry(ip)
+    runInMillis(500, 'fireConfigTableSSR')
 }
 
 /**
@@ -11525,6 +11535,10 @@ void enableBleGatewayError(Map data) {
     String error = data.error as String
     bleLogError("enableBleGateway: script upload failed on ${ip} — ${error}")
     appendLog('error', "Failed to upload BLE script to ${ip}: ${error}")
+
+    // Refresh config table to reflect failed state
+    buildDeviceStatusCacheEntry(ip)
+    runInMillis(500, 'fireConfigTableSSR')
 }
 
 /**
