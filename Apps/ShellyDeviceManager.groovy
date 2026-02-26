@@ -476,9 +476,6 @@ Map mainPage() {
         }
 
         section("Options", hideable: true) {
-            input name: 'enableAutoUpdate', type: 'bool', title: 'Enable auto-update',
-                description: 'Automatically checks for and installs app updates from GitHub daily at 3AM.',
-                defaultValue: true, submitOnChange: true
             input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
                 description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
                 defaultValue: true, submitOnChange: true
@@ -491,16 +488,10 @@ Map mainPage() {
         }
 
         section("Driver Management", hideable: true, hidden: true) {
-            input name: 'rebuildOnUpdate', type: 'bool', title: 'Update drivers when app is updated',
-                description: 'Automatically updates pre-built driver versions when the app version changes.',
-                defaultValue: true, submitOnChange: true
+            paragraph renderAutoUpdateSettingsHtml()
 
             String driverMgmtHtml = renderDriverManagementHtml()
             paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${driverMgmtHtml}</span>"
-            paragraph "<div style='display:flex;align-items:center;gap:12px;margin-top:8px'>" +
-                buttonLink('btnForceRebuildDrivers', 'Force Update All Drivers', '#1A77C9', '15px') +
-                buttonLink('btnForceUpdateApp', 'Force Update App', '#1A77C9', '15px') +
-                "</div>"
         }
 
         section("Logging", hideable: true) {
@@ -582,16 +573,39 @@ void appButtonHandler(String buttonName) {
             logInfo("Manual force update of all drivers requested")
             appendLog('info', "Updating ${allDrivers.size()} driver(s)...")
             state.lastAutoconfVersion = getAppVersion()
-            reinstallAllPrebuiltDrivers()
+            reinstallAllTrackedDrivers()
         }
         // Sweep orphaned ShellyDeviceManager drivers (catches both tracked + manually uploaded test drivers)
         sweepAllUnusedShellyHubDrivers()
+        sendEvent(name: 'driverRebuildStatus', value: 'swept')
+    }
+
+    if (buttonName == 'btnToggleAutoDrivers') {
+        Boolean current = settings?.rebuildOnUpdate != false
+        app.updateSetting('rebuildOnUpdate', [type: 'bool', value: !current])
+    }
+
+    if (buttonName == 'btnToggleAutoApp') {
+        Boolean current = settings?.enableAutoUpdate != false
+        app.updateSetting('enableAutoUpdate', [type: 'bool', value: !current])
     }
 
     if (buttonName == 'btnForceUpdateApp') {
         logInfo('Manual force update of app requested')
         appendLog('info', 'Checking for app updates...')
         checkForAppUpdate()
+    }
+
+    if (buttonName.startsWith('btnUpdateDriver|')) {
+        String trackingKey = buttonName.minus('btnUpdateDriver|')
+        logInfo("Manual update requested for driver: ${trackingKey}")
+        Boolean success = reinstallSingleDriver(trackingKey)
+        if (success) {
+            appendLog('info', "Updated driver: ${trackingKey}")
+        } else {
+            appendLog('warn', "Failed to update driver: ${trackingKey}")
+        }
+        sendEvent(name: 'driverRebuildStatus', value: 'updated')
     }
 
     // === Device Configuration Table Buttons ===
@@ -3479,17 +3493,56 @@ List<Map> listDeviceScripts(String ipAddress) {
 }
 
 /**
- * Renders the driver rebuild status HTML for the main page.
- * Shows progress when rebuilding, or a completion message otherwise.
+ * Renders the auto-update settings table with checkbox toggles and action buttons.
+ * Shows a compact MDL table with rows for driver and app auto-update settings,
+ * using Iconify checkbox icons as clickable toggles.
  *
- * @return HTML string for the rebuild status
+ * @return HTML string for the auto-update settings table
  */
+private String renderAutoUpdateSettingsHtml() {
+    Boolean autoDrivers = settings?.rebuildOnUpdate != false
+    Boolean autoApp = settings?.enableAutoUpdate != false
+
+    String checkedIcon = "<iconify-icon icon='material-symbols:check-box'></iconify-icon>"
+    String uncheckedIcon = "<iconify-icon icon='material-symbols:check-box-outline-blank'></iconify-icon>"
+
+    String driverToggle = buttonLink('btnToggleAutoDrivers',
+        autoDrivers ? checkedIcon : uncheckedIcon,
+        autoDrivers ? '#4CAF50' : '#9E9E9E', '22px')
+    String appToggle = buttonLink('btnToggleAutoApp',
+        autoApp ? checkedIcon : uncheckedIcon,
+        autoApp ? '#4CAF50' : '#9E9E9E', '22px')
+
+    StringBuilder sb = new StringBuilder()
+    sb.append("<div style='overflow-x:auto;margin-bottom:12px'><table class='mdl-data-table'>")
+    sb.append('<thead><tr>')
+    sb.append("<th style='text-align:left'>Target</th>")
+    sb.append('<th>Auto-Update</th>')
+    sb.append('<th>Action</th>')
+    sb.append('</tr></thead><tbody>')
+
+    sb.append('<tr>')
+    sb.append("<td style='text-align:left;font-weight:500'>Drivers</td>")
+    sb.append("<td>${driverToggle}</td>")
+    sb.append("<td>${buttonLink('btnForceRebuildDrivers', 'Update All', '#1A77C9', '14px')}</td>")
+    sb.append('</tr>')
+
+    sb.append('<tr>')
+    sb.append("<td style='text-align:left;font-weight:500'>App</td>")
+    sb.append("<td>${appToggle}</td>")
+    sb.append("<td>${buttonLink('btnForceUpdateApp', 'Update', '#1A77C9', '14px')}</td>")
+    sb.append('</tr>')
+
+    sb.append('</tbody></table></div>')
+    return sb.toString()
+}
+
 /**
- * Renders the driver management section HTML, including tracked
- * driver list with device counts and update status. Used both for
- * initial page render and SSR updates.
+ * Renders the driver management section as an MDL table showing all tracked
+ * drivers with version status and per-driver update buttons. Used both for
+ * initial page render and SSR updates via {@code driverRebuildStatus} event.
  *
- * @return HTML string for the driver management section
+ * @return HTML string for the driver management table
  */
 private String renderDriverManagementHtml() {
     StringBuilder sb = new StringBuilder()
@@ -3497,30 +3550,62 @@ private String renderDriverManagementHtml() {
     Map allDrivers = state.autoDrivers ?: [:]
 
     if (allDrivers.isEmpty()) {
-        sb.append("No drivers are currently tracked.<br>")
-    } else {
-        def childDevices = getChildDevices() ?: []
-        sb.append("<b>${allDrivers.size()}</b> driver(s) tracked (app v${currentVersion}):<br>")
-        allDrivers.each { key, info ->
-            Integer deviceCount = childDevices.count { it.typeName == info.name }
-            String versionTag = (info.version && info.version != currentVersion) ? " <i>(outdated: v${info.version})</i>" : ''
-            sb.append("&nbsp;&nbsp;- ${info.name} (${deviceCount} device(s))${versionTag}<br>")
-        }
+        sb.append('<p>No drivers are currently tracked.</p>')
+        return sb.toString()
     }
 
-    sb.append('<br>')
-    List<String> outdated = []
+    // Count outdated drivers for the summary line
+    int outdatedCount = 0
     allDrivers.each { key, info ->
-        if (info.version && info.version != currentVersion) {
-            outdated.add(info.name as String)
-        }
-    }
-    if (outdated.size() > 0) {
-        sb.append("<b>${outdated.size()} driver(s) need updating.</b>")
-    } else if (!allDrivers.isEmpty()) {
-        sb.append("<b>All drivers are up to date (v${currentVersion}).</b>")
+        if (info.version && info.version.toString() != currentVersion) { outdatedCount++ }
     }
 
+    if (outdatedCount > 0) {
+        sb.append("<p style='margin:4px 0'><b>${outdatedCount} driver(s) need updating</b> (app v${currentVersion})</p>")
+    } else {
+        sb.append("<p style='margin:4px 0'><b>All ${allDrivers.size()} driver(s) up to date</b> (v${currentVersion})</p>")
+    }
+
+    // Build sorted list of driver entries: [trackingKey, info] pairs sorted by display name
+    List<Map.Entry> sortedDrivers = allDrivers.collect { key, info -> [key: key.toString(), info: info] }
+    sortedDrivers.sort { a, b ->
+        String nameA = (a.info.name ?: '').toString().toLowerCase()
+        String nameB = (b.info.name ?: '').toString().toLowerCase()
+        return nameA <=> nameB
+    }
+
+    sb.append("<div style='overflow-x:auto'><table class='mdl-data-table'>")
+    sb.append('<thead><tr>')
+    sb.append("<th style='text-align:left'>Driver Name</th>")
+    sb.append('<th>Installed Version</th>')
+    sb.append('<th>Available Version</th>')
+    sb.append('<th>Action</th>')
+    sb.append('</tr></thead><tbody>')
+
+    sortedDrivers.each { entry ->
+        String trackingKey = entry.key.toString()
+        Map info = entry.info as Map
+        String driverName = (info.name ?: '').toString().replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        String installedVersion = (info.version ?: 'unknown').toString()
+        Boolean isOutdated = installedVersion != currentVersion
+
+        String versionColor = isOutdated ? '#FF9800' : '#4CAF50'
+        String actionCell
+        if (isOutdated) {
+            actionCell = buttonLink("btnUpdateDriver|${trackingKey}".toString(), 'Update', '#1A77C9', '14px')
+        } else {
+            actionCell = "<span style='color:#9E9E9E'>&mdash;</span>"
+        }
+
+        sb.append('<tr>')
+        sb.append("<td style='text-align:left;font-weight:500'>${driverName}</td>")
+        sb.append("<td style='color:${versionColor}'>${installedVersion}</td>")
+        sb.append("<td>${currentVersion}</td>")
+        sb.append("<td>${actionCell}</td>")
+        sb.append('</tr>')
+    }
+
+    sb.append('</tbody></table></div>')
     return sb.toString()
 }
 
@@ -4405,7 +4490,7 @@ void initialize() {
         state.lastAutoconfVersion = currentVersion
         if (settings?.rebuildOnUpdate != false) {
             logInfo("App version changed from ${lastVersion} to ${currentVersion}, updating drivers")
-            reinstallAllPrebuiltDrivers()
+            reinstallAllTrackedDrivers()
         } else {
             logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver update disabled)")
         }
@@ -4415,7 +4500,7 @@ void initialize() {
         Boolean hasOutdated = allDrivers.any { key, info -> info.version != currentVersion }
         if (hasOutdated && settings?.rebuildOnUpdate != false) {
             logInfo("Found outdated drivers at app version ${currentVersion}, triggering update")
-            reinstallAllPrebuiltDrivers()
+            reinstallAllTrackedDrivers()
         } else {
             logDebug("App version unchanged (${currentVersion}), no driver update needed")
         }
@@ -13100,14 +13185,104 @@ private String downloadFile(String uri) {
 /* #region Driver Auto-Update */
 
 /**
- * Reinstalls all tracked prebuilt drivers with the current app version.
- * Called on app version change to update driver version suffixes.
+ * Resolves a component driver display name back to its GitHub source file name.
+ * Builds a reverse lookup from the forward maps in {@link #getComponentDriverName}
+ * and {@link #getComponentDriverFileName}, plus the two hardcoded UI component drivers.
+ *
+ * @param driverName The component driver name (e.g., "Shelly Autoconf Switch PM")
+ * @return The GitHub file name (e.g., "ShellySwitchComponentPM.groovy"), or null if not found
  */
-private void reinstallAllPrebuiltDrivers() {
+@CompileStatic
+private String resolveComponentDriverFileName(String driverName) {
+    // Hardcoded UI component drivers that don't follow the standard mapping
+    Map<String, String> uiDrivers = [
+        'Shelly PLUGS_UI RGB': 'ShellyPlugsUiRGBComponent.groovy',
+        'Shelly Autoconf PowerstripUI': 'ShellyPowerstripUiComponent.groovy'
+    ]
+    if (uiDrivers.containsKey(driverName)) { return uiDrivers[driverName] }
+
+    // Standard component types with optional power monitoring variants
+    List<String> componentTypes = ['switch', 'cover', 'light', 'rgb', 'rgbw', 'input', 'em', 'adc',
+                                   'temperature', 'humidity', 'blutrv', 'voltmeter']
+
+    for (String type : componentTypes) {
+        // Check default (non-PM) variant
+        String defaultName = getComponentDriverName(type, false)
+        if (defaultName == driverName) {
+            return getComponentDriverFileName(type, false)
+        }
+        // Check PM variant
+        String pmName = getComponentDriverName(type, true)
+        if (pmName != null && pmName == driverName) {
+            return getComponentDriverFileName(type, true)
+        }
+    }
+    return null
+}
+
+/**
+ * Reinstalls a single tracked driver by its tracking key.
+ * Handles both prebuilt drivers (downloaded as generated .groovy files) and
+ * component drivers (fetched individually from GitHub).
+ *
+ * @param trackingKey The key in {@code state.autoDrivers} (e.g., "ShellyDeviceManager.Shelly Autoconf Switch")
+ * @return true if the driver was successfully updated, false otherwise
+ */
+private Boolean reinstallSingleDriver(String trackingKey) {
+    Map allDrivers = state.autoDrivers ?: [:]
+
+    // GString-safe lookup: keys may be GStrings in state
+    Map.Entry matchEntry = allDrivers.find { k, v -> k.toString() == trackingKey }
+    if (!matchEntry) {
+        logWarn("reinstallSingleDriver: tracking key not found: ${trackingKey}")
+        return false
+    }
+
+    Map info = matchEntry.value as Map
+    String driverName = (info.name ?: '').toString()
+    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+    Boolean isComponent = info.isComponentDriver ?: false
+    String version = getAppVersion()
+
+    if (isComponent) {
+        String fileName = resolveComponentDriverFileName(driverName)
+        if (!fileName) {
+            logWarn("reinstallSingleDriver: cannot resolve file for component driver '${driverName}'")
+            return false
+        }
+        logInfo("Updating component driver: ${driverName} (${fileName})")
+        fetchAndInstallComponentDriver(fileName, driverName)
+        return true
+    }
+
+    // Prebuilt driver path
+    if (PREBUILT_DRIVERS.containsKey(baseName)) {
+        List<String> components = (info.components ?: []) as List<String>
+        Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+        return installPrebuiltDriver(baseName, components, pmMap, version)
+    }
+
+    if (baseName.startsWith('Shelly Autoconf') && baseName.contains('Parent')) {
+        logWarn("No prebuilt driver for '${baseName}'. Falling back to Shelly Autoconf Parent.")
+        List<String> components = (info.components ?: []) as List<String>
+        Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+        return installPrebuiltDriver('Shelly Autoconf Parent', components, pmMap, version)
+    }
+
+    logWarn("reinstallSingleDriver: no prebuilt driver for '${baseName}' — cannot update")
+    return false
+}
+
+/**
+ * Reinstalls all tracked drivers (both prebuilt and component) with the current app version.
+ * Called on app version change to update driver version suffixes. Delegates each driver
+ * to {@link #reinstallSingleDriver} for unified prebuilt/component handling.
+ */
+private void reinstallAllTrackedDrivers() {
     initializeDriverTracking()
 
     String version = getAppVersion()
-    // Defensive snapshot: registerAutoDriver() mutates state.autoDrivers during each iteration,
+    // Defensive snapshot: reinstallSingleDriver() may mutate state.autoDrivers during each iteration,
     // so we must iterate over a detached copy to avoid ConcurrentModificationException.
     Map driverSnapshot = new LinkedHashMap((state.autoDrivers ?: [:]) as Map)
     if (driverSnapshot.isEmpty()) {
@@ -13121,30 +13296,8 @@ private void reinstallAllPrebuiltDrivers() {
     int updated = 0
     int errors = 0
     driverSnapshot.each { key, info ->
-        String baseName = (info.name ?: '').replaceAll(/\s+v\d+(\.\d+)*$/, '')
-        Boolean isComponent = info.isComponentDriver ?: false
-
-        if (isComponent) {
-            logDebug("Skipping component driver update: ${key} (version-independent)")
-            return
-        }
-
-        if (PREBUILT_DRIVERS.containsKey(baseName)) {
-            List<String> components = (info.components ?: []) as List<String>
-            Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-            Boolean success = installPrebuiltDriver(baseName, components, pmMap, version)
-            if (success) { updated++ } else { errors++ }
-        } else if (baseName.startsWith('Shelly Autoconf') && baseName.contains('Parent')) {
-            // Fall back to generic autoconf parent for unrecognized parent device patterns
-            logWarn("No prebuilt driver for '${baseName}'. Falling back to Shelly Autoconf Parent.")
-            List<String> components = (info.components ?: []) as List<String>
-            Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-            Boolean success = installPrebuiltDriver('Shelly Autoconf Parent', components, pmMap, version)
-            if (success) { updated++ } else { errors++ }
-        } else {
-            logWarn("No prebuilt driver for '${baseName}' — cannot update. Add to PREBUILT_DRIVERS.")
-            errors++
-        }
+        Boolean success = reinstallSingleDriver(key.toString())
+        if (success) { updated++ } else { errors++ }
     }
 
     logInfo("Driver update complete: ${updated} updated, ${errors} error(s)")
