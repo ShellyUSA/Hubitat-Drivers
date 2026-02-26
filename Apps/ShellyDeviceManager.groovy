@@ -522,6 +522,9 @@ Map mainPage() {
 
         section("Driver Management", hideable: true, hidden: true) {
             paragraph renderAutoUpdateSettingsHtml()
+            input name: 'autoUpdateTime', type: 'time', title: 'Auto-update time',
+                description: 'Daily time for automatic update checks',
+                defaultValue: '2000-01-01T03:00:00.000+0000', required: false, submitOnChange: true
 
             String driverMgmtHtml = renderDriverManagementHtml()
             paragraph "<span class='ssr-app-state-${app.id}-driverRebuildStatus'>${driverMgmtHtml}</span>"
@@ -621,15 +624,6 @@ void appButtonHandler(String buttonName) {
     if (buttonName == 'btnToggleAutoApp') {
         Boolean current = settings?.enableAutoUpdate != false
         app.updateSetting('enableAutoUpdate', [type: 'bool', value: !current])
-    }
-
-    if (buttonName == 'btnSetUpdateTime') {
-        String timeVal = settings?.btnSetUpdateTime?.toString()?.trim()
-        if (timeVal && timeVal ==~ /\d{2}:\d{2}/) {
-            state.autoUpdateTime = timeVal
-            logInfo("Auto-update time set to ${formatTimeForDisplay(timeVal)}")
-        }
-        app.removeSetting('btnSetUpdateTime')
     }
 
     if (buttonName == 'btnForceUpdateApp') {
@@ -3535,9 +3529,9 @@ List<Map> listDeviceScripts(String ipAddress) {
 }
 
 /**
- * Renders the auto-update settings table with checkbox toggles, a schedule
- * time picker, and action buttons. The time picker uses a JavaScript prompt
- * with a buttonLink-style hidden form field to submit the chosen time.
+ * Renders the auto-update settings table with checkbox toggles, a read-only
+ * schedule time display, and action buttons. The schedule time is controlled
+ * by the native Hubitat {@code autoUpdateTime} time input rendered below this table.
  *
  * @return HTML string for the auto-update settings table
  */
@@ -3555,38 +3549,17 @@ private String renderAutoUpdateSettingsHtml() {
         autoApp ? checkedIcon : uncheckedIcon,
         autoApp ? '#4CAF50' : '#9E9E9E', '22px')
 
-    // Schedule time display (stored as "HH:MM" in state, default 03:00)
-    String scheduleTime = (state.autoUpdateTime ?: '03:00') as String
-    String displayTime = formatTimeForDisplay(scheduleTime)
-
-    // Time picker: buttonLink-style hidden inputs + clickable display that opens a JS prompt
-    String timeButton = "<div class='form-group'><input type='hidden' name='btnSetUpdateTime.type' value='button'></div>" +
-        "<div style='display:inline-block'><div class='submitOnChange' " +
-        "onclick='editAutoUpdateTime(\"${scheduleTime}\", this)' " +
-        "style='color:#1A77C9;cursor:pointer;font-weight:500;font-size:14px'>${displayTime}</div></div>" +
-        "<input type='hidden' name='settings[btnSetUpdateTime]' id='autoUpdateTimeVal' value=''>"
+    // Parse schedule time from Hubitat time input (ISO datetime) or default to 03:00
+    int scheduleHour = 3
+    int scheduleMinute = 0
+    if (settings?.autoUpdateTime) {
+        Date updateTime = toDateTime(settings.autoUpdateTime as String)
+        scheduleHour = updateTime.format('H') as int
+        scheduleMinute = updateTime.format('m') as int
+    }
+    String displayTime = formatTimeForDisplay(String.format('%02d:%02d', scheduleHour, scheduleMinute))
 
     StringBuilder sb = new StringBuilder()
-
-    // JavaScript for the time prompt
-    sb.append("""<script>
-    function editAutoUpdateTime(current, element) {
-        var time = prompt('Enter auto-update time (HH:MM, 24-hour format):', current);
-        if (time != null) {
-            var match = time.match(/^(\\d{1,2}):(\\d{2})\$/);
-            if (match) {
-                var h = parseInt(match[1]), m = parseInt(match[2]);
-                if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-                    var padded = (h < 10 ? '0' + h : '' + h) + ':' + (m < 10 ? '0' + m : '' + m);
-                    document.getElementById('autoUpdateTimeVal').value = padded;
-                    buttonClick(element);
-                    return;
-                }
-            }
-            alert('Invalid time format. Please use HH:MM (24-hour), e.g. 03:00 or 14:30');
-        }
-    }
-    </script>""")
 
     sb.append("<div style='overflow-x:auto;margin-bottom:12px'><table class='mdl-data-table'>")
     sb.append('<thead><tr>')
@@ -3606,7 +3579,7 @@ private String renderAutoUpdateSettingsHtml() {
     sb.append('<tr>')
     sb.append("<td style='text-align:left;font-weight:500'>App</td>")
     sb.append("<td>${appToggle}</td>")
-    sb.append("<td>${timeButton}</td>")
+    sb.append("<td><span style='font-weight:500'>${displayTime}</span></td>")
     sb.append("<td>${buttonLink('btnForceUpdateApp', 'Update', '#1A77C9', '14px')}</td>")
     sb.append('</tr>')
 
@@ -4632,11 +4605,10 @@ void initialize() {
     if (settings?.enableAutoUpdate != false) {
         int updateHour = 3
         int updateMinute = 0
-        String storedTime = state.autoUpdateTime as String
-        if (storedTime && storedTime ==~ /\d{2}:\d{2}/) {
-            String[] parts = storedTime.split(':')
-            updateHour = parts[0] as int
-            updateMinute = parts[1] as int
+        if (settings?.autoUpdateTime) {
+            Date updateTime = toDateTime(settings.autoUpdateTime as String)
+            updateHour = updateTime.format('H') as int
+            updateMinute = updateTime.format('m') as int
         }
         schedule("0 ${updateMinute} ${updateHour} ? * *", 'checkForAppUpdate')
         logDebug("App auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', updateHour, updateMinute))} daily")
