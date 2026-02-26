@@ -1863,6 +1863,27 @@ void reinitializeDevice(String ipAddress) {
     // Step 2: Re-query device info and status from physical device
     fetchAndStoreDeviceInfo(ipAddress)
 
+    // Step 2.5: Ensure UI component drivers are installed and data values set.
+    // Handles devices created before the PLUGS_UI/POWERSTRIP_UI install logic existed.
+    Map discoveredDevice = state.discoveredShellys[ipAddress] as Map
+    Map deviceStatus = (discoveredDevice?.deviceStatus ?: [:]) as Map
+    Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') }
+    if (hasPlugsUi) {
+        if (!isComponentDriverInstalled('Shelly PLUGS_UI RGB')) {
+            fetchAndInstallComponentDriver('ShellyPlugsUiRGBComponent.groovy', 'Shelly PLUGS_UI RGB')
+        }
+        childDevice.updateDataValue('hasPlugsUi', 'true')
+        logInfo("  PLUGS_UI detected — ensuring RGB LED child driver is installed")
+    }
+    Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') }
+    if (hasPowerstripUi) {
+        if (!isComponentDriverInstalled('Shelly Autoconf PowerstripUI')) {
+            fetchAndInstallComponentDriver('ShellyPowerstripUiComponent.groovy', 'Shelly Autoconf PowerstripUI')
+        }
+        childDevice.updateDataValue('hasPowerstripUi', 'true')
+        logInfo("  POWERSTRIP_UI detected — ensuring LED strip child driver is installed")
+    }
+
     if (isGen1Device(childDevice)) {
         // Gen 1: no scripts, configure action URLs instead of webhooks
         logInfo("Gen 1 device — skipping scripts, configuring action URLs")
@@ -1877,6 +1898,12 @@ void reinitializeDevice(String ipAddress) {
 
         // Step 5: Install/update all required webhooks (also removes obsolete scripts)
         installRequiredActionsForIp(ipAddress)
+    }
+
+    // Step 6: Trigger driver's updated() to reconcile UI children (PLUGS_UI, POWERSTRIP_UI).
+    // updateSetting triggers updated(), which calls reconcilePlugsUiChild() in the driver.
+    if (hasPlugsUi || hasPowerstripUi) {
+        childDevice.updateSetting('ipAddress', ipAddress)
     }
 
     logInfo("Reinitialization complete for ${ipAddress}")
