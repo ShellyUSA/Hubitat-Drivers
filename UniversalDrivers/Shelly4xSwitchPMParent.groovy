@@ -29,6 +29,7 @@ metadata {
     capability 'Refresh'
 
     command 'reinitialize'
+    command 'reconcileUiChildren'
     attribute 'lastUpdated', 'string'
   }
 }
@@ -207,6 +208,15 @@ void reconcileChildDevices() {
   }
 
   // Create POWERSTRIP_UI LED child if needed
+  reconcilePowerstripUiChild()
+}
+
+/**
+ * Reconciles UI child devices (POWERSTRIP_UI LED strip).
+ * Called by the parent app during reinitializeDevice() to ensure
+ * UI children exist for devices created before this feature was added.
+ */
+void reconcileUiChildren() {
   reconcilePowerstripUiChild()
 }
 
