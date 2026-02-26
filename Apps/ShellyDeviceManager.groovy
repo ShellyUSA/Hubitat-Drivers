@@ -45,6 +45,10 @@
 @Field static ConcurrentHashMap<String, Map<String, String>> bleLastSentValues =
     new java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
 
+/** Best RSSI per broadcast per MAC — tracks strongest signal across gateways for current PID */
+@Field static ConcurrentHashMap<String, Map> bleRssiTracker =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+
 /** Cached hub temperature scale — avoids getLocation() call per advertisement */
 @Field static volatile String cachedTempScale = null
 
@@ -10709,8 +10713,14 @@ private void processBleReport(String gatewayName, Map bleData) {
     Integer modelId = bleData.modelId != null ? bleData.modelId as Integer : null
     Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
 
-    // Dedup by pid per MAC
-    if (isBlePidDuplicate(mac, pid)) { return }
+    // Dedup by PID per MAC — also tracks best RSSI across gateways
+    Integer pidResult = checkBlePidAndRssi(mac, pid, rssi, gatewayName)
+    if (pidResult == 2) { return }
+    if (pidResult == 1) {
+        updateBleRssiOnly(mac, rssi, gatewayName)
+        return
+    }
+    // pidResult == 0: new PID — full processing continues below
 
     // Single child lookup — passed to both functions to avoid double getChildDevice() call
     Object child = getChildDevice(mac)
@@ -10723,31 +10733,68 @@ private void processBleReport(String gatewayName, Map bleData) {
 }
 
 /**
- * Checks if a BLE packet ID has already been processed for a given MAC.
- * Maintains a ring buffer of the last 10 pids per MAC in the @Field blePidCache.
- * Thread-safe via synchronized block on the per-MAC list.
+ * Checks if a BLE packet ID is new or duplicate, and compares RSSI for duplicates.
+ * Maintains a ring buffer of the last 10 PIDs per MAC in the @Field blePidCache.
+ * For new PIDs, initializes the RSSI tracker. For duplicates, compares RSSI and
+ * updates if the new gateway has a stronger signal.
+ * Thread-safe via synchronized block on the per-MAC list and ConcurrentHashMap atomicity.
  *
  * @param mac The BLE device MAC address
  * @param pid The packet ID to check
- * @return true if this pid was already seen for this MAC
+ * @param rssi The signal strength from the reporting gateway (may be null)
+ * @param gatewayName The name of the gateway reporting this advertisement
+ * @return 0 = new PID (full processing), 1 = duplicate but better RSSI (update RSSI only), 2 = skip
  */
 @CompileStatic
-private static Boolean isBlePidDuplicate(String mac, Integer pid) {
+private static Integer checkBlePidAndRssi(String mac, Integer pid, Integer rssi, String gatewayName) {
     List<Integer> pids = blePidCache.get(mac)
     if (pids == null) {
         blePidCache.putIfAbsent(mac, (List<Integer>) [])
         pids = blePidCache.get(mac)
     }
+    Boolean isNewPid
     synchronized (pids) {
         if (pids.contains(pid)) {
-            return true
-        }
-        pids.add(pid)
-        if (pids.size() > 10) {
-            pids.remove(0)
+            isNewPid = false
+        } else {
+            pids.add(pid)
+            if (pids.size() > 10) { pids.remove(0) }
+            isNewPid = true
         }
     }
-    return false
+
+    if (isNewPid) {
+        bleRssiTracker.put(mac, [pid: pid, rssi: rssi != null ? rssi : ((Integer) (-127)), gateway: gatewayName])
+        return (Integer) 0
+    }
+
+    // Duplicate PID — compare RSSI
+    if (rssi == null) { return (Integer) 2 }
+    Map existing = bleRssiTracker.get(mac)
+    if (existing == null || existing.pid != pid) { return (Integer) 2 }
+    if (rssi > (existing.rssi as Integer)) {
+        bleRssiTracker.put(mac, [pid: pid, rssi: rssi, gateway: gatewayName])
+        return (Integer) 1
+    }
+    return (Integer) 2
+}
+
+/**
+ * Updates only the RSSI and gateway name in the volatile BLE discovery cache.
+ * Called when a duplicate PID arrives from a gateway with a stronger signal.
+ *
+ * @param mac The BLE device MAC address
+ * @param rssi The improved signal strength value
+ * @param gatewayName The name of the gateway with the stronger signal
+ */
+private void updateBleRssiOnly(String mac, Integer rssi, String gatewayName) {
+    String macKey = mac.toString()
+    Map volatileEntry = bleDiscoveryVolatile.get(macKey)
+    if (volatileEntry == null) { return }
+    volatileEntry.rssi = rssi
+    volatileEntry.lastGateway = gatewayName
+    bleDiscoveryVolatile.put(macKey, volatileEntry)
+    bleLogTrace("BLE RSSI improved: ${mac} → ${rssi} dBm via ${gatewayName}")
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -11062,6 +11109,7 @@ private void removeBleDevice(String mac) {
         blePidCache.remove(macKey)
         bleLastContact.remove(macKey)
         bleDiscoveryVolatile.remove(macKey)
+        bleRssiTracker.remove(macKey)
 
         // Update discovery state
         Map discoveredBle = state.discoveredBleDevices ?: [:]
