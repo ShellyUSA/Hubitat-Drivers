@@ -485,10 +485,6 @@ Map mainPage() {
             input name: 'enableIpScan', type: 'bool', title: 'Enable IP subnet scan during discovery',
                 description: 'Probes each IP on the local /24 subnet at /shelly during discovery. Fallback for when mDNS is unreliable. Scans ~254 addresses over ~4 minutes.',
                 defaultValue: true, submitOnChange: true
-            input name: 'gen1PollInterval', type: 'enum', title: 'Gen 1 device poll interval',
-                description: 'How often to poll Gen 1 devices for power monitoring and state updates. Gen 1 devices do not support real-time power/energy reporting.',
-                options: ['30':'30 seconds', '60':'1 minute', '120':'2 minutes', '300':'5 minutes', '600':'10 minutes'],
-                defaultValue: '60', submitOnChange: true
             input name: 'devicePassword', type: 'password', title: 'Device password',
                 description: 'Password for Shelly devices with authentication enabled. Used for Gen 2/3 digest auth and Gen 1 Basic Auth (username is always "admin").',
                 required: false
@@ -4429,8 +4425,6 @@ void initialize() {
         unschedule('checkForAppUpdate')
     }
 
-    // Schedule Gen 1 device polling if any Gen 1 devices exist
-    scheduleGen1Polling()
 
     // Schedule BLE presence check every 5 minutes (only when BLE is active)
     if (state.bleGateways || state.discoveredBleDevices) {
@@ -6148,57 +6142,6 @@ private void syncGen1HTSettings(String ipAddress, def childDevice, String gen1Ty
     }
 }
 
-/**
- * Polls all non-battery Gen 1 devices for current status.
- * Called on a schedule based on the user-configured Gen 1 polling interval.
- * Battery devices are skipped (they sleep and are polled on wake-up via action URL callbacks).
- */
-void pollGen1Devices() {
-    List childDevices = getChildDevices() ?: []
-    List gen1Devices = childDevices.findAll { isGen1Device(it) }
-
-    if (!gen1Devices) { return }
-
-    Integer polled = 0
-    gen1Devices.each { def dev ->
-        String ip = dev.getDataValue('ipAddress')
-        if (!ip) { return }
-
-        // Skip battery devices — status comes from webhook pushes, not polling
-        if (isBatteryPoweredDevice(dev)) { return }
-
-        pollGen1DeviceStatus(ip)
-        polled++
-    }
-
-    if (polled > 0) {
-        logDebug("pollGen1Devices: polled ${polled} Gen 1 device(s)")
-    }
-}
-
-/**
- * Schedules periodic Gen 1 device polling based on user-configured interval.
- * Only schedules if Gen 1 non-battery devices exist. Unschedules if no Gen 1 devices found.
- */
-private void scheduleGen1Polling() {
-    List childDevices = getChildDevices() ?: []
-    Boolean hasGen1NonBattery = childDevices.any { isGen1Device(it) && !isBatteryPoweredDevice(it) }
-
-    if (hasGen1NonBattery) {
-        Integer intervalSec = (settings?.gen1PollInterval ?: '60') as Integer
-        String cronExpr
-        if (intervalSec < 60) {
-            cronExpr = "0/${intervalSec} * * ? * *"
-        } else {
-            Integer intervalMin = intervalSec / 60 as Integer
-            cronExpr = "0 0/${intervalMin} * ? * *"
-        }
-        schedule(cronExpr, 'pollGen1Devices')
-        logDebug("Gen 1 polling scheduled every ${intervalSec}s")
-    } else {
-        unschedule('pollGen1Devices')
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════
 // Generation Detection Helpers

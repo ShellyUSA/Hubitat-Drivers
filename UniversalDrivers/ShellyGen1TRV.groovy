@@ -26,6 +26,9 @@ metadata {
     capability 'Battery'
     //Attributes: battery - NUMBER, unit:%
 
+    capability 'Initialize'
+    //Commands: initialize()
+
     capability 'Refresh'
     //Commands: refresh()
 
@@ -113,6 +116,9 @@ preferences {
   input name: 'logLevel', type: 'enum', title: 'Logging Level',
     options: ['trace': 'Trace', 'debug': 'Debug', 'info': 'Info', 'warn': 'Warning'],
     defaultValue: 'debug', required: true
+  input name: 'pollInterval', type: 'number', title: 'Polling Interval (seconds, 0 = disabled)',
+    description: 'How often to poll for status updates. Minimum 10 seconds. 0 disables polling.',
+    defaultValue: 0, range: '0..3600', required: false
 }
 
 
@@ -126,11 +132,13 @@ void installed() {
   sendEvent(name: 'valve', value: 'closed', descriptionText: 'Initialized as closed')
   sendEvent(name: 'valvePosition', value: 0, descriptionText: 'Initialized at position 0')
   parent?.componentRefresh(device)
+  initialize()
 }
 
 void updated() {
   logDebug("updated() called with settings: ${settings}")
   relayDeviceSettings()
+  initialize()
 }
 
 /**
@@ -288,8 +296,45 @@ private void routeActionUrlCallback(Map params) {
 
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  Refresh Command                                             ║
+// ║  Initialize / Refresh / Polling Commands                     ║
 // ╚══════════════════════════════════════════════════════════════╝
+
+/**
+ * Configures periodic polling schedule based on user preference.
+ * Clamps minimum interval to 10 seconds to prevent excessive polling.
+ */
+private void schedulePolling() {
+  unschedule('scheduledPoll')
+  Integer interval = (settings?.pollInterval ?: 0) as Integer
+  if (interval > 0) {
+    if (interval < 10) { interval = 10 }
+    String cronExpr
+    if (interval < 60) {
+      cronExpr = "0/${interval} * * ? * *"
+    } else {
+      Integer minutes = (Integer)(interval / 60)
+      cronExpr = "0 0/${minutes} * ? * *"
+    }
+    schedule(cronExpr, 'scheduledPoll')
+    logDebug("Polling scheduled every ${interval}s")
+  }
+}
+
+/**
+ * Called by the scheduled job to trigger a status poll via the parent app.
+ */
+void scheduledPoll() {
+  logDebug('scheduledPoll() triggered')
+  parent?.componentRefresh(device)
+}
+
+/**
+ * Initializes the device driver. Called on install and settings update.
+ */
+void initialize() {
+  logDebug('initialize() called')
+  schedulePolling()
+}
 
 /**
  * Refreshes the TRV state by requesting a status poll from the parent app.
@@ -301,7 +346,7 @@ void refresh() {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Refresh Command                                         ║
+// ║  END Initialize / Refresh / Polling Commands                 ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 
