@@ -18,6 +18,39 @@
 @Field static final Integer MAX_COMMAND_RETRIES = 5
 @Field static final Long OPPORTUNISTIC_DRAIN_WINDOW_MS = 10000L
 
+// ─── BLE Performance Caches ────────────────────────────────────────────────────
+// In-memory caches that eliminate per-advertisement state writes.
+// Volatile fields (rssi, battery, lastSeen, lastGateway) are flushed to state every
+// 5 minutes via flushBleDiscoveryVolatile() — called from checkBlePresence().
+
+/** PID dedup ring buffer per MAC — replaces state.recentBlePids (no persistence needed) */
+@Field static ConcurrentHashMap<String, List<Integer>> blePidCache =
+    new java.util.concurrent.ConcurrentHashMap<String, List<Integer>>()
+
+/** Volatile BLE discovery fields (rssi, battery, lastSeen, lastGateway) — replaces per-ad state writes */
+@Field static ConcurrentHashMap<String, Map> bleDiscoveryVolatile =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+
+/** Throttle timestamp for periodic flush of bleDiscoveryVolatile to state */
+@Field static volatile long lastBleDiscoveryFlush = 0L
+
+/** Last BLE contact timestamp per MAC — replaces state.deviceConfigs[mac].lastBleContact */
+@Field static ConcurrentHashMap<String, Long> bleLastContact =
+    new java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+/** Throttle timestamp for BLE table SSR updates — replaces state.lastBleTableUpdate */
+@Field static volatile long lastBleTableSSR = 0L
+
+/** Last-sent event values per MAC/attribute — suppresses duplicate sendEvent calls */
+@Field static ConcurrentHashMap<String, Map<String, String>> bleLastSentValues =
+    new java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+
+/** Cached hub temperature scale — avoids getLocation() call per advertisement */
+@Field static volatile String cachedTempScale = null
+
+/** Expiry timestamp for cachedTempScale (refresh every 5 minutes) */
+@Field static volatile long tempScaleCacheTime = 0L
+
 // IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
 // These two values MUST match. APP_VERSION is used at runtime to embed the version
 // into prebuilt drivers and to detect app updates for automatic driver updates.
@@ -4451,8 +4484,32 @@ void initialize() {
 
     // BLE state initialization
     if (!state.discoveredBleDevices) { state.discoveredBleDevices = [:] }
-    if (!state.recentBlePids) { state.recentBlePids = [:] }
     if (!state.bleGateways) { state.bleGateways = [] }
+
+    // Migrate: PID dedup is now in @Field blePidCache — remove obsolete state key
+    state.remove('recentBlePids')
+    // Migrate: SSR throttle is now in @Field lastBleTableSSR — remove obsolete state key
+    state.remove('lastBleTableUpdate')
+
+    // Warm up @Field caches from persisted state so BLE works immediately after reboot
+    Map discoveredBle = state.discoveredBleDevices ?: [:]
+    discoveredBle.each { String macKey, bleVal ->
+        Map entry = bleVal as Map
+        Map volatileData = [:]
+        if (entry.rssi != null) { volatileData.rssi = entry.rssi }
+        if (entry.battery != null) { volatileData.battery = entry.battery }
+        if (entry.lastSeen != null) { volatileData.lastSeen = entry.lastSeen }
+        if (entry.lastGateway != null) { volatileData.lastGateway = entry.lastGateway }
+        if (volatileData) { bleDiscoveryVolatile.put(macKey, volatileData) }
+    }
+    // Warm up bleLastContact from state.deviceConfigs
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    deviceConfigs.each { String key, configVal ->
+        Map config = configVal as Map
+        if (config?.isBleDevice == true && config.lastBleContact != null) {
+            bleLastContact.put(key, config.lastBleContact as Long)
+        }
+    }
 
     // Ensure state mirrors current settings for logging
     state.logLevel = settings?.logLevel ?: (state.logLevel ?: 'debug')
@@ -10426,10 +10483,11 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
 
     // Throttle BLE table SSR updates to avoid exceeding hub event rate limits.
     // At most once per 10 seconds — BLE advertisements arrive frequently.
-    Long lastBleUpdate = (state.lastBleTableUpdate ?: 0) as Long
-    if (now() - lastBleUpdate > 10000) {
+    // Uses @Field volatile instead of state to avoid a state write per batch.
+    Long nowMs = now()
+    if (nowMs - lastBleTableSSR > 10000L) {
+        lastBleTableSSR = nowMs
         sendEvent(name: 'bleTable', value: 'update')
-        state.lastBleTableUpdate = now()
     }
 }
 
@@ -10452,46 +10510,44 @@ private void processBleReport(String gatewayName, Map bleData) {
     Integer modelId = bleData.modelId != null ? bleData.modelId as Integer : null
     Integer rssi = bleData.rssi != null ? bleData.rssi as Integer : null
 
-    // logTrace("processBleReport: mac=${mac} pid=${pid} model=${model} modelId=${modelId} rssi=${rssi} gateway=${gatewayName} fields=${bleData.keySet()}")
-
     // Dedup by pid per MAC
-    if (isBlePidDuplicate(mac, pid)) {
-        // logTrace("processBleReport: duplicate pid ${pid} for ${mac}, skipping")
-        return
-    }
+    if (isBlePidDuplicate(mac, pid)) { return }
 
-    // Update discovery state
-    updateBleDiscoveryState(mac, model, modelId, rssi, gatewayName, bleData)
+    // Single child lookup — passed to both functions to avoid double getChildDevice() call
+    Object child = getChildDevice(mac)
+
+    // Update discovery state (volatile fields go to @Field cache, structural to state)
+    updateBleDiscoveryState(mac, model, modelId, rssi, gatewayName, bleData, child)
 
     // Route events to child device (if created)
-    routeBleEventToChild(mac, bleData)
+    if (child) { routeBleEventToChild(mac, bleData, child) }
 }
 
 /**
  * Checks if a BLE packet ID has already been processed for a given MAC.
- * Maintains a ring buffer of the last 10 pids per MAC in state.recentBlePids.
+ * Maintains a ring buffer of the last 10 pids per MAC in the @Field blePidCache.
+ * Thread-safe via synchronized block on the per-MAC list.
  *
  * @param mac The BLE device MAC address
  * @param pid The packet ID to check
  * @return true if this pid was already seen for this MAC
  */
-private Boolean isBlePidDuplicate(String mac, Integer pid) {
-    Map recentPids = state.recentBlePids ?: [:]
-    String macKey = mac.toString()
-    List<Integer> pids = (recentPids[macKey] ?: []) as List<Integer>
-
-    if (pids.contains(pid)) {
-        return true
+@CompileStatic
+private static Boolean isBlePidDuplicate(String mac, Integer pid) {
+    List<Integer> pids = blePidCache.get(mac)
+    if (pids == null) {
+        blePidCache.putIfAbsent(mac, (List<Integer>) [])
+        pids = blePidCache.get(mac)
     }
-
-    // Add to ring buffer (keep last 10)
-    pids.add(pid)
-    if (pids.size() > 10) {
-        pids = pids[-10..-1]
+    synchronized (pids) {
+        if (pids.contains(pid)) {
+            return true
+        }
+        pids.add(pid)
+        if (pids.size() > 10) {
+            pids.remove(0)
+        }
     }
-
-    recentPids[macKey] = pids
-    state.recentBlePids = recentPids
     return false
 }
 
@@ -10552,9 +10608,9 @@ private static Integer inferBleModelFromData(Map bleData) {
 
 /**
  * Updates the BLE discovery state for a device.
- * Tracks discovered BLE devices with their model, RSSI, last seen time,
- * gateway info, and whether a Hubitat child device has been created.
- * Uses multi-layer model resolution: numeric model ID → string model code → existing entry data.
+ * Volatile fields (rssi, battery, lastSeen, lastGateway) go to the @Field bleDiscoveryVolatile
+ * cache — zero state writes per advertisement. Structural fields (model, driverName, isCreated)
+ * are written to state.discoveredBleDevices only when they actually change.
  *
  * @param mac BLE device MAC address (uppercase, no colons)
  * @param model BLE device model code from local_name (e.g., 'SBHT-003C')
@@ -10562,15 +10618,31 @@ private static Integer inferBleModelFromData(Map bleData) {
  * @param rssi Signal strength in dBm
  * @param gatewayName Display name of the WiFi gateway device
  * @param bleData Full BLE data map (for extracting battery, etc.)
+ * @param child Pre-fetched child device (may be null)
  */
-private void updateBleDiscoveryState(String mac, String model, Integer modelId, Integer rssi, String gatewayName, Map bleData) {
+private void updateBleDiscoveryState(String mac, String model, Integer modelId, Integer rssi, String gatewayName, Map bleData, Object child) {
     Map discoveredBle = state.discoveredBleDevices ?: [:]
     String macKey = mac.toString()
 
     Map entry = (discoveredBle[macKey] ?: [:]) as Map
-    entry.mac = mac
-    if (model) { entry.model = model }
-    if (modelId != null) { entry.modelId = modelId }
+    Boolean structuralChange = false
+
+    // Track whether this is a brand-new entry
+    Boolean isNewEntry = !discoveredBle.containsKey(macKey)
+    if (isNewEntry) {
+        entry.mac = mac
+        structuralChange = true
+    }
+
+    // Model fields — only update if new info arrives
+    if (model && entry.model != model) {
+        entry.model = model
+        structuralChange = true
+    }
+    if (modelId != null && entry.modelId != modelId) {
+        entry.modelId = modelId
+        structuralChange = true
+    }
 
     // Resolve driver info using accumulated entry data (sticky — persists across packets)
     // Cast needed: state round-trips through JSON serialization, so types are not preserved
@@ -10587,46 +10659,76 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
             if (driverInfo) {
                 logDebug("BLE discovery: inferred model ID 0x${String.format('%04X', inferredId)} (${driverInfo.friendlyModel}) for ${mac} from BTHome data shape")
                 entry.modelId = inferredId
+                structuralChange = true
             }
         }
     }
 
     if (driverInfo) {
-        entry.friendlyModel = driverInfo.friendlyModel
-        entry.driverName = driverInfo.driverName
-        if (driverInfo.modelCode) { entry.modelCode = driverInfo.modelCode }
+        if (entry.friendlyModel != driverInfo.friendlyModel) {
+            entry.friendlyModel = driverInfo.friendlyModel
+            structuralChange = true
+        }
+        if (entry.driverName != driverInfo.driverName) {
+            entry.driverName = driverInfo.driverName
+            structuralChange = true
+        }
+        if (driverInfo.modelCode && entry.modelCode != driverInfo.modelCode) {
+            entry.modelCode = driverInfo.modelCode
+            structuralChange = true
+        }
     }
 
     // Check if child device exists
-    def child = getChildDevice(mac)
     Boolean isCreated = (child != null)
 
     // Skip unknown devices that don't have a child device already created.
-    // Only known Shelly BLE models (resolved via model ID or model code) are tracked for discovery.
     if (!driverInfo && !isCreated) {
         logInfo("BLE discovery: ignoring unknown device ${mac} (model=${model}, modelId=${modelId})")
-        // Remove stale entry if previously stored
         if (discoveredBle.containsKey(macKey)) {
             discoveredBle.remove(macKey)
             state.discoveredBleDevices = discoveredBle
+            bleDiscoveryVolatile.remove(macKey)
         }
         return
     }
 
-    if (rssi != null) { entry.rssi = rssi }
-    if (bleData.battery != null) { entry.battery = bleData.battery as Integer }
-    entry.lastSeen = now()
-    entry.lastGateway = gatewayName
-
-    entry.isCreated = isCreated
+    // Child device association — structural change if status changed
+    if (entry.isCreated != isCreated) {
+        entry.isCreated = isCreated
+        structuralChange = true
+    }
     if (child) {
-        entry.hubDeviceId = child.id
-        entry.hubDeviceName = child.displayName
-        entry.hubDeviceLabel = child.label ?: child.displayName
+        Object childId = child.id
+        String childDisplayName = child.displayName?.toString()
+        String childLabel = (child.label ?: child.displayName)?.toString()
+        if (entry.hubDeviceId != childId) {
+            entry.hubDeviceId = childId
+            structuralChange = true
+        }
+        if (entry.hubDeviceName != childDisplayName) {
+            entry.hubDeviceName = childDisplayName
+            structuralChange = true
+        }
+        if (entry.hubDeviceLabel != childLabel) {
+            entry.hubDeviceLabel = childLabel
+            structuralChange = true
+        }
     }
 
-    discoveredBle[macKey] = entry
-    state.discoveredBleDevices = discoveredBle
+    // Volatile fields → @Field cache (no state write)
+    Map volatileEntry = bleDiscoveryVolatile.get(macKey) ?: [:]
+    if (rssi != null) { volatileEntry.rssi = rssi }
+    if (bleData.battery != null) { volatileEntry.battery = bleData.battery as Integer }
+    volatileEntry.lastSeen = now()
+    volatileEntry.lastGateway = gatewayName
+    bleDiscoveryVolatile.put(macKey, volatileEntry)
+
+    // Persist structural changes only (first discovery, model resolution, child create/rename)
+    if (structuralChange) {
+        discoveredBle[macKey] = entry
+        state.discoveredBleDevices = discoveredBle
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -10756,6 +10858,12 @@ private void removeBleDevice(String mac) {
         deviceConfigs.remove(macKey)
         state.deviceConfigs = deviceConfigs
 
+        // Clean up @Field in-memory caches to prevent stale data on re-add
+        bleLastSentValues.remove(macKey)
+        blePidCache.remove(macKey)
+        bleLastContact.remove(macKey)
+        bleDiscoveryVolatile.remove(macKey)
+
         // Update discovery state
         Map discoveredBle = state.discoveredBleDevices ?: [:]
         Map bleInfo = discoveredBle[macKey] as Map
@@ -10780,112 +10888,134 @@ private void removeBleDevice(String mac) {
 /**
  * Routes decoded BLE data to a Hubitat child device as events.
  * Converts BTHome fields to standard Hubitat attributes.
+ * Suppresses duplicate events for continuous attributes (temperature, humidity, battery, illuminance)
+ * using the @Field bleLastSentValues cache. Always sends isStateChange events (button, motion, contact).
  *
  * @param mac BLE device MAC address (the child DNI)
  * @param bleData Map of decoded BTHome fields
+ * @param child Pre-fetched child device (must not be null)
  */
-private void routeBleEventToChild(String mac, Map bleData) {
-    def child = getChildDevice(mac)
-    if (!child) { return }
+private void routeBleEventToChild(String mac, Map bleData, Object child) {
+    String tempScale = getCachedTemperatureScale()
+    List<Map> events = buildBleEvents(bleData, tempScale)
 
-    List<Map> events = buildBleEvents(bleData)
-
-    events.each { Map evt ->
-        childSendEventHelper(child, evt)
+    // Get or create last-sent cache for this MAC
+    String macKey = mac.toString()
+    Map<String, String> lastSent = bleLastSentValues.get(macKey)
+    if (lastSent == null) {
+        bleLastSentValues.putIfAbsent(macKey, new ConcurrentHashMap<String, String>())
+        lastSent = bleLastSentValues.get(macKey)
     }
 
-    // Always send presence and timestamp
-    childSendEventHelper(child, [name: 'presence', value: 'present', descriptionText: 'BLE advertisement received'])
-    childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+    // Send events — skip unchanged continuous values, always send isStateChange events
+    events.each { Map evt ->
+        if (evt.isStateChange == true) {
+            // Button, motion, contact — always fire
+            childSendEventHelper(child, evt)
+        } else {
+            // Continuous: temperature, humidity, battery, illuminance, tilt — skip if unchanged
+            String evtName = evt.name as String
+            String evtVal = evt.value?.toString()
+            if (lastSent.get(evtName) != evtVal) {
+                lastSent.put(evtName, evtVal)
+                childSendEventHelper(child, evt)
+            }
+        }
+    }
 
-    // Track last contact time for presence management
-    String macKey = mac.toString()
-    Map deviceConfigs = state.deviceConfigs ?: [:]
-    Map config = (deviceConfigs[macKey] ?: [:]) as Map
-    config.lastBleContact = now()
-    deviceConfigs[macKey] = config
-    state.deviceConfigs = deviceConfigs
+    // Presence — only send when transitioning to present (uses in-memory cache, not DB read)
+    if (lastSent.get('presence') != 'present') {
+        lastSent.put('presence', 'present')
+        childSendEventHelper(child, [name: 'presence', value: 'present', descriptionText: 'BLE advertisement received'])
+    }
 
-    List<String> eventSummary = events.collect { Map evt -> "${evt.name}=${evt.value}" } as List<String>
-    // logTrace("routeBleEventToChild: sent ${events.size()} events to ${child.displayName}: ${eventSummary}")
+    // lastUpdated — throttle to once per 30 seconds
+    Long nowMs = now()
+    String lastUpdatedTime = lastSent.get('_lastUpdatedAt')
+    if (!lastUpdatedTime || (nowMs - (lastUpdatedTime as Long)) > 30000L) {
+        lastSent.put('_lastUpdatedAt', nowMs.toString())
+        childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+    }
+
+    // Track last contact in @Field cache (no state write)
+    bleLastContact.put(macKey, nowMs)
 }
 
 /**
  * Converts BLE data fields to Hubitat event maps.
  * Handles temperature unit conversion, motion/contact states,
- * and multi-button BTHome encoding.
+ * and multi-button BTHome encoding. Pure logic — no dynamic property access.
  *
  * @param bleData Map of decoded BTHome fields
+ * @param tempScale Hub temperature scale ('F' or 'C'), pre-fetched by caller
  * @return List of event maps suitable for sendEvent()
  */
-private List<Map> buildBleEvents(Map bleData) {
+@CompileStatic
+private static List<Map> buildBleEvents(Map bleData, String tempScale) {
     List<Map> events = []
 
     // Battery
     if (bleData.battery != null) {
         Integer battery = bleData.battery as Integer
         events.add([name: 'battery', value: battery, unit: '%',
-            descriptionText: "Battery is ${battery}%"])
+            descriptionText: "Battery is ${battery}%".toString()])
     }
 
     // Temperature (BTHome sends Celsius; convert if hub uses Fahrenheit)
     if (bleData.temperature != null) {
         BigDecimal tempC = bleData.temperature as BigDecimal
-        String scale = getTemperatureScale()
-        BigDecimal temp = (scale == 'F') ? cToF(tempC) : tempC
+        BigDecimal temp = (tempScale == 'F') ? ((tempC * 9.0G / 5.0G) + 32.0G) : tempC
         temp = temp.setScale(1, BigDecimal.ROUND_HALF_UP)
-        events.add([name: 'temperature', value: temp, unit: "°${scale}",
-            descriptionText: "Temperature is ${temp}°${scale}"])
+        events.add([name: 'temperature', value: temp, unit: "\u00B0${tempScale}".toString(),
+            descriptionText: "Temperature is ${temp}\u00B0${tempScale}".toString()])
     }
 
     // Humidity
     if (bleData.humidity != null) {
         Integer humidity = Math.round(bleData.humidity as BigDecimal) as Integer
         events.add([name: 'humidity', value: humidity, unit: '%rh',
-            descriptionText: "Humidity is ${humidity}%"])
+            descriptionText: "Humidity is ${humidity}%".toString()])
     }
 
     // Illuminance
     if (bleData.illuminance != null) {
         Integer lux = Math.round(bleData.illuminance as BigDecimal) as Integer
         events.add([name: 'illuminance', value: lux, unit: 'lux',
-            descriptionText: "Illuminance is ${lux} lux"])
+            descriptionText: "Illuminance is ${lux} lux".toString()])
     }
 
     // Motion (0=inactive, 1=active)
     if (bleData.motion != null) {
         String motionVal = (bleData.motion as Integer) == 1 ? 'active' : 'inactive'
         events.add([name: 'motion', value: motionVal, isStateChange: true,
-            descriptionText: "Motion is ${motionVal}"])
+            descriptionText: "Motion is ${motionVal}".toString()])
     }
 
     // Window/Door contact (0=closed, 1=open)
     if (bleData.window != null) {
         String contactVal = (bleData.window as Integer) == 1 ? 'open' : 'closed'
         events.add([name: 'contact', value: contactVal, isStateChange: true,
-            descriptionText: "Contact is ${contactVal}"])
+            descriptionText: "Contact is ${contactVal}".toString()])
     }
 
     // Rotation (tilt angle)
     if (bleData.rotation != null) {
         BigDecimal tilt = bleData.rotation as BigDecimal
-        events.add([name: 'tilt', value: tilt, unit: '°',
-            descriptionText: "Tilt is ${tilt}°"])
+        events.add([name: 'tilt', value: tilt, unit: '\u00B0',
+            descriptionText: "Tilt is ${tilt}\u00B0".toString()])
     }
 
     // Button events (BTHome: 1=push, 2=double, 3=triple, 4+=held, 254=released)
     if (bleData.button != null) {
         if (bleData.button instanceof List) {
-            // Multi-button device: array index = button number (0-based → 1-based)
             List buttonList = bleData.button as List
-            buttonList.eachWithIndex { btnVal, Integer idx ->
+            for (int idx = 0; idx < buttonList.size(); idx++) {
                 Integer buttonNum = idx + 1
-                Integer action = btnVal as Integer
+                Integer action = buttonList[idx] as Integer
                 Map buttonEvent = buildButtonEvent(action, buttonNum)
                 if (buttonEvent) { events.add(buttonEvent) }
             }
         } else {
-            // Single button device
             Integer action = bleData.button as Integer
             Map buttonEvent = buildButtonEvent(action, 1)
             if (buttonEvent) { events.add(buttonEvent) }
@@ -10903,26 +11033,27 @@ private List<Map> buildBleEvents(Map bleData) {
  * @param buttonNum The button number (1-based)
  * @return Event map or null if no action (action == 0)
  */
-private Map buildButtonEvent(Integer action, Integer buttonNum) {
+@CompileStatic
+private static Map buildButtonEvent(Integer action, Integer buttonNum) {
     switch (action) {
         case 0:
             return null // No action
         case 1:
             return [name: 'pushed', value: buttonNum, isStateChange: true,
-                descriptionText: "Button ${buttonNum} pushed"]
+                descriptionText: "Button ${buttonNum} pushed".toString()]
         case 2:
             return [name: 'doubleTapped', value: buttonNum, isStateChange: true,
-                descriptionText: "Button ${buttonNum} double-tapped"]
+                descriptionText: "Button ${buttonNum} double-tapped".toString()]
         case 3:
             return [name: 'tripleTapped', value: buttonNum, isStateChange: true,
-                descriptionText: "Button ${buttonNum} triple-tapped"]
+                descriptionText: "Button ${buttonNum} triple-tapped".toString()]
         case 254:
             return [name: 'released', value: buttonNum, isStateChange: true,
-                descriptionText: "Button ${buttonNum} released"]
+                descriptionText: "Button ${buttonNum} released".toString()]
         default:
             // 4+ = long press / held
             return [name: 'held', value: buttonNum, isStateChange: true,
-                descriptionText: "Button ${buttonNum} held"]
+                descriptionText: "Button ${buttonNum} held".toString()]
     }
 }
 
@@ -10936,6 +11067,23 @@ private String getTemperatureScale() {
     return getLocationHelper()?.temperatureScale ?: 'F'
 }
 
+/**
+ * Returns the hub's temperature scale, cached for 5 minutes.
+ * Avoids calling getLocation() on every BLE advertisement.
+ *
+ * @return 'F' or 'C'
+ */
+private String getCachedTemperatureScale() {
+    Long nowMs = now()
+    if (cachedTempScale != null && (nowMs - tempScaleCacheTime) < 300000L) {
+        return cachedTempScale
+    }
+    String scale = getTemperatureScale()
+    cachedTempScale = scale
+    tempScaleCacheTime = nowMs
+    return scale
+}
+
 // ─────────────────────────────────────────────────────────────
 // BLE Presence Management
 // ─────────────────────────────────────────────────────────────
@@ -10944,8 +11092,12 @@ private String getTemperatureScale() {
  * Checks all BLE devices for presence timeout.
  * Called on a 5-minute schedule. If a device hasn't been heard from
  * within its presenceTimeout setting, marks it as 'not present'.
+ * Also flushes volatile BLE discovery data to state for reboot persistence.
  */
 void checkBlePresence() {
+    // Piggyback volatile cache flush on the existing 5-minute schedule
+    flushBleDiscoveryVolatile()
+
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Boolean anyChanged = false
 
@@ -10953,16 +11105,17 @@ void checkBlePresence() {
         Map config = configVal as Map
         if (config?.isBleDevice != true) { return }
 
-        Long lastContact = config.lastBleContact as Long ?: 0L
+        // Read from @Field cache first, fall back to state for backward compatibility
+        Long lastContact = bleLastContact.get(key) ?: (config.lastBleContact as Long ?: 0L)
         if (lastContact == 0L) { return }
 
-        def child = getChildDevice(key)
+        Object child = getChildDevice(key)
         if (!child) { return }
 
         // Get presenceTimeout from device settings (default 60 minutes)
         Integer timeoutMinutes = 60
         try {
-            def deviceTimeout = child.getSetting('presenceTimeout')
+            Object deviceTimeout = child.getSetting('presenceTimeout')
             if (deviceTimeout != null) { timeoutMinutes = deviceTimeout as Integer }
         } catch (Exception e) {
             logDebug("checkBlePresence: getSetting failed for ${child.displayName}, using default ${timeoutMinutes}min")
@@ -10972,11 +11125,14 @@ void checkBlePresence() {
         Long elapsed = now() - lastContact
 
         if (elapsed > timeoutMs) {
-            String currentPresence = child.currentValue('presence')
+            String currentPresence = child.currentValue('presence')?.toString()
             if (currentPresence != 'not present') {
                 childSendEventHelper(child, [name: 'presence', value: 'not present',
                     descriptionText: "No BLE data for ${timeoutMinutes} minutes"])
                 logInfo("BLE device ${child.displayName} marked as not present (no data for ${timeoutMinutes} min)")
+                // Clear presence from bleLastSentValues so next advertisement re-sends 'present'
+                Map<String, String> lastSent = bleLastSentValues.get(key)
+                if (lastSent) { lastSent.remove('presence') }
                 anyChanged = true
             }
         }
@@ -10984,6 +11140,54 @@ void checkBlePresence() {
 
     if (anyChanged) {
         sendEvent(name: 'bleTable', value: 'presence')
+    }
+}
+
+/**
+ * Merges volatile BLE discovery fields (rssi, battery, lastSeen, lastGateway) from
+ * the @Field bleDiscoveryVolatile cache into state.discoveredBleDevices.
+ * Internal throttle of 60 seconds — safe to call frequently.
+ * Ensures BLE table data survives hub reboots with reasonably recent values.
+ */
+private void flushBleDiscoveryVolatile() {
+    Long nowMs = now()
+    if ((nowMs - lastBleDiscoveryFlush) < 60000L) { return }
+    lastBleDiscoveryFlush = nowMs
+
+    if (bleDiscoveryVolatile.isEmpty()) { return }
+
+    Map discoveredBle = state.discoveredBleDevices ?: [:]
+    Boolean changed = false
+
+    bleDiscoveryVolatile.each { String macKey, Map volatileData ->
+        Map entry = discoveredBle[macKey] as Map
+        if (!entry) { return }
+
+        if (volatileData.rssi != null) { entry.rssi = volatileData.rssi }
+        if (volatileData.battery != null) { entry.battery = volatileData.battery }
+        if (volatileData.lastSeen != null) { entry.lastSeen = volatileData.lastSeen }
+        if (volatileData.lastGateway != null) { entry.lastGateway = volatileData.lastGateway }
+        discoveredBle[macKey] = entry
+        changed = true
+    }
+
+    if (changed) {
+        state.discoveredBleDevices = discoveredBle
+    }
+
+    // Also flush lastBleContact to state.deviceConfigs for reboot persistence
+    Map deviceConfigs = state.deviceConfigs ?: [:]
+    Boolean configChanged = false
+    bleLastContact.each { String macKey, Long contactTime ->
+        Map config = deviceConfigs[macKey] as Map
+        if (config) {
+            config.lastBleContact = contactTime
+            deviceConfigs[macKey] = config
+            configChanged = true
+        }
+    }
+    if (configChanged) {
+        state.deviceConfigs = deviceConfigs
     }
 }
 
@@ -11207,7 +11411,7 @@ private String renderBleTableMarkup() {
         return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
     }
 
-    // Filter to known devices only and refresh cached display fields from current model maps.
+    // Filter to known devices only, merge volatile cache, and refresh cached display fields.
     // Stale entries (stored before model map updates) get their friendlyModel/driverName refreshed here.
     List<Map> deviceList = []
     Boolean stateChanged = false
@@ -11218,6 +11422,16 @@ private String renderBleTableMarkup() {
         Map<String, String> driverInfo = resolveBleDriverInfo(entryModelId, entryModel)
         Boolean isCreated = entry.isCreated ?: false
         if (!driverInfo && !isCreated) { return }
+
+        // Merge volatile fields from @Field cache so table shows current rssi/battery/lastSeen/lastGateway
+        Map volatileData = bleDiscoveryVolatile.get(macKey)
+        if (volatileData) {
+            if (volatileData.rssi != null) { entry.rssi = volatileData.rssi }
+            if (volatileData.battery != null) { entry.battery = volatileData.battery }
+            if (volatileData.lastSeen != null) { entry.lastSeen = volatileData.lastSeen }
+            if (volatileData.lastGateway != null) { entry.lastGateway = volatileData.lastGateway }
+        }
+
         // Refresh cached display fields from resolved driver info
         if (driverInfo) {
             if (entry.friendlyModel != driverInfo.friendlyModel ||
