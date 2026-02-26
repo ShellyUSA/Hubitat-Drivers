@@ -324,7 +324,7 @@ definition(
     iconUrl: "",
     iconX2Url: "",
     singleInstance: true,
-    singleThreaded: true,
+    singleThreaded: false,
     version: "1.0.34"
 )
 
@@ -597,6 +597,8 @@ Map mainPage() {
             }
 
             input name: 'displayLogLevel', type: 'enum', title: 'App page display log level (X and above)', options: displayOptions, defaultValue: validatedDisplay, submitOnChange: true
+
+            input name: 'bleLogLevel', type: 'enum', title: 'BLE logging level', options: levelOptions, defaultValue: 'info', submitOnChange: true
 
             String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
             String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
@@ -8439,6 +8441,18 @@ private Boolean shouldLogOverall(String level) {
 }
 
 /**
+ * Determines if a BLE message at the given level should be logged.
+ * Errors and warnings always pass through regardless of BLE level setting.
+ *
+ * @param level The log level to check
+ * @return true if the message should be logged
+ */
+private Boolean shouldBleLogOverall(String level) {
+    if (level == 'error' || level == 'warn') { return true }
+    return levelPriority(level) >= levelPriority(settings?.bleLogLevel ?: 'info')
+}
+
+/**
  * Determines if a message at the given level should be displayed in the app UI.
  * Compares the message level against the configured displayLogLevel setting
  * (or logLevel if displayLogLevel is not set).
@@ -8525,6 +8539,62 @@ private void logWarn(String msg) {
  */
 private void logError(String msg) {
     if (!shouldLogOverall('error')) { return }
+    log.error msg
+    if (shouldDisplay('error')) { appendLog('error', msg) }
+}
+
+// ─────────────────────────────────────────────────────────────
+// BLE-Specific Log Helpers
+// ─────────────────────────────────────────────────────────────
+// These write directly to log.* and appendLog() instead of delegating
+// to logX() helpers. This avoids a double-gate: logX() checks
+// shouldLogOverall() (the global logLevel), which would silently
+// suppress BLE messages even when bleLogLevel allows them.
+
+/**
+ * Logs a BLE trace-level message, gated only by bleLogLevel.
+ * @param msg The message to log
+ */
+private void bleLogTrace(String msg) {
+    if (!shouldBleLogOverall('trace')) { return }
+    log.trace msg
+    if (shouldDisplay('trace')) { appendLog('trace', msg) }
+}
+
+/**
+ * Logs a BLE debug-level message, gated only by bleLogLevel.
+ * @param msg The message to log
+ */
+private void bleLogDebug(String msg) {
+    if (!shouldBleLogOverall('debug')) { return }
+    log.debug msg
+    if (shouldDisplay('debug')) { appendLog('debug', msg) }
+}
+
+/**
+ * Logs a BLE info-level message, gated only by bleLogLevel.
+ * @param msg The message to log
+ */
+private void bleLogInfo(String msg) {
+    if (!shouldBleLogOverall('info')) { return }
+    log.info msg
+    if (shouldDisplay('info')) { appendLog('info', msg) }
+}
+
+/**
+ * Logs a BLE warning-level message. Always passes through.
+ * @param msg The message to log
+ */
+private void bleLogWarn(String msg) {
+    log.warn msg
+    if (shouldDisplay('warn')) { appendLog('warn', msg) }
+}
+
+/**
+ * Logs a BLE error-level message. Always passes through.
+ * @param msg The message to log
+ */
+private void bleLogError(String msg) {
     log.error msg
     if (shouldDisplay('error')) { appendLog('error', msg) }
 }
@@ -10567,7 +10637,7 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
     Object rawMessages = bleData?.messages
     if (rawMessages instanceof List) {
         List messages = (List) rawMessages
-        // logTrace("handleBleRelay: processing ${messages.size()} messages from ${gatewayName}")
+        bleLogTrace("handleBleRelay: processing ${messages.size()} messages from ${gatewayName}")
         messages.each { Object item ->
             if (item instanceof Map) {
                 processBleReport(gatewayName, (Map) item)
@@ -10575,10 +10645,10 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
         }
     } else if (bleData?.mac) {
         // Flat single-message fallback (e.g., from routeWebhookParams)
-        // logTrace("handleBleRelay: processing single message from ${gatewayName}")
+        bleLogTrace("handleBleRelay: processing single message from ${gatewayName}")
         processBleReport(gatewayName, bleData)
     } else {
-        logDebug("handleBleRelay: unrecognized format from ${gatewayName}")
+        bleLogDebug("handleBleRelay: unrecognized format from ${gatewayName}")
         return
     }
 
@@ -10607,10 +10677,10 @@ void handleBleRelayRaw(Object gatewayDevice, String rawBody) {
         if (parsed instanceof Map) {
             handleBleRelay(gatewayDevice, (Map) parsed)
         } else {
-            logDebug("handleBleRelayRaw: unexpected JSON type from ${gatewayName}")
+            bleLogDebug("handleBleRelayRaw: unexpected JSON type from ${gatewayName}")
         }
     } catch (Exception e) {
-        log.error "handleBleRelayRaw: JSON parse error from ${gatewayName}: ${e.message}"
+        bleLogError("handleBleRelayRaw: JSON parse error from ${gatewayName}: ${e.message}")
     }
 }
 
@@ -10624,7 +10694,7 @@ void handleBleRelayRaw(Object gatewayDevice, String rawBody) {
 private void processBleReport(String gatewayName, Map bleData) {
     String mac = bleData?.mac?.toString()?.toUpperCase()
     if (!mac) {
-        logDebug('processBleReport: no MAC in BLE data')
+        bleLogDebug('processBleReport: no MAC in BLE data')
         return
     }
 
@@ -10780,7 +10850,7 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
         if (inferredId != null) {
             driverInfo = resolveBleDriverInfo(inferredId, null)
             if (driverInfo) {
-                logDebug("BLE discovery: inferred model ID 0x${String.format('%04X', inferredId)} (${driverInfo.friendlyModel}) for ${mac} from BTHome data shape")
+                bleLogDebug("BLE discovery: inferred model ID 0x${String.format('%04X', inferredId)} (${driverInfo.friendlyModel}) for ${mac} from BTHome data shape")
                 entry.modelId = inferredId
                 structuralChange = true
             }
@@ -10807,7 +10877,7 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
 
     // Skip unknown devices that don't have a child device already created.
     if (!driverInfo && !isCreated) {
-        logTrace("BLE discovery: ignoring unknown device ${mac} (model=${model}, modelId=${modelId})")
+        bleLogTrace("BLE discovery: ignoring unknown device ${mac} (model=${model}, modelId=${modelId})")
         if (discoveredBle.containsKey(macKey)) {
             discoveredBle.remove(macKey)
             state.discoveredBleDevices = discoveredBle
@@ -10870,7 +10940,7 @@ private void createBleDevice(String mac) {
     Map bleInfo = discoveredBle[macKey] as Map
 
     if (!bleInfo) {
-        logError("createBleDevice: no BLE info found for MAC ${mac}")
+        bleLogError("createBleDevice: no BLE info found for MAC ${mac}")
         appendLog('error', "Failed to create BLE device: no info for ${mac}")
         return
     }
@@ -10880,7 +10950,7 @@ private void createBleDevice(String mac) {
     Map<String, String> driverInfo = resolveBleDriverInfo(modelId, model)
 
     if (!driverInfo) {
-        logError("createBleDevice: unknown model '${model}' (modelId=${modelId}) for MAC ${mac}")
+        bleLogError("createBleDevice: unknown model '${model}' (modelId=${modelId}) for MAC ${mac}")
         appendLog('error', "Failed to create BLE device: unknown model for ${mac}")
         return
     }
@@ -10893,14 +10963,14 @@ private void createBleDevice(String mac) {
     // Check if device already exists
     def existing = getChildDevice(mac)
     if (existing) {
-        logWarn("BLE device already exists: ${existing.displayName} (${mac})")
+        bleLogWarn("BLE device already exists: ${existing.displayName} (${mac})")
         appendLog('warn', "BLE device already exists: ${existing.displayName}")
         return
     }
 
     // Install the driver
     if (!installPrebuiltDriver(driverName, [], [:], APP_VERSION)) {
-        logError("createBleDevice: failed to install driver '${driverName}'")
+        bleLogError("createBleDevice: failed to install driver '${driverName}'")
         appendLog('error', "Failed to install BLE driver: ${driverName}")
         return
     }
@@ -10918,7 +10988,7 @@ private void createBleDevice(String mac) {
 
     try {
         def childDevice = addChildDevice('ShellyDeviceManager', driverNameWithVersion, mac, deviceProps)
-        logInfo("Created BLE device: ${deviceLabel} using driver ${driverNameWithVersion}")
+        bleLogInfo("Created BLE device: ${deviceLabel} using driver ${driverNameWithVersion}")
         appendLog('info', "Created BLE device: ${deviceLabel}")
 
         // Track driver
@@ -10945,7 +11015,7 @@ private void createBleDevice(String mac) {
         state.discoveredBleDevices = discoveredBle
 
     } catch (Exception e) {
-        logError("createBleDevice: failed to create ${deviceLabel} — ${e.message}")
+        bleLogError("createBleDevice: failed to create ${deviceLabel} — ${e.message}")
         appendLog('error', "Failed to create BLE device ${deviceLabel}: ${e.message}")
     }
 }
@@ -10960,7 +11030,7 @@ private void removeBleDevice(String mac) {
 
     try {
         deleteChildDevice(mac)
-        logInfo("Removed BLE device: ${mac}")
+        bleLogInfo("Removed BLE device: ${mac}")
         appendLog('info', "Removed BLE device: ${mac}")
 
         // Clean up driver tracking only after successful delete
@@ -10999,7 +11069,7 @@ private void removeBleDevice(String mac) {
             state.discoveredBleDevices = discoveredBle
         }
     } catch (Exception e) {
-        logError("removeBleDevice: failed to delete ${mac} — ${e.message}")
+        bleLogError("removeBleDevice: failed to delete ${mac} — ${e.message}")
         appendLog('error', "Failed to remove BLE device ${mac}: ${e.message}")
     }
 }
@@ -11241,7 +11311,7 @@ void checkBlePresence() {
             Object deviceTimeout = child.getSetting('presenceTimeout')
             if (deviceTimeout != null) { timeoutMinutes = deviceTimeout as Integer }
         } catch (Exception e) {
-            logDebug("checkBlePresence: getSetting failed for ${child.displayName}, using default ${timeoutMinutes}min")
+            bleLogDebug("checkBlePresence: getSetting failed for ${child.displayName}, using default ${timeoutMinutes}min")
         }
 
         Long timeoutMs = timeoutMinutes * 60L * 1000L
@@ -11252,7 +11322,7 @@ void checkBlePresence() {
             if (currentPresence != 'not present') {
                 childSendEventHelper(child, [name: 'presence', value: 'not present',
                     descriptionText: "No BLE data for ${timeoutMinutes} minutes"])
-                logInfo("BLE device ${child.displayName} marked as not present (no data for ${timeoutMinutes} min)")
+                bleLogInfo("BLE device ${child.displayName} marked as not present (no data for ${timeoutMinutes} min)")
                 // Clear presence from bleLastSentValues so next advertisement re-sends 'present'
                 Map<String, String> lastSent = bleLastSentValues.get(key)
                 if (lastSent) { lastSent.remove('presence') }
@@ -11332,7 +11402,7 @@ private void toggleBleGateway(String ip) {
         disableBleGateway(ip)
         bleGateways.remove(ip)
         state.bleGateways = bleGateways
-        appendLog('info', "BLE gateway disabled on ${ip}")
+        bleLogInfo("BLE gateway disabled on ${ip}")
     } else {
         // enableBleGateway is async — gateway list update happens in enableBleGatewayComplete
         enableBleGateway(ip)
@@ -11352,7 +11422,7 @@ private void enableBleGateway(String ip) {
     Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
     // Step 1: Enable Bluetooth with observer
-    logInfo("Enabling Bluetooth on ${ip}...")
+    bleLogInfo("Enabling Bluetooth on ${ip}...")
     LinkedHashMap bleCmd = bleSetConfigCommand(true, true, true)
     if (hasAuth) { bleCmd.auth = getAuth() }
     postCommandSync(bleCmd, uri)
@@ -11362,7 +11432,7 @@ private void enableBleGateway(String ip) {
     String scriptUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts/HubitatBLEHelper.js"
     String scriptCode = downloadFile(scriptUrl)
     if (!scriptCode) {
-        logError("enableBleGateway: failed to download HubitatBLEHelper.js from GitHub")
+        bleLogError("enableBleGateway: failed to download HubitatBLEHelper.js from GitHub")
         appendLog('error', "Failed to download BLE script for ${ip}")
         return
     }
@@ -11374,19 +11444,19 @@ private void enableBleGateway(String ip) {
     Integer scriptId
     if (existingScript) {
         scriptId = existingScript.id as Integer
-        logInfo("Updating HubitatBLEHelper script (id: ${scriptId}) on ${ip}...")
+        bleLogInfo("Updating HubitatBLEHelper script (id: ${scriptId}) on ${ip}...")
 
         LinkedHashMap stopCmd = scriptStopCommand(scriptId)
         if (hasAuth) { stopCmd.auth = getAuth() }
         postCommandSync(stopCmd, uri)
     } else {
-        logInfo("Creating HubitatBLEHelper script on ${ip}...")
+        bleLogInfo("Creating HubitatBLEHelper script on ${ip}...")
         LinkedHashMap createCmd = scriptCreateCommand('HubitatBLEHelper')
         if (hasAuth) { createCmd.auth = getAuth() }
         LinkedHashMap createResult = postCommandSync(createCmd, uri)
         scriptId = ((createResult?.result as Map)?.id ?: (createResult?.id)) as Integer
         if (scriptId == null) {
-            logError("enableBleGateway: failed to create script on ${ip}")
+            bleLogError("enableBleGateway: failed to create script on ${ip}")
             appendLog('error', "Failed to create BLE script on ${ip}")
             return
         }
@@ -11441,7 +11511,7 @@ void enableBleGatewayComplete(Map data) {
         state.bleGateways = bleGateways
     }
 
-    logInfo("BLE gateway enabled on ${ip}")
+    bleLogInfo("BLE gateway enabled on ${ip}")
     appendLog('info', "BLE gateway enabled on ${ip}")
 }
 
@@ -11453,7 +11523,7 @@ void enableBleGatewayComplete(Map data) {
 void enableBleGatewayError(Map data) {
     String ip = data.ip as String
     String error = data.error as String
-    logError("enableBleGateway: script upload failed on ${ip} — ${error}")
+    bleLogError("enableBleGateway: script upload failed on ${ip} — ${error}")
     appendLog('error', "Failed to upload BLE script to ${ip}: ${error}")
 }
 
@@ -11472,7 +11542,7 @@ private void disableBleGateway(String ip) {
 
     if (existingScript) {
         Integer scriptId = existingScript.id as Integer
-        logInfo("Removing HubitatBLEHelper (id: ${scriptId}) from ${ip}...")
+        bleLogInfo("Removing HubitatBLEHelper (id: ${scriptId}) from ${ip}...")
 
         LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
         if (hasAuth) { deleteCmd.auth = getAuth() }
@@ -11480,12 +11550,12 @@ private void disableBleGateway(String ip) {
     }
 
     // Disable BLE observer but keep BLE enabled for RPC
-    logInfo("Disabling BLE observer on ${ip}...")
+    bleLogInfo("Disabling BLE observer on ${ip}...")
     LinkedHashMap bleCmd = bleSetConfigCommand(true, true, false)
     if (hasAuth) { bleCmd.auth = getAuth() }
     postCommandSync(bleCmd, uri)
 
-    logInfo("BLE gateway disabled on ${ip}")
+    bleLogInfo("BLE gateway disabled on ${ip}")
 }
 
 /**
