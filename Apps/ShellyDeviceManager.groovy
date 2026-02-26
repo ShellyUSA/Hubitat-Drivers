@@ -1840,11 +1840,13 @@ void reinitializeDevice(String ipAddress) {
     // Step 2: Re-query device info and status from physical device
     fetchAndStoreDeviceInfo(ipAddress)
 
-    // Step 2.5: Ensure UI component drivers are installed and data values set.
-    // Handles devices created before the PLUGS_UI/POWERSTRIP_UI install logic existed.
+    // Ensure UI component drivers are installed and data values set.
+    // Check both deviceStatus (fresh network data) AND device data values (authoritative
+    // for existing devices — works even if device is offline and fetch returned empty status).
     Map discoveredDevice = state.discoveredShellys[ipAddress] as Map
     Map deviceStatus = (discoveredDevice?.deviceStatus ?: [:]) as Map
-    Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') }
+    Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') } ||
+            childDevice.getDataValue('hasPlugsUi') == 'true'
     if (hasPlugsUi) {
         if (!isComponentDriverInstalled('Shelly PLUGS_UI RGB')) {
             fetchAndInstallComponentDriver('ShellyPlugsUiRGBComponent.groovy', 'Shelly PLUGS_UI RGB')
@@ -1852,7 +1854,8 @@ void reinitializeDevice(String ipAddress) {
         childDevice.updateDataValue('hasPlugsUi', 'true')
         logInfo("  PLUGS_UI detected — ensuring RGB LED child driver is installed")
     }
-    Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') }
+    Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') } ||
+            childDevice.getDataValue('hasPowerstripUi') == 'true'
     if (hasPowerstripUi) {
         if (!isComponentDriverInstalled('Shelly Autoconf PowerstripUI')) {
             fetchAndInstallComponentDriver('ShellyPowerstripUiComponent.groovy', 'Shelly Autoconf PowerstripUI')
@@ -1878,13 +1881,10 @@ void reinitializeDevice(String ipAddress) {
     }
 
     // Step 6: Trigger driver to reconcile UI children (PLUGS_UI, POWERSTRIP_UI).
-    // Uses an explicit command instead of relying on undocumented updateSetting behavior.
+    // Toggling the declared 'reconcileUi' preference triggers updated(), which
+    // calls reconcilePlugsUiChild() / reconcilePowerstripUiChild() in the driver.
     if (hasPlugsUi || hasPowerstripUi) {
-        try {
-            childDevice.reconcileUiChildren()
-        } catch (Exception e) {
-            logWarn("reconcileUiChildren not available on driver — update driver to latest version")
-        }
+        childDevice.updateSetting('reconcileUi', [type: 'bool', value: true])
     }
 
     logInfo("Reinitialization complete for ${ipAddress}")

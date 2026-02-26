@@ -32,7 +32,6 @@ metadata {
     //Attributes: energy - NUMBER, unit:kWh
 
     command 'resetEnergyMonitors'
-    command 'reconcileUiChildren'
   }
 }
 
@@ -47,6 +46,8 @@ preferences {
     defaultValue: 0, range: '0..86400', required: false
   input name: 'autoOnTime', type: 'decimal', title: 'Auto-On Timer (seconds, 0 = disabled)',
     defaultValue: 0, range: '0..86400', required: false
+  // Hidden preference — toggled by the app to trigger updated() -> reconcilePlugsUiChild()
+  input name: 'reconcileUi', type: 'bool', title: '', defaultValue: false, required: false
 }
 
 
@@ -462,15 +463,6 @@ void resetEnergyMonitors() {
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  PLUGS_UI LED Management                                     ║
 // ╚══════════════════════════════════════════════════════════════╝
-
-/**
- * Reconciles UI child devices (PLUGS_UI RGB LED).
- * Called by the parent app during reinitializeDevice() to ensure
- * UI children exist for devices created before this feature was added.
- */
-void reconcileUiChildren() {
-  reconcilePlugsUiChild()
-}
 
 /**
  * Ensures a PLUGS_UI RGB child device exists if this Shelly has an LED indicator.
