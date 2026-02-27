@@ -55,10 +55,10 @@
 /** Expiry timestamp for cachedTempScale (refresh every 5 minutes) */
 @Field static volatile long tempScaleCacheTime = 0L
 
-// IMPORTANT: When bumping the version in definition() below, also update APP_VERSION.
-// These two values MUST match. APP_VERSION is used at runtime to embed the version
-// into prebuilt drivers and to detect app updates for automatic driver updates.
-@Field static final String APP_VERSION = "1.0.38"
+// App version — single source of truth. The CI pipeline automatically syncs this value
+// into the definition() block's version field on release. Do NOT manually edit the
+// version in definition() — it will be overwritten on the next release.
+@Field static final String APP_VERSION = "1.0.39"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -329,7 +329,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: false,
-    version: "1.0.38"
+    version: "1.0.39"
 )
 
 preferences {

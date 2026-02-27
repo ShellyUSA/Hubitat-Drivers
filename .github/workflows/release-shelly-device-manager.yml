@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for git log changelog range and tag resolution
 
       - name: Extract APP_VERSION from source
         id: version
@@ -37,6 +39,25 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Detected APP_VERSION=${VERSION}, tag=${TAG}"
+
+      - name: Sync definition() version with APP_VERSION
+        run: |
+          # Matches exactly 4-space-indented 'version:' with a quoted numeric value — targets definition() only
+          sed -i "s/\(    version: \)\"[0-9.]*\"/\1\"${VERSION}\"/" Apps/ShellyDeviceManager.groovy
+
+          if git diff --quiet Apps/ShellyDeviceManager.groovy; then
+            echo "definition() version already matches APP_VERSION (${VERSION})"
+          else
+            echo "Updated definition() version to ${VERSION}"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add Apps/ShellyDeviceManager.groovy
+            git commit -m "chore: sync definition() version to APP_VERSION ${VERSION} [skip ci]"
+            git push
+            echo "Committed and pushed version sync"
+          fi
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
 
       - name: Check if release already exists
         id: check
@@ -62,12 +83,15 @@ jobs:
           # Find the previous app release tag
           PREV_TAG=$(git tag -l "app-v*" --sort=-v:refname | head -n 1)
 
+          # Exclude automated sync commits from the changelog
           if [ -n "$PREV_TAG" ]; then
-            CHANGELOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges -- \
+            CHANGELOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges \
+              --invert-grep --grep="^chore: sync definition" -- \
               Apps/ShellyDeviceManager.groovy Scripts/ UniversalDrivers/component_driver.json \
               || echo "- Release ${VERSION}")
           else
-            CHANGELOG=$(git log --pretty=format:"- %s" --no-merges -20 -- \
+            CHANGELOG=$(git log --pretty=format:"- %s" --no-merges -20 \
+              --invert-grep --grep="^chore: sync definition" -- \
               Apps/ShellyDeviceManager.groovy Scripts/ UniversalDrivers/component_driver.json \
               || echo "- Release ${VERSION}")
           fi
@@ -91,10 +115,10 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
 
+          # No --target: release tags HEAD which includes the sync commit (if any)
           gh release create "$TAG" \
             --title "Shelly Device Manager ${VERSION}" \
             --notes-file changelog.md \
-            --target "${{ github.sha }}" \
             Apps/ShellyDeviceManager.groovy
 
           echo "Release ${TAG} created"
