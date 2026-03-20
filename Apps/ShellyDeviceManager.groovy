@@ -77,6 +77,8 @@
     'SHBLB-1':   'Shelly Gen1 Bulb',
     'SHCB-1':    'Shelly Gen1 Bulb',
     'SHCL-255':  'Shelly Gen1 Bulb',     // Color Bulb variant
+    'SHDM-1':    'Shelly Gen1 Single Dimmer', // Shelly Dimmer (Gen 1)
+    'SHDM-2':    'Shelly Gen1 Single Dimmer', // Shelly Dimmer 2
     'SHVIN-1':   'Shelly Gen1 Single Dimmer',
     'SHDIMW-1':  'Shelly Gen1 Single Dimmer', // Wall-mount dimmer
     'SHBDUO-1':  'Shelly Gen1 Duo',
@@ -7439,7 +7441,9 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Determine driver name for discovered components and install prebuilt driver
     if (components.size() > 0) {
         Boolean isParent = needsParentChild
-        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.isGen1 as Boolean ?: false) : false
+        // Use the 'gen' field (set during initial discovery) rather than the derived 'isGen1' boolean,
+        // which is only populated during table-refresh and would be null on first discovery.
+        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.gen?.toString() == '1') : false
 
         // Model-specific driver override for Gen 1 devices (e.g., Plugs)
         String gen1TypeCode = ipKey ? state.discoveredShellys[ipKey]?.gen1Type?.toString() : null
