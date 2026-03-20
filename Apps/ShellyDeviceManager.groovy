@@ -16194,6 +16194,28 @@ void componentInitialize(def parentDevice) {
 }
 
 /**
+ * Returns the versioned driver name for a given base driver name, as installed on the hub.
+ * Prebuilt drivers are installed with a version suffix (e.g., 'Shelly Gen1 White Channel v1.0.39'),
+ * but parent drivers only know the base name. This callback lets a parent driver resolve the
+ * correct versioned name to pass to {@code addChildDevice()}.
+ *
+ * @param parentDevice The calling parent device
+ * @param baseName The base driver name without version suffix (e.g., 'Shelly Gen1 White Channel')
+ * @return The versioned driver name (e.g., 'Shelly Gen1 White Channel v1.0.39'), or baseName if not found
+ */
+String componentGetVersionedDriverName(def parentDevice, String baseName) {
+    Map allDrivers = state.autoDrivers ?: [:]
+    String searchKey = "ShellyDeviceManager.${baseName}"
+    Map.Entry match = allDrivers.find { k, v -> k.toString().startsWith(searchKey) }
+    if (match) {
+        Map info = match.value as Map
+        return (info.name ?: baseName).toString()
+    }
+    logWarn("componentGetVersionedDriverName: no versioned driver found for '${baseName}', falling back to base name")
+    return baseName
+}
+
+/**
  * Handles configure() command from parent devices.
  *
  * @param parentDevice The parent device to configure
