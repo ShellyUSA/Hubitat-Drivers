@@ -14793,7 +14793,7 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
       
       // Only include brightness param if level > 0 to avoid issues with bulbs that don't like brightness=0
       Map params = switch(level) {
-        0 -> [turn: 'off']
+        case 0 -> [turn: 'off']
         default -> [turn: 'on', brightness: level.toString()]
       }
 
