@@ -14797,7 +14797,7 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
       // Only send transition when turning on
       if (transitionMs != null && level > 0) {
         // Max transition is 5000ms (5s); cap it to avoid errors
-        params.transition = min(transitionMs, 5000).intValue().toString()
+        params.transition = Integer.min(transitionMs.intValue(), 5000).toString()
       }
       String brightnessStr = params.brightness ? "&brightness=${params.brightness}" : ""
       String transitionStr = params.transition ? "&transition=${params.transition}" : ""
