@@ -5,10 +5,7 @@
         {
           "name": "acceleration",
           "type": "enum",
-          "values": [
-            "inactive",
-            "active"
-          ]
+          "values": ["inactive", "active"]
         }
       ],
       "commands": [],
@@ -24,12 +21,7 @@
         {
           "name": "alarm",
           "type": "enum",
-          "values": [
-            "strobe",
-            "off",
-            "both",
-            "siren"
-          ]
+          "values": ["strobe", "off", "both", "siren"]
         }
       ],
       "commands": [
@@ -129,10 +121,7 @@
         {
           "name": "mute",
           "type": "enum",
-          "values": [
-            "unmuted",
-            "muted"
-          ]
+          "values": ["unmuted", "muted"]
         },
         {
           "name": "volume",
@@ -186,10 +175,7 @@
         {
           "name": "presence",
           "type": "enum",
-          "values": [
-            "not present",
-            "present"
-          ]
+          "values": ["not present", "present"]
         }
       ],
       "commands": [],
@@ -200,10 +186,7 @@
         {
           "name": "switch",
           "type": "enum",
-          "values": [
-            "on",
-            "off"
-          ]
+          "values": ["on", "off"]
         }
       ],
       "commands": [
@@ -227,10 +210,7 @@
         {
           "name": "holdableButton",
           "type": "enum",
-          "values": [
-            "true",
-            "false"
-          ]
+          "values": ["true", "false"]
         },
         {
           "name": "numberOfButtons",
@@ -255,11 +235,7 @@
         {
           "name": "carbonMonoxide",
           "type": "enum",
-          "values": [
-            "detected",
-            "tested",
-            "clear"
-          ]
+          "values": ["detected", "tested", "clear"]
         }
       ],
       "commands": [],
@@ -299,10 +275,7 @@
         {
           "name": "status",
           "type": "enum",
-          "values": [
-            "playing",
-            "stopped"
-          ]
+          "values": ["playing", "stopped"]
         }
       ],
       "commands": [
@@ -389,10 +362,7 @@
         {
           "name": "colorMode",
           "type": "enum",
-          "values": [
-            "CT",
-            "RGB"
-          ]
+          "values": ["CT", "RGB"]
         }
       ],
       "commands": [],
@@ -426,9 +396,7 @@
     },
     {
       "attributes": [],
-      "commandFiles": [
-        "ConfigureCommands.groovy"
-      ],
+      "commandFiles": ["ConfigureCommands.groovy"],
       "commands": [
         {
           "arguments": [],
@@ -471,10 +439,7 @@
         {
           "name": "contact",
           "type": "enum",
-          "values": [
-            "closed",
-            "open"
-          ]
+          "values": ["closed", "open"]
         }
       ],
       "commands": [],
@@ -489,22 +454,14 @@
       ],
       "commands": [],
       "id": "CurrentMeter",
-      "requiredScripts": [
-        "powermonitoring.js"
-      ]
+      "requiredScripts": ["powermonitoring.js"]
     },
     {
       "attributes": [
         {
           "name": "door",
           "type": "enum",
-          "values": [
-            "unknown",
-            "closed",
-            "open",
-            "closing",
-            "opening"
-          ]
+          "values": ["unknown", "closed", "open", "closing", "opening"]
         }
       ],
       "commands": [
@@ -543,9 +500,7 @@
         }
       ],
       "id": "EnergyMeter",
-      "requiredScripts": [
-        "powermonitoring.js"
-      ]
+      "requiredScripts": ["powermonitoring.js"]
     },
     {
       "attributes": [
@@ -594,10 +549,7 @@
         {
           "name": "filterStatus",
           "type": "enum",
-          "values": [
-            "normal",
-            "replace"
-          ]
+          "values": ["normal", "replace"]
         }
       ],
       "commands": [],
@@ -608,13 +560,7 @@
         {
           "name": "door",
           "type": "enum",
-          "values": [
-            "unknown",
-            "open",
-            "closing",
-            "closed",
-            "opening"
-          ]
+          "values": ["unknown", "open", "closing", "closed", "opening"]
         }
       ],
       "commands": [
@@ -685,11 +631,7 @@
         {
           "name": "indicatorStatus",
           "type": "enum",
-          "values": [
-            "never",
-            "when on",
-            "when off"
-          ]
+          "values": ["never", "when on", "when off"]
         }
       ],
       "commands": [
@@ -710,9 +652,7 @@
     },
     {
       "attributes": [],
-      "commandFiles": [
-        "InitializeCommands.groovy"
-      ],
+      "commandFiles": ["InitializeCommands.groovy"],
       "commands": [
         {
           "arguments": [],
@@ -726,10 +666,7 @@
         {
           "name": "switch",
           "type": "enum",
-          "values": [
-            "on",
-            "off"
-          ]
+          "values": ["on", "off"]
         }
       ],
       "commands": [
@@ -793,12 +730,7 @@
         {
           "name": "lock",
           "type": "enum",
-          "values": [
-            "locked",
-            "unlocked with timeout",
-            "unlocked",
-            "unknown"
-          ]
+          "values": ["locked", "unlocked with timeout", "unlocked", "unknown"]
         }
       ],
       "commands": [
@@ -818,12 +750,7 @@
         {
           "name": "codeChanged",
           "type": "enum",
-          "values": [
-            "added",
-            "changed",
-            "deleted",
-            "failed"
-          ]
+          "values": ["added", "changed", "deleted", "failed"]
         },
         {
           "name": "codeLength",
@@ -928,10 +855,7 @@
         {
           "name": "motion",
           "type": "enum",
-          "values": [
-            "inactive",
-            "active"
-          ]
+          "values": ["inactive", "active"]
         }
       ],
       "commands": [],
@@ -946,10 +870,7 @@
         {
           "name": "mute",
           "type": "enum",
-          "values": [
-            "unmuted",
-            "muted"
-          ]
+          "values": ["unmuted", "muted"]
         },
         {
           "name": "status",
@@ -1084,10 +1005,7 @@
         {
           "name": "switch",
           "type": "enum",
-          "values": [
-            "on",
-            "off"
-          ]
+          "values": ["on", "off"]
         }
       ],
       "commands": [
@@ -1121,21 +1039,14 @@
       ],
       "commands": [],
       "id": "PowerMeter",
-      "requiredScripts": [
-        "powermonitoring.js"
-      ]
+      "requiredScripts": ["powermonitoring.js"]
     },
     {
       "attributes": [
         {
           "name": "powerSource",
           "type": "enum",
-          "values": [
-            "battery",
-            "dc",
-            "mains",
-            "unknown"
-          ]
+          "values": ["battery", "dc", "mains", "unknown"]
         }
       ],
       "commands": [],
@@ -1146,10 +1057,7 @@
         {
           "name": "presence",
           "type": "enum",
-          "values": [
-            "present",
-            "not present"
-          ]
+          "values": ["present", "not present"]
         }
       ],
       "commands": [],
@@ -1181,9 +1089,7 @@
     },
     {
       "attributes": [],
-      "commandFiles": [
-        "RefreshCommands.groovy"
-      ],
+      "commandFiles": ["RefreshCommands.groovy"],
       "commands": [
         {
           "arguments": [],
@@ -1208,10 +1114,7 @@
         {
           "name": "switch",
           "type": "enum",
-          "values": [
-            "on",
-            "off"
-          ]
+          "values": ["on", "off"]
         }
       ],
       "commands": [
@@ -1245,40 +1148,22 @@
         {
           "name": "mute",
           "type": "enum",
-          "values": [
-            "muted",
-            "unknown",
-            "unmuted"
-          ]
+          "values": ["muted", "unknown", "unmuted"]
         },
         {
           "name": "pictureMode",
           "type": "enum",
-          "values": [
-            "unknown",
-            "standard",
-            "movie",
-            "dynamic"
-          ]
+          "values": ["unknown", "standard", "movie", "dynamic"]
         },
         {
           "name": "soundMode",
           "type": "enum",
-          "values": [
-            "speech",
-            "movie",
-            "unknown",
-            "standard",
-            "music"
-          ]
+          "values": ["speech", "movie", "unknown", "standard", "music"]
         },
         {
           "name": "switch",
           "type": "enum",
-          "values": [
-            "on",
-            "off"
-          ]
+          "values": ["on", "off"]
         },
         {
           "name": "volume",
@@ -1362,12 +1247,7 @@
         {
           "name": "codeChanged",
           "type": "enum",
-          "values": [
-            "added",
-            "changed",
-            "deleted",
-            "failed"
-          ]
+          "values": ["added", "changed", "deleted", "failed"]
         },
         {
           "name": "codeLength",
@@ -1384,12 +1264,7 @@
         {
           "name": "securityKeypad",
           "type": "enum",
-          "values": [
-            "disarmed",
-            "armed home",
-            "armed away",
-            "unknown"
-          ]
+          "values": ["disarmed", "armed home", "armed away", "unknown"]
         }
       ],
       "commands": [
@@ -1477,10 +1352,7 @@
         {
           "name": "shock",
           "type": "enum",
-          "values": [
-            "clear",
-            "detected"
-          ]
+          "values": ["clear", "detected"]
         }
       ],
       "commands": [],
@@ -1505,10 +1377,7 @@
         {
           "name": "sleeping",
           "type": "enum",
-          "values": [
-            "not sleeping",
-            "sleeping"
-          ]
+          "values": ["not sleeping", "sleeping"]
         }
       ],
       "commands": [],
@@ -1519,11 +1388,7 @@
         {
           "name": "smoke",
           "type": "enum",
-          "values": [
-            "clear",
-            "tested",
-            "detected"
-          ]
+          "values": ["clear", "tested", "detected"]
         }
       ],
       "commands": [],
@@ -1545,10 +1410,7 @@
         {
           "name": "sound",
           "type": "enum",
-          "values": [
-            "detected",
-            "not detected"
-          ]
+          "values": ["detected", "not detected"]
         }
       ],
       "commands": [],
@@ -1600,15 +1462,10 @@
         {
           "name": "switch",
           "type": "enum",
-          "values": [
-            "on",
-            "off"
-          ]
+          "values": ["on", "off"]
         }
       ],
-      "commandFiles": [
-        "SwitchCommands.groovy"
-      ],
+      "commandFiles": ["SwitchCommands.groovy"],
       "commands": [
         {
           "arguments": [],
@@ -1644,16 +1501,9 @@
       ],
       "id": "SwitchLevel",
       "shellyComponent": "light",
-      "commandFiles": [
-        "LightCommands.groovy"
-      ],
-      "requiredScripts": [
-        "lightstatus.js"
-      ],
-      "companionCapabilities": [
-        "Light",
-        "ChangeLevel"
-      ]
+      "commandFiles": ["LightCommands.groovy"],
+      "requiredScripts": ["lightstatus.js"],
+      "companionCapabilities": ["Light", "ChangeLevel"]
     },
     {
       "attributes": [
@@ -1707,10 +1557,7 @@
         {
           "name": "tamper",
           "type": "enum",
-          "values": [
-            "clear",
-            "detected"
-          ]
+          "values": ["clear", "detected"]
         }
       ],
       "commands": [],
@@ -1754,22 +1601,12 @@
         {
           "name": "supportedThermostatFanModes",
           "type": "enum",
-          "values": [
-            "on",
-            "circulate",
-            "auto"
-          ]
+          "values": ["on", "circulate", "auto"]
         },
         {
           "name": "supportedThermostatModes",
           "type": "enum",
-          "values": [
-            "auto",
-            "off",
-            "heat",
-            "emergency heat",
-            "cool"
-          ]
+          "values": ["auto", "off", "heat", "emergency heat", "cool"]
         },
         {
           "name": "temperature",
@@ -1778,22 +1615,12 @@
         {
           "name": "thermostatFanMode",
           "type": "enum",
-          "values": [
-            "on",
-            "circulate",
-            "auto"
-          ]
+          "values": ["on", "circulate", "auto"]
         },
         {
           "name": "thermostatMode",
           "type": "enum",
-          "values": [
-            "auto",
-            "off",
-            "heat",
-            "emergency heat",
-            "cool"
-          ]
+          "values": ["auto", "off", "heat", "emergency heat", "cool"]
         },
         {
           "name": "thermostatOperatingState",
@@ -1931,11 +1758,7 @@
         {
           "name": "thermostatFanMode",
           "type": "enum",
-          "values": [
-            "auto",
-            "circulate",
-            "on"
-          ]
+          "values": ["auto", "circulate", "on"]
         }
       ],
       "commands": [
@@ -1994,13 +1817,7 @@
         {
           "name": "thermostatMode",
           "type": "enum",
-          "values": [
-            "heat",
-            "cool",
-            "emergency heat",
-            "auto",
-            "off"
-          ]
+          "values": ["heat", "cool", "emergency heat", "auto", "off"]
         }
       ],
       "commands": [
@@ -2104,12 +1921,7 @@
         {
           "name": "sessionStatus",
           "type": "enum",
-          "values": [
-            "stopped",
-            "canceled",
-            "running",
-            "paused"
-          ]
+          "values": ["stopped", "canceled", "running", "paused"]
         },
         {
           "name": "timeRemaining",
@@ -2162,9 +1974,7 @@
         {
           "name": "touch",
           "type": "enum",
-          "values": [
-            "touched"
-          ]
+          "values": ["touched"]
         }
       ],
       "commands": [],
@@ -2185,10 +1995,7 @@
         {
           "name": "valve",
           "type": "enum",
-          "values": [
-            "open",
-            "closed"
-          ]
+          "values": ["open", "closed"]
         }
       ],
       "commands": [
@@ -2208,20 +2015,12 @@
         {
           "name": "camera",
           "type": "enum",
-          "values": [
-            "on",
-            "off",
-            "restarting",
-            "unavailable"
-          ]
+          "values": ["on", "off", "restarting", "unavailable"]
         },
         {
           "name": "mute",
           "type": "enum",
-          "values": [
-            "unmuted",
-            "muted"
-          ]
+          "values": ["unmuted", "muted"]
         },
         {
           "name": "settings",
@@ -2287,19 +2086,14 @@
       ],
       "commands": [],
       "id": "VoltageMeasurement",
-      "requiredScripts": [
-        "powermonitoring.js"
-      ]
+      "requiredScripts": ["powermonitoring.js"]
     },
     {
       "attributes": [
         {
           "name": "water",
           "type": "enum",
-          "values": [
-            "wet",
-            "dry"
-          ]
+          "values": ["wet", "dry"]
         }
       ],
       "commands": [],
@@ -2347,9 +2141,7 @@
       ],
       "id": "WindowShade",
       "shellyComponent": "cover",
-      "commandFiles": [
-        "CoverCommands.groovy"
-      ]
+      "commandFiles": ["CoverCommands.groovy"]
     },
     {
       "attributes": [
@@ -2403,12 +2195,8 @@
       "commands": [],
       "id": "PowerMeterComponent",
       "shellyComponent": "pm1",
-      "commandFiles": [
-        "PowerMonitoring.groovy"
-      ],
-      "requiredScripts": [
-        "powermonitoring.js"
-      ],
+      "commandFiles": ["PowerMonitoring.groovy"],
+      "requiredScripts": ["powermonitoring.js"],
       "companionCapabilities": [
         "PowerMeter",
         "EnergyMeter",
@@ -2421,9 +2209,7 @@
       "commands": [],
       "id": "EnergyMeterComponent",
       "shellyComponent": "em",
-      "requiredScripts": [
-        "powermonitoring.js"
-      ],
+      "requiredScripts": ["powermonitoring.js"],
       "companionCapabilities": [
         "PowerMeter",
         "EnergyMeter",
@@ -2436,9 +2222,7 @@
       "commands": [],
       "id": "EnergyMeterPhaseComponent",
       "shellyComponent": "em1",
-      "requiredScripts": [
-        "powermonitoring.js"
-      ],
+      "requiredScripts": ["powermonitoring.js"],
       "companionCapabilities": [
         "PowerMeter",
         "EnergyMeter",
@@ -2456,9 +2240,7 @@
       "commands": [],
       "id": "InputButtonComponent",
       "shellyComponent": "input",
-      "commandFiles": [
-        "InputCommands.groovy"
-      ],
+      "commandFiles": ["InputCommands.groovy"],
       "companionCapabilities": [
         "PushableButton",
         "DoubleTapableButton",
@@ -2470,21 +2252,11 @@
       "commands": [],
       "id": "VoltmeterComponent",
       "shellyComponent": "voltmeter",
-      "companionCapabilities": [
-        "VoltageMeasurement"
-      ]
+      "companionCapabilities": ["VoltageMeasurement"]
     }
   ],
   "deviceSpecificPreferences": {
-    "cover": [
-      {
-        "defaultValue": "false",
-        "name": "swapOpenClose",
-        "required": false,
-        "title": "Swap Open/Close Direction",
-        "type": "bool"
-      }
-    ],
+    "cover": [],
     "light": [
       {
         "defaultValue": "0",

@@ -16156,6 +16156,8 @@ void componentRefresh(def childDevice) {
             // Parent refresh: distribute status to all children
             distributeStatusToChildren(parentDni, deviceStatus)
             syncSwitchConfigForParentChildren(parentDni, ipAddress)
+            syncCoverConfigToDriver(childDevice, ipAddress)
+            syncCoverConfigForParentChildren(parentDni, ipAddress)
         } else {
             // Single child refresh: only update this child
             String componentType = childDevice.getDataValue('componentType')
@@ -16168,6 +16170,7 @@ void componentRefresh(def childDevice) {
                 updateChildFromStatus(childDevice, componentType, componentData)
             }
             syncSwitchConfigToDriver(childDevice, ipAddress)
+            syncCoverConfigToDriver(childDevice, ipAddress)
             // Sync light config for dimmer devices (dimmers have light:N components, not switch:N)
             String refreshTypeName = childDevice.typeName ?: ''
             if (refreshTypeName.contains('Dimmer')) {
@@ -17159,6 +17162,245 @@ void componentUpdateColorSettings(def childDevice, Map colorSettings) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// Cover Settings (device-side direction, input, travel, and safety config)
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Receives cover settings from a standalone single-cover driver.
+ * Applies settings to Gen 2+ devices via Cover.SetConfig JSON-RPC.
+ *
+ * @param childDevice The standalone cover device
+ * @param coverSettings Map with device-side cover config values
+ */
+void componentUpdateCoverSettings(def childDevice, Map coverSettings) {
+    if (!childDevice || !coverSettings) { return }
+    String ipAddress = childDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("componentUpdateCoverSettings: no IP for ${childDevice.displayName}")
+        return
+    }
+    if (isGen1Device(childDevice)) {
+        logDebug("componentUpdateCoverSettings: skipping Gen 1 cover config for ${childDevice.displayName}")
+        return
+    }
+
+    Integer coverId = extractComponentId(childDevice, 'coverId')
+    applyGen2CoverSettings(ipAddress, childDevice, coverId, coverSettings)
+}
+
+/**
+ * Receives cover settings from a parent driver on behalf of a child cover component.
+ *
+ * @param parentDevice The parent device
+ * @param coverId The cover component ID
+ * @param coverSettings Map with device-side cover config values
+ */
+void parentUpdateCoverSettings(def parentDevice, Integer coverId, Map coverSettings) {
+    if (!parentDevice || !coverSettings) { return }
+    String ipAddress = parentDevice.getDataValue('ipAddress')
+    if (!ipAddress) {
+        logError("parentUpdateCoverSettings: no IP for ${parentDevice.displayName}")
+        return
+    }
+    if (isGen1Device(parentDevice)) {
+        logDebug("parentUpdateCoverSettings: skipping Gen 1 cover config for ${parentDevice.displayName}")
+        return
+    }
+
+    applyGen2CoverSettings(ipAddress, parentDevice, coverId, coverSettings)
+}
+
+/**
+ * Applies cover settings to a Gen 2+ device via Cover.SetConfig RPC.
+ *
+ * @param ipAddress The device IP address
+ * @param device The Hubitat device relaying the config
+ * @param coverId The cover component ID
+ * @param coverSettings Map with cover configuration keys from driver preferences
+ */
+private void applyGen2CoverSettings(String ipAddress, def device, Integer coverId, Map coverSettings) {
+    Map config = [:]
+    if (coverSettings.invert_directions != null) { config.invert_directions = coverSettings.invert_directions as Boolean }
+    if (coverSettings.in_mode != null) { config.in_mode = coverSettings.in_mode as String }
+    if (coverSettings.in_locked != null) { config.in_locked = coverSettings.in_locked as Boolean }
+    if (coverSettings.swap_inputs != null) { config.swap_inputs = coverSettings.swap_inputs as Boolean }
+    if (coverSettings.power_limit != null) { config.power_limit = coverSettings.power_limit as BigDecimal }
+    if (coverSettings.voltage_limit != null) { config.voltage_limit = coverSettings.voltage_limit as BigDecimal }
+    if (coverSettings.undervoltage_limit != null) { config.undervoltage_limit = coverSettings.undervoltage_limit as BigDecimal }
+    if (coverSettings.current_limit != null) { config.current_limit = coverSettings.current_limit as BigDecimal }
+    if (coverSettings.maxtime_open != null) { config.maxtime_open = coverSettings.maxtime_open as BigDecimal }
+    if (coverSettings.maxtime_close != null) { config.maxtime_close = coverSettings.maxtime_close as BigDecimal }
+    if (coverSettings.maintenance_mode != null) { config.maintenance_mode = coverSettings.maintenance_mode as Boolean }
+
+    Map motorConfig = [:]
+    if (coverSettings.motor_idle_power_thr != null) { motorConfig.idle_power_thr = coverSettings.motor_idle_power_thr as BigDecimal }
+    if (coverSettings.motor_idle_confirm_period != null) { motorConfig.idle_confirm_period = coverSettings.motor_idle_confirm_period as BigDecimal }
+    if (!motorConfig.isEmpty()) { config.motor = motorConfig }
+
+    Map obstructionConfig = [:]
+    if (coverSettings.obstruction_enable != null) { obstructionConfig.enable = coverSettings.obstruction_enable as Boolean }
+    if (coverSettings.obstruction_direction != null) { obstructionConfig.direction = coverSettings.obstruction_direction as String }
+    if (coverSettings.obstruction_action != null) { obstructionConfig.action = coverSettings.obstruction_action as String }
+    if (coverSettings.obstruction_power_thr != null) { obstructionConfig.power_thr = coverSettings.obstruction_power_thr as BigDecimal }
+    if (coverSettings.obstruction_holdoff != null) { obstructionConfig.holdoff = coverSettings.obstruction_holdoff as BigDecimal }
+    if (!obstructionConfig.isEmpty()) { config.obstruction_detection = obstructionConfig }
+
+    Map safetySwitchConfig = [:]
+    if (coverSettings.safety_switch_enable != null) { safetySwitchConfig.enable = coverSettings.safety_switch_enable as Boolean }
+    if (coverSettings.safety_switch_direction != null) { safetySwitchConfig.direction = coverSettings.safety_switch_direction as String }
+    if (coverSettings.safety_switch_action != null) { safetySwitchConfig.action = coverSettings.safety_switch_action as String }
+    if (coverSettings.safety_switch_allowed_move != null) {
+        String allowedMove = coverSettings.safety_switch_allowed_move as String
+        safetySwitchConfig.allowed_move = (allowedMove == 'reverse') ? 'reverse' : null
+    }
+    if (!safetySwitchConfig.isEmpty()) { config.safety_switch = safetySwitchConfig }
+
+    if (!config) { return }
+
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = coverSetConfigCommandJson(config, coverId)
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    if (response != null) {
+        logInfo("Applied Gen2+ cover config to ${device.displayName} cover:${coverId}: ${config}")
+    } else {
+        logWarn("Failed to apply Gen2+ cover config to ${device.displayName}: no response")
+    }
+}
+
+/**
+ * Reads cover config from a Gen 2+ device and updates the target driver's preferences.
+ * Applies to single-cover parent devices and child cover component devices.
+ *
+ * @param targetDevice The Hubitat device whose preferences should be updated
+ * @param ipAddress The device IP address
+ */
+private void syncCoverConfigToDriver(def targetDevice, String ipAddress) {
+    if (isGen1Device(targetDevice)) { return }
+
+    String componentType = targetDevice.getDataValue('componentType')
+    if (componentType != null && componentType != 'cover') { return }
+
+    Integer coverId = 0
+    if (componentType == 'cover') {
+        coverId = extractComponentId(targetDevice, 'coverId')
+    } else {
+        String componentStr = targetDevice.getDataValue('components') ?: ''
+        Integer coverCount = componentStr ? componentStr.split(',').count { it.trim().startsWith('cover:') } : 0
+        if (coverCount != 1 && !(targetDevice.typeName ?: '').contains('Single Cover')) { return }
+    }
+
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = coverGetConfigCommand(coverId, 'syncCoverConfig')
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    if (!response) { return }
+
+    Map config = [:]
+    if (response.result instanceof Map) {
+        config = response.result as Map
+    } else if (response instanceof Map) {
+        config = response as Map
+    }
+
+    if (config) { syncCoverConfigToPreferences(targetDevice, config) }
+}
+
+/**
+ * Syncs cover config to preferences for all child cover devices of a parent device.
+ *
+ * @param parentDni The parent device network ID
+ * @param ipAddress The device IP address
+ */
+private void syncCoverConfigForParentChildren(String parentDni, String ipAddress) {
+    getChildDevices()?.each { child ->
+        if (child.deviceNetworkId.startsWith("${parentDni}-cover-")) {
+            syncCoverConfigToDriver(child, ipAddress)
+        }
+    }
+}
+
+/**
+ * Maps a Cover.GetConfig response to Hubitat driver preferences.
+ *
+ * @param targetDevice The device whose preferences to update
+ * @param config The Cover.GetConfig result map
+ */
+private void syncCoverConfigToPreferences(def targetDevice, Map config) {
+    if (config.invert_directions != null) {
+        deviceUpdateSettingHelper(targetDevice, 'invert_directions', [type: 'bool', value: config.invert_directions as Boolean])
+    }
+    if (config.in_mode != null) {
+        deviceUpdateSettingHelper(targetDevice, 'in_mode', [type: 'enum', value: config.in_mode.toString()])
+    }
+    if (config.in_locked != null) {
+        deviceUpdateSettingHelper(targetDevice, 'in_locked', [type: 'bool', value: config.in_locked as Boolean])
+    }
+    if (config.swap_inputs != null) {
+        deviceUpdateSettingHelper(targetDevice, 'swap_inputs', [type: 'bool', value: config.swap_inputs as Boolean])
+    }
+    if (config.power_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'power_limit', [type: 'decimal', value: config.power_limit as BigDecimal])
+    }
+    if (config.voltage_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'voltage_limit', [type: 'decimal', value: config.voltage_limit as BigDecimal])
+    }
+    if (config.undervoltage_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'undervoltage_limit', [type: 'decimal', value: config.undervoltage_limit as BigDecimal])
+    }
+    if (config.current_limit != null) {
+        deviceUpdateSettingHelper(targetDevice, 'current_limit', [type: 'decimal', value: config.current_limit as BigDecimal])
+    }
+    if (config.maxtime_open != null) {
+        deviceUpdateSettingHelper(targetDevice, 'maxtime_open', [type: 'decimal', value: config.maxtime_open as BigDecimal])
+    }
+    if (config.maxtime_close != null) {
+        deviceUpdateSettingHelper(targetDevice, 'maxtime_close', [type: 'decimal', value: config.maxtime_close as BigDecimal])
+    }
+    if (config.maintenance_mode != null) {
+        deviceUpdateSettingHelper(targetDevice, 'maintenance_mode', [type: 'bool', value: config.maintenance_mode as Boolean])
+    }
+
+    Map motorConfig = config.motor instanceof Map ? config.motor as Map : [:]
+    if (motorConfig.idle_power_thr != null) {
+        deviceUpdateSettingHelper(targetDevice, 'motor_idle_power_thr', [type: 'decimal', value: motorConfig.idle_power_thr as BigDecimal])
+    }
+    if (motorConfig.idle_confirm_period != null) {
+        deviceUpdateSettingHelper(targetDevice, 'motor_idle_confirm_period', [type: 'decimal', value: motorConfig.idle_confirm_period as BigDecimal])
+    }
+
+    Map obstructionConfig = config.obstruction_detection instanceof Map ? config.obstruction_detection as Map : [:]
+    if (obstructionConfig.enable != null) {
+        deviceUpdateSettingHelper(targetDevice, 'obstruction_enable', [type: 'bool', value: obstructionConfig.enable as Boolean])
+    }
+    if (obstructionConfig.direction != null) {
+        deviceUpdateSettingHelper(targetDevice, 'obstruction_direction', [type: 'enum', value: obstructionConfig.direction.toString()])
+    }
+    if (obstructionConfig.action != null) {
+        deviceUpdateSettingHelper(targetDevice, 'obstruction_action', [type: 'enum', value: obstructionConfig.action.toString()])
+    }
+    if (obstructionConfig.power_thr != null) {
+        deviceUpdateSettingHelper(targetDevice, 'obstruction_power_thr', [type: 'decimal', value: obstructionConfig.power_thr as BigDecimal])
+    }
+    if (obstructionConfig.holdoff != null) {
+        deviceUpdateSettingHelper(targetDevice, 'obstruction_holdoff', [type: 'decimal', value: obstructionConfig.holdoff as BigDecimal])
+    }
+
+    Map safetySwitchConfig = config.safety_switch instanceof Map ? config.safety_switch as Map : [:]
+    if (safetySwitchConfig.enable != null) {
+        deviceUpdateSettingHelper(targetDevice, 'safety_switch_enable', [type: 'bool', value: safetySwitchConfig.enable as Boolean])
+    }
+    if (safetySwitchConfig.direction != null) {
+        deviceUpdateSettingHelper(targetDevice, 'safety_switch_direction', [type: 'enum', value: safetySwitchConfig.direction.toString()])
+    }
+    if (safetySwitchConfig.action != null) {
+        deviceUpdateSettingHelper(targetDevice, 'safety_switch_action', [type: 'enum', value: safetySwitchConfig.action.toString()])
+    }
+    if (safetySwitchConfig.containsKey('allowed_move')) {
+        deviceUpdateSettingHelper(targetDevice, 'safety_switch_allowed_move',
+            [type: 'enum', value: safetySwitchConfig.allowed_move?.toString() ?: 'none'])
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Switch Settings (default state, auto-on, auto-off)
 // ═══════════════════════════════════════════════════════════════
 
@@ -17640,6 +17882,8 @@ void parentRefresh(def parentDevice) {
     // Send status to parent driver via distributeStatus() callback
     try {
         parentDevice.distributeStatus(deviceStatus)
+        syncCoverConfigToDriver(parentDevice, ipAddress)
+        syncCoverConfigForParentChildren(parentDevice.deviceNetworkId, ipAddress)
         logDebug("Sent status to ${parentDevice.displayName}")
     } catch (Exception e) {
         logError("Failed to distribute status to ${parentDevice.displayName}: ${e.message}")

@@ -24,8 +24,50 @@ metadata {
     input name: 'logLevel', type: 'enum', title: 'Logging Level',
       options: ['warn':'Warning', 'info':'Info', 'debug':'Debug', 'trace':'Trace'],
       defaultValue: 'info', required: true
-    input name: 'swapOpenClose', type: 'bool', title: 'Swap Open/Close Direction',
+    input name: 'invert_directions', type: 'bool', title: 'Reverse Motor Direction on Device',
       defaultValue: false, required: false
+    input name: 'in_mode', type: 'enum', title: 'Physical Input Mode',
+      options: ['single':'Single', 'dual':'Dual', 'detached':'Detached'], required: false
+    input name: 'in_locked', type: 'bool', title: 'Lock Physical Inputs',
+      defaultValue: false, required: false
+    input name: 'swap_inputs', type: 'bool', title: 'Swap Open and Close Inputs',
+      defaultValue: false, required: false
+    input name: 'power_limit', type: 'decimal', title: 'Overpower Protection Limit (W, blank = disabled)',
+      required: false
+    input name: 'voltage_limit', type: 'decimal', title: 'Overvoltage Protection Limit (V, blank = disabled)',
+      required: false
+    input name: 'undervoltage_limit', type: 'decimal', title: 'Undervoltage Protection Limit (V, blank = disabled)',
+      required: false
+    input name: 'current_limit', type: 'decimal', title: 'Overcurrent Protection Limit (A, blank = disabled)',
+      required: false
+    input name: 'maxtime_open', type: 'decimal', title: 'Max Travel Time Open (seconds)',
+      required: false
+    input name: 'maxtime_close', type: 'decimal', title: 'Max Travel Time Close (seconds)',
+      required: false
+    input name: 'motor_idle_power_thr', type: 'decimal', title: 'Motor Idle Power Threshold (W)',
+      required: false
+    input name: 'motor_idle_confirm_period', type: 'decimal', title: 'Motor Idle Confirm Delay (seconds)',
+      required: false
+    input name: 'maintenance_mode', type: 'bool', title: 'Maintenance Mode (disable movement)',
+      defaultValue: false, required: false
+    input name: 'obstruction_enable', type: 'bool', title: 'Obstruction Detection Enabled',
+      defaultValue: false, required: false
+    input name: 'obstruction_direction', type: 'enum', title: 'Obstruction Detection Direction',
+      options: ['open':'Open', 'close':'Close', 'both':'Both'], required: false
+    input name: 'obstruction_action', type: 'enum', title: 'Obstruction Detection Action',
+      options: ['stop':'Stop', 'reverse':'Reverse'], required: false
+    input name: 'obstruction_power_thr', type: 'decimal', title: 'Obstruction Power Threshold (W)',
+      required: false
+    input name: 'obstruction_holdoff', type: 'decimal', title: 'Obstruction Detection Holdoff (seconds)',
+      required: false
+    input name: 'safety_switch_enable', type: 'bool', title: 'Safety Switch Enabled',
+      defaultValue: false, required: false
+    input name: 'safety_switch_direction', type: 'enum', title: 'Safety Switch Direction',
+      options: ['open':'Open', 'close':'Close', 'both':'Both'], required: false
+    input name: 'safety_switch_action', type: 'enum', title: 'Safety Switch Action',
+      options: ['stop':'Stop', 'reverse':'Reverse', 'pause':'Pause'], required: false
+    input name: 'safety_switch_allowed_move', type: 'enum', title: 'Safety Switch Allowed Movement',
+      options: ['none':'No movement while engaged', 'reverse':'Reverse only'], required: false
   }
 }
 
@@ -39,10 +81,44 @@ void installed() {
 void updated() {
   logDebug('updated() called')
   initialize()
+  relayCoverSettings()
 }
 
 void initialize() {
   logDebug('initialize() called')
+}
+
+/**
+ * Gathers cover settings and sends them to the parent driver.
+ */
+private void relayCoverSettings() {
+  Map coverSettings = [:]
+  if (settings.invert_directions != null) { coverSettings.invert_directions = settings.invert_directions as Boolean }
+  if (settings.in_mode != null) { coverSettings.in_mode = settings.in_mode as String }
+  if (settings.in_locked != null) { coverSettings.in_locked = settings.in_locked as Boolean }
+  if (settings.swap_inputs != null) { coverSettings.swap_inputs = settings.swap_inputs as Boolean }
+  if (settings.power_limit != null) { coverSettings.power_limit = settings.power_limit as BigDecimal }
+  if (settings.voltage_limit != null) { coverSettings.voltage_limit = settings.voltage_limit as BigDecimal }
+  if (settings.undervoltage_limit != null) { coverSettings.undervoltage_limit = settings.undervoltage_limit as BigDecimal }
+  if (settings.current_limit != null) { coverSettings.current_limit = settings.current_limit as BigDecimal }
+  if (settings.maxtime_open != null) { coverSettings.maxtime_open = settings.maxtime_open as BigDecimal }
+  if (settings.maxtime_close != null) { coverSettings.maxtime_close = settings.maxtime_close as BigDecimal }
+  if (settings.motor_idle_power_thr != null) { coverSettings.motor_idle_power_thr = settings.motor_idle_power_thr as BigDecimal }
+  if (settings.motor_idle_confirm_period != null) { coverSettings.motor_idle_confirm_period = settings.motor_idle_confirm_period as BigDecimal }
+  if (settings.maintenance_mode != null) { coverSettings.maintenance_mode = settings.maintenance_mode as Boolean }
+  if (settings.obstruction_enable != null) { coverSettings.obstruction_enable = settings.obstruction_enable as Boolean }
+  if (settings.obstruction_direction != null) { coverSettings.obstruction_direction = settings.obstruction_direction as String }
+  if (settings.obstruction_action != null) { coverSettings.obstruction_action = settings.obstruction_action as String }
+  if (settings.obstruction_power_thr != null) { coverSettings.obstruction_power_thr = settings.obstruction_power_thr as BigDecimal }
+  if (settings.obstruction_holdoff != null) { coverSettings.obstruction_holdoff = settings.obstruction_holdoff as BigDecimal }
+  if (settings.safety_switch_enable != null) { coverSettings.safety_switch_enable = settings.safety_switch_enable as Boolean }
+  if (settings.safety_switch_direction != null) { coverSettings.safety_switch_direction = settings.safety_switch_direction as String }
+  if (settings.safety_switch_action != null) { coverSettings.safety_switch_action = settings.safety_switch_action as String }
+  if (settings.safety_switch_allowed_move != null) { coverSettings.safety_switch_allowed_move = settings.safety_switch_allowed_move as String }
+  if (!coverSettings.isEmpty()) {
+    logDebug("Relaying cover settings to parent: ${coverSettings}")
+    parent?.componentUpdateCoverSettings(device, coverSettings)
+  }
 }
 
 void open() {

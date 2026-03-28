@@ -699,6 +699,18 @@ void componentResetEnergyMonitors(def childDevice) {
   parent?.parentSendCommand(device, 'Cover.ResetCounters', [id: coverId, type: ['aenergy']])
 }
 
+/**
+ * Relays cover settings from a child component to the app.
+ *
+ * @param childDevice The child device sending its settings
+ * @param coverSettings Map with device-side cover config values
+ */
+void componentUpdateCoverSettings(def childDevice, Map coverSettings) {
+  Integer coverId = childDevice.getDataValue('coverId')?.toInteger() ?: 0
+  logDebug("componentUpdateCoverSettings() from cover ${coverId}: ${coverSettings}")
+  parent?.parentUpdateCoverSettings(device, coverId, coverSettings)
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Component Commands                                       ║
 // ╚══════════════════════════════════════════════════════════════╝
