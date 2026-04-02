@@ -14,12 +14,15 @@ Agent workflow (step-by-step)
 1. Create a branch named `ai/<short-description>`.
 2. Run a quick safety scan: grep for `TODO|HACK|FIXME` and scan for accidental secrets.
 3. Make the minimal code changes required.
-4. If you change driver behavior, update `resources/version.json` and add a short `UpdateInfo` entry (see `resources/version.json` instructions).
+4. If you change active-scope app or driver behavior, follow the release/versioning flow for that surface:
+   - `Apps/ShellyDeviceManager.groovy`: update `APP_VERSION` when preparing a release
+   - `UniversalDrivers/` and `Scripts/`: keep any directly related inline version comments or release wiring consistent when applicable
+   - Do **not** update `resources/version.json` for Shelly Device Manager active-scope work unless the user explicitly asks for a legacy workflow
 5. Validate locally (compile with `groovyc` if available) and sanity-check by running any small static checks.
 6. Create a _draft_ PR with:
    - Short title: `driver: <DriverName> — <one-line summary>` or `fix: <DriverName> — <one-line summary>`
    - Detailed testing steps: how to reproduce and what to look for in Hubitat logs and `Current States`.
-   - Checklist: `UpdateInfo` updated (if applicable), `resources/version.json` updated (if applicable), tested locally or note why hardware is required.
+   - Checklist: active-scope release/versioning steps updated (if applicable), tested locally or note why hardware is required.
 7. Add labels: `ai-generated` and `needs-human-review`. Add `needs-hardware-test` if hardware verification is required.
 
 When to require human sign-off
@@ -35,4 +38,4 @@ If unsure
 References
 
 - Hubitat developer docs: https://docs2.hubitat.com/en/developer
-- repo `README.md` and `ShellyDriverLibrary/`
+- repo `README.md`, `CLAUDE.md`, and the active code in `Apps/ShellyDeviceManager.groovy`, `UniversalDrivers/`, and `Scripts/`

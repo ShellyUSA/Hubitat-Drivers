@@ -15,7 +15,7 @@ All future development work is scoped to:
 
 - **App:** `Apps/ShellyDeviceManager.groovy`
 - **Drivers:** `UniversalDrivers/` folder (all `.groovy` files and `component_driver.json`)
-- **Scripts:** `Scripts/` folder (JavaScript files for Hubitat dashboard tiles)
+- **Scripts:** `Scripts/` folder (JavaScript files that run on Shelly Gen 2+ device firmware via the Shelly scripting runtime)
 
 **DO NOT modify or reference** `ShellyDriverLibrary/ShellyUSA.ShellyUSA_Driver_Library.groovy`. This is **legacy code** that is no longer maintained. Do not use it as a reference for new work, do not update it, and do not port patterns from it into the active codebase.
 
