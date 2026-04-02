@@ -106,6 +106,7 @@
     'shelly1g4anz': 'Shelly Autoconf Single Switch 1 Gen4',
     'shelly1pmg4':     'Shelly Autoconf Single Switch PM 1PM Gen4',
     'shelly1pmg4anz': 'Shelly Autoconf Single Switch PM 1PM Gen4',
+    's3dm-0a1ww':      'Shelly Autoconf DALI Dimmer',
     'sawd-5a1xx10eu0': 'Shelly Autoconf Wall Display X2i Parent',
     'sawd-3a1xe10eu2': 'Shelly Autoconf Wall Display XL Parent',
 ]
@@ -139,6 +140,7 @@
     'Shelly Autoconf Single Switch PM 1PM Gen4': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
     'Shelly Autoconf Single Dimmer': 'UniversalDrivers/ShellySingleDimmer.groovy',
     'Shelly Autoconf Single Dimmer PM': 'UniversalDrivers/ShellySingleDimmerPM.groovy',
+    'Shelly Autoconf DALI Dimmer': 'UniversalDrivers/ShellyDaliDimmer.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
     'Shelly Autoconf THL Sensor': 'UniversalDrivers/ShellyTHLSensor.groovy',
     'Shelly Autoconf Flood Sensor': 'UniversalDrivers/ShellyFloodSensor.groovy',
@@ -7497,7 +7499,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'pm', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
         'flood', 'contact', 'lux', 'tilt', 'motion', 'presence', 'presencezone', 'valve', 'thermostat', 'adc',
-        'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui'] as Set
+        'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui', 'dali'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -7669,6 +7671,11 @@ private String resolveGen2DedicatedDriverName(String ipKey, List<String> compone
     Map discoveredDevice = state.discoveredShellys[ipKey] as Map
     String gen2AppName = discoveredDevice?.deviceApp?.toString()
     String modelCode = discoveredDevice?.model?.toString()?.toLowerCase()
+    Map<String, Integer> componentCounts = [:]
+    components.each { String component ->
+        String baseType = component.contains(':') ? component.split(':')[0] : component
+        componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
+    }
 
     Boolean isPill = (gen2AppName && PILL_APP_NAMES.contains(gen2AppName)) ||
         (modelCode && PILL_MODEL_CODES.contains(modelCode))
@@ -7677,12 +7684,6 @@ private String resolveGen2DedicatedDriverName(String ipKey, List<String> compone
             component == 'blugw' || component.startsWith('blugw:') || component.startsWith('blutrv:')
         }
         if (!hasBluGatewayRole) {
-            Map<String, Integer> componentCounts = [:]
-            components.each { String component ->
-                String baseType = component.contains(':') ? component.split(':')[0] : component
-                componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
-            }
-
             // Preserve the existing THL-style illuminance slice until there is a checked-in
             // illuminance component driver for the broader Pill parent architecture.
             Boolean narrowThlSlice =
@@ -7697,6 +7698,20 @@ private String resolveGen2DedicatedDriverName(String ipKey, List<String> compone
                 return 'Shelly Autoconf Pill Parent'
             }
         }
+    }
+
+    Boolean hasDali = componentCounts.containsKey('dali')
+    Boolean daliStandaloneShape = hasDali &&
+        (componentCounts['light'] ?: 0) == 1 &&
+        !componentCounts.containsKey('switch') &&
+        !componentCounts.containsKey('cover') &&
+        !componentCounts.containsKey('rgb') &&
+        !componentCounts.containsKey('rgbw') &&
+        !componentCounts.containsKey('cct') &&
+        !componentCounts.containsKey('em') &&
+        !componentCounts.containsKey('em1')
+    if (daliStandaloneShape && !modelCode) {
+        return 'Shelly Autoconf DALI Dimmer'
     }
 
     if (gen2AppName && GEN2_MODEL_DRIVER_OVERRIDE.containsKey(gen2AppName)) {
@@ -16429,20 +16444,24 @@ void componentRefresh(def childDevice) {
             syncCoverConfigToDriver(childDevice, ipAddress)
             syncCoverConfigForParentChildren(parentDni, ipAddress)
         } else {
-            // Single child refresh: only update this child
-            String componentType = childDevice.getDataValue('componentType')
-            String idDataKey = "${componentType}Id"
-            Integer componentId = extractComponentId(childDevice, idDataKey)
-            String componentKey = "${componentType}:${componentId}"
+            String refreshTypeName = childDevice.typeName ?: ''
+            if (refreshTypeName.contains('DALI Dimmer')) {
+                childDevice.distributeStatus(deviceStatus)
+            } else {
+                // Single child refresh: only update this child
+                String componentType = childDevice.getDataValue('componentType')
+                String idDataKey = "${componentType}Id"
+                Integer componentId = extractComponentId(childDevice, idDataKey)
+                String componentKey = "${componentType}:${componentId}"
 
-            if (deviceStatus[componentKey] instanceof Map) {
-                Map componentData = deviceStatus[componentKey] as Map
-                updateChildFromStatus(childDevice, componentType, componentData)
+                if (deviceStatus[componentKey] instanceof Map) {
+                    Map componentData = deviceStatus[componentKey] as Map
+                    updateChildFromStatus(childDevice, componentType, componentData)
+                }
             }
             syncSwitchConfigToDriver(childDevice, ipAddress)
             syncCoverConfigToDriver(childDevice, ipAddress)
             // Sync light config for dimmer devices (dimmers have light:N components, not switch:N)
-            String refreshTypeName = childDevice.typeName ?: ''
             if (refreshTypeName.contains('Dimmer')) {
                 syncLightConfigToDriver(childDevice, ipAddress)
                 syncWdUiConfigToDriver(childDevice, ipAddress)

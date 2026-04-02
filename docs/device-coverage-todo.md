@@ -43,22 +43,7 @@ TODO:
 - Validate the `blugw` / BLE-gateway role on real hardware, especially if the device can mix local platform components with gateway responsibilities.
 - Decide whether the existing THL / illuminance slice should eventually migrate into the dedicated Pill parent once an active-scope illuminance child-driver path exists.
 
-### 2. Shelly DALI Dimmer Gen3
-
-Why this needs validation before being called supported:
-
-- Official Shelly docs describe a clean `light:0` + `input:*` + `dali` device model.
-- The generic dimmer path may partially work, but the active repo does not include any explicit `dali` handling, diagnostics, or model-specific discovery logic.
-- No active driver names, scripts, or discovery branches mention `DALI` today.
-
-TODO:
-
-- Test discovery using a real device or captured API payloads.
-- If `dali` is exposed as a distinct component, teach `determineDeviceDriver()` and driver installation logic to recognize it.
-- Expose DALI bus diagnostics that are useful in Hubitat, such as gear count and bus error state.
-- Keep scope to Shelly's documented broadcast-dimmer behavior. Do not assume per-ballast child devices.
-
-### 3. BLU Variant Mapping Audit
+### 2. BLU Variant Mapping Audit
 
 Why this needs validation:
 
@@ -73,7 +58,7 @@ TODO:
 - Create new drivers only where the payload or capability model is genuinely new.
 - Keep `Shelly BLU TRV` out of this gap list. It is already supported through the BLU Gateway path.
 
-### 4. Shelly Plug US Gen4 Illuminance Integration
+### 3. Shelly Plug US Gen4 Illuminance Integration
 
 Why this needs validation before being called supported:
 
@@ -88,7 +73,7 @@ TODO:
 - Decide whether illuminance should live on the main driver or a child sensor device.
 - Verify that LED-control child behavior (`PLUGS_UI`) still works if the device moves off the plain single-switch PM path.
 
-### 5. Shelly EM Mini Gen4
+### 4. Shelly EM Mini Gen4
 
 Why this needs validation before being called supported:
 
@@ -107,10 +92,12 @@ TODO:
 These are not currently counted as missing coverage, but they should be revisited when hardware or API dumps are available:
 
 - `Shelly BLU Distance` now has dedicated BLU model routing for `SBDI-003E` / `0x000A`, forwards BTHome `0x40` distance measurements, and uses a dedicated driver exposing `distanceMm` plus battery/presence.
+- `Shelly DALI Dimmer Gen3` now has dedicated routing for the confirmed `S3DM-0A1WW` hardware plus explicit `dali` component recognition, uses a dedicated standalone `Shelly Autoconf DALI Dimmer` driver, and exposes DALI gear-count/error/scan diagnostics plus scan and ping commands on the main dimmer device.
 - `The Pill` now has dedicated routing to `Shelly Autoconf Pill Parent` for profiles beyond the existing THL-style illuminance slice, while that illuminance slice is intentionally preserved on `Shelly Autoconf THL Sensor` until live payloads and an illuminance child path are validated.
 - `Wall Display X2i` and `Wall Display XL` now have dedicated model-specific routing to the Wall Display parent, and the parent now tolerates illuminance-only variants plus the X2i 2-output power base.
 - Remaining wall-display validation: capture real `GetStatus` / component payloads for `SAWD-5A1XX10EU0` and `SAWD-3A1XE10EU2`, and confirm whether the XL front-panel buttons expose local API events at all.
 - `Wall Display X2` may still be close to the legacy wall-display path, but its current firmware component map should be verified when hardware is available.
+- Remaining DALI validation: capture a live `Shelly.GetDeviceInfo.app` value before adding an app-name override, confirm whether internal temperature is exposed in `light:0` status at all, and validate exact detached/button-mode webhook payloads on real hardware.
 - `Shelly Dimmer Gen4 EU/US` appears to fit the existing single-dimmer path and should not be treated as a gap without contrary hardware evidence.
 - `Shelly 1 Gen4`, `Shelly 1PM Gen4`, and `Shelly 2PM Gen4` now have dedicated model-specific routing in the active app while reusing the proven switch/cover implementations.
 - `Power Strip 4 Gen4`, `Flood Gen4`, and `Leak Sensor Cable` already have active code paths and should not be treated as gaps.
