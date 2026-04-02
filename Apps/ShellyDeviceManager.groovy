@@ -218,6 +218,7 @@
     'Shelly BLU DoorWindow': 'UniversalDrivers/ShellyBluDoorWindow.groovy',
     'Shelly BLU HT': 'UniversalDrivers/ShellyBluHT.groovy',
     'Shelly BLU Motion': 'UniversalDrivers/ShellyBluMotion.groovy',
+    'Shelly BLU Remote Control ZB': 'UniversalDrivers/ShellyBluRemoteControlZB.groovy',
     'Shelly BLU WallSwitch4': 'UniversalDrivers/ShellyBluWallSwitch.groovy',
 ]
 
@@ -238,7 +239,7 @@
     'SBHT-003C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
     'SBHT-103C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T Display',    modelCode: 'SBHT-103C'],
     'SBMO-003Z':   [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion',         modelCode: 'SBMO-003Z'],
-    'SBRC-005B':   [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    'SBRC-005B':   [driverName: 'Shelly BLU Remote Control ZB', friendlyModel: 'Shelly BLU Remote Control ZB', modelCode: 'SBRC-005B'],
     'SBBT-002CZ':  [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1 ZB',    modelCode: 'SBBT-002CZ'],
     'SBDW-002CZ':  [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window ZB', modelCode: 'SBDW-002CZ'],
     'SBHT-003CZ':  [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T ZB',         modelCode: 'SBHT-003CZ'],
@@ -260,7 +261,7 @@
     0x0006: [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBBT-004CEU'],
     0x0007: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
     0x0008: [driverName: null,                      friendlyModel: 'Shelly BLU TRV',            modelCode: 'SBTR-001AEU'],
-    0x0009: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    0x0009: [driverName: 'Shelly BLU Remote Control ZB', friendlyModel: 'Shelly BLU Remote Control ZB', modelCode: 'SBRC-005B'],
     0x000A: [driverName: 'Shelly BLU Distance',    friendlyModel: 'Shelly BLU Distance',       modelCode: 'SBDI-003E'],
     0x000B: [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
     0x000C: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T Display',    modelCode: 'SBHT-103C'],
@@ -11120,12 +11121,24 @@ private static Map<String, String> resolveBleDriverInfo(Integer modelId, String 
 private static Integer inferBleModelFromData(Map bleData) {
     def buttonData = bleData?.button
     if (buttonData instanceof List && ((List) buttonData).size() == 4) { return 0x0007 }
+    if (isBleRemoteControlZbPayload(bleData)) { return 0x0009 }
     if (buttonData != null) { return 0x0001 }
     if (bleData?.containsKey('distanceMm')) { return 0x000A }
     if (bleData?.temperature != null && bleData?.humidity != null) { return 0x0003 }
     if (bleData?.containsKey('motion')) { return 0x0005 }
     if (bleData?.containsKey('window')) { return 0x0002 }
     return null
+}
+
+@CompileStatic
+private static Boolean isBleRemoteControlZbPayload(Map bleData) {
+    if (bleData == null) { return false }
+    if (bleData.containsKey('channel') || bleData.containsKey('dimmer')) { return true }
+    def rotationData = bleData.rotation
+    if (rotationData instanceof List && ((List) rotationData).size() >= 3) { return true }
+    def buttonData = bleData.button
+    if (buttonData instanceof List && ((List) buttonData).size() == 2) { return true }
+    return false
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -11425,7 +11438,9 @@ private void removeBleDevice(String mac) {
  */
 private void routeBleEventToChild(String mac, Map bleData, Object child) {
     String tempScale = getCachedTemperatureScale()
-    List<Map> events = buildBleEvents(bleData, tempScale)
+    String bleModel = child?.getDataValue('bleModel')
+    Boolean isRemoteControlZb = (bleModel == 'SBRC-005B') || isBleRemoteControlZbPayload(bleData)
+    List<Map> events = buildBleEvents(bleData, tempScale, isRemoteControlZb)
 
     // Get or create last-sent cache for this MAC
     String macKey = mac.toString()
@@ -11479,7 +11494,7 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
  * @return List of event maps suitable for sendEvent()
  */
 @CompileStatic
-private static List<Map> buildBleEvents(Map bleData, String tempScale) {
+private static List<Map> buildBleEvents(Map bleData, String tempScale, Boolean isRemoteControlZb) {
     List<Map> events = []
 
     // Battery
@@ -11534,11 +11549,39 @@ private static List<Map> buildBleEvents(Map bleData, String tempScale) {
             descriptionText: "Contact is ${contactVal}".toString()])
     }
 
-    // Rotation (tilt angle)
+    // Rotation
     if (bleData.rotation != null) {
+        if (isRemoteControlZb) {
+            if (bleData.rotation instanceof List) {
+                List rotationList = bleData.rotation as List
+                for (int idx = 0; idx < rotationList.size(); idx++) {
+                    BigDecimal rawRotation = rotationList[idx] as BigDecimal
+                    Integer rotationNum = idx + 1
+                    events.add([name: "rawRotation${rotationNum}".toString(), value: rawRotation, unit: '\u00B0',
+                        descriptionText: "Raw rotation ${rotationNum} is ${rawRotation}\u00B0".toString()])
+                }
+            } else {
+                BigDecimal rawRotation = bleData.rotation as BigDecimal
+                events.add([name: 'rawRotation1', value: rawRotation, unit: '\u00B0',
+                    descriptionText: "Raw rotation 1 is ${rawRotation}\u00B0".toString()])
+            }
+        } else {
         BigDecimal tilt = bleData.rotation as BigDecimal
         events.add([name: 'tilt', value: tilt, unit: '\u00B0',
             descriptionText: "Tilt is ${tilt}\u00B0".toString()])
+        }
+    }
+
+    if (isRemoteControlZb && bleData.channel != null) {
+        Integer rawChannel = bleData.channel as Integer
+        events.add([name: 'rawChannel', value: rawChannel,
+            descriptionText: "Raw channel is ${rawChannel}".toString()])
+    }
+
+    if (isRemoteControlZb && bleData.dimmer != null) {
+        Integer rawDimmer = (bleData.dimmer as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP).intValue()
+        events.add([name: 'rawDimmer', value: rawDimmer,
+            descriptionText: "Raw dimmer is ${rawDimmer}".toString()])
     }
 
     // Button events (BTHome: 1=push, 2=double, 3=triple, 4+=held, 254=released)
