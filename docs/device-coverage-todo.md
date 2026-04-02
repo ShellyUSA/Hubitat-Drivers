@@ -18,30 +18,30 @@ Scope notes:
 
 ## Confirmed Current Gaps
 
-### 1. The Pill by Shelly multi-mode platform support
+No currently confirmed missing-support items remain at the top of the backlog.
 
-Why this is a gap:
+- `The Pill` now has dedicated model-aware routing for profiles beyond the existing THL-style illuminance slice, plus a dedicated configurable parent driver for that broader platform behavior.
+- Remaining backlog items are now validation-heavy follow-up work rather than clear missing-support gaps.
 
-- The current Shelly catalog lists `The Pill` as a live Gen3 product.
-- The current repo already has partial narrow coverage for the H&T + illuminance slice via `Shelly Autoconf THL Sensor`, but that does not cover the broader configurable platform.
-- There is still no explicit discovery mapping or configurable parent for the multi-mode `The Pill` topology (`temperature:*`, `humidity:*`, `input:*`, `voltmeter:*`, optional SSR outputs, and optional BLE-gateway behavior).
-- Existing BLU gateway support is TRV-centric and is not a good fit for a mixed sensor/I/O platform device.
+## Likely Gaps That Need Validation
+
+### 1. The Pill by Shelly live payload and mixed-mode validation
+
+Why this still needs validation:
+
+- `The Pill` profiles beyond the existing THL-style illuminance slice now route to `Shelly Autoconf Pill Parent` using the confirmed hardware model code `S3SN-0U53X` plus a best-effort `ShellyPill` app-name alias.
+- The new parent covers the broader configurable platform surfaces that were previously missing from the active stack: `temperature:*`, `humidity:*`, `input:*`, `voltmeter:*`, and optional `switch:*` SSR outputs.
+- The existing narrow H&T + illuminance slice is intentionally left on `Shelly Autoconf THL Sensor` for now so lux support is not regressed before an active-scope illuminance component-driver path exists.
+- If live components expose `blugw` / `blutrv`, the app still defers to the existing BLU Gateway parent instead of forcing the Pill parent. That is the safest current behavior, but it still needs real hardware validation.
 
 TODO:
 
 - Capture real `Shelly.GetDeviceInfo`, `Shelly.GetStatus`, `Shelly.GetConfig`, and `Shelly.GetComponents` payloads for the official `S3SN-0U53X` hardware in its major modes.
-- Route by a confirmed live model/app identifier instead of relying on catalog naming alone.
-- Decide whether it should be handled as a configurable parent platform rather than a single fixed driver.
-- Support the major documented modes:
-  - `DS18B20` temperature probes
-  - `DHT22` temperature + humidity
-  - analog voltage / `0-30V` add-on mode
-  - digital I/O
-  - SSR add-on outputs
-  - BLE gateway role
-- Add any new component-driver install paths required by the selected design.
-
-## Likely Gaps That Need Validation
+- Confirm the live `Shelly.GetDeviceInfo.app` value instead of relying on the current best-effort `ShellyPill` alias.
+- Validate exact input numbering and status payload shapes for digital-input, analog-input, and DHT22 / DS18B20 profiles.
+- Verify SSR add-on output behavior and whether any PM-related fields are ever present on `switch:*`.
+- Validate the `blugw` / BLE-gateway role on real hardware, especially if the device can mix local platform components with gateway responsibilities.
+- Decide whether the existing THL / illuminance slice should eventually migrate into the dedicated Pill parent once an active-scope illuminance child-driver path exists.
 
 ### 2. Shelly DALI Dimmer Gen3
 
@@ -107,6 +107,7 @@ TODO:
 These are not currently counted as missing coverage, but they should be revisited when hardware or API dumps are available:
 
 - `Shelly BLU Distance` now has dedicated BLU model routing for `SBDI-003E` / `0x000A`, forwards BTHome `0x40` distance measurements, and uses a dedicated driver exposing `distanceMm` plus battery/presence.
+- `The Pill` now has dedicated routing to `Shelly Autoconf Pill Parent` for profiles beyond the existing THL-style illuminance slice, while that illuminance slice is intentionally preserved on `Shelly Autoconf THL Sensor` until live payloads and an illuminance child path are validated.
 - `Wall Display X2i` and `Wall Display XL` now have dedicated model-specific routing to the Wall Display parent, and the parent now tolerates illuminance-only variants plus the X2i 2-output power base.
 - Remaining wall-display validation: capture real `GetStatus` / component payloads for `SAWD-5A1XX10EU0` and `SAWD-3A1XE10EU2`, and confirm whether the XL front-panel buttons expose local API events at all.
 - `Wall Display X2` may still be close to the legacy wall-display path, but its current firmware component map should be verified when hardware is available.

@@ -95,6 +95,11 @@
     'PresenceG4': 'Shelly Autoconf Presence G4 Parent',
 ]
 
+// Best-known The Pill identifiers. The model code is confirmed from current Shelly docs.
+// The app name is a best-effort alias until a live Shelly.GetDeviceInfo payload is captured.
+@Field static final Set<String> PILL_APP_NAMES = ['ShellyPill'] as Set
+@Field static final Set<String> PILL_MODEL_CODES = ['s3sn-0u53x'] as Set
+
 // Model-specific driver overrides keyed by the stable Shelly model ID from /shelly.
 @Field static final Map<String, String> GEN2_MODEL_CODE_DRIVER_OVERRIDE = [
     'shelly1g4':       'Shelly Autoconf Single Switch 1 Gen4',
@@ -163,6 +168,7 @@
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
     'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
     'Shelly Autoconf Plus Uni Parent': 'UniversalDrivers/ShellyPlusUniParent.groovy',
+    'Shelly Autoconf Pill Parent': 'UniversalDrivers/ShellyPillParent.groovy',
     'Shelly Autoconf Presence G4 Parent': 'UniversalDrivers/ShellyPresenceG4Parent.groovy',
 
     // BLU Gateway parent driver (for BLU TRV and other gateway-paired BLE devices)
@@ -1076,7 +1082,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     // installed() -> reconcileChildDevices() has them on the first call
     List<String> components = []
     List<String> pmComponents = []
-    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity', 'illuminance', 'blutrv', 'presencezone'] as Set
+    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity', 'illuminance', 'blutrv', 'presencezone', 'voltmeter'] as Set
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
@@ -7578,6 +7584,15 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         } else {
             driverName = generateDriverName(components, componentPowerMonitoring, isParent, isGen1)
         }
+
+        if (!needsParentChild && driverName?.endsWith(' Parent')) {
+            needsParentChild = true
+            if (ipKey && state.discoveredShellys[ipKey]) {
+                state.discoveredShellys[ipKey].needsParentChild = true
+            }
+            logDebug("Forcing parent-child architecture for dedicated parent driver '${driverName}'")
+        }
+
         String version = getAppVersion()
         String driverNameWithVersion = "${driverName} v${version}"
 
@@ -7594,6 +7609,13 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             // (user may change input modes at runtime, so all variants must be available)
             if (driverName == 'Shelly Autoconf Plus Uni Parent') {
                 installPlusUniComponentDrivers()
+            }
+
+            // The Pill can switch between sensor, voltmeter, digital I/O, and SSR profiles.
+            // Install all likely child drivers up front because reinitialize() does not
+            // backfill missing generic component drivers later.
+            if (driverName == 'Shelly Autoconf Pill Parent') {
+                installPillComponentDrivers()
             }
 
             // Store the driver name on the discovered device entry
@@ -7646,11 +7668,41 @@ private String resolveGen2DedicatedDriverName(String ipKey, List<String> compone
 
     Map discoveredDevice = state.discoveredShellys[ipKey] as Map
     String gen2AppName = discoveredDevice?.deviceApp?.toString()
+    String modelCode = discoveredDevice?.model?.toString()?.toLowerCase()
+
+    Boolean isPill = (gen2AppName && PILL_APP_NAMES.contains(gen2AppName)) ||
+        (modelCode && PILL_MODEL_CODES.contains(modelCode))
+    if (isPill) {
+        Boolean hasBluGatewayRole = components.any { String component ->
+            component == 'blugw' || component.startsWith('blugw:') || component.startsWith('blutrv:')
+        }
+        if (!hasBluGatewayRole) {
+            Map<String, Integer> componentCounts = [:]
+            components.each { String component ->
+                String baseType = component.contains(':') ? component.split(':')[0] : component
+                componentCounts[baseType] = (componentCounts[baseType] ?: 0) + 1
+            }
+
+            // Preserve the existing THL-style illuminance slice until there is a checked-in
+            // illuminance component driver for the broader Pill parent architecture.
+            Boolean narrowThlSlice =
+                componentCounts.containsKey('illuminance') &&
+                !componentCounts.containsKey('input') &&
+                !componentCounts.containsKey('switch') &&
+                !componentCounts.containsKey('voltmeter') &&
+                (componentCounts['temperature'] ?: 0) <= 1 &&
+                (componentCounts['humidity'] ?: 0) <= 1
+
+            if (!narrowThlSlice) {
+                return 'Shelly Autoconf Pill Parent'
+            }
+        }
+    }
+
     if (gen2AppName && GEN2_MODEL_DRIVER_OVERRIDE.containsKey(gen2AppName)) {
         return GEN2_MODEL_DRIVER_OVERRIDE[gen2AppName]
     }
 
-    String modelCode = discoveredDevice?.model?.toString()?.toLowerCase()
     if (!modelCode) { return null }
 
     if (GEN2_MODEL_CODE_DRIVER_OVERRIDE.containsKey(modelCode)) {
@@ -8468,6 +8520,32 @@ private void installPlusUniComponentDrivers() {
             fetchAndInstallComponentDriver(fileName, driverName)
         } else {
             logDebug("Plus Uni component driver already installed: ${driverName}")
+        }
+    }
+}
+
+/**
+ * Installs the component drivers used by the dedicated The Pill parent.
+ * The Pill can change between sensor, input, voltmeter, and SSR-output profiles,
+ * so these drivers must already exist on the hub before a later reinitialize().
+ */
+private void installPillComponentDrivers() {
+    Map<String, String> drivers = [
+        'ShellySwitchComponent.groovy'                : 'Shelly Autoconf Switch',
+        'ShellySwitchComponentPM.groovy'              : 'Shelly Autoconf Switch PM',
+        'ShellyInputButtonComponent.groovy'           : 'Shelly Autoconf Input Button',
+        'ShellyInputAnalogComponent.groovy'           : 'Shelly Autoconf Input Analog',
+        'ShellyInputSwitchComponent.groovy'           : 'Shelly Autoconf Input Switch',
+        'ShellyTemperaturePeripheralComponent.groovy' : 'Shelly Autoconf Temperature Peripheral',
+        'ShellyHumidityPeripheralComponent.groovy'    : 'Shelly Autoconf Humidity Peripheral',
+        'ShellyVoltmeterComponent.groovy'             : 'Shelly Autoconf Voltmeter',
+    ]
+
+    drivers.each { String fileName, String driverName ->
+        if (!isComponentDriverInstalled(driverName)) {
+            fetchAndInstallComponentDriver(fileName, driverName)
+        } else {
+            logDebug("Pill component driver already installed: ${driverName}")
         }
     }
 }
