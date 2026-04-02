@@ -206,6 +206,7 @@
     // BLE device drivers
     'Shelly BLU Button1': 'UniversalDrivers/ShellyBluButton1.groovy',
     'Shelly BLU Button4': 'UniversalDrivers/ShellyBluButton4.groovy',
+    'Shelly BLU Distance': 'UniversalDrivers/ShellyBluDistance.groovy',
     'Shelly BLU DoorWindow': 'UniversalDrivers/ShellyBluDoorWindow.groovy',
     'Shelly BLU HT': 'UniversalDrivers/ShellyBluHT.groovy',
     'Shelly BLU Motion': 'UniversalDrivers/ShellyBluMotion.groovy',
@@ -220,6 +221,7 @@
     'SBBT-002C':   [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',       modelCode: 'SBBT-002C'],
     'SBBT-004CEU': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBBT-004CEU'],
     'SBBT-004CUS': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
+    'SBDI-003E':   [driverName: 'Shelly BLU Distance',    friendlyModel: 'Shelly BLU Distance',       modelCode: 'SBDI-003E'],
     'SBDW-002C':   [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
     'SBHT-003C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
     'SBHT-103C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T Display',    modelCode: 'SBHT-103C'],
@@ -246,6 +248,7 @@
     0x0007: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
     0x0008: [driverName: null,                      friendlyModel: 'Shelly BLU TRV',            modelCode: 'SBTR-001AEU'],
     0x0009: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU Remote',         modelCode: 'SBRC-005B'],
+    0x000A: [driverName: 'Shelly BLU Distance',    friendlyModel: 'Shelly BLU Distance',       modelCode: 'SBDI-003E'],
     0x000B: [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
     0x000C: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T Display',    modelCode: 'SBHT-103C'],
 ]
@@ -11017,6 +11020,7 @@ private static Integer inferBleModelFromData(Map bleData) {
     def buttonData = bleData?.button
     if (buttonData instanceof List && ((List) buttonData).size() == 4) { return 0x0007 }
     if (buttonData != null) { return 0x0001 }
+    if (bleData?.containsKey('distanceMm')) { return 0x000A }
     if (bleData?.temperature != null && bleData?.humidity != null) { return 0x0003 }
     if (bleData?.containsKey('motion')) { return 0x0005 }
     if (bleData?.containsKey('window')) { return 0x0002 }
@@ -11310,7 +11314,8 @@ private void removeBleDevice(String mac) {
 /**
  * Routes decoded BLE data to a Hubitat child device as events.
  * Converts BTHome fields to standard Hubitat attributes.
- * Suppresses duplicate events for continuous attributes (temperature, humidity, battery, illuminance)
+ * Suppresses duplicate events for continuous attributes (temperature, humidity, battery, illuminance,
+ * distanceMm, tilt)
  * using the @Field bleLastSentValues cache. Always sends isStateChange events (button, motion, contact).
  *
  * @param mac BLE device MAC address (the child DNI)
@@ -11335,7 +11340,7 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
             // Button, motion, contact — always fire
             childSendEventHelper(child, evt)
         } else {
-            // Continuous: temperature, humidity, battery, illuminance, tilt — skip if unchanged
+            // Continuous: temperature, humidity, battery, illuminance, distanceMm, tilt — skip if unchanged
             String evtName = evt.name as String
             String evtVal = evt.value?.toString()
             if (lastSent.get(evtName) != evtVal) {
@@ -11365,7 +11370,7 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
 
 /**
  * Converts BLE data fields to Hubitat event maps.
- * Handles temperature unit conversion, motion/contact states,
+ * Handles temperature unit conversion, distance readings, motion/contact states,
  * and multi-button BTHome encoding. Pure logic — no dynamic property access.
  *
  * @param bleData Map of decoded BTHome fields
@@ -11404,6 +11409,14 @@ private static List<Map> buildBleEvents(Map bleData, String tempScale) {
         Integer lux = (bleData.illuminance as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP).intValue()
         events.add([name: 'illuminance', value: lux, unit: 'lux',
             descriptionText: "Illuminance is ${lux} lux".toString()])
+    }
+
+    // Distance (BLU Distance advertises BTHome object 0x40 in millimeters)
+    if (bleData.distanceMm != null) {
+        BigDecimal rawDistanceMm = bleData.distanceMm as BigDecimal
+        Integer distanceMm = rawDistanceMm.setScale(0, BigDecimal.ROUND_HALF_UP).intValue()
+        events.add([name: 'distanceMm', value: distanceMm, unit: 'mm',
+            descriptionText: "Distance is ${distanceMm} mm".toString()])
     }
 
     // Motion (0=inactive, 1=active)

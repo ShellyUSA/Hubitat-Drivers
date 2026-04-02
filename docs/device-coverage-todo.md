@@ -18,17 +18,19 @@ Scope notes:
 
 ## Confirmed Current Gaps
 
-### 1. The Pill by Shelly
+### 1. The Pill by Shelly multi-mode platform support
 
 Why this is a gap:
 
 - The current Shelly catalog lists `The Pill` as a live Gen3 product.
-- There is no explicit discovery mapping, driver selection branch, or parent driver for it in the active codebase.
+- The current repo already has partial narrow coverage for the H&T + illuminance slice via `Shelly Autoconf THL Sensor`, but that does not cover the broader configurable platform.
+- There is still no explicit discovery mapping or configurable parent for the multi-mode `The Pill` topology (`temperature:*`, `humidity:*`, `input:*`, `voltmeter:*`, optional SSR outputs, and optional BLE-gateway behavior).
 - Existing BLU gateway support is TRV-centric and is not a good fit for a mixed sensor/I/O platform device.
 
 TODO:
 
-- Inspect the real component and mode model exposed by `The Pill`.
+- Capture real `Shelly.GetDeviceInfo`, `Shelly.GetStatus`, `Shelly.GetConfig`, and `Shelly.GetComponents` payloads for the official `S3SN-0U53X` hardware in its major modes.
+- Route by a confirmed live model/app identifier instead of relying on catalog naming alone.
 - Decide whether it should be handled as a configurable parent platform rather than a single fixed driver.
 - Support the major documented modes:
   - `DS18B20` temperature probes
@@ -39,27 +41,9 @@ TODO:
   - BLE gateway role
 - Add any new component-driver install paths required by the selected design.
 
-### 2. Shelly BLU Distance
-
-Why this is a gap:
-
-- The current Shelly catalog lists `Shelly BLU Distance` as a current BLU device.
-- There is no BLE model mapping for it in `Apps/ShellyDeviceManager.groovy`.
-- There is no dedicated driver or BLE event handling for distance/level reporting in the active stack.
-
-TODO:
-
-- Add the BLU model-code / model-ID mapping once verified from official docs or live advertisements.
-- Define the Hubitat-facing attribute model:
-  - `Battery`
-  - custom distance attribute such as `distanceMm` or `distanceCm`
-  - optional derived occupancy or level state based on thresholds
-- Parse the device's BLE advertisement or gateway-relayed payload shape.
-- Add a dedicated driver and document common use cases such as tank level, parking, and obstacle detection.
-
 ## Likely Gaps That Need Validation
 
-### 3. Shelly DALI Dimmer Gen3
+### 2. Shelly DALI Dimmer Gen3
 
 Why this needs validation before being called supported:
 
@@ -74,7 +58,7 @@ TODO:
 - Expose DALI bus diagnostics that are useful in Hubitat, such as gear count and bus error state.
 - Keep scope to Shelly's documented broadcast-dimmer behavior. Do not assume per-ballast child devices.
 
-### 4. BLU Variant Mapping Audit
+### 3. BLU Variant Mapping Audit
 
 Why this needs validation:
 
@@ -89,7 +73,7 @@ TODO:
 - Create new drivers only where the payload or capability model is genuinely new.
 - Keep `Shelly BLU TRV` out of this gap list. It is already supported through the BLU Gateway path.
 
-### 5. Shelly Plug US Gen4 Illuminance Integration
+### 4. Shelly Plug US Gen4 Illuminance Integration
 
 Why this needs validation before being called supported:
 
@@ -104,7 +88,7 @@ TODO:
 - Decide whether illuminance should live on the main driver or a child sensor device.
 - Verify that LED-control child behavior (`PLUGS_UI`) still works if the device moves off the plain single-switch PM path.
 
-### 6. Shelly EM Mini Gen4
+### 5. Shelly EM Mini Gen4
 
 Why this needs validation before being called supported:
 
@@ -122,6 +106,7 @@ TODO:
 
 These are not currently counted as missing coverage, but they should be revisited when hardware or API dumps are available:
 
+- `Shelly BLU Distance` now has dedicated BLU model routing for `SBDI-003E` / `0x000A`, forwards BTHome `0x40` distance measurements, and uses a dedicated driver exposing `distanceMm` plus battery/presence.
 - `Wall Display X2i` and `Wall Display XL` now have dedicated model-specific routing to the Wall Display parent, and the parent now tolerates illuminance-only variants plus the X2i 2-output power base.
 - Remaining wall-display validation: capture real `GetStatus` / component payloads for `SAWD-5A1XX10EU0` and `SAWD-3A1XE10EU2`, and confirm whether the XL front-panel buttons expose local API events at all.
 - `Wall Display X2` may still be close to the legacy wall-display path, but its current firmware component map should be verified when hardware is available.

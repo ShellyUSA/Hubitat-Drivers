@@ -91,7 +91,7 @@ BTH[0x3D] = ["_count16", DT_U16, 0];
 BTH[0x3E] = ["_count32", DT_U32, 0];
 BTH[0x3F] = ["rotation", DT_I16, 0.1];
 // --- Extended sensors ---
-BTH[0x40] = ["_distMm", DT_U16, 0];
+BTH[0x40] = ["distanceMm", DT_U16, 0];
 BTH[0x41] = ["_distM", DT_U16, 0.1];
 BTH[0x42] = ["_duration", DT_U24, 0.001];
 BTH[0x43] = ["_current16", DT_U16, 0.001];
