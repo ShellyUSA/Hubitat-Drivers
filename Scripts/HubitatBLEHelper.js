@@ -86,7 +86,7 @@ BTH[0x2E] = ["humidity", DT_U8, 0];
 BTH[0x2F] = ["_moisture8", DT_U8, 0];
 // --- Events ---
 BTH[0x3A] = ["button", DT_U8, 0];
-BTH[0x3C] = ["_dimmer", DT_U16, 0];
+BTH[0x3C] = ["dimmer", DT_U16, 0];
 BTH[0x3D] = ["_count16", DT_U16, 0];
 BTH[0x3E] = ["_count32", DT_U32, 0];
 BTH[0x3F] = ["rotation", DT_I16, 0.1];
@@ -113,6 +113,7 @@ BTH[0x52] = ["_gyroscope", DT_U16, 0.001];
 // 0x53 (text) and 0x54 (raw) are variable-length — cannot be decoded here
 BTH[0x55] = ["_volumeStorage", DT_U32, 0.001];
 BTH[0x56] = ["_conductivity", DT_U16, 0];
+BTH[0x60] = ["channel", DT_U8, 0];
 // --- Device info ---
 BTH[0xF0] = ["device_type_id", DT_U16, 0];
 BTH[0xF1] = ["_fwVersion32", DT_U32, 0];
