@@ -47,14 +47,14 @@ TODO:
 
 Why this needs validation:
 
-- The current BLU model tables cover the main `Button1`, `Button4`/remote, `Door/Window`, `H&T`, `Motion`, `Wall Switch 4`, and `TRV` shapes.
-- Current Shelly docs list additional BLU variants that are not explicitly mapped in the active app, including product variants such as `Button Tough 1`, `Wall Switch 4 ZB`, and newer remote-control variants.
-- Some of these may only need alias model mappings to existing drivers, while others may require new event parsing.
+- The current BLU model tables now cover the main `Button1`, `Button4`/remote, `Door/Window`, `H&T`, `Motion`, `Wall Switch 4`, and `TRV` shapes, plus explicit alias mappings for `Button Tough 1 ZB`, `Wall Switch 4 ZB DK`, and `RC Button 4 ZB`.
+- Plain `Button Tough 1`, `RC Button`, and `RC Button US` are no longer code gaps: current Shelly docs reuse the same model codes and Bluetooth IDs as the already-mapped `Button1` and `RC Button 4` entries.
+- The remaining BLU question is no longer simple model mapping. Official docs for `SBRC-005B` / `Shelly BLU Remote Control ZB` describe extra wheel / channel data beyond a plain 4-button remote, but the active app still routes that model to the generic `Shelly BLU Button4` driver.
 
 TODO:
 
-- Audit current Shelly BLU model codes against `BLE_MODEL_TO_DRIVER` and `BLE_MODEL_ID_TO_DRIVER`.
-- Add alias mappings where the payload shape already matches an existing driver.
+- Capture or confirm real BLE advertisements for `SBRC-005B` / `Shelly BLU Remote Control ZB`, especially the `dimmer`, `rotation`, and `channel` fields.
+- Decide whether `SBRC-005B` should keep reusing `Shelly BLU Button4` or move to a dedicated active-scope driver for wheel / channel behavior.
 - Create new drivers only where the payload or capability model is genuinely new.
 - Keep `Shelly BLU TRV` out of this gap list. It is already supported through the BLU Gateway path.
 

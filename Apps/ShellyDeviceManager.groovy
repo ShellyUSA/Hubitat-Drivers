@@ -226,9 +226,13 @@
  * Used to auto-detect device type from BLE advertisements and select the correct driver.
  */
 @Field static final Map<String, Map<String, String>> BLE_MODEL_TO_DRIVER = [
+    // Shelly BLU Button Tough 1 reuses the standard Button1 identifiers (SBBT-002C / 0x0001).
     'SBBT-002C':   [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',       modelCode: 'SBBT-002C'],
+    'SBBT-102C':   [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button Tough 1 ZB', modelCode: 'SBBT-102C'],
     'SBBT-004CEU': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4',  modelCode: 'SBBT-004CEU'],
+    'SBBT-104CEU': [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4 ZB DK', modelCode: 'SBBT-104CEU'],
     'SBBT-004CUS': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4',    modelCode: 'SBBT-004CUS'],
+    'SBBT-104CUS': [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4 ZB', modelCode: 'SBBT-104CUS'],
     'SBDI-003E':   [driverName: 'Shelly BLU Distance',    friendlyModel: 'Shelly BLU Distance',       modelCode: 'SBDI-003E'],
     'SBDW-002C':   [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
     'SBHT-003C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
@@ -248,6 +252,7 @@
  * to driver information. These numeric IDs are more reliable than local_name strings for identification.
  */
 @Field static final Map<Integer, Map<String, String>> BLE_MODEL_ID_TO_DRIVER = [
+    // Shelly BLU Button Tough 1 reuses the standard Button1 identifiers (SBBT-002C / 0x0001).
     0x0001: [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button 1',       modelCode: 'SBBT-002C'],
     0x0002: [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window',    modelCode: 'SBDW-002C'],
     0x0003: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T',            modelCode: 'SBHT-003C'],
@@ -259,6 +264,9 @@
     0x000A: [driverName: 'Shelly BLU Distance',    friendlyModel: 'Shelly BLU Distance',       modelCode: 'SBDI-003E'],
     0x000B: [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
     0x000C: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T Display',    modelCode: 'SBHT-103C'],
+    0x0015: [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4 ZB DK', modelCode: 'SBBT-104CEU'],
+    0x0016: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4 ZB', modelCode: 'SBBT-104CUS'],
+    0x0017: [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button Tough 1 ZB', modelCode: 'SBBT-102C'],
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
