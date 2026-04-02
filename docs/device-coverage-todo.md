@@ -1,6 +1,6 @@
 # Device Coverage TODO
 
-Last reviewed: 2026-03-28
+Last reviewed: 2026-04-02
 
 This backlog compares the current Shelly catalog in `shelly-product-catalog.md` against the active autoconf stack:
 
@@ -110,12 +110,42 @@ TODO:
 - Create new drivers only where the payload or capability model is genuinely new.
 - Keep `Shelly BLU TRV` out of this gap list. It is already supported through the BLU Gateway path.
 
+### 6. Shelly Plug US Gen4 Illuminance Integration
+
+Why this needs validation before being called supported:
+
+- Official Shelly docs describe `Shelly Plug US Gen4` as more than a plain single-switch PM device.
+- The active autoconf path should already cover the relay and PM behavior, but `illuminance:0` may be dropped by the current monolithic `Single Switch PM` driver path.
+- `PLUGS_UI` support already exists, so the remaining question is whether the built-in light sensor needs a dedicated parent/child or monolithic sensor exposure path.
+
+TODO:
+
+- Capture a real `GetStatus` payload (or equivalent API dump) from `Shelly Plug US Gen4`.
+- Confirm whether `illuminance:0` is always present and whether it changes frequently enough to justify webhook/script handling.
+- Decide whether illuminance should live on the main driver or a child sensor device.
+- Verify that LED-control child behavior (`PLUGS_UI`) still works if the device moves off the plain single-switch PM path.
+
+### 7. Shelly EM Mini Gen4
+
+Why this needs validation before being called supported:
+
+- The active stack likely maps `Shelly EM Mini Gen4` onto the existing EM parent path.
+- Current repo evidence is still indirect; there is not yet a verified local payload capture confirming the component names, phase shape, and any Gen4-specific diagnostics.
+- This looks more like a validation gap than a known implementation gap, but it should stay on the backlog until a real device or authoritative API dump confirms the assumption.
+
+TODO:
+
+- Capture real `GetStatus` / component data from `Shelly EM Mini Gen4`.
+- Verify whether it exposes `em`, `em1`, or another power-monitoring component shape.
+- Confirm that the existing EM parent and child component drivers expose the most useful Gen4 metrics without additional model-specific handling.
+
 ## Validation-Only Items
 
 These are not currently counted as missing coverage, but they should be revisited when hardware or API dumps are available:
 
 - `Wall Display X2` may already be close to the existing wall display path, but its actual component map still needs to be verified.
-- Gen3/Gen4 relays, PM devices, covers, and multi-relay products appear to be broadly covered by the generic component-based driver logic.
+- `Shelly Dimmer Gen4 EU/US` appears to fit the existing single-dimmer path and should not be treated as a gap without contrary hardware evidence.
+- `Shelly 1 Gen4`, `Shelly 1PM Gen4`, and `Shelly 2PM Gen4` now have dedicated model-specific routing in the active app while reusing the proven switch/cover implementations.
 - `Power Strip 4 Gen4`, `Flood Gen4`, and `Leak Sensor Cable` already have active code paths and should not be treated as gaps.
 
 ## Explicitly Out Of Scope For This TODO

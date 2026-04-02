@@ -95,12 +95,39 @@
     'PresenceG4': 'Shelly Autoconf Presence G4 Parent',
 ]
 
+// Model-specific driver overrides keyed by the stable Shelly model ID from /shelly.
+@Field static final Map<String, String> GEN2_MODEL_CODE_DRIVER_OVERRIDE = [
+    'shelly1g4':       'Shelly Autoconf Single Switch 1 Gen4',
+    'shelly1g4anz': 'Shelly Autoconf Single Switch 1 Gen4',
+    'shelly1pmg4':     'Shelly Autoconf Single Switch PM 1PM Gen4',
+    'shelly1pmg4anz': 'Shelly Autoconf Single Switch PM 1PM Gen4',
+]
+
+// Shelly 2PM Gen4 can expose either a dual-switch or single-cover profile.
+@Field static final Set<String> GEN2_2PM_G4_MODEL_CODES = [
+    'shelly2pmg4',
+    'shelly2pmg4anz'
+] as Set<String>
+
+// Explicitly-approved source metadata names for prebuilt driver aliases that reuse
+// a shared implementation file under a different Hubitat driver name.
+@Field static final Map<String, String> PREBUILT_DRIVER_SOURCE_NAME_OVERRIDE = [
+    'Shelly Autoconf Single Switch 1 Gen4': 'Shelly Autoconf Single Switch',
+    'Shelly Autoconf Single Switch PM 1PM Gen4': 'Shelly Autoconf Single Switch PM',
+    'Shelly Autoconf 2x Switch PM 2PM Gen4 Parent': 'Shelly Autoconf 2x Switch PM Parent',
+    'Shelly Autoconf Single Cover PM 2PM Gen4 Parent': 'Shelly Autoconf Single Cover PM Parent',
+    'Shelly Autoconf Single CCT Parent': 'Shelly Autoconf Single CCT PM Parent',
+    'Shelly Autoconf Single Cover Parent': 'Shelly Autoconf Single Cover PM Parent',
+]
+
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
 // New device types should be added here as prebuilt .groovy files.
 @Field static final Map<String, String> PREBUILT_DRIVERS = [
     // Single-component standalone drivers
     'Shelly Autoconf Single Switch': 'UniversalDrivers/ShellySingleSwitch.groovy',
     'Shelly Autoconf Single Switch PM': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
+    'Shelly Autoconf Single Switch 1 Gen4': 'UniversalDrivers/ShellySingleSwitch.groovy',
+    'Shelly Autoconf Single Switch PM 1PM Gen4': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
     'Shelly Autoconf Single Dimmer': 'UniversalDrivers/ShellySingleDimmer.groovy',
     'Shelly Autoconf Single Dimmer PM': 'UniversalDrivers/ShellySingleDimmerPM.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
@@ -112,9 +139,11 @@
     // Multi-component parent drivers (create driver-level children)
     'Shelly Autoconf 2x Switch Parent': 'UniversalDrivers/Shelly2xSwitchParent.groovy',
     'Shelly Autoconf 2x Switch PM Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
+    'Shelly Autoconf 2x Switch PM 2PM Gen4 Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
     'Shelly Autoconf 3x Switch Parent': 'UniversalDrivers/Shelly3xSwitchParent.groovy',
     'Shelly Autoconf 4x Switch PM Parent': 'UniversalDrivers/Shelly4xSwitchPMParent.groovy',
     'Shelly Autoconf Single Cover PM Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
+    'Shelly Autoconf Single Cover PM 2PM Gen4 Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
     'Shelly Autoconf 2x Cover PM Parent': 'UniversalDrivers/Shelly2xCoverPMParent.groovy',
     'Shelly Autoconf 2x Dimmer PM Parent': 'UniversalDrivers/Shelly2xDimmerPMParent.groovy',
     'Shelly Autoconf 4x Dimmer PM Parent': 'UniversalDrivers/Shelly4xDimmerPMParent.groovy',
@@ -7525,10 +7554,9 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         String gen1TypeCode = ipKey ? state.discoveredShellys[ipKey]?.gen1Type?.toString() : null
         String driverName
 
-        // Model-specific driver override for Gen 2+ devices (e.g., Plus Uni)
-        String gen2AppName = (!isGen1 && ipKey) ? state.discoveredShellys[ipKey]?.deviceApp?.toString() : null
-        if (gen2AppName && GEN2_MODEL_DRIVER_OVERRIDE.containsKey(gen2AppName)) {
-            driverName = GEN2_MODEL_DRIVER_OVERRIDE[gen2AppName]
+        driverName = isGen1 ? null : resolveGen2DedicatedDriverName(ipKey, components)
+        if (driverName) {
+            logDebug("Using dedicated Gen 2+/Gen 4 driver '${driverName}' for ${ipKey}")
         } else if (gen1TypeCode && GEN1_MODEL_DRIVER_OVERRIDE.containsKey(gen1TypeCode)) {
             driverName = GEN1_MODEL_DRIVER_OVERRIDE[gen1TypeCode]
         } else if (gen1TypeCode == 'SHRGBW2') {
@@ -7594,6 +7622,42 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     } else {
         logDebug("Device has an unexpected combination of switches and inputs, manual review may be needed")
     }
+}
+
+/**
+ * Resolves explicit Gen 2+/Gen 4 driver overrides for devices that should keep
+ * model-specific names even though they reuse an existing prebuilt implementation.
+ *
+ * @param ipKey The discovered device IP key
+ * @param components The device component list used for profile-sensitive routing
+ * @return A dedicated driver name, or null if the device should use generic naming
+ */
+private String resolveGen2DedicatedDriverName(String ipKey, List<String> components) {
+    if (!ipKey) { return null }
+
+    Map discoveredDevice = state.discoveredShellys[ipKey] as Map
+    String gen2AppName = discoveredDevice?.deviceApp?.toString()
+    if (gen2AppName && GEN2_MODEL_DRIVER_OVERRIDE.containsKey(gen2AppName)) {
+        return GEN2_MODEL_DRIVER_OVERRIDE[gen2AppName]
+    }
+
+    String modelCode = discoveredDevice?.model?.toString()?.toLowerCase()
+    if (!modelCode) { return null }
+
+    if (GEN2_MODEL_CODE_DRIVER_OVERRIDE.containsKey(modelCode)) {
+        return GEN2_MODEL_CODE_DRIVER_OVERRIDE[modelCode]
+    }
+
+    if (GEN2_2PM_G4_MODEL_CODES.contains(modelCode)) {
+        Boolean hasCover = components.any { String component ->
+            component == 'cover' || component.startsWith('cover:')
+        }
+        return hasCover ?
+            'Shelly Autoconf Single Cover PM 2PM Gen4 Parent' :
+            'Shelly Autoconf 2x Switch PM 2PM Gen4 Parent'
+    }
+
+    return null
 }
 
 /**
@@ -7838,12 +7902,26 @@ private Boolean installPrebuiltDriver(String driverName, List<String> components
         return false
     }
 
-    // Patch the driver name in source to include version suffix, consistent with generated drivers.
-    // Pre-built source has e.g. name: 'Shelly Autoconf Single Switch PM' — we append ' v1.0.33'.
+    // Patch the downloaded metadata name to the requested versioned driver name.
+    // This lets dedicated model aliases reuse a shared pre-built implementation safely.
     String driverNameWithVersion = "${driverName} v${version}"
-    sourceCode = sourceCode.replaceFirst(/(name:\s*')${java.util.regex.Pattern.quote(driverName)}'/, "\$1${driverNameWithVersion}'")
+    String sourceDriverName = null
+    def sourceNameMatch = (sourceCode =~ /definition\s*\(\s*name:\s*'([^']+)'/)
+    if (sourceNameMatch.find()) {
+        sourceDriverName = sourceNameMatch.group(1)
+        String expectedSourceName = PREBUILT_DRIVER_SOURCE_NAME_OVERRIDE[driverName] ?: driverName
+        if (sourceDriverName != expectedSourceName) {
+            logError("installPrebuiltDriver: expected source driver '${expectedSourceName}' but found '${sourceDriverName}' for '${driverName}'")
+            return false
+        }
+        sourceCode = sourceCode.replaceFirst(/(definition\s*\(\s*name:\s*')[^']+'/,
+            "\$1${driverNameWithVersion}'")
+    } else {
+        logError("installPrebuiltDriver: could not determine source driver name for ${driverName}")
+        return false
+    }
 
-    logInfo("Downloaded pre-built driver for ${driverNameWithVersion} (${sourceCode.length()} chars)")
+    logInfo("Downloaded pre-built driver '${sourceDriverName}' as '${driverNameWithVersion}' (${sourceCode.length()} chars)")
     Boolean success = installDriver(sourceCode)
     if (!success) {
         logError("installPrebuiltDriver: installDriver failed for ${driverNameWithVersion}")
@@ -14437,7 +14515,11 @@ private void registerAutoDriver(String driverName, String namespace, String vers
   List<String> keysToRemove = []
   // Snapshot keys to avoid ConcurrentModificationException from concurrent state mutations
   new LinkedHashMap((state.autoDrivers ?: [:]) as Map).each { k, v ->
-    if (k != key && k.toString().contains(baseName)) {
+    Map trackedDriver = v as Map
+    String trackedDriverName = trackedDriver?.name?.toString() ?: ''
+    String trackedNamespace = trackedDriver?.namespace?.toString() ?: ''
+    String trackedBaseName = trackedDriverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+    if (k != key && trackedNamespace == namespace && trackedBaseName == baseName) {
       keysToRemove.add(k.toString())
     }
   }
