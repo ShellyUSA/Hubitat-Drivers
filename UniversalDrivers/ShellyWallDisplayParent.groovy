@@ -1,14 +1,16 @@
 /**
  * Shelly Autoconf Wall Display Parent
  *
- * Parent driver for the Shelly Wall Display device.
- * Combines a relay switch with environmental sensors (temperature, humidity, illuminance)
- * and input button capabilities.
+ * Parent driver for Shelly Wall Display-family devices.
+ * Supports the original Wall Display / Wall Display X2 sensor mix as well as the
+ * newer X2i / XL variants that can omit temperature and humidity, and the X2i
+ * 2-output power base that exposes multiple relay outputs.
  *
  * Architecture:
  *   - App creates parent device with component data values
- *   - Parent handles switch control and sensor data directly
- *   - Input children created only if multiple inputs present
+ *   - Parent handles sensor data directly
+ *   - Switch children are created only when multiple switch outputs are present
+ *   - Input children are created only if multiple inputs are present
  *   - Sensor data arrives via webhooks, switch commands via Shelly RPC
  *
  * Version: 1.0.0
@@ -39,6 +41,8 @@ metadata {
 
     command 'reinitialize'
     attribute 'lastUpdated', 'string'
+    attribute 'temperatureStatus', 'string'
+    attribute 'humidityStatus', 'string'
   }
 }
 
@@ -98,7 +102,8 @@ void reinitialize() {
 
 /**
  * Reconciles driver-level child devices against the components data value.
- * Only creates input children when more than 1 input is present.
+ * Creates switch children when more than 1 relay output is present, and input
+ * children when more than 1 physical input is present.
  */
 void reconcileChildDevices() {
   String componentStr = device.getDataValue('components')
@@ -108,17 +113,18 @@ void reconcileChildDevices() {
   }
 
   List<String> components = componentStr.split(',').collect { it.trim() }
+  Integer switchCount = components.findAll { it.startsWith('switch:') }.size()
   Integer inputCount = components.findAll { it.startsWith('input:') }.size()
 
   Set<String> desiredDnis = [] as Set
-  if (inputCount > 1) {
-    components.each { String comp ->
-      if (!comp.contains(':')) { return }
-      String baseType = comp.split(':')[0]
-      Integer compId = comp.split(':')[1] as Integer
-      if (baseType == 'input') {
-        desiredDnis.add("${device.deviceNetworkId}-input-${compId}".toString())
-      }
+  components.each { String comp ->
+    if (!comp.contains(':')) { return }
+    String baseType = comp.split(':')[0]
+    Integer compId = comp.split(':')[1] as Integer
+    if (baseType == 'switch' && switchCount > 1) {
+      desiredDnis.add("${device.deviceNetworkId}-switch-${compId}".toString())
+    } else if (baseType == 'input' && inputCount > 1) {
+      desiredDnis.add("${device.deviceNetworkId}-input-${compId}".toString())
     }
   }
 
@@ -137,26 +143,37 @@ void reconcileChildDevices() {
     }
   }
 
-  if (inputCount > 1) {
-    components.each { String comp ->
-      if (!comp.contains(':')) { return }
-      String baseType = comp.split(':')[0]
-      Integer compId = comp.split(':')[1] as Integer
-      if (baseType != 'input') { return }
+  components.each { String comp ->
+    if (!comp.contains(':')) { return }
+    String baseType = comp.split(':')[0]
+    Integer compId = comp.split(':')[1] as Integer
 
-      String childDni = "${device.deviceNetworkId}-input-${compId}"
-      if (getChildDevice(childDni)) { return }
+    String driverName = null
+    String label = null
+    String childDni = null
 
-      String label = "${device.displayName} Input ${compId}"
-      try {
-        def child = addChildDevice('ShellyDeviceManager', 'Shelly Autoconf Input Button', childDni, [name: label, label: label])
-        child.updateDataValue('componentType', 'input')
-        child.updateDataValue('inputId', compId.toString())
+    if (baseType == 'switch' && switchCount > 1) {
+      driverName = 'Shelly Autoconf Switch'
+      label = "${device.displayName} Switch ${compId}"
+      childDni = "${device.deviceNetworkId}-switch-${compId}"
+    } else if (baseType == 'input' && inputCount > 1) {
+      driverName = 'Shelly Autoconf Input Button'
+      label = "${device.displayName} Input ${compId}"
+      childDni = "${device.deviceNetworkId}-input-${compId}"
+    }
+
+    if (!driverName || !childDni || getChildDevice(childDni)) { return }
+
+    try {
+      def child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
+      child.updateDataValue('componentType', baseType)
+      child.updateDataValue("${baseType}Id", compId.toString())
+      if (baseType == 'input') {
         child.sendEvent(name: 'numberOfButtons', value: 1)
-        logInfo("Created child: ${label} (Shelly Autoconf Input Button)")
-      } catch (Exception e) {
-        logError("Failed to create child ${label}: ${e.message}")
       }
+      logInfo("Created child: ${label} (${driverName})")
+    } catch (Exception e) {
+      logError("Failed to create child ${label}: ${e.message}")
     }
   }
 
@@ -175,31 +192,106 @@ void reconcileChildDevices() {
 // ║  Switch Commands                                              ║
 // ╚══════════════════════════════════════════════════════════════╝
 
-/**
- * Finds the switch component from the device's components data value.
- *
- * @return Map with compId (Integer), or null if not found
- */
-private Map getSwitchComponent() {
+private List<Integer> getComponentIds(String componentType) {
   String componentStr = device.getDataValue('components') ?: ''
-  String switchComp = componentStr.split(',').find { it.startsWith('switch:') }
-  if (!switchComp) { return null }
-  Integer compId = switchComp.split(':')[1] as Integer
-  return [compId: compId]
+  if (!componentStr) { return [] }
+  return componentStr.split(',')
+    .collect { it.trim() }
+    .findAll { it.startsWith("${componentType}:") }
+    .collect { String comp -> comp.split(':')[1] as Integer }
+}
+
+private Boolean isMultiSwitchDevice() {
+  return getComponentIds('switch').size() > 1
+}
+
+private void updateParentSwitchState() {
+  Map switchStates = state.switchStates ?: [:]
+  if (switchStates.isEmpty()) { return }
+
+  String newState = switchStates.values().any { it == true } ? 'on' : 'off'
+  if (device.currentValue('switch') != newState) {
+    sendEvent(name: 'switch', value: newState, descriptionText: "Wall display switch is ${newState}")
+  }
+}
+
+private void setSwitchState(Integer switchId, Boolean isOn) {
+  if (switchId == null) { return }
+  Map switchStates = state.switchStates ?: [:]
+  switchStates["switch:${switchId}".toString()] = isOn
+  state.switchStates = switchStates
+  updateParentSwitchState()
+}
+
+private void refreshSwitchStatesFromStatus(Map deviceStatus) {
+  Map switchStates = [:]
+  deviceStatus.each { k, v ->
+    String key = k.toString()
+    if (key.startsWith('switch:') && v instanceof Map && v.output != null) {
+      switchStates[key] = v.output
+    }
+  }
+  state.switchStates = switchStates
+  updateParentSwitchState()
+}
+
+private Boolean hasMissingSensorDriverError(Map statusData) {
+  List errors = statusData?.errors instanceof List ? statusData.errors as List : []
+  return errors.any { Object err -> err?.toString() == 'Sensor driver missing from firmware' }
+}
+
+private Boolean hasUsableTemperature(Map statusData) {
+  if (!statusData || hasMissingSensorDriverError(statusData)) { return false }
+
+  BigDecimal tempC = statusData.tC != null ? statusData.tC as BigDecimal : null
+  BigDecimal tempF = statusData.tF != null ? statusData.tF as BigDecimal : null
+  if (tempC != null && tempC <= -100) { return false }
+  if (tempF != null && tempF <= -148) { return false }
+  return tempC != null || tempF != null
+}
+
+private Boolean hasUsableHumidity(Map statusData) {
+  if (!statusData || hasMissingSensorDriverError(statusData)) { return false }
+
+  BigDecimal humidity = statusData.rh != null ? statusData.rh as BigDecimal : null
+  return humidity != null && humidity >= 0
+}
+
+private BigDecimal getWebhookTemperatureValue(Map params, String scale) {
+  BigDecimal tempC = params.tC != null ? params.tC as BigDecimal : null
+  BigDecimal tempF = params.tF != null ? params.tF as BigDecimal : null
+  if (tempC != null && tempC <= -100) { return null }
+  if (tempF != null && tempF <= -148) { return null }
+
+  if (scale == 'C' && tempC != null) { return tempC }
+  if (scale == 'C' && tempF != null) { return (tempF - 32) * 5 / 9 }
+  if (tempF != null) { return tempF }
+  if (tempC != null) { return tempC * 9 / 5 + 32 }
+  return null
+}
+
+private void updateSensorAvailability(String attributeName, String newStatus) {
+  if (device.currentValue(attributeName) != newStatus) {
+    sendEvent(name: attributeName, value: newStatus)
+  }
 }
 
 void on() {
   logDebug('on() called')
-  Map comp = getSwitchComponent()
-  if (!comp) { logWarn('No switch component found'); return }
-  parent?.parentSendCommand(device, 'Switch.Set', [id: comp.compId, on: true])
+  List<Integer> switchIds = getComponentIds('switch')
+  if (!switchIds) { logWarn('No switch component found'); return }
+  switchIds.each { Integer switchId ->
+    parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: true])
+  }
 }
 
 void off() {
   logDebug('off() called')
-  Map comp = getSwitchComponent()
-  if (!comp) { logWarn('No switch component found'); return }
-  parent?.parentSendCommand(device, 'Switch.Set', [id: comp.compId, on: false])
+  List<Integer> switchIds = getComponentIds('switch')
+  if (!switchIds) { logWarn('No switch component found'); return }
+  switchIds.each { Integer switchId ->
+    parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: false])
+  }
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -212,9 +304,30 @@ void off() {
 // ║  Component Commands (called by children)                      ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+void componentOn(def childDevice) {
+  Integer switchId = childDevice.getDataValue('switchId')?.toInteger()
+  logDebug("componentOn() from switch ${switchId}")
+  if (switchId == null) { return }
+  parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: true])
+}
+
+void componentOff(def childDevice) {
+  Integer switchId = childDevice.getDataValue('switchId')?.toInteger()
+  logDebug("componentOff() from switch ${switchId}")
+  if (switchId == null) { return }
+  parent?.parentSendCommand(device, 'Switch.Set', [id: switchId, on: false])
+}
+
 void componentRefresh(def childDevice) {
   logDebug("componentRefresh() from ${childDevice.displayName}")
   parent?.parentRefresh(device)
+}
+
+void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
+  Integer switchId = childDevice.getDataValue('switchId')?.toInteger()
+  logDebug("componentUpdateSwitchSettings() from switch ${switchId}: ${switchSettings}")
+  if (switchId == null) { return }
+  parent?.parentUpdateSwitchSettings(device, switchId, switchSettings)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -286,20 +399,51 @@ private void routeWebhookNotification(Map params) {
   String dst = params.dst
   if (!dst || params.cid == null) { return }
 
+  String nowStr = new Date().format('yyyy-MM-dd HH:mm:ss')
   List<Map> events = buildWebhookEvents(dst, params)
-  if (!events) { return }
+  if (!events) {
+    if (dst == 'temperature') {
+      updateSensorAvailability('temperatureStatus', 'unavailable')
+      sendEvent(name: 'lastUpdated', value: nowStr)
+    } else if (dst == 'humidity') {
+      updateSensorAvailability('humidityStatus', 'unavailable')
+      sendEvent(name: 'lastUpdated', value: nowStr)
+    }
+    return
+  }
+
+  if (dst == 'temperature') {
+    updateSensorAvailability('temperatureStatus', 'ok')
+  } else if (dst == 'humidity') {
+    updateSensorAvailability('humidityStatus', 'ok')
+  }
+
+  Integer componentId = params.cid as Integer
+
+  if (dst.startsWith('switch_') && isMultiSwitchDevice()) {
+    String childDni = "${device.deviceNetworkId}-switch-${componentId}"
+    def child = getChildDevice(childDni)
+    if (child) {
+      events.each { Map evt -> child.sendEvent(evt) }
+      child.sendEvent(name: 'lastUpdated', value: nowStr)
+      Map switchEvent = events.find { Map evt -> evt.name == 'switch' } as Map
+      if (switchEvent?.value != null) {
+        setSwitchState(componentId, switchEvent.value.toString() == 'on')
+      }
+      sendEvent(name: 'lastUpdated', value: nowStr)
+      return
+    }
+  }
 
   // Input events -> route to children if > 1 input
   if (dst.startsWith('input_')) {
-    String componentStr = device.getDataValue('components') ?: ''
-    Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
+    Integer inputCount = getComponentIds('input').size()
     if (inputCount > 1) {
-      Integer componentId = params.cid as Integer
       String childDni = "${device.deviceNetworkId}-input-${componentId}"
       def child = getChildDevice(childDni)
       if (child) {
         events.each { Map evt -> child.sendEvent(evt) }
-        child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+        child.sendEvent(name: 'lastUpdated', value: nowStr)
       }
       return
     }
@@ -307,7 +451,13 @@ private void routeWebhookNotification(Map params) {
 
   // Everything else -> parent
   events.each { Map evt -> sendEvent(evt) }
-  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+  if (dst.startsWith('switch_')) {
+    Map switchEvent = events.find { Map evt -> evt.name == 'switch' } as Map
+    if (switchEvent?.value != null) {
+      setSwitchState(componentId, switchEvent.value.toString() == 'on')
+    }
+  }
+  sendEvent(name: 'lastUpdated', value: nowStr)
 }
 
 private List<Map> buildWebhookEvents(String dst, Map params) {
@@ -323,14 +473,7 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
 
     case 'temperature':
       String scale = getLocationHelper()?.temperatureScale ?: 'F'
-      BigDecimal temp = null
-      if (scale == 'C' && params.tC != null) {
-        temp = params.tC as BigDecimal
-      } else if (params.tF != null) {
-        temp = params.tF as BigDecimal
-      } else if (params.tC != null) {
-        temp = (params.tC as BigDecimal) * 9 / 5 + 32
-      }
+      BigDecimal temp = getWebhookTemperatureValue(params, scale)
       if (temp != null) {
         BigDecimal offset = settings?.tempOffset != null ? settings.tempOffset as BigDecimal : 0
         temp = temp + offset
@@ -340,7 +483,7 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       break
 
     case 'humidity':
-      if (params.rh != null) {
+      if (params.rh != null && (params.rh as BigDecimal) >= 0) {
         BigDecimal humidity = params.rh as BigDecimal
         BigDecimal offset = settings?.humidityOffset != null ? settings.humidityOffset as BigDecimal : 0
         humidity = humidity + offset
@@ -453,34 +596,52 @@ private void checkAndUpdateSourceIp(Map msg) {
 void distributeStatus(Map deviceStatus) {
   if (!deviceStatus) { return }
 
+  Boolean multiSwitch = isMultiSwitchDevice()
+  List<Integer> temperatureComponents = getComponentIds('temperature')
+  List<Integer> humidityComponents = getComponentIds('humidity')
+  String temperatureStatus = temperatureComponents ? 'unavailable' : 'not present'
+  String humidityStatus = humidityComponents ? 'unavailable' : 'not present'
+
   deviceStatus.each { k, v ->
     String key = k.toString()
     if (!key.contains(':') || !(v instanceof Map)) { return }
 
     String baseType = key.split(':')[0]
+    Integer componentId = key.split(':')[1] as Integer
     Map statusData = v as Map
 
     if (baseType == 'switch') {
       if (statusData.output != null) {
         String switchState = statusData.output ? 'on' : 'off'
-        sendEvent(name: 'switch', value: switchState)
+        if (multiSwitch) {
+          String childDni = "${device.deviceNetworkId}-switch-${componentId}"
+          def child = getChildDevice(childDni)
+          if (child) {
+            child.sendEvent(name: 'switch', value: switchState)
+            child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+          }
+        } else {
+          sendEvent(name: 'switch', value: switchState)
+        }
       }
     } else if (baseType == 'temperature') {
       BigDecimal tempC = statusData.tC != null ? statusData.tC as BigDecimal : null
       BigDecimal tempF = statusData.tF != null ? statusData.tF as BigDecimal : null
-      if (tempC != null || tempF != null) {
+      if (hasUsableTemperature(statusData)) {
         String scale = getLocationHelper()?.temperatureScale ?: 'F'
         BigDecimal temp = (scale == 'C') ? tempC : (tempF ?: tempC * 9 / 5 + 32)
         BigDecimal offset = settings?.tempOffset != null ? settings.tempOffset as BigDecimal : 0
         temp = temp + offset
         sendEvent(name: 'temperature', value: temp, unit: "°${scale}")
+        temperatureStatus = 'ok'
       }
     } else if (baseType == 'humidity') {
-      if (statusData.rh != null) {
+      if (hasUsableHumidity(statusData)) {
         BigDecimal humidity = statusData.rh as BigDecimal
         BigDecimal offset = settings?.humidityOffset != null ? settings.humidityOffset as BigDecimal : 0
         humidity = humidity + offset
         sendEvent(name: 'humidity', value: humidity, unit: '%')
+        humidityStatus = 'ok'
       }
     } else if (baseType == 'illuminance') {
       if (statusData.lux != null) {
@@ -489,6 +650,9 @@ void distributeStatus(Map deviceStatus) {
     }
   }
 
+  updateSensorAvailability('temperatureStatus', temperatureStatus)
+  updateSensorAvailability('humidityStatus', humidityStatus)
+  refreshSwitchStatesFromStatus(deviceStatus)
   sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 

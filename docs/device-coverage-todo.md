@@ -18,28 +18,7 @@ Scope notes:
 
 ## Confirmed Current Gaps
 
-### 1. Shelly Wall Display X2i / Wall Display XL
-
-Why this is a gap:
-
-- Current wall display detection in `Apps/ShellyDeviceManager.groovy` assumes a `switch + temperature + humidity + illuminance` device shape.
-- `UniversalDrivers/ShellyWallDisplayParent.groovy` is tailored to the older Wall Display sensor mix.
-- Current Shelly docs describe newer Wall Display models with materially different hardware:
-  - `Wall Display X2i` adds interchangeable power bases, including a 2-output base.
-  - `Wall Display XL` adds 4 physical buttons.
-  - `X2i` and `XL` are not documented as direct matches for the original driver assumptions.
-
-TODO:
-
-- Capture real `GetStatus` / component lists from `Wall Display X2i` and `Wall Display XL`.
-- Extend device classification so newer wall display models do not depend on the original temp/humidity/lux profile.
-- Update or split the parent driver to support:
-  - 1-output and 2-output `X2i` power-base variants.
-  - `XL` front-button events if the local API exposes them cleanly.
-  - illuminance-only variants if temperature and humidity are absent.
-- Verify that webhook and child-button behavior still works after the model split.
-
-### 2. The Pill by Shelly
+### 1. The Pill by Shelly
 
 Why this is a gap:
 
@@ -60,7 +39,7 @@ TODO:
   - BLE gateway role
 - Add any new component-driver install paths required by the selected design.
 
-### 3. Shelly BLU Distance
+### 2. Shelly BLU Distance
 
 Why this is a gap:
 
@@ -80,7 +59,7 @@ TODO:
 
 ## Likely Gaps That Need Validation
 
-### 4. Shelly DALI Dimmer Gen3
+### 3. Shelly DALI Dimmer Gen3
 
 Why this needs validation before being called supported:
 
@@ -95,7 +74,7 @@ TODO:
 - Expose DALI bus diagnostics that are useful in Hubitat, such as gear count and bus error state.
 - Keep scope to Shelly's documented broadcast-dimmer behavior. Do not assume per-ballast child devices.
 
-### 5. BLU Variant Mapping Audit
+### 4. BLU Variant Mapping Audit
 
 Why this needs validation:
 
@@ -110,7 +89,7 @@ TODO:
 - Create new drivers only where the payload or capability model is genuinely new.
 - Keep `Shelly BLU TRV` out of this gap list. It is already supported through the BLU Gateway path.
 
-### 6. Shelly Plug US Gen4 Illuminance Integration
+### 5. Shelly Plug US Gen4 Illuminance Integration
 
 Why this needs validation before being called supported:
 
@@ -125,7 +104,7 @@ TODO:
 - Decide whether illuminance should live on the main driver or a child sensor device.
 - Verify that LED-control child behavior (`PLUGS_UI`) still works if the device moves off the plain single-switch PM path.
 
-### 7. Shelly EM Mini Gen4
+### 6. Shelly EM Mini Gen4
 
 Why this needs validation before being called supported:
 
@@ -143,7 +122,9 @@ TODO:
 
 These are not currently counted as missing coverage, but they should be revisited when hardware or API dumps are available:
 
-- `Wall Display X2` may already be close to the existing wall display path, but its actual component map still needs to be verified.
+- `Wall Display X2i` and `Wall Display XL` now have dedicated model-specific routing to the Wall Display parent, and the parent now tolerates illuminance-only variants plus the X2i 2-output power base.
+- Remaining wall-display validation: capture real `GetStatus` / component payloads for `SAWD-5A1XX10EU0` and `SAWD-3A1XE10EU2`, and confirm whether the XL front-panel buttons expose local API events at all.
+- `Wall Display X2` may still be close to the legacy wall-display path, but its current firmware component map should be verified when hardware is available.
 - `Shelly Dimmer Gen4 EU/US` appears to fit the existing single-dimmer path and should not be treated as a gap without contrary hardware evidence.
 - `Shelly 1 Gen4`, `Shelly 1PM Gen4`, and `Shelly 2PM Gen4` now have dedicated model-specific routing in the active app while reusing the proven switch/cover implementations.
 - `Power Strip 4 Gen4`, `Flood Gen4`, and `Leak Sensor Cable` already have active code paths and should not be treated as gaps.

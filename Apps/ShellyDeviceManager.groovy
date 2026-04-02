@@ -101,6 +101,8 @@
     'shelly1g4anz': 'Shelly Autoconf Single Switch 1 Gen4',
     'shelly1pmg4':     'Shelly Autoconf Single Switch PM 1PM Gen4',
     'shelly1pmg4anz': 'Shelly Autoconf Single Switch PM 1PM Gen4',
+    'sawd-5a1xx10eu0': 'Shelly Autoconf Wall Display X2i Parent',
+    'sawd-3a1xe10eu2': 'Shelly Autoconf Wall Display XL Parent',
 ]
 
 // Shelly 2PM Gen4 can expose either a dual-switch or single-cover profile.
@@ -116,6 +118,8 @@
     'Shelly Autoconf Single Switch PM 1PM Gen4': 'Shelly Autoconf Single Switch PM',
     'Shelly Autoconf 2x Switch PM 2PM Gen4 Parent': 'Shelly Autoconf 2x Switch PM Parent',
     'Shelly Autoconf Single Cover PM 2PM Gen4 Parent': 'Shelly Autoconf Single Cover PM Parent',
+    'Shelly Autoconf Wall Display X2i Parent': 'Shelly Autoconf Wall Display Parent',
+    'Shelly Autoconf Wall Display XL Parent': 'Shelly Autoconf Wall Display Parent',
     'Shelly Autoconf Single CCT Parent': 'Shelly Autoconf Single CCT PM Parent',
     'Shelly Autoconf Single Cover Parent': 'Shelly Autoconf Single Cover PM Parent',
 ]
@@ -154,6 +158,8 @@
     'Shelly Autoconf 5x Dimmer PM Parent': 'UniversalDrivers/Shelly5xDimmerPMParent.groovy',
     'Shelly Autoconf Single Cover Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
     'Shelly Autoconf Wall Display Parent': 'UniversalDrivers/ShellyWallDisplayParent.groovy',
+    'Shelly Autoconf Wall Display X2i Parent': 'UniversalDrivers/ShellyWallDisplayParent.groovy',
+    'Shelly Autoconf Wall Display XL Parent': 'UniversalDrivers/ShellyWallDisplayParent.groovy',
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
     'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
     'Shelly Autoconf Plus Uni Parent': 'UniversalDrivers/ShellyPlusUniParent.groovy',
