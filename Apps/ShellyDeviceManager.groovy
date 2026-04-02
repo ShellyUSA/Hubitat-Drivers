@@ -58,7 +58,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.39"
+@Field static final String APP_VERSION = "1.0.40"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -92,6 +92,7 @@
 // Keyed by deviceApp (the 'app' field from Shelly.GetDeviceInfo / mDNS TXT record).
 @Field static final Map<String, String> GEN2_MODEL_DRIVER_OVERRIDE = [
     'PlusUni': 'Shelly Autoconf Plus Uni Parent',
+    'PresenceG4': 'Shelly Autoconf Presence G4 Parent',
 ]
 
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
@@ -127,6 +128,7 @@
     'Shelly Autoconf 4x Input Parent': 'UniversalDrivers/Shelly4xInputParent.groovy',
     'Shelly Autoconf EM Parent': 'UniversalDrivers/ShellyPro3EMParent.groovy',
     'Shelly Autoconf Plus Uni Parent': 'UniversalDrivers/ShellyPlusUniParent.groovy',
+    'Shelly Autoconf Presence G4 Parent': 'UniversalDrivers/ShellyPresenceG4Parent.groovy',
 
     // BLU Gateway parent driver (for BLU TRV and other gateway-paired BLE devices)
     'Shelly Autoconf BLU Gateway Parent': 'UniversalDrivers/ShellyBluGatewayParent.groovy',
@@ -221,7 +223,8 @@
     'coverstatus',
     'lightstatus',
     'HubitatBLEHelper',
-    'bluetrvstatus'
+    'bluetrvstatus',
+    'presencestatus'
 ]
 
 // ═══════════════════════════════════════════════════════════════
@@ -1035,7 +1038,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     // installed() -> reconcileChildDevices() has them on the first call
     List<String> components = []
     List<String> pmComponents = []
-    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity', 'blutrv'] as Set
+    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity', 'illuminance', 'blutrv', 'presencezone'] as Set
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
@@ -1969,15 +1972,16 @@ void reinitializeDevice(String ipAddress) {
         logInfo("Gen 1 device — skipping scripts, configuring action URLs")
         installGen1ActionUrls(ipAddress)
     } else {
-        // Gen 2/3: install scripts and webhooks
-        // Step 3: Install any missing required scripts
-        installRequiredScriptsForIp(ipAddress)
-
-        // Step 4: Enable and start all required scripts
-        enableAndStartRequiredScriptsForIp(ipAddress)
-
-        // Step 5: Install/update all required webhooks (also removes obsolete scripts)
-        installRequiredActionsForIp(ipAddress)
+        // Gen 2/3: install required scripts first. Script upload/start is async, so
+        // webhook reconciliation that depends on script health is deferred until
+        // finalizeScriptInstallation() runs after the queue completes.
+        Set<String> requiredScripts = getRequiredScriptsForDevice(childDevice)
+        if (requiredScripts) {
+            installRequiredScriptsForIp(ipAddress, true)
+        } else {
+            // Devices without managed scripts can reconcile webhooks immediately.
+            installRequiredActionsForIp(ipAddress)
+        }
     }
 
     // Step 6: Trigger driver to reconcile UI children (PLUGS_UI, POWERSTRIP_UI).
@@ -2049,7 +2053,7 @@ private void updateComponentDriversForDevice(Map config) {
     Set<String> updatedDrivers = [] as Set
 
     componentTypes.each { String baseType ->
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'voltmeter'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'presencezone', 'voltmeter'].contains(baseType)) { return }
 
         String compDriverName = getComponentDriverName(baseType, parentHasPM)
         if (!compDriverName || updatedDrivers.contains(compDriverName)) { return }
@@ -2071,7 +2075,7 @@ private void updateComponentDriversForDevice(Map config) {
  *
  * @param ipAddress The IP address of the Shelly device
  */
-private void installRequiredScriptsForIp(String ipAddress) {
+private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActionsAfterInstall = false) {
     Object device = findChildDeviceByIp(ipAddress)
     if (!device) {
         logError("installRequiredScriptsForIp: no child device found for ${ipAddress}")
@@ -2082,6 +2086,12 @@ private void installRequiredScriptsForIp(String ipAddress) {
     if (requiredScripts.size() == 0) {
         logInfo("No required scripts for device at ${ipAddress}")
         appendLog('info', "No required scripts for ${device.displayName}")
+        return
+    }
+
+    if (!writeHubitatIpToKVS(ipAddress)) {
+        logError("Cannot install required scripts on ${ipAddress}: failed to write hubitat_sdm_ip to KVS")
+        appendLog('error', "Failed to prepare script configuration on ${device.displayName}")
         return
     }
 
@@ -2110,7 +2120,8 @@ private void installRequiredScriptsForIp(String ipAddress) {
         scriptQueue: scriptQueue,
         queueIndex: 0,
         installed: 0,
-        updated: 0
+        updated: 0,
+        reconcileActionsAfterInstall: reconcileActionsAfterInstall
     ]
 
     installNextScript(context)
@@ -2197,7 +2208,8 @@ void installNextScript(Map data) {
             installedScripts: data.installedScripts,
             scriptQueue: data.scriptQueue,
             installed: data.installed,
-            updated: data.updated
+            updated: data.updated,
+            reconcileActionsAfterInstall: data.reconcileActionsAfterInstall
         ]
 
         // Start async chunk upload with completion callback
@@ -2295,12 +2307,14 @@ void finalizeScriptInstallation(Map data) {
     String deviceDisplayName = data.deviceDisplayName as String
     Integer installed = (data.installed ?: 0) as Integer
     Integer updated = (data.updated ?: 0) as Integer
+    Boolean reconcileActionsAfterInstall = (data.reconcileActionsAfterInstall ?: false) as Boolean
 
     Integer newlyInstalled = installed - updated
     logInfo("Script installation complete: ${newlyInstalled} installed, ${updated} updated on ${ipAddress}")
     appendLog('info', "Script installation complete: ${newlyInstalled} installed, ${updated} updated on ${deviceDisplayName}")
 
-    // Write Hubitat IP to KVS after installing/updating scripts
+    // Refresh the KVS entry after the queue completes in case the hub IP changed
+    // while the scripts were being updated.
     if (installed > 0) {
         writeHubitatIpToKVS(ipAddress)
     }
@@ -2316,6 +2330,10 @@ void finalizeScriptInstallation(Map data) {
         entry.activeScriptCount = installed
         cache[ipAddress] = entry
         state.deviceStatusCache = cache
+    }
+
+    if (reconcileActionsAfterInstall) {
+        installRequiredActionsForIp(ipAddress)
     }
 
     // Fire SSR update event directly — this IS the completion event, no timer needed
@@ -2337,6 +2355,17 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
 
     Set<String> requiredScripts = getRequiredScriptsForDevice(device)
     Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it) } as Set<String>
+    if (requiredNames.isEmpty()) {
+        logInfo("No required scripts to enable/start on ${ipAddress}")
+        appendLog('info', "No scripts to enable on ${device.displayName}")
+        return
+    }
+
+    if (!writeHubitatIpToKVS(ipAddress)) {
+        logError("Cannot enable/start required scripts on ${ipAddress}: failed to write hubitat_sdm_ip to KVS")
+        appendLog('error', "Failed to prepare script configuration on ${device.displayName}")
+        return
+    }
 
     List<Map> installedScripts = listDeviceScripts(ipAddress)
     if (installedScripts == null) {
@@ -2385,10 +2414,6 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
     logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
     appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
 
-    // Write Hubitat IP to KVS after enabling/starting scripts
-    if (fixed > 0) {
-        writeHubitatIpToKVS(ipAddress)
-    }
 }
 
 /**
@@ -2409,9 +2434,17 @@ private void installRequiredActionsForIp(String ipAddress) {
         return
     }
 
+    if (deviceRequiresPresenceStatusScript(device) && !isScriptInstalledAndRunning(ipAddress, 'presencestatus')) {
+        logError("installRequiredActionsForIp: presencestatus is not active on ${ipAddress}; preserving existing webhook configuration")
+        appendLog('error', "Skipped webhook changes for ${device.displayName}: presencestatus is not active")
+        return
+    }
+
     List<Map> requiredActions = getRequiredActionsForDevice(device)
     if (!requiredActions) {
         logInfo("No actions required for this device")
+        removeObsoleteWebhooks(ipAddress, device, [])
+        removeObsoleteScripts(ipAddress, device)
         return
     }
 
@@ -2701,6 +2734,39 @@ private void installGen1ActionUrls(String ipAddress) {
             state.deviceConfigs[dni] = config
         }
     }
+}
+
+private Boolean isScriptInstalledAndRunning(String ipAddress, String scriptName) {
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) { return false }
+
+    Map script = installedScripts.find { Map entry ->
+        (entry.name ?: '') == scriptName
+    } as Map
+    return script != null && (script.enable as Boolean) && (script.running as Boolean)
+}
+
+private Boolean deviceRequiresPresenceStatusScript(def device) {
+    if (!device) { return false }
+
+    String dni = device.deviceNetworkId
+    Map config = state.deviceConfigs?.get(dni) as Map
+    if (config?.hasPresenceZone == true) { return true }
+    if (((config?.componentTypes ?: []) as List<String>).contains('presencezone')) { return true }
+
+    String components = device.getDataValue('components') ?: ''
+    if (components.split(',').any { String comp -> comp?.trim()?.startsWith('presencezone:') }) {
+        return true
+    }
+
+    String ipAddress = device.getDataValue('ipAddress')
+    Map discovered = ipAddress ? (state.discoveredShellys ?: [:])[ipAddress] as Map : null
+    Map discoveredStatus = discovered?.deviceStatus as Map
+    if (discoveredStatus?.keySet()?.any { Object key -> key?.toString()?.startsWith('presencezone:') }) {
+        return true
+    }
+
+    return (device.typeName ?: '').contains('Presence G4')
 }
 
 /**
@@ -3380,6 +3446,8 @@ private void storeDeviceConfig(String dni, Map deviceInfo, String driverName, Bo
         hasFlood: componentTypes.contains('flood'),
         hasContact: componentTypes.contains('contact'),
         hasMotion: componentTypes.contains('motion'),
+        hasPresence: componentTypes.contains('presence') || componentTypes.contains('presencezone'),
+        hasPresenceZone: componentTypes.contains('presencezone'),
         hasThermostat: componentTypes.contains('thermostat'),
         hasBluTrv: componentTypes.contains('blutrv'),
         supportedWebhookEvents: (deviceInfo.supportedWebhookEvents ?: []) as List<String>,
@@ -4187,8 +4255,12 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
     // Check if device uses powermonitoring.js script (if so, don't create power webhooks)
     Set<String> requiredScripts = getRequiredScriptsForDevice(device)
     Boolean usesPowerScript = requiredScripts.any { it.toLowerCase().contains('powermonitoring') }
+    Boolean usesPresenceScript = deviceComponentTypes.contains('presencezone')
     if (usesPowerScript) {
         logDebug("Device uses powermonitoring.js script - will skip power webhook events")
+    }
+    if (usesPresenceScript) {
+        logDebug("Device uses presencestatus.js script - will skip presence/illuminance webhook events")
     }
 
     // Query input configurations to determine their types (button, switch, analog)
@@ -4237,7 +4309,13 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
                 return
             }
 
-            // Filter 3: For input events, check if the event is applicable to this input's type
+            // Filter 3: Presence G4 uses script-only realtime notifications.
+            if (usesPresenceScript && (shellyComponent == 'presencezone' || shellyComponent == 'presence' || shellyComponent == 'illuminance')) {
+                logDebug("Skipping ${shellyComponent} event '${event}' - device uses presencestatus.js script")
+                return
+            }
+
+            // Filter 4: For input events, check if the event is applicable to this input's type
             if (shellyComponent == 'input' && inputTypes.containsKey(cid)) {
                 String inputType = inputTypes[cid]
                 if (!isInputEventApplicable(event, inputType)) {
@@ -7374,7 +7452,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // 'powerstrip_ui' — LED strip indicator on Power Strip Gen4; child creation driven by hasPowerstripUi data value
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'pm', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
-        'flood', 'contact', 'lux', 'tilt', 'motion', 'valve', 'thermostat', 'adc',
+        'flood', 'contact', 'lux', 'tilt', 'motion', 'presence', 'presencezone', 'valve', 'thermostat', 'adc',
         'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui'] as Set
 
     deviceStatus.each { k, v ->
@@ -7417,7 +7495,9 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     }
     // BLU Gateway always needs parent-child (TRVs are driver-level children)
     Boolean hasBluGw = components.any { it.toString().startsWith('blugw') }
+    Boolean hasPresenceZone = components.any { it.toString().startsWith('presencezone:') }
     Boolean needsParentChild = hasBluGw ||
+        hasPresenceZone ||
         actuatorCounts.any { String k, Integer v -> v > 1 } ||
         actuatorCounts.size() > 1 ||
         actuatorCounts.containsKey('em') || actuatorCounts.containsKey('em1') ||
@@ -7628,6 +7708,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
     if (!isGen1 && foundActuators.contains('switch') && foundSensors.contains('temperature')
         && foundSensors.contains('humidity') && hasIlluminance) {
         return "${prefix} Wall Display Parent"
+    }
+
+    // Presence G4: parent-level illuminance plus per-zone occupancy children.
+    Boolean hasPresenceZone = componentCounts.containsKey('presencezone')
+    if (!isGen1 && hasPresenceZone) {
+        return "${prefix} Presence G4 Parent"
     }
 
     // Special case: Input-only devices (no actuators, only inputs)
@@ -8122,6 +8208,7 @@ private String getComponentDriverFileName(String componentType, Boolean hasPower
         'temperature': [default: 'ShellyTemperaturePeripheralComponent.groovy'],
         'humidity': [default: 'ShellyHumidityPeripheralComponent.groovy'],
         'blutrv': [default: 'ShellyBluTRVComponent.groovy'],
+        'presencezone': [default: 'ShellyPresenceZoneComponent.groovy'],
         'voltmeter': [default: 'ShellyVoltmeterComponent.groovy']
     ]
 
@@ -8155,6 +8242,7 @@ private String getComponentDriverName(String componentType, Boolean hasPowerMoni
         'temperature': [default: 'Shelly Autoconf Temperature Peripheral'],
         'humidity': [default: 'Shelly Autoconf Humidity Peripheral'],
         'blutrv': [default: 'Shelly Autoconf BLU TRV'],
+        'presencezone': [default: 'Shelly Autoconf Presence Zone'],
         'voltmeter': [default: 'Shelly Autoconf Voltmeter']
     ]
 
@@ -8255,7 +8343,7 @@ private void installComponentDriversForDevice(Map deviceInfo) {
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'voltmeter'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'presencezone', 'voltmeter'].contains(baseType)) { return }
 
         Boolean hasPM = componentPowerMonitoring[key] ?: false
         String driverName = getComponentDriverName(baseType, hasPM)
@@ -9478,12 +9566,13 @@ LinkedHashMap kvsDeleteCommand(String key, String etag = null) {
  * hardcoding it in script source code.
  *
  * @param ipAddress The IP address of the Shelly device
+ * @return true when the KVS write succeeds, false otherwise
  */
-private void writeHubitatIpToKVS(String ipAddress) {
+private Boolean writeHubitatIpToKVS(String ipAddress) {
     String hubitatIp = location.hub.localIP
     if (!hubitatIp) {
         logWarn("writeHubitatIpToKVS: could not determine Hubitat IP")
-        return
+        return false
     }
 
     logDebug("Writing Hubitat IP (${hubitatIp}) to KVS on ${ipAddress}")
@@ -9497,8 +9586,10 @@ private void writeHubitatIpToKVS(String ipAddress) {
     LinkedHashMap response = postCommandSync(command, uri)
     if (response?.error) {
         logError("Failed to write hubitat_sdm_ip to KVS on ${ipAddress}: ${response.error}")
+        return false
     } else {
         logDebug("Successfully wrote hubitat_sdm_ip=${hubitatIp} to KVS on ${ipAddress}")
+        return true
     }
 }
 
@@ -13672,7 +13763,7 @@ private String resolveComponentDriverFileName(String driverName) {
 
     // Standard component types with optional power monitoring variants
     List<String> componentTypes = ['switch', 'cover', 'light', 'rgb', 'rgbw', 'input', 'em', 'adc',
-                                   'temperature', 'humidity', 'blutrv', 'voltmeter']
+                                   'temperature', 'humidity', 'blutrv', 'presencezone', 'voltmeter']
 
     for (String type : componentTypes) {
         // Check default (non-PM) variant

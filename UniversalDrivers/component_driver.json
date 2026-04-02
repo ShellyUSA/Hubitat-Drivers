@@ -2253,6 +2253,22 @@
       "id": "VoltmeterComponent",
       "shellyComponent": "voltmeter",
       "companionCapabilities": ["VoltageMeasurement"]
+    },
+    {
+      "attributes": [
+        {
+          "name": "numObjects",
+          "type": "number"
+        }
+      ],
+      "commands": [],
+      "id": "PresenceZoneComponent",
+      "shellyComponent": "presencezone",
+      "requiredScripts": ["presencestatus.js"],
+      "companionCapabilities": [
+        "MotionSensor",
+        "PresenceSensor"
+      ]
     }
   ],
   "deviceSpecificPreferences": {
@@ -2612,7 +2628,13 @@
       "bthomesensor.single_push",
       "bthomesensor.state_change",
       "bthomesensor.triple_push",
-      "bthomesensor.value_change"
+      "bthomesensor.value_change",
+      "presence.track",
+      "presence.no_track",
+      "presencezone.presence",
+      "presencezone.counter",
+      "presencezone.enter",
+      "presencezone.leave"
     ]
   }
 }
