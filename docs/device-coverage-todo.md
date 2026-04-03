@@ -87,7 +87,8 @@ These are not currently counted as missing coverage, but they should be revisite
 - Remaining BLU Remote Control ZB validation: capture live BLE advertisements to confirm whether raw channel values are `0..3` or `1..4`, whether the two repeated button objects map to a stable physical ordering, whether the three repeated rotation values have stable axis semantics, and whether accelerometer / magic-wand behavior needs additional attributes beyond the conservative raw baseline.
 - `Shelly Dimmer Gen4 EU/US` appears to fit the existing single-dimmer path and should not be treated as a gap without contrary hardware evidence.
 - `Shelly 1 Gen4`, `Shelly 1PM Gen4`, and `Shelly 2PM Gen4` now have dedicated model-specific routing in the active app while reusing the proven switch/cover implementations.
-- `Power Strip 4 Gen4`, `Flood Gen4`, and `Leak Sensor Cable` already have active code paths and should not be treated as gaps.
+- `Power Strip 4 Gen4` now has dedicated model-aware routing to the shared `4x Switch PM Parent` path plus refresh-backed `POWERSTRIP_UI` config sync, so it should not be treated as a gap without contrary live payload evidence.
+- `Flood Gen4` and `Leak Sensor Cable` already have active code paths and should not be treated as gaps.
 
 ## Explicitly Out Of Scope For This TODO
 
