@@ -78,6 +78,8 @@
     'SHCB-1':    'Shelly Gen1 Bulb',
     'SHRGBWW-01': 'Shelly Gen1 Bulb',
     'SHCL-255':  'Shelly Gen1 Bulb',     // Color Bulb variant
+    'SHDM-1':    'Shelly Gen1 Single Dimmer', // Shelly Dimmer (Gen 1)
+    'SHDM-2':    'Shelly Gen1 Single Dimmer', // Shelly Dimmer 2
     'SHVIN-1':   'Shelly Gen1 Single Dimmer',
     'SHDIMW-1':  'Shelly Gen1 Single Dimmer', // Wall-mount dimmer
     'SHBDUO-1':  'Shelly Gen1 Duo',
@@ -7581,7 +7583,9 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Determine driver name for discovered components and install prebuilt driver
     if (components.size() > 0) {
         Boolean isParent = needsParentChild
-        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.isGen1 as Boolean ?: false) : false
+        // Use the 'gen' field (set during initial discovery) rather than the derived 'isGen1' boolean,
+        // which is only populated during table-refresh and would be null on first discovery.
+        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.gen?.toString() == '1') : false
 
         // Model-specific driver override for Gen 1 devices (e.g., Plugs)
         String gen1TypeCode = ipKey ? state.discoveredShellys[ipKey]?.gen1Type?.toString() : null
@@ -15143,12 +15147,18 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
     // Gen 1: GET /light/{id}?turn=on&brightness={level}
     if (isGen1Device(childDevice)) {
       Integer lightId = extractComponentId(childDevice, 'lightId')
-      String turnAction = level > 0 ? 'on' : 'off'
-      Map params = [turn: turnAction, brightness: level.toString()]
-      if (transitionMs != null) {
-        params.transition = (transitionMs / 1000).intValue().toString()
+      
+      // Only include brightness param if level > 0 to avoid issues with bulbs that don't like brightness=0
+      Map params = level > 0 ? [turn: 'on', brightness: level.toString()] : [turn: 'off']
+      
+      // Only send transition when turning on
+      if (transitionMs != null && level > 0) {
+        // Max transition is 5000ms (5s); cap it to avoid errors
+        params.transition = Integer.min(transitionMs.intValue(), 5000).toString()
       }
-      logDebug("componentSetLevel: Gen 1 light/${lightId}?turn=${turnAction}&brightness=${level}")
+      String brightnessStr = params.brightness ? "&brightness=${params.brightness}" : ""
+      String transitionStr = params.transition ? "&transition=${params.transition}" : ""
+      logDebug("componentSetLevel: Gen 1 light/${lightId}?turn=${params.turn}${brightnessStr}${transitionStr}")
       sendGen1Get(ipAddress, "light/${lightId}", params)
       return
     }
