@@ -11429,7 +11429,7 @@ private void removeBleDevice(String mac) {
  * Routes decoded BLE data to a Hubitat child device as events.
  * Converts BTHome fields to standard Hubitat attributes.
  * Suppresses duplicate events for continuous attributes (temperature, humidity, battery, illuminance,
- * distanceMm, tilt)
+ * distanceMm, tilt, rawChannel, rawDimmer, rawRotationN)
  * using the @Field bleLastSentValues cache. Always sends isStateChange events (button, motion, contact).
  *
  * @param mac BLE device MAC address (the child DNI)
@@ -11438,7 +11438,8 @@ private void removeBleDevice(String mac) {
  */
 private void routeBleEventToChild(String mac, Map bleData, Object child) {
     String tempScale = getCachedTemperatureScale()
-    String bleModel = child?.getDataValue('bleModel')
+    ChildDeviceWrapper childDevice = child as ChildDeviceWrapper
+    String bleModel = childGetDeviceDataValueHelper(childDevice, 'bleModel')
     Boolean isRemoteControlZb = (bleModel == 'SBRC-005B') || isBleRemoteControlZbPayload(bleData)
     List<Map> events = buildBleEvents(bleData, tempScale, isRemoteControlZb)
 
@@ -11487,7 +11488,8 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
 /**
  * Converts BLE data fields to Hubitat event maps.
  * Handles temperature unit conversion, distance readings, motion/contact states,
- * and multi-button BTHome encoding. Pure logic — no dynamic property access.
+ * raw Remote Control ZB fields, and multi-button BTHome encoding.
+ * Pure logic — no dynamic property access.
  *
  * @param bleData Map of decoded BTHome fields
  * @param tempScale Hub temperature scale ('F' or 'C'), pre-fetched by caller
@@ -11554,7 +11556,8 @@ private static List<Map> buildBleEvents(Map bleData, String tempScale, Boolean i
         if (isRemoteControlZb) {
             if (bleData.rotation instanceof List) {
                 List rotationList = bleData.rotation as List
-                for (int idx = 0; idx < rotationList.size(); idx++) {
+                int rotationCount = Math.min(rotationList.size(), 3)
+                for (int idx = 0; idx < rotationCount; idx++) {
                     BigDecimal rawRotation = rotationList[idx] as BigDecimal
                     Integer rotationNum = idx + 1
                     events.add([name: "rawRotation${rotationNum}".toString(), value: rawRotation, unit: '\u00B0',
@@ -11566,9 +11569,9 @@ private static List<Map> buildBleEvents(Map bleData, String tempScale, Boolean i
                     descriptionText: "Raw rotation 1 is ${rawRotation}\u00B0".toString()])
             }
         } else {
-        BigDecimal tilt = bleData.rotation as BigDecimal
-        events.add([name: 'tilt', value: tilt, unit: '\u00B0',
-            descriptionText: "Tilt is ${tilt}\u00B0".toString()])
+            BigDecimal tilt = bleData.rotation as BigDecimal
+            events.add([name: 'tilt', value: tilt, unit: '\u00B0',
+                descriptionText: "Tilt is ${tilt}\u00B0".toString()])
         }
     }
 

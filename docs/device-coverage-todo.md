@@ -43,22 +43,7 @@ TODO:
 - Validate the `blugw` / BLE-gateway role on real hardware, especially if the device can mix local platform components with gateway responsibilities.
 - Decide whether the existing THL / illuminance slice should eventually migrate into the dedicated Pill parent once an active-scope illuminance child-driver path exists.
 
-### 2. BLU Variant Mapping Audit
-
-Why this needs validation:
-
-- The current BLU model tables now cover the main `Button1`, `Button4`/remote, `Door/Window`, `H&T`, `Motion`, `Wall Switch 4`, and `TRV` shapes, plus explicit alias mappings for `Button Tough 1 ZB`, `Wall Switch 4 ZB DK`, and `RC Button 4 ZB`.
-- Plain `Button Tough 1`, `RC Button`, and `RC Button US` are no longer code gaps: current Shelly docs reuse the same model codes and Bluetooth IDs as the already-mapped `Button1` and `RC Button 4` entries.
-- The remaining BLU question is no longer simple model mapping. Official docs for `SBRC-005B` / `Shelly BLU Remote Control ZB` describe extra wheel / channel data beyond a plain 4-button remote, but the active app still routes that model to the generic `Shelly BLU Button4` driver.
-
-TODO:
-
-- Capture or confirm real BLE advertisements for `SBRC-005B` / `Shelly BLU Remote Control ZB`, especially the `dimmer`, `rotation`, and `channel` fields.
-- Decide whether `SBRC-005B` should keep reusing `Shelly BLU Button4` or move to a dedicated active-scope driver for wheel / channel behavior.
-- Create new drivers only where the payload or capability model is genuinely new.
-- Keep `Shelly BLU TRV` out of this gap list. It is already supported through the BLU Gateway path.
-
-### 3. Shelly Plug US Gen4 Illuminance Integration
+### 2. Shelly Plug US Gen4 Illuminance Integration
 
 Why this needs validation before being called supported:
 
@@ -73,7 +58,7 @@ TODO:
 - Decide whether illuminance should live on the main driver or a child sensor device.
 - Verify that LED-control child behavior (`PLUGS_UI`) still works if the device moves off the plain single-switch PM path.
 
-### 4. Shelly EM Mini Gen4
+### 3. Shelly EM Mini Gen4
 
 Why this needs validation before being called supported:
 
@@ -92,12 +77,14 @@ TODO:
 These are not currently counted as missing coverage, but they should be revisited when hardware or API dumps are available:
 
 - `Shelly BLU Distance` now has dedicated BLU model routing for `SBDI-003E` / `0x000A`, forwards BTHome `0x40` distance measurements, and uses a dedicated driver exposing `distanceMm` plus battery/presence.
+- `Shelly BLU Remote Control ZB` now has dedicated BLU model routing for `SBRC-005B` / `0x0009`, uses its own standalone driver, forwards raw `channel` / `dimmer` values plus raw `rotation1..3`, and treats the repeated button objects as raw button slots `1..2` without guessing left/right semantics.
 - `Shelly DALI Dimmer Gen3` now has dedicated routing for the confirmed `S3DM-0A1WW` hardware plus explicit `dali` component recognition, uses a dedicated standalone `Shelly Autoconf DALI Dimmer` driver, and exposes DALI gear-count/error/scan diagnostics plus scan and ping commands on the main dimmer device.
 - `The Pill` now has dedicated routing to `Shelly Autoconf Pill Parent` for profiles beyond the existing THL-style illuminance slice, while that illuminance slice is intentionally preserved on `Shelly Autoconf THL Sensor` until live payloads and an illuminance child path are validated.
 - `Wall Display X2i` and `Wall Display XL` now have dedicated model-specific routing to the Wall Display parent, and the parent now tolerates illuminance-only variants plus the X2i 2-output power base.
 - Remaining wall-display validation: capture real `GetStatus` / component payloads for `SAWD-5A1XX10EU0` and `SAWD-3A1XE10EU2`, and confirm whether the XL front-panel buttons expose local API events at all.
 - `Wall Display X2` may still be close to the legacy wall-display path, but its current firmware component map should be verified when hardware is available.
 - Remaining DALI validation: capture a live `Shelly.GetDeviceInfo.app` value before adding an app-name override, confirm whether internal temperature is exposed in `light:0` status at all, and validate exact detached/button-mode webhook payloads on real hardware.
+- Remaining BLU Remote Control ZB validation: capture live BLE advertisements to confirm whether raw channel values are `0..3` or `1..4`, whether the two repeated button objects map to a stable physical ordering, whether the three repeated rotation values have stable axis semantics, and whether accelerometer / magic-wand behavior needs additional attributes beyond the conservative raw baseline.
 - `Shelly Dimmer Gen4 EU/US` appears to fit the existing single-dimmer path and should not be treated as a gap without contrary hardware evidence.
 - `Shelly 1 Gen4`, `Shelly 1PM Gen4`, and `Shelly 2PM Gen4` now have dedicated model-specific routing in the active app while reusing the proven switch/cover implementations.
 - `Power Strip 4 Gen4`, `Flood Gen4`, and `Leak Sensor Cable` already have active code paths and should not be treated as gaps.
