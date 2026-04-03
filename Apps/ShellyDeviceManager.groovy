@@ -76,6 +76,7 @@
     'SHPLG2-1':  'Shelly Gen1 Plug S',   // Plug 2
     'SHBLB-1':   'Shelly Gen1 Bulb',
     'SHCB-1':    'Shelly Gen1 Bulb',
+    'SHRGBWW-01': 'Shelly Gen1 RGBWW',
     'SHCL-255':  'Shelly Gen1 Bulb',     // Color Bulb variant
     'SHVIN-1':   'Shelly Gen1 Single Dimmer',
     'SHDIMW-1':  'Shelly Gen1 Single Dimmer', // Wall-mount dimmer
@@ -85,7 +86,7 @@
     'SHGS-1':    'Shelly Gen1 Gas Sensor',
     'SHSN-1':    'Shelly Gen1 Sense',
     'SHUNI-1':   'Shelly Gen1 Uni Parent',
-    // SHRGBW2 and SHRGBWW-01 intentionally excluded — require dynamic mode detection (color vs white)
+    // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
 ]
 
 // Model-specific driver overrides for Gen 2+ devices that need dedicated drivers.
@@ -128,6 +129,7 @@
     'Shelly Autoconf Wall Display XL Parent': 'Shelly Autoconf Wall Display Parent',
     'Shelly Autoconf Single CCT Parent': 'Shelly Autoconf Single CCT PM Parent',
     'Shelly Autoconf Single Cover Parent': 'Shelly Autoconf Single Cover PM Parent',
+    'Shelly Gen1 RGBWW': 'Shelly Gen1 Bulb',
 ]
 
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
@@ -188,11 +190,10 @@
     'Shelly Gen1 Plug S': 'UniversalDrivers/ShellyGen1PlugS.groovy',
     'Shelly Gen1 Single Dimmer': 'UniversalDrivers/ShellyGen1SingleDimmer.groovy',
     'Shelly Gen1 Bulb': 'UniversalDrivers/ShellyGen1Bulb.groovy',
+    'Shelly Gen1 RGBWW': 'UniversalDrivers/ShellyGen1Bulb.groovy',
     'Shelly Gen1 Duo': 'UniversalDrivers/ShellyGen1Duo.groovy',
     'Shelly Gen1 RGBW2 Color': 'UniversalDrivers/ShellyGen1RGBW2Color.groovy',
     'Shelly Gen1 RGBW2 White Parent': 'UniversalDrivers/ShellyGen1RGBW2WhiteParent.groovy',
-    'Shelly Gen1 RGBWW Color': 'UniversalDrivers/ShellyGen1RGBWWColor.groovy',
-    'Shelly Gen1 RGBWW White Parent': 'UniversalDrivers/ShellyGen1RGBWWWhiteParent.groovy',
     'Shelly Gen1 White Channel': 'UniversalDrivers/ShellyGen1WhiteChannel.groovy',
     'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
@@ -364,6 +365,7 @@
     'shellybulbduo':    'SHBDUO-1',
     'shellycolorbulb':  'SHCB-1',
     'shellyrgbw2':      'SHRGBW2',
+    'shellyrgbww':      'SHRGBWW-01',
     'shellyht':         'SHHT-1',
     'shellyflood':      'SHWT-1',
     'shellydw':         'SHDW-1',
@@ -2633,12 +2635,12 @@ private void clearGen1ActionUrls(String ipAddress) {
         }
     }
 
-    // Light/dimmer components (RGBW2/RGBWW use /settings/color/ instead of /settings/light/)
+    // Light/dimmer components (RGBW2 uses /settings/color/ instead of /settings/light/)
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('light:')) {
             Integer cid = key.split(':')[1] as Integer
-            String settingsPath = ((typeCode == 'SHRGBW2') || (typeCode == 'SHRGBWW-01')) ? "settings/color/${cid}" : "settings/light/${cid}"
+            String settingsPath = (typeCode == 'SHRGBW2') ? "settings/color/${cid}" : "settings/light/${cid}"
             Map result = sendGen1Setting(ipAddress, settingsPath, [
                 out_on_url: '', out_off_url: '',
                 shortpush_url: '', longpush_url: ''
@@ -2647,7 +2649,7 @@ private void clearGen1ActionUrls(String ipAddress) {
         }
     }
 
-    // White channel components (RGBW2/RGBWW white mode)
+    // White channel components (RGBW2 white mode)
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('white:')) {
@@ -2902,12 +2904,12 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
     }
 
     // Light/dimmer action URLs (component settings endpoint)
-    // RGBW2/RGBWW in color mode use /settings/color/{cid} instead of /settings/light/{cid}
+    // RGBW2 in color mode uses /settings/color/{cid} instead of /settings/light/{cid}
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('light:')) {
             Integer cid = key.split(':')[1] as Integer
-            String settingsPath = ((typeCode == 'SHRGBW2') || (typeCode == 'SHRGBWW-01')) ? "settings/color/${cid}" : "settings/light/${cid}"
+            String settingsPath = (typeCode == 'SHRGBW2') ? "settings/color/${cid}" : "settings/light/${cid}"
             actions.add([endpoint: settingsPath, param: 'out_on_url',
                 dst: 'light_on', cid: cid, name: "Light ${cid} On", configType: 'component'])
             actions.add([endpoint: settingsPath, param: 'out_off_url',
@@ -2915,7 +2917,7 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
         }
     }
 
-    // White channel action URLs (RGBW2/RGBWW in white mode)
+    // White channel action URLs (RGBW2 in white mode)
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('white:')) {
@@ -7175,10 +7177,10 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
     }
 
     // Lights → light:N or white:N depending on device mode
-    // RGBW2/RGBWW in white mode: normalize lights as white:N (commands use /white/ endpoint)
+    // RGBW2 in white mode: normalize lights as white:N (commands use /white/ endpoint)
     List lights = gen1Status?.lights as List
     if (lights) {
-        Boolean isWhiteMode = ((typeCode == 'SHRGBW2') || (typeCode == 'SHRGBWW-01')) && mode == 'white'
+        Boolean isWhiteMode = (typeCode == 'SHRGBW2' && mode == 'white')
         String lightPrefix = isWhiteMode ? 'white' : 'light'
 
         for (int i = 0; i < lights.size(); i++) {
@@ -7190,7 +7192,7 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
             // Color mode fields (present on bulbs/RGBW devices in color mode)
             if (!isWhiteMode) {
                 if (lightData.containsKey('mode'))  { lightMap.mode = lightData.mode }
-                // Fallback: RGBW2/RGBWW report mode at top level of status, not inside lights[]
+                // Fallback: RGBW2 reports mode at top level of status, not inside lights[]
                 if (!lightMap.containsKey('mode') && gen1Status.containsKey('mode')) {
                     lightMap.mode = gen1Status.mode
                 }
@@ -7588,13 +7590,13 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             logDebug("Using dedicated Gen 2+/Gen 4 driver '${driverName}' for ${ipKey}")
         } else if (gen1TypeCode && GEN1_MODEL_DRIVER_OVERRIDE.containsKey(gen1TypeCode)) {
             driverName = GEN1_MODEL_DRIVER_OVERRIDE[gen1TypeCode]
-        } else if (gen1TypeCode == 'SHRGBW2' || gen1TypeCode == 'SHRGBWW-01') {
-            // RGBW2/RGBWW mode-based driver selection (color vs white firmware mode)
+        } else if (gen1TypeCode == 'SHRGBW2') {
+            // RGBW2 mode-based driver selection (color vs white firmware mode)
             Map gen1Settings = ipKey ? state.discoveredShellys[ipKey]?.gen1Settings as Map : null
             String rgbw2Mode = gen1Settings?.mode?.toString() ?: 'color'
             driverName = (rgbw2Mode == 'white') ?
-                ((gen1TypeCode == 'SHRGBWW-01') ? 'Shelly Gen1 RGBWW White Parent' : 'Shelly Gen1 RGBW2 White Parent') :
-                ((gen1TypeCode == 'SHRGBWW-01') ? 'Shelly Gen1 RGBWW Color' : 'Shelly Gen1 RGBW2 Color')
+                'Shelly Gen1 RGBW2 White Parent' :
+                'Shelly Gen1 RGBW2 Color'
         } else {
             driverName = generateDriverName(components, componentPowerMonitoring, isParent, isGen1)
         }
@@ -7615,7 +7617,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
 
             // White parent needs its child driver installed too
-            if (driverName == 'Shelly Gen1 RGBW2 White Parent' || driverName == 'Shelly Gen1 RGBWW White Parent') {
+            if (driverName == 'Shelly Gen1 RGBW2 White Parent') {
                 installPrebuiltDriver('Shelly Gen1 White Channel', components, componentPowerMonitoring, version)
             }
 
@@ -15179,9 +15181,9 @@ void componentSetColor(def childDevice, Map colorMap) {
           white: '0', gain: gainLevel.toString()
       ]
 
-      // RGBW2/RGBWW use /color/{id} endpoint; bulbs use /light/{id} with mode=color
+      // RGBW2 uses /color/{id} endpoint; bulbs use /light/{id} with mode=color
       String gen1Type = childDevice.getDataValue('gen1Type')
-      if (gen1Type == 'SHRGBW2' || gen1Type == 'SHRGBWW-01') {
+      if (gen1Type == 'SHRGBW2') {
         logDebug("componentSetColor: Gen 1 color/${lightId} params=${params}")
         sendGen1Get(ipAddress, "color/${lightId}", params)
       } else {
