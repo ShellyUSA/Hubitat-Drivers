@@ -11136,8 +11136,6 @@ private static Boolean isBleRemoteControlZbPayload(Map bleData) {
     if (bleData.containsKey('channel') || bleData.containsKey('dimmer')) { return true }
     def rotationData = bleData.rotation
     if (rotationData instanceof List && ((List) rotationData).size() >= 3) { return true }
-    def buttonData = bleData.button
-    if (buttonData instanceof List && ((List) buttonData).size() == 2) { return true }
     return false
 }
 
@@ -11429,7 +11427,7 @@ private void removeBleDevice(String mac) {
  * Routes decoded BLE data to a Hubitat child device as events.
  * Converts BTHome fields to standard Hubitat attributes.
  * Suppresses duplicate events for continuous attributes (temperature, humidity, battery, illuminance,
- * distanceMm, tilt, rawChannel, rawDimmer, rawRotationN)
+ * distanceMm, tilt, rawChannel)
  * using the @Field bleLastSentValues cache. Always sends isStateChange events (button, motion, contact).
  *
  * @param mac BLE device MAC address (the child DNI)
@@ -11440,7 +11438,8 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
     String tempScale = getCachedTemperatureScale()
     ChildDeviceWrapper childDevice = child as ChildDeviceWrapper
     String bleModel = childGetDeviceDataValueHelper(childDevice, 'bleModel')
-    Boolean isRemoteControlZb = (bleModel == 'SBRC-005B') || isBleRemoteControlZbPayload(bleData)
+    Boolean childSupportsRemoteRaw = childHasAttributeHelper(childDevice, 'rawChannel')
+    Boolean isRemoteControlZb = childSupportsRemoteRaw && ((bleModel == 'SBRC-005B') || isBleRemoteControlZbPayload(bleData))
     List<Map> events = buildBleEvents(bleData, tempScale, isRemoteControlZb)
 
     // Get or create last-sent cache for this MAC
@@ -11560,15 +11559,15 @@ private static List<Map> buildBleEvents(Map bleData, String tempScale, Boolean i
                 for (int idx = 0; idx < rotationCount; idx++) {
                     BigDecimal rawRotation = rotationList[idx] as BigDecimal
                     Integer rotationNum = idx + 1
-                    events.add([name: "rawRotation${rotationNum}".toString(), value: rawRotation, unit: '\u00B0',
+                    events.add([name: "rawRotation${rotationNum}".toString(), value: rawRotation, unit: '\u00B0', isStateChange: true,
                         descriptionText: "Raw rotation ${rotationNum} is ${rawRotation}\u00B0".toString()])
                 }
             } else {
                 BigDecimal rawRotation = bleData.rotation as BigDecimal
-                events.add([name: 'rawRotation1', value: rawRotation, unit: '\u00B0',
+                events.add([name: 'rawRotation1', value: rawRotation, unit: '\u00B0', isStateChange: true,
                     descriptionText: "Raw rotation 1 is ${rawRotation}\u00B0".toString()])
             }
-        } else {
+        } else if (!(bleData.rotation instanceof List)) {
             BigDecimal tilt = bleData.rotation as BigDecimal
             events.add([name: 'tilt', value: tilt, unit: '\u00B0',
                 descriptionText: "Tilt is ${tilt}\u00B0".toString()])
@@ -11583,7 +11582,7 @@ private static List<Map> buildBleEvents(Map bleData, String tempScale, Boolean i
 
     if (isRemoteControlZb && bleData.dimmer != null) {
         Integer rawDimmer = (bleData.dimmer as BigDecimal).setScale(0, BigDecimal.ROUND_HALF_UP).intValue()
-        events.add([name: 'rawDimmer', value: rawDimmer,
+        events.add([name: 'rawDimmer', value: rawDimmer, isStateChange: true,
             descriptionText: "Raw dimmer is ${rawDimmer}".toString()])
     }
 
