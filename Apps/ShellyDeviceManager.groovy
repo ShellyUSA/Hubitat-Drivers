@@ -76,7 +76,6 @@
     'SHPLG2-1':  'Shelly Gen1 Plug S',   // Plug 2
     'SHBLB-1':   'Shelly Gen1 Bulb',
     'SHCB-1':    'Shelly Gen1 Bulb',
-    'SHRGBWW-01': 'Shelly Gen1 RGBWW',
     'SHCL-255':  'Shelly Gen1 Bulb',     // Color Bulb variant
     'SHVIN-1':   'Shelly Gen1 Single Dimmer',
     'SHDIMW-1':  'Shelly Gen1 Single Dimmer', // Wall-mount dimmer
@@ -86,7 +85,7 @@
     'SHGS-1':    'Shelly Gen1 Gas Sensor',
     'SHSN-1':    'Shelly Gen1 Sense',
     'SHUNI-1':   'Shelly Gen1 Uni Parent',
-    // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
+    // SHRGBW2 and SHRGBWW-01 intentionally excluded — require dynamic mode detection (color vs white)
 ]
 
 // Model-specific driver overrides for Gen 2+ devices that need dedicated drivers.
@@ -107,6 +106,7 @@
     'shelly1g4anz': 'Shelly Autoconf Single Switch 1 Gen4',
     'shelly1pmg4':     'Shelly Autoconf Single Switch PM 1PM Gen4',
     'shelly1pmg4anz': 'Shelly Autoconf Single Switch PM 1PM Gen4',
+    'shellypowerstrip4g4': 'Shelly Autoconf Power Strip 4 Gen4 Parent',
     's3dm-0a1ww':      'Shelly Autoconf DALI Dimmer',
     'sawd-5a1xx10eu0': 'Shelly Autoconf Wall Display X2i Parent',
     'sawd-3a1xe10eu2': 'Shelly Autoconf Wall Display XL Parent',
@@ -123,13 +123,13 @@
 @Field static final Map<String, String> PREBUILT_DRIVER_SOURCE_NAME_OVERRIDE = [
     'Shelly Autoconf Single Switch 1 Gen4': 'Shelly Autoconf Single Switch',
     'Shelly Autoconf Single Switch PM 1PM Gen4': 'Shelly Autoconf Single Switch PM',
+    'Shelly Autoconf Power Strip 4 Gen4 Parent': 'Shelly Autoconf 4x Switch PM Parent',
     'Shelly Autoconf 2x Switch PM 2PM Gen4 Parent': 'Shelly Autoconf 2x Switch PM Parent',
     'Shelly Autoconf Single Cover PM 2PM Gen4 Parent': 'Shelly Autoconf Single Cover PM Parent',
     'Shelly Autoconf Wall Display X2i Parent': 'Shelly Autoconf Wall Display Parent',
     'Shelly Autoconf Wall Display XL Parent': 'Shelly Autoconf Wall Display Parent',
     'Shelly Autoconf Single CCT Parent': 'Shelly Autoconf Single CCT PM Parent',
     'Shelly Autoconf Single Cover Parent': 'Shelly Autoconf Single Cover PM Parent',
-    'Shelly Gen1 RGBWW': 'Shelly Gen1 Bulb',
 ]
 
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
@@ -155,6 +155,7 @@
     'Shelly Autoconf 2x Switch PM 2PM Gen4 Parent': 'UniversalDrivers/Shelly2xSwitchPMParent.groovy',
     'Shelly Autoconf 3x Switch Parent': 'UniversalDrivers/Shelly3xSwitchParent.groovy',
     'Shelly Autoconf 4x Switch PM Parent': 'UniversalDrivers/Shelly4xSwitchPMParent.groovy',
+    'Shelly Autoconf Power Strip 4 Gen4 Parent': 'UniversalDrivers/Shelly4xSwitchPMParent.groovy',
     'Shelly Autoconf Single Cover PM Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
     'Shelly Autoconf Single Cover PM 2PM Gen4 Parent': 'UniversalDrivers/ShellySingleCoverPMParent.groovy',
     'Shelly Autoconf 2x Cover PM Parent': 'UniversalDrivers/Shelly2xCoverPMParent.groovy',
@@ -190,10 +191,11 @@
     'Shelly Gen1 Plug S': 'UniversalDrivers/ShellyGen1PlugS.groovy',
     'Shelly Gen1 Single Dimmer': 'UniversalDrivers/ShellyGen1SingleDimmer.groovy',
     'Shelly Gen1 Bulb': 'UniversalDrivers/ShellyGen1Bulb.groovy',
-    'Shelly Gen1 RGBWW': 'UniversalDrivers/ShellyGen1Bulb.groovy',
     'Shelly Gen1 Duo': 'UniversalDrivers/ShellyGen1Duo.groovy',
     'Shelly Gen1 RGBW2 Color': 'UniversalDrivers/ShellyGen1RGBW2Color.groovy',
     'Shelly Gen1 RGBW2 White Parent': 'UniversalDrivers/ShellyGen1RGBW2WhiteParent.groovy',
+    'Shelly Gen1 RGBWW Color': 'UniversalDrivers/ShellyGen1RGBWWColor.groovy',
+    'Shelly Gen1 RGBWW White Parent': 'UniversalDrivers/ShellyGen1RGBWWWhiteParent.groovy',
     'Shelly Gen1 White Channel': 'UniversalDrivers/ShellyGen1WhiteChannel.groovy',
     'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
@@ -2635,12 +2637,12 @@ private void clearGen1ActionUrls(String ipAddress) {
         }
     }
 
-    // Light/dimmer components (RGBW2 uses /settings/color/ instead of /settings/light/)
+    // Light/dimmer components (RGBW2/RGBWW use /settings/color/ instead of /settings/light/)
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('light:')) {
             Integer cid = key.split(':')[1] as Integer
-            String settingsPath = (typeCode == 'SHRGBW2') ? "settings/color/${cid}" : "settings/light/${cid}"
+            String settingsPath = ((typeCode == 'SHRGBW2') || (typeCode == 'SHRGBWW-01')) ? "settings/color/${cid}" : "settings/light/${cid}"
             Map result = sendGen1Setting(ipAddress, settingsPath, [
                 out_on_url: '', out_off_url: '',
                 shortpush_url: '', longpush_url: ''
@@ -2649,7 +2651,7 @@ private void clearGen1ActionUrls(String ipAddress) {
         }
     }
 
-    // White channel components (RGBW2 white mode)
+    // White channel components (RGBW2/RGBWW white mode)
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('white:')) {
@@ -2904,12 +2906,12 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
     }
 
     // Light/dimmer action URLs (component settings endpoint)
-    // RGBW2 in color mode uses /settings/color/{cid} instead of /settings/light/{cid}
+    // RGBW2/RGBWW in color mode use /settings/color/{cid} instead of /settings/light/{cid}
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('light:')) {
             Integer cid = key.split(':')[1] as Integer
-            String settingsPath = (typeCode == 'SHRGBW2') ? "settings/color/${cid}" : "settings/light/${cid}"
+            String settingsPath = ((typeCode == 'SHRGBW2') || (typeCode == 'SHRGBWW-01')) ? "settings/color/${cid}" : "settings/light/${cid}"
             actions.add([endpoint: settingsPath, param: 'out_on_url',
                 dst: 'light_on', cid: cid, name: "Light ${cid} On", configType: 'component'])
             actions.add([endpoint: settingsPath, param: 'out_off_url',
@@ -2917,7 +2919,7 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
         }
     }
 
-    // White channel action URLs (RGBW2 in white mode)
+    // White channel action URLs (RGBW2/RGBWW in white mode)
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('white:')) {
@@ -7147,8 +7149,9 @@ static Map inferGen1BatteryComponents(String typeCode) {
 static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode) {
     Map normalized = [:]
 
-    // Detect relay vs roller mode (Shelly 2, 2.5)
-    String mode = gen1Settings?.mode?.toString() ?: 'relay'
+    // Detect relay vs roller / light vs white mode. Prefer settings, but fall back to
+    // status because RGBW-family devices report mode there when settings are missing.
+    String mode = gen1Settings?.mode?.toString() ?: gen1Status?.mode?.toString() ?: 'relay'
 
     // Relays → switch:N (only if not in roller mode)
     List relays = gen1Status?.relays as List
@@ -7177,10 +7180,10 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
     }
 
     // Lights → light:N or white:N depending on device mode
-    // RGBW2 in white mode: normalize lights as white:N (commands use /white/ endpoint)
+    // RGBW2/RGBWW in white mode: normalize lights as white:N (commands use /white/ endpoint)
     List lights = gen1Status?.lights as List
     if (lights) {
-        Boolean isWhiteMode = (typeCode == 'SHRGBW2' && mode == 'white')
+        Boolean isWhiteMode = ((typeCode == 'SHRGBW2') || (typeCode == 'SHRGBWW-01')) && mode == 'white'
         String lightPrefix = isWhiteMode ? 'white' : 'light'
 
         for (int i = 0; i < lights.size(); i++) {
@@ -7192,7 +7195,7 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
             // Color mode fields (present on bulbs/RGBW devices in color mode)
             if (!isWhiteMode) {
                 if (lightData.containsKey('mode'))  { lightMap.mode = lightData.mode }
-                // Fallback: RGBW2 reports mode at top level of status, not inside lights[]
+                // Fallback: RGBW2/RGBWW report mode at top level of status, not inside lights[]
                 if (!lightMap.containsKey('mode') && gen1Status.containsKey('mode')) {
                     lightMap.mode = gen1Status.mode
                 }
@@ -7590,13 +7593,14 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             logDebug("Using dedicated Gen 2+/Gen 4 driver '${driverName}' for ${ipKey}")
         } else if (gen1TypeCode && GEN1_MODEL_DRIVER_OVERRIDE.containsKey(gen1TypeCode)) {
             driverName = GEN1_MODEL_DRIVER_OVERRIDE[gen1TypeCode]
-        } else if (gen1TypeCode == 'SHRGBW2') {
-            // RGBW2 mode-based driver selection (color vs white firmware mode)
+        } else if (gen1TypeCode == 'SHRGBW2' || gen1TypeCode == 'SHRGBWW-01') {
+            // RGBW2/RGBWW mode-based driver selection (color vs white firmware mode)
             Map gen1Settings = ipKey ? state.discoveredShellys[ipKey]?.gen1Settings as Map : null
-            String rgbw2Mode = gen1Settings?.mode?.toString() ?: 'color'
+            Map gen1Status = ipKey ? state.discoveredShellys[ipKey]?.gen1Status as Map : null
+            String rgbw2Mode = gen1Settings?.mode?.toString() ?: gen1Status?.mode?.toString() ?: 'color'
             driverName = (rgbw2Mode == 'white') ?
-                'Shelly Gen1 RGBW2 White Parent' :
-                'Shelly Gen1 RGBW2 Color'
+                ((gen1TypeCode == 'SHRGBWW-01') ? 'Shelly Gen1 RGBWW White Parent' : 'Shelly Gen1 RGBW2 White Parent') :
+                ((gen1TypeCode == 'SHRGBWW-01') ? 'Shelly Gen1 RGBWW Color' : 'Shelly Gen1 RGBW2 Color')
         } else {
             driverName = generateDriverName(components, componentPowerMonitoring, isParent, isGen1)
         }
@@ -7617,7 +7621,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
 
             // White parent needs its child driver installed too
-            if (driverName == 'Shelly Gen1 RGBW2 White Parent') {
+            if (driverName == 'Shelly Gen1 RGBW2 White Parent' || driverName == 'Shelly Gen1 RGBWW White Parent') {
                 installPrebuiltDriver('Shelly Gen1 White Channel', components, componentPowerMonitoring, version)
             }
 
@@ -10226,6 +10230,17 @@ LinkedHashMap lightGetConfigCommand(Integer id = 0, src = 'lightGetConfig') {
     "params" : [
       "id" : id
     ]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap powerstripUiGetConfigCommand(String src = 'powerstripUiGetConfig') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "POWERSTRIP_UI.GetConfig",
+    "params" : [:]
   ]
   return command
 }
@@ -15181,9 +15196,9 @@ void componentSetColor(def childDevice, Map colorMap) {
           white: '0', gain: gainLevel.toString()
       ]
 
-      // RGBW2 uses /color/{id} endpoint; bulbs use /light/{id} with mode=color
+      // RGBW2/RGBWW use /color/{id} endpoint; bulbs use /light/{id} with mode=color
       String gen1Type = childDevice.getDataValue('gen1Type')
-      if (gen1Type == 'SHRGBW2') {
+      if (gen1Type == 'SHRGBW2' || gen1Type == 'SHRGBWW-01') {
         logDebug("componentSetColor: Gen 1 color/${lightId} params=${params}")
         sendGen1Get(ipAddress, "color/${lightId}", params)
       } else {
@@ -17467,6 +17482,26 @@ private void syncWdUiConfigToDriver(def targetDevice, String ipAddress) {
     }
 }
 
+/**
+ * Syncs POWERSTRIP_UI LED-strip config from the physical device into the parent driver.
+ *
+ * @param parentDevice The Power Strip parent device
+ * @param ipAddress The Shelly device IP address
+ */
+private void syncPowerstripUiConfigToDriver(def parentDevice, String ipAddress) {
+    if (!parentDevice || parentDevice.getDataValue('hasPowerstripUi') != 'true') { return }
+
+    String rpcUri = "http://${ipAddress}/rpc"
+    LinkedHashMap command = powerstripUiGetConfigCommand('syncPowerstripUiConfig')
+    LinkedHashMap response = postCommandSync(command, rpcUri)
+    if (!response) { return }
+
+    Map config = response?.result as Map ?: [:]
+    if (!config) { return }
+
+    parentDevice.syncPowerstripUiConfig(config)
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Color Settings (default state, auto-on, auto-off for RGBW2 color mode)
 // ═══════════════════════════════════════════════════════════════
@@ -18231,6 +18266,7 @@ void parentRefresh(def parentDevice) {
         parentDevice.distributeStatus(deviceStatus)
         syncCoverConfigToDriver(parentDevice, ipAddress)
         syncCoverConfigForParentChildren(parentDevice.deviceNetworkId, ipAddress)
+        syncPowerstripUiConfigToDriver(parentDevice, ipAddress)
         logDebug("Sent status to ${parentDevice.displayName}")
     } catch (Exception e) {
         logError("Failed to distribute status to ${parentDevice.displayName}: ${e.message}")

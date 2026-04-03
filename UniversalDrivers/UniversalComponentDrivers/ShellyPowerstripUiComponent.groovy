@@ -11,8 +11,8 @@
  * When mode is 'switch', both on/off colors are set identically so the strip always
  * shows the same color. Turning the PowerstripUI child "off" in Hubitat sets mode = "off".
  *
- * POWERSTRIP_UI has no queryable status and no webhook events, so this driver
- * maintains its own state from Hubitat commands.
+ * POWERSTRIP_UI has no useful GetStatus payload or webhook events, so refresh
+ * delegates through the parent to re-read POWERSTRIP_UI.GetConfig instead.
  *
  * Delegates commands to parent driver via componentPowerstripUiXxx() pattern.
  */
@@ -64,10 +64,17 @@ void installed() {
 
 /**
  * Called when device preferences are saved.
- * Sends updated night mode configuration to the parent driver.
+ * Applies the selected LED mode immediately and sends updated night mode
+ * configuration to the parent driver.
  */
 void updated() {
   logDebug('updated() called')
+  String ledMode = settings.ledMode ?: 'switch'
+  if (ledMode == 'off') {
+    parent?.componentPowerstripUiOff(device)
+  } else {
+    parent?.componentPowerstripUiOn(device, ledMode)
+  }
   Map nightModeConfig = [
     enable: settings.enableNightMode ?: false,
     brightness: settings.nightModeBrightness != null ? settings.nightModeBrightness as Integer : 10,
@@ -143,11 +150,12 @@ void setSaturation(BigDecimal saturation) {
 }
 
 /**
- * No-op: POWERSTRIP_UI has no queryable status (GetStatus returns {}).
- * State is maintained locally from Hubitat commands.
+ * Refreshes the parent device so POWERSTRIP_UI.GetConfig is re-read and synced
+ * back into this child driver.
  */
 void refresh() {
-  logDebug('refresh() called — no-op for POWERSTRIP_UI (no queryable status)')
+  logDebug('refresh() called')
+  parent?.refresh()
 }
 
 // ═══════════════════════════════════════════════════════════════

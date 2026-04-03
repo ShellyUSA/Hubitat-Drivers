@@ -232,6 +232,8 @@ private void reconcilePowerstripUiChild() {
   if (!enabled) {
     state.remove('powerstripUiRgb')
     state.remove('powerstripUiBrightness')
+    state.remove('powerstripUiLedMode')
+    state.remove('powerstripUiLastActiveMode')
     return
   }
 
@@ -258,6 +260,8 @@ private void reconcilePowerstripUiChild() {
     // Store default color state on parent
     state.powerstripUiRgb = defaultRgb
     state.powerstripUiBrightness = 100
+    state.powerstripUiLedMode = 'switch'
+    state.powerstripUiLastActiveMode = 'switch'
 
     // Send initial config to set LED strip to "switch" mode with default color
     Map config = buildPowerstripUiColorConfig(defaultRgb, 100)
@@ -765,14 +769,16 @@ void componentPowerstripUiOn(com.hubitat.app.DeviceWrapper childDevice, String l
     componentPowerstripUiOff(childDevice)
     return
   }
+  Integer brightness = state.powerstripUiBrightness ?: 100
   Map config
   if (ledMode == 'power') {
-    config = [config: [leds: [mode: 'power']]]
+    config = buildPowerstripUiPowerConfig(brightness)
   } else {
     List<Integer> rgb = state.powerstripUiRgb ?: [0, 100, 0]
-    Integer brightness = state.powerstripUiBrightness ?: 100
     config = buildPowerstripUiColorConfig(rgb, brightness)
   }
+  state.powerstripUiLedMode = ledMode
+  state.powerstripUiLastActiveMode = ledMode
   parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
   sendPowerstripUiChildEvent(childDevice, [name: 'switch', value: 'on'])
 }
@@ -786,6 +792,7 @@ void componentPowerstripUiOn(com.hubitat.app.DeviceWrapper childDevice, String l
 void componentPowerstripUiOff(com.hubitat.app.DeviceWrapper childDevice) {
   logDebug("componentPowerstripUiOff() called")
   Map config = [config: [leds: [mode: 'off']]]
+  state.powerstripUiLedMode = 'off'
   parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
   sendPowerstripUiChildEvent(childDevice, [name: 'switch', value: 'off'])
 }
@@ -814,6 +821,8 @@ void componentPowerstripUiSetColor(com.hubitat.app.DeviceWrapper childDevice, Ma
   }
 
   Map config = buildPowerstripUiColorConfig(rgb, level)
+  state.powerstripUiLedMode = 'switch'
+  state.powerstripUiLastActiveMode = 'switch'
   parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
 
   sendPowerstripUiChildEvent(childDevice, [name: 'hue', value: hue])
@@ -844,9 +853,19 @@ void componentPowerstripUiSetLevel(com.hubitat.app.DeviceWrapper childDevice, In
   }
 
   state.powerstripUiBrightness = level
-  List<Integer> rgb = state.powerstripUiRgb ?: [0, 100, 0]
-
-  Map config = buildPowerstripUiColorConfig(rgb, level)
+  String ledMode = state.powerstripUiLedMode == 'off' ?
+    (state.powerstripUiLastActiveMode ?: 'switch') :
+    (state.powerstripUiLedMode ?: 'switch')
+  Map config
+  if (ledMode == 'power') {
+    config = buildPowerstripUiPowerConfig(level)
+    state.powerstripUiLastActiveMode = 'power'
+  } else {
+    List<Integer> rgb = state.powerstripUiRgb ?: [0, 100, 0]
+    config = buildPowerstripUiColorConfig(rgb, level)
+    state.powerstripUiLastActiveMode = 'switch'
+  }
+  state.powerstripUiLedMode = ledMode
   parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
 
   sendPowerstripUiChildEvent(childDevice, [name: 'level', value: level, unit: '%'])
@@ -868,6 +887,69 @@ void componentPowerstripUiSetNightMode(com.hubitat.app.DeviceWrapper childDevice
     active_between: [nightModeConfig.startTime ?: '22:00', nightModeConfig.endTime ?: '06:00']
   ]]]]
   parent?.parentSendCommand(device, 'POWERSTRIP_UI.SetConfig', config)
+}
+
+/**
+ * Applies POWERSTRIP_UI.GetConfig data from the app to the child device and cached state.
+ *
+ * @param config The POWERSTRIP_UI.GetConfig response map
+ */
+void syncPowerstripUiConfig(Map config) {
+  if (!config || device.getDataValue('hasPowerstripUi') != 'true') { return }
+
+  String childDni = "${device.deviceNetworkId}-powerstripui".toString()
+  com.hubitat.app.DeviceWrapper child = getChildDevice(childDni)
+  if (!child) { return }
+
+  Map leds = config.leds as Map ?: [:]
+  Map colors = leds.colors as Map ?: [:]
+  Map switchColorBlock = colors['switch:0'] as Map ?: [:]
+  Map switchOnColor = switchColorBlock.on as Map ?: [:]
+  List switchRgbRaw = switchOnColor.rgb as List ?: []
+  List<Integer> switchRgb = switchRgbRaw.size() == 3 ?
+    switchRgbRaw.collect { Object value -> (value as Number).intValue() } as List<Integer> :
+    null
+  String ledMode = leds.mode?.toString() ?: (state.powerstripUiLedMode ?: 'switch')
+
+  if (switchRgb) {
+    state.powerstripUiRgb = switchRgb
+    updatePowerstripUiChildColorState(child, switchRgb)
+  }
+
+  Map powerColor = colors.power as Map ?: [:]
+  Integer brightness = null
+  if (ledMode == 'power' && powerColor.brightness != null) {
+    brightness = powerColor.brightness as Integer
+  } else if (switchOnColor.brightness != null) {
+    brightness = switchOnColor.brightness as Integer
+  }
+  if (brightness != null) {
+    state.powerstripUiBrightness = brightness
+    sendPowerstripUiChildEvent(child, [name: 'level', value: brightness, unit: '%'])
+  }
+
+  state.powerstripUiLedMode = ledMode
+  if (ledMode != 'off') {
+    state.powerstripUiLastActiveMode = ledMode
+    child.updateSetting('ledMode', [type: 'enum', value: ledMode])
+  }
+  sendPowerstripUiChildEvent(child, [name: 'switch', value: ledMode == 'off' ? 'off' : 'on'])
+  sendPowerstripUiChildEvent(child, [name: 'colorMode', value: 'RGB'])
+
+  Map nightMode = leds.night_mode as Map ?: [:]
+  if (nightMode.enable != null) {
+    child.updateSetting('enableNightMode', [type: 'bool', value: nightMode.enable as Boolean])
+  }
+  if (nightMode.brightness != null) {
+    child.updateSetting('nightModeBrightness', [type: 'number', value: nightMode.brightness as Integer])
+  }
+  List activeBetween = nightMode.active_between as List ?: []
+  if (activeBetween.size() == 2) {
+    child.updateSetting('nightModeStartTime', [type: 'string', value: activeBetween[0]?.toString() ?: '22:00'])
+    child.updateSetting('nightModeEndTime', [type: 'string', value: activeBetween[1]?.toString() ?: '06:00'])
+  }
+
+  child.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 
 /**
@@ -909,6 +991,38 @@ private static List<Integer> hsvToPowerstripUiRgb(Integer hue, Integer saturatio
 }
 
 /**
+ * Converts RGB on a 0-100 scale to Hubitat HSV values on a 0-100 scale.
+ *
+ * @param rgb List of [red, green, blue] values (0-100)
+ * @return Map containing hue and saturation values
+ */
+@CompileStatic
+private static Map<String, Integer> powerstripUiRgbToHsv(List<Integer> rgb) {
+  double r = ((rgb[0] ?: 0) as Integer) / 100.0d
+  double g = ((rgb[1] ?: 0) as Integer) / 100.0d
+  double b = ((rgb[2] ?: 0) as Integer) / 100.0d
+  double max = Math.max(r, Math.max(g, b))
+  double min = Math.min(r, Math.min(g, b))
+  double delta = max - min
+
+  double hueDeg = 0.0d
+  if (delta != 0.0d) {
+    if (max == r) {
+      hueDeg = 60.0d * (((g - b) / delta) % 6.0d)
+    } else if (max == g) {
+      hueDeg = 60.0d * (((b - r) / delta) + 2.0d)
+    } else {
+      hueDeg = 60.0d * (((r - g) / delta) + 4.0d)
+    }
+  }
+  if (hueDeg < 0.0d) { hueDeg += 360.0d }
+
+  Integer hue = Math.round((float)(hueDeg / 3.6d))
+  Integer saturation = max == 0.0d ? 0 : Math.round((float)((delta / max) * 100.0d))
+  return [hue: hue, saturation: saturation]
+}
+
+/**
  * Builds the nested config map for POWERSTRIP_UI.SetConfig in switch mode.
  * Sets leds.mode = "switch" with both on/off colors identical so the strip
  * shows the same color regardless of individual outlet states.
@@ -929,6 +1043,34 @@ private static Map buildPowerstripUiColorConfig(List<Integer> rgb, Integer brigh
     'switch:3': [on: colorEntry, off: colorEntry]
   ]
   return [config: [leds: [mode: 'switch', colors: colors]]]
+}
+
+/**
+ * Builds the nested config map for POWERSTRIP_UI.SetConfig in power mode.
+ *
+ * @param brightness Brightness percentage (0-100)
+ * @return Map suitable as POWERSTRIP_UI.SetConfig params
+ */
+@CompileStatic
+private static Map buildPowerstripUiPowerConfig(Integer brightness) {
+  return [config: [leds: [mode: 'power', colors: [power: [brightness: brightness]]]]]
+}
+
+/**
+ * Updates the POWERSTRIP_UI child color-related attributes from an RGB value.
+ *
+ * @param childDevice The POWERSTRIP_UI child device
+ * @param rgb List of [red, green, blue] values (0-100)
+ */
+private void updatePowerstripUiChildColorState(com.hubitat.app.DeviceWrapper childDevice, List<Integer> rgb) {
+  Map<String, Integer> hsv = powerstripUiRgbToHsv(rgb)
+  sendPowerstripUiChildEvent(childDevice, [name: 'hue', value: hsv.hue])
+  sendPowerstripUiChildEvent(childDevice, [name: 'saturation', value: hsv.saturation, unit: '%'])
+
+  String hexR = String.format('%02X', Math.round(rgb[0] * 2.55d) as Integer)
+  String hexG = String.format('%02X', Math.round(rgb[1] * 2.55d) as Integer)
+  String hexB = String.format('%02X', Math.round(rgb[2] * 2.55d) as Integer)
+  sendPowerstripUiChildEvent(childDevice, [name: 'RGB', value: "${hexR}${hexG}${hexB}"])
 }
 
 /**
