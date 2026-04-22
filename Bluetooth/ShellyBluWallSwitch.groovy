@@ -25,10 +25,14 @@ metadata {
 }
 @Field static Boolean BLU = true
 @Field static Integer BUTTONS = 4
+@Field static Integer PRESENCE_TIMEOUT_MIN = 60
+@Field static Integer PRESENCE_TIMEOUT_DEFAULT = 300
 
 @CompileStatic
 void deviceSpecificConfigure() {
-  if(getDeviceSettings().presenceTimeout == null) {setDeviceSetting('presenceTimeout', [type: 'number', value: 300])}
+  if(getDeviceSettings().presenceTimeout == null) {
+    setDeviceSetting('presenceTimeout', [type: 'number', value: PRESENCE_TIMEOUT_DEFAULT])
+  }
   sendDeviceEvent([name: 'numberOfButtons', value: 4])
   runEveryCustomSeconds(60, 'checkPresence')
 }

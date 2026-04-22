@@ -1123,25 +1123,21 @@ void setBatteryPercent(Integer percent) {
 
 @CompileStatic
 void checkPresence() {
-  Integer presenceTimeout = (getDeviceSettings()?.presenceTimeout as Integer)
-  // checkPresence is scheduled every 60 seconds, so scale the history window to
-  // cover at least the configured timeout plus a small buffer for scheduler drift.
-  Integer eventWindow = Math.max(50, (((int) Math.ceil((presenceTimeout ?: 300) / 60.0d))) + 5)
-
-  List<Event> events = thisDevice().events([max: eventWindow])
+  Integer presenceTimeout = (getDeviceSettings()?.presenceTimeout ?: 300) as Integer
+  // Pull a wide event window so synthetic entries (presence/lastUpdated) can never
+  // crowd the real beacon event out of view, even with long presenceTimeout values.
+  List<Event> events = thisDevice().events([max: 1000])
   Event lastEvent = events?.find { it.name != 'presence' && it.name != 'lastUpdated' }
-  if(lastEvent != null) {
-    logTrace("Last real event: ${lastEvent.name} @ ${lastEvent.getUnixTime()}")
-    if(((unixTimeMillis() - lastEvent.getUnixTime()) / 1000) > presenceTimeout) {
-      sendDeviceEvent([name: 'presence', value: 'not present', isStateChange: false])
-    } else {
-      sendDeviceEvent([name: 'presence', value: 'present', isStateChange: false])
-    }
-  } else {
-    logTrace("No real event found in last ${eventWindow} events while checking presence")
+  if(lastEvent == null) {
+    logDebug('No real event found while checking presence; marking not present')
+    sendDeviceEvent([name: 'presence', value: 'not present', isStateChange: false])
+    return
   }
+  logTrace("Last real event: ${lastEvent.name} @ ${lastEvent.getUnixTime()}")
+  Long ageSec = (unixTimeMillis() - lastEvent.getUnixTime()) / 1000
+  String value = ageSec > presenceTimeout ? 'not present' : 'present'
+  sendDeviceEvent([name: 'presence', value: value, isStateChange: false])
 }
-
 
 @CompileStatic
 void setLevelAttribute(Integer level, ChildDeviceWrapper child = null) {
