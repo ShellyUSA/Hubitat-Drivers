@@ -1123,15 +1123,22 @@ void setBatteryPercent(Integer percent) {
 
 @CompileStatic
 void checkPresence() {
-  List<Event> events = thisDevice().events([max: 50])
+  Integer presenceTimeout = (getDeviceSettings()?.presenceTimeout as Integer)
+  // checkPresence is scheduled every 60 seconds, so scale the history window to
+  // cover at least the configured timeout plus a small buffer for scheduler drift.
+  Integer eventWindow = Math.max(50, (((int) Math.ceil((presenceTimeout ?: 300) / 60.0d))) + 5)
+
+  List<Event> events = thisDevice().events([max: eventWindow])
   Event lastEvent = events?.find { it.name != 'presence' && it.name != 'lastUpdated' }
   if(lastEvent != null) {
     logTrace("Last real event: ${lastEvent.name} @ ${lastEvent.getUnixTime()}")
-    if(((unixTimeMillis() - lastEvent.getUnixTime()) / 1000) > (getDeviceSettings()?.presenceTimeout as Integer)) {
+    if(((unixTimeMillis() - lastEvent.getUnixTime()) / 1000) > presenceTimeout) {
       sendDeviceEvent([name: 'presence', value: 'not present', isStateChange: false])
     } else {
       sendDeviceEvent([name: 'presence', value: 'present', isStateChange: false])
     }
+  } else {
+    logTrace("No real event found in last ${eventWindow} events while checking presence")
   }
 }
 
