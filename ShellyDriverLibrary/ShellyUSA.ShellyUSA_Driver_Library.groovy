@@ -154,7 +154,7 @@ if (device != null) {
     }
 
     if(hasCapabilityPresence() == true) {
-      input(name: 'presenceTimeout', type: 'number', title: 'Presence Timeout (minimum 300 seconds)', required: true, defaultValue: 300)
+      input(name: 'presenceTimeout', type: 'number', title: "Presence Timeout (minimum ${getPresenceTimeoutMinimum()} seconds)", required: true, defaultValue: getPresenceTimeoutMinimum())
     }
 
     if(hasADCGen1() == true && deviceIsComponent() == false) {
@@ -785,8 +785,8 @@ void configure() {
 
   if(hasButtons() == true) {sendDeviceEvent([name: 'numberOfButtons', value: getNumberOfButtons()])}
 
-  if(getDeviceSettings().presenceTimeout != null && (getDeviceSettings().presenceTimeout as Integer) < 300) {
-    setDeviceSetting('presenceTimeout', [type: 'number', value: 300])
+  if(getDeviceSettings().presenceTimeout != null && (getDeviceSettings().presenceTimeout as Integer) < getPresenceTimeoutMinimum()) {
+    setDeviceSetting('presenceTimeout', [type: 'number', value: getPresenceTimeoutMinimum()])
   }
   tryDeviceSpecificConfigure()
   if(thisDeviceOrChildrenHasPowerMonitoring() == true) { configureNightlyPowerMonitoringReset() }
@@ -2144,6 +2144,9 @@ Boolean isBlu() {BLU != null && BLU == true}
 Boolean hasWebsocket() {return WS != null && WS == true}
 Boolean hasButtons() {return BUTTONS != null}
 Integer getNumberOfButtons() {return hasButtons() == true ? BUTTONS as Integer : 0}
+Integer getPresenceTimeoutMinimum() {
+  try { return (PRESENCE_TIMEOUT_MIN as Integer) } catch(ignored) { return 300 }
+}
 
 @CompileStatic
 Boolean wsShouldBeConnected() {
