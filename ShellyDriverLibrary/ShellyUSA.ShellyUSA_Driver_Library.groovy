@@ -785,9 +785,7 @@ void configure() {
 
   if(hasButtons() == true) {sendDeviceEvent([name: 'numberOfButtons', value: getNumberOfButtons()])}
 
-  if(getDeviceSettings().presenceTimeout != null && (getDeviceSettings().presenceTimeout as Integer) < getPresenceTimeoutMinimum()) {
-    setDeviceSetting('presenceTimeout', [type: 'number', value: getPresenceTimeoutMinimum()])
-  }
+  enforcePresenceTimeoutFloor()
   tryDeviceSpecificConfigure()
   if(thisDeviceOrChildrenHasPowerMonitoring() == true) { configureNightlyPowerMonitoringReset() }
 
@@ -1123,7 +1121,9 @@ void setBatteryPercent(Integer percent) {
 
 @CompileStatic
 void checkPresence() {
-  Integer presenceTimeout = (getDeviceSettings()?.presenceTimeout ?: 300) as Integer
+  // Resolves configured value with the driver floor applied in-memory, so a
+  // stale/corrupted setting cannot pin presence below the minimum.
+  Integer presenceTimeout = getPresenceTimeoutSeconds()
   // Pull a wide event window so synthetic entries (presence/lastUpdated) can never
   // crowd the real beacon event out of view, even with long presenceTimeout values.
   List<Event> events = thisDevice().events([max: 1000])
@@ -2148,6 +2148,29 @@ Boolean hasButtons() {return BUTTONS != null}
 Integer getNumberOfButtons() {return hasButtons() == true ? BUTTONS as Integer : 0}
 Integer getPresenceTimeoutMinimum() {
   try { return (PRESENCE_TIMEOUT_MIN as Integer) } catch(ignored) { return 300 }
+}
+
+/**
+ * Clamps a user-edited `presenceTimeout` up to the driver-declared floor.
+ * Safe to call repeatedly; no-op when the setting is null or already >= floor.
+ */
+void enforcePresenceTimeoutFloor() {
+  Integer min = getPresenceTimeoutMinimum()
+  Object configured = getDeviceSettings().presenceTimeout
+  if(configured != null && (configured as Integer) < min) {
+    setDeviceSetting('presenceTimeout', [type: 'number', value: min])
+  }
+}
+
+/**
+ * Resolves the effective `presenceTimeout` in seconds for this device.
+ * Applies the floor in-memory so runtime paths are correct even if the
+ * persisted setting has not yet been clamped.
+ */
+Integer getPresenceTimeoutSeconds() {
+  Integer min = getPresenceTimeoutMinimum()
+  Integer configured = (getDeviceSettings()?.presenceTimeout ?: min) as Integer
+  return Math.max(configured, min)
 }
 
 @CompileStatic
@@ -6234,6 +6257,7 @@ void uninstalled() {
 
 void updated() {
   logDebug('Device preferences saved, running configure()...')
+  try { enforcePresenceTimeoutFloor() } catch(ignored) { }
   try { configure() }
   catch(e) {
     if(e.toString().startsWith('java.net.NoRouteToHostException') || e.toString().startsWith('org.apache.http.conn.ConnectTimeoutException')) {
