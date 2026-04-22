@@ -24,7 +24,8 @@ metadata {
   }
 }
 @Field static Boolean BLU = true
-@Field static Integer BUTTONS = 1@Field static Integer PRESENCE_TIMEOUT_MIN = 60   // ← new; set to whatever floor you want
+@Field static Integer BUTTONS = 1
+@Field static Integer PRESENCE_TIMEOUT_MIN = 60   // ← new; set to whatever floor you want
 
 @CompileStatic
 void deviceSpecificConfigure() {
