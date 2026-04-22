@@ -25,12 +25,13 @@ metadata {
 }
 @Field static Boolean BLU = true
 @Field static Integer BUTTONS = 1
-@Field static Integer PRESENCE_TIMEOUT_MIN = 60   // ← new; set to whatever floor you want
+@Field static Integer PRESENCE_TIMEOUT_MIN = 60
+@Field static Integer PRESENCE_TIMEOUT_DEFAULT = 300
 
 @CompileStatic
 void deviceSpecificConfigure() {
   if(getDeviceSettings().presenceTimeout == null) {
-    setDeviceSetting('presenceTimeout', [type: 'number', value: PRESENCE_TIMEOUT_MIN])
+    setDeviceSetting('presenceTimeout', [type: 'number', value: PRESENCE_TIMEOUT_DEFAULT])
   }
   sendDeviceEvent([name: 'numberOfButtons', value: 1])
   runEveryCustomSeconds(60, 'checkPresence')

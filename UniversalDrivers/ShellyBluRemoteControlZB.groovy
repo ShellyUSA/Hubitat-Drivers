@@ -49,7 +49,7 @@ preferences {
     defaultValue: 'debug', required: true
   input name: 'presenceTimeout', type: 'number', title: 'Presence timeout (minutes)',
     description: 'Mark not present if no BLE data received within this period',
-    defaultValue: 60, required: true
+    defaultValue: 60, required: true, range: '1..'
 }
 
 
