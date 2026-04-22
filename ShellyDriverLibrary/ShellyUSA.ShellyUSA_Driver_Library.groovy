@@ -154,8 +154,8 @@ if (device != null) {
     }
 
     if(hasCapabilityPresence() == true) {
-	  input(name: 'presenceTimeout', type: 'number', title: "Presence Timeout (minimum ${getPresenceTimeoutMinimum()} seconds)", required: true, defaultValue: getPresenceTimeoutMinimum())
-	}
+      input(name: 'presenceTimeout', type: 'number', title: "Presence Timeout (minimum ${getPresenceTimeoutMinimum()} seconds)", required: true, defaultValue: getPresenceTimeoutMinimum())
+    }
 
     if(hasADCGen1() == true && deviceIsComponent() == false) {
       input(name: 'gen1_create_child_switch_dev_adc', type:'bool', title: 'Create child switch for adc over/under reports', required: false, defaultValue: false)
