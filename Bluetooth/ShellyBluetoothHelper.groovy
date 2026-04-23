@@ -1,5 +1,5 @@
 /**
- * Version: 2.16.1
+ * Version: 2.16.2
  */
 definition(
   name: 'Shelly Bluetooth Helper',
