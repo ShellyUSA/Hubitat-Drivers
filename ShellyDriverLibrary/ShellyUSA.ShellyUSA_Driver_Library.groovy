@@ -1134,7 +1134,7 @@ void checkPresence() {
     return
   }
   logTrace("Last real event: ${lastEvent.name} @ ${lastEvent.getUnixTime()}")
-  Long ageSec = (unixTimeMillis() - lastEvent.getUnixTime()) / 1000
+  Long ageSec = (unixTimeMillis() - lastEvent.getUnixTime()).intdiv(1000)
   String value = ageSec > presenceTimeout ? 'not present' : 'present'
   sendDeviceEvent([name: 'presence', value: value, isStateChange: false])
 }
