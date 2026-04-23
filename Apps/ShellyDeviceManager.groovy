@@ -11720,6 +11720,10 @@ void checkBlePresence() {
         } catch (Exception e) {
             bleLogDebug("checkBlePresence: getSetting failed for ${child.displayName}, using default ${timeoutMinutes}min")
         }
+        // Defense in depth against a stale or hand-edited setting slipping past
+        // the input range; a zero/negative timeout would pin the device to
+        // 'not present' permanently.
+        if (timeoutMinutes < 1) { timeoutMinutes = 60 }
 
         Long timeoutMs = timeoutMinutes * 60L * 1000L
         Long elapsed = now() - lastContact
