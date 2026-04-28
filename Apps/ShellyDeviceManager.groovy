@@ -404,7 +404,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: false,
-    version: "1.0.40"
+    version: "1.0.41"
 )
 
 preferences {
