@@ -58,7 +58,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.40"
+@Field static final String APP_VERSION = "1.0.41"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -94,6 +94,13 @@
 @Field static final Map<String, String> GEN2_MODEL_DRIVER_OVERRIDE = [
     'PlusUni': 'Shelly Autoconf Plus Uni Parent',
     'PresenceG4': 'Shelly Autoconf Presence G4 Parent',
+    // Linkedgo partner thermostats. The 'app' field value is assumed from the source-ID
+    // prefix observed in API responses ('st1820-XXXXXXXXXXXX', 'st-802-XXXXXXXXXXXX').
+    // Both casings registered defensively until live Shelly.GetDeviceInfo capture confirms.
+    'st1820': 'Shelly Linkedgo ST1820',
+    'ST1820': 'Shelly Linkedgo ST1820',
+    'st-802': 'Shelly Linkedgo ST802',
+    'ST-802': 'Shelly Linkedgo ST802',
 ]
 
 // Best-known The Pill identifiers. The model code is confirmed from current Shelly docs.
@@ -176,6 +183,10 @@
     'Shelly Autoconf Plus Uni Parent': 'UniversalDrivers/ShellyPlusUniParent.groovy',
     'Shelly Autoconf Pill Parent': 'UniversalDrivers/ShellyPillParent.groovy',
     'Shelly Autoconf Presence G4 Parent': 'UniversalDrivers/ShellyPresenceG4Parent.groovy',
+
+    // Linkedgo partner thermostats (Shelly Connected — Virtual Components RPC)
+    'Shelly Linkedgo ST1820': 'UniversalDrivers/ShellyLinkedgoST1820.groovy',
+    'Shelly Linkedgo ST802':  'UniversalDrivers/ShellyLinkedgoST802.groovy',
 
     // BLU Gateway parent driver (for BLU TRV and other gateway-paired BLE devices)
     'Shelly Autoconf BLU Gateway Parent': 'UniversalDrivers/ShellyBluGatewayParent.groovy',
@@ -16521,7 +16532,13 @@ void componentRefresh(def childDevice) {
             syncCoverConfigForParentChildren(parentDni, ipAddress)
         } else {
             String refreshTypeName = childDevice.typeName ?: ''
-            if (refreshTypeName.contains('DALI Dimmer')) {
+            // DALI Dimmer and Linkedgo virtual-component thermostats both consume the full
+            // deviceStatus map directly (they don't have a single componentType/componentId
+            // pairing — DALI maps lights dynamically; Linkedgo maps virtual instance IDs
+            // to roles via state.virtualMap built from Shelly.GetComponents).
+            if (refreshTypeName.contains('DALI Dimmer') ||
+                refreshTypeName.contains('Linkedgo ST1820') ||
+                refreshTypeName.contains('Linkedgo ST802')) {
                 childDevice.distributeStatus(deviceStatus)
             } else {
                 // Single child refresh: only update this child
@@ -17120,6 +17137,179 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
         logInfo("Gen 1 TRV settings applied to ${childDevice.displayName}")
     } else {
         logWarn("Failed to apply Gen 1 TRV settings to ${childDevice.displayName} — device may be unreachable")
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Linkedgo Virtual-Component Commands (ST1820 / ST802)
+// ═══════════════════════════════════════════════════════════════
+//
+// Linkedgo partner thermostats (Shelly Connected) are built on the Shelly
+// Virtual Components framework rather than the standard Thermostat RPC.
+// State is exposed as numbered Boolean/Number/Enum instances aggregated under
+// service:0; the (owner, role) pair identifies what each virtual component
+// represents. These dispatchers translate role-based driver commands into
+// the wire RPC methods (Number.Set, Enum.Set, Boolean.Set), discovering
+// instance IDs via Shelly.GetComponents on demand.
+//
+// None can be @CompileStatic — all access dynamic device data and call
+// postCommandSync (which itself is non-static).
+
+/**
+ * Queries Shelly.GetComponents and returns a role->id map for all virtual
+ * components owned by service:0. The driver caches the result in
+ * state.virtualMap and re-fetches when stale (instance ID seen in status
+ * not present in cached map).
+ *
+ * @param childDevice The Linkedgo child device
+ * @return Map of role (String) -> instance ID (Integer); empty map on failure
+ */
+Map componentLinkedgoGetComponents(def childDevice) {
+    Map<String, Integer> result = [:]
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) {
+            logError("componentLinkedgoGetComponents: no IP for ${childDevice.displayName}")
+            return result
+        }
+        String uri = "http://${ip}/rpc"
+        LinkedHashMap command = [id: 0, src: 'linkedgoGetComponents', method: 'Shelly.GetComponents', params: [include: ['config']]]
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        LinkedHashMap json = postCommandSync(command, uri)
+        List<Map> components = json?.result?.components as List<Map>
+        if (!components) {
+            logWarn("componentLinkedgoGetComponents: empty components list for ${childDevice.displayName}")
+            return result
+        }
+        components.each { Map comp ->
+            String key = comp.key?.toString()
+            Map config = comp.config as Map
+            String role = config?.role?.toString()
+            if (!key || !role) { return }
+            String[] parts = key.split(':')
+            if (parts.length != 2) { return }
+            try {
+                result[role] = parts[1] as Integer
+            } catch (NumberFormatException ignored) {}
+        }
+        logDebug("componentLinkedgoGetComponents: discovered ${result.size()} role mappings for ${childDevice.displayName}: ${result}")
+    } catch (Exception e) {
+        logError("componentLinkedgoGetComponents exception for ${childDevice.displayName}: ${e.message}")
+    }
+    return result
+}
+
+/**
+ * Queries Service.GetConfig for thermostat-level settings (temperature offset,
+ * range, hysteresis, anti-freeze setpoint, etc.). Driver caches in
+ * state.serviceConfig for setpoint clamping.
+ *
+ * @param childDevice The Linkedgo child device
+ * @return The Service.GetConfig result map, or null on failure
+ */
+Map componentLinkedgoGetServiceConfig(def childDevice) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) {
+            logError("componentLinkedgoGetServiceConfig: no IP for ${childDevice.displayName}")
+            return null
+        }
+        String uri = "http://${ip}/rpc"
+        LinkedHashMap command = [id: 0, src: 'linkedgoGetServiceConfig', method: 'Service.GetConfig', params: [id: 0]]
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        LinkedHashMap json = postCommandSync(command, uri)
+        Map config = json?.result as Map
+        logDebug("componentLinkedgoGetServiceConfig: ${childDevice.displayName} config: ${config}")
+        return config
+    } catch (Exception e) {
+        logError("componentLinkedgoGetServiceConfig exception for ${childDevice.displayName}: ${e.message}")
+        return null
+    }
+}
+
+/**
+ * Sets a Number virtual component value by role on service:0.
+ * Used for target_temperature, target_humidity, etc.
+ *
+ * @param childDevice The Linkedgo child device
+ * @param role The virtual component role (e.g. 'target_temperature')
+ * @param value The numeric value to write
+ */
+void componentLinkedgoSetNumber(def childDevice, String role, Number value) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) {
+            logError("componentLinkedgoSetNumber: no IP for ${childDevice.displayName}")
+            return
+        }
+        String uri = "http://${ip}/rpc"
+        LinkedHashMap command = [id: 0, src: 'linkedgoSetNumber', method: 'Number.Set',
+            params: [owner: 'service:0', role: role, value: value]]
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        logDebug("componentLinkedgoSetNumber: ${childDevice.displayName} ${role}=${value}")
+        postCommandSync(command, uri)
+    } catch (Exception e) {
+        logError("componentLinkedgoSetNumber exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Sets an Enum virtual component value by role on service:0.
+ * Used for working_mode, fan_speed, etc.
+ *
+ * @param childDevice The Linkedgo child device
+ * @param role The virtual component role (e.g. 'working_mode')
+ * @param value The enum value to write (e.g. 'heat', 'cool', 'auto')
+ */
+void componentLinkedgoSetEnum(def childDevice, String role, String value) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) {
+            logError("componentLinkedgoSetEnum: no IP for ${childDevice.displayName}")
+            return
+        }
+        String uri = "http://${ip}/rpc"
+        LinkedHashMap command = [id: 0, src: 'linkedgoSetEnum', method: 'Enum.Set',
+            params: [owner: 'service:0', role: role, value: value]]
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        logDebug("componentLinkedgoSetEnum: ${childDevice.displayName} ${role}=${value}")
+        postCommandSync(command, uri)
+    } catch (Exception e) {
+        logError("componentLinkedgoSetEnum exception for ${childDevice.displayName}: ${e.message}")
+    }
+}
+
+/**
+ * Sets a Boolean virtual component value by role on service:0.
+ * Boolean.Set is id-keyed (not role-keyed), so the instance ID is resolved
+ * via the driver's cached state.virtualMap. The role->id map is passed in
+ * because the driver-side @CompileStatic constraint prevents accessing
+ * child state directly here.
+ *
+ * @param childDevice The Linkedgo child device
+ * @param instanceId The Boolean component's numeric instance ID
+ * @param role The role name (used only for logging)
+ * @param value The boolean value to write
+ */
+void componentLinkedgoSetBoolean(def childDevice, Integer instanceId, String role, Boolean value) {
+    try {
+        if (instanceId == null) {
+            logWarn("componentLinkedgoSetBoolean: no instance ID for role '${role}' on ${childDevice.displayName} — virtualMap may be stale")
+            return
+        }
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) {
+            logError("componentLinkedgoSetBoolean: no IP for ${childDevice.displayName}")
+            return
+        }
+        String uri = "http://${ip}/rpc"
+        LinkedHashMap command = [id: 0, src: 'linkedgoSetBoolean', method: 'Boolean.Set',
+            params: [id: instanceId, value: value]]
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        logDebug("componentLinkedgoSetBoolean: ${childDevice.displayName} ${role} (id=${instanceId})=${value}")
+        postCommandSync(command, uri)
+    } catch (Exception e) {
+        logError("componentLinkedgoSetBoolean exception for ${childDevice.displayName}: ${e.message}")
     }
 }
 

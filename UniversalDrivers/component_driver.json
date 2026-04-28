@@ -2634,7 +2634,11 @@
       "presencezone.presence",
       "presencezone.counter",
       "presencezone.enter",
-      "presencezone.leave"
+      "presencezone.leave",
+      "boolean.change",
+      "number.change",
+      "enum.change",
+      "service.status_change"
     ]
   }
 }
