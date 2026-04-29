@@ -6885,7 +6885,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         if (deviceStatus) { parts.add("status=OK") }
         appendLog('info', "Device info for ${device.name} (${ip}): ${parts.join(', ')}")
 
-        logDebug("fetchAndStoreDeviceInfo: deviceInfo keys=${deviceInfo.keySet()}")
+        logDebug("fetchAndStoreDeviceInfo: deviceInfo keys=${deviceInfo.keySet()}, app=${deviceInfo.app}, model=${deviceInfo.model}, id=${deviceInfo.id}")
         if (deviceConfig) { logDebug("fetchAndStoreDeviceInfo: deviceConfig keys=${deviceConfig.keySet()}") }
         if (deviceStatus) { logDebug("fetchAndStoreDeviceInfo: deviceStatus keys=${deviceStatus.keySet()}") }
 
@@ -7523,10 +7523,13 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Comprehensive set of recognized Shelly component types
     // 'pm' — Power Strip Gen4 uses pm:0-3 (not pm1:0-3); recognized to suppress unknown-component warnings
     // 'powerstrip_ui' — LED strip indicator on Power Strip Gen4; child creation driven by hasPowerstripUi data value
+    // 'service' — Virtual-components container (e.g., Linkedgo ST1820/ST802 thermostats); driver routing
+    //   happens via deviceApp/id-prefix override since these devices expose only service:0 plus dynamic
+    //   boolean:N/number:N/enum:N children
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'pm', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
         'flood', 'contact', 'lux', 'tilt', 'motion', 'presence', 'presencezone', 'valve', 'thermostat', 'adc',
-        'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui', 'dali'] as Set
+        'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui', 'dali', 'service'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -7744,6 +7747,21 @@ private String resolveGen2DedicatedDriverName(String ipKey, List<String> compone
 
     if (gen2AppName && GEN2_MODEL_DRIVER_OVERRIDE.containsKey(gen2AppName)) {
         return GEN2_MODEL_DRIVER_OVERRIDE[gen2AppName]
+    }
+
+    // id-prefix fallback: Shelly Gen2+ device IDs follow '<app>-<MAC>' (e.g. 'st1820-AABBCCDDEEFF').
+    // When the live 'app' field doesn't match the expected GEN2_MODEL_DRIVER_OVERRIDE key, the 'id'
+    // field still encodes the same prefix, providing a defensive route for partner devices like
+    // Linkedgo thermostats whose 'app' value was assumed rather than verified at registration time.
+    String deviceId = (discoveredDevice?.deviceInfo as Map)?.id?.toString()?.toLowerCase()
+    if (deviceId) {
+        Map.Entry<String, String> idMatch = GEN2_MODEL_DRIVER_OVERRIDE.find { String k, String v ->
+            deviceId.startsWith(k.toLowerCase() + '-')
+        }
+        if (idMatch) {
+            logDebug("resolveGen2DedicatedDriverName: matched by id-prefix '${idMatch.key}' for ipKey ${ipKey}")
+            return idMatch.value
+        }
     }
 
     if (!modelCode) { return null }
