@@ -10,6 +10,11 @@ on:
       - 'UniversalDrivers/**'
       - '.github/workflows/release-shelly-device-manager.yml'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Override version (e.g., 1.0.42). Leave blank to use APP_VERSION from source.'
+        required: false
+        type: string
 
 jobs:
   release:
@@ -24,40 +29,64 @@ jobs:
         with:
           fetch-depth: 0  # Full history needed for git log changelog range and tag resolution
 
-      - name: Extract APP_VERSION from source
+      - name: Determine version (override or extract from source)
         id: version
+        env:
+          OVERRIDE_VERSION: ${{ github.event.inputs.version }}
         run: |
-          VERSION=$(grep -m 1 '@Field.*APP_VERSION' Apps/ShellyDeviceManager.groovy \
-            | sed -n 's/.*APP_VERSION *= *"\([0-9.]*\)".*/\1/p')
+          if [ -n "$OVERRIDE_VERSION" ]; then
+            if ! printf '%s' "$OVERRIDE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "ERROR: Manual version '$OVERRIDE_VERSION' must be in format X.Y.Z"
+              exit 1
+            fi
+            VERSION="$OVERRIDE_VERSION"
+            echo "override=true" >> "$GITHUB_OUTPUT"
+            echo "Using manual version override: $VERSION"
+          else
+            VERSION=$(grep -m 1 '@Field.*APP_VERSION' Apps/ShellyDeviceManager.groovy \
+              | sed -n 's/.*APP_VERSION *= *"\([0-9.]*\)".*/\1/p')
 
-          if [ -z "$VERSION" ]; then
-            echo "ERROR: Could not extract APP_VERSION from source"
-            exit 1
+            if [ -z "$VERSION" ]; then
+              echo "ERROR: Could not extract APP_VERSION from source"
+              exit 1
+            fi
+            echo "override=false" >> "$GITHUB_OUTPUT"
+            echo "Using APP_VERSION from source: $VERSION"
           fi
 
           TAG="app-v${VERSION}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Detected APP_VERSION=${VERSION}, tag=${TAG}"
+          echo "Resolved version=${VERSION}, tag=${TAG}"
 
-      - name: Sync definition() version with APP_VERSION
+      - name: Apply version to source files
         run: |
+          # When manually overridden, rewrite the @Field APP_VERSION line first
+          if [ "$OVERRIDE" = "true" ]; then
+            sed -i "s/\(@Field.*APP_VERSION *= *\)\"[0-9.]*\"/\1\"${VERSION}\"/" Apps/ShellyDeviceManager.groovy
+          fi
+
           # Matches exactly 4-space-indented 'version:' with a quoted numeric value — targets definition() only
           sed -i "s/\(    version: \)\"[0-9.]*\"/\1\"${VERSION}\"/" Apps/ShellyDeviceManager.groovy
 
           if git diff --quiet Apps/ShellyDeviceManager.groovy; then
-            echo "definition() version already matches APP_VERSION (${VERSION})"
+            echo "Source files already at version ${VERSION}"
           else
-            echo "Updated definition() version to ${VERSION}"
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add Apps/ShellyDeviceManager.groovy
-            git commit -m "chore: sync definition() version to APP_VERSION ${VERSION} [skip ci]"
+            if [ "$OVERRIDE" = "true" ]; then
+              git commit -m "chore: bump APP_VERSION to ${VERSION} [skip ci]"
+              echo "Committed and pushed APP_VERSION bump to ${VERSION}"
+            else
+              git commit -m "chore: sync definition() version to APP_VERSION ${VERSION} [skip ci]"
+              echo "Committed and pushed definition() version sync"
+            fi
             git push
-            echo "Committed and pushed version sync"
           fi
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          OVERRIDE: ${{ steps.version.outputs.override }}
 
       - name: Check if release already exists
         id: check
@@ -86,12 +115,12 @@ jobs:
           # Exclude automated sync commits from the changelog
           if [ -n "$PREV_TAG" ]; then
             CHANGELOG=$(git log "${PREV_TAG}..HEAD" --pretty=format:"- %s" --no-merges \
-              --invert-grep --grep="^chore: sync definition" -- \
+              --invert-grep --grep="^chore: sync definition" --grep="^chore: bump APP_VERSION" -- \
               Apps/ShellyDeviceManager.groovy Scripts/ UniversalDrivers/component_driver.json \
               || echo "- Release ${VERSION}")
           else
             CHANGELOG=$(git log --pretty=format:"- %s" --no-merges -20 \
-              --invert-grep --grep="^chore: sync definition" -- \
+              --invert-grep --grep="^chore: sync definition" --grep="^chore: bump APP_VERSION" -- \
               Apps/ShellyDeviceManager.groovy Scripts/ UniversalDrivers/component_driver.json \
               || echo "- Release ${VERSION}")
           fi
