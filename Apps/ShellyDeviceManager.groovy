@@ -1958,6 +1958,26 @@ private def findChildDeviceByIp(String ip) {
 }
 
 /**
+ * Builds a friendly descriptor for a URI containing a Shelly device IP, used
+ * to enrich error logs so the user can identify the unreachable device by name
+ * instead of just an IP address.
+ *
+ * @param uri A URL that begins with the device IP (e.g. "http://192.168.1.59/rpc")
+ * @return "DeviceLabel (192.168.1.59)" if a child device with that IP exists,
+ *         otherwise the original URI unchanged
+ */
+private String describeDeviceForUri(String uri) {
+    if (!uri) return uri
+    java.util.regex.Matcher m = uri =~ /https?:\/\/([^\/:]+)/
+    if (!m.find()) return uri
+    String ip = m.group(1)
+    def dev = findChildDeviceByIp(ip)
+    if (!dev) return uri
+    String label = dev.label ?: dev.displayName
+    return "${label} (${uri})"
+}
+
+/**
  * Queries the Hubitat hub for all existing device network IDs.
  * Uses the internal /hub2/devicesList endpoint with cookie authentication,
  * following the same pattern as {@link #getAppCodeId}.
@@ -10801,7 +10821,7 @@ LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
       throw ex2
     }
   } catch(Exception ex) {
-    logError("postCommandSync exception for ${params.uri}: ${ex.class.simpleName}: ${ex.message ?: ex.toString()}")
+    logError("postCommandSync exception for ${describeDeviceForUri(params.uri as String)}: ${ex.class.simpleName}: ${ex.message ?: ex.toString()}")
     throw ex
   }
   logTrace("postCommandSync returned from ${params.uri}: ${prettyJson(json)}")
