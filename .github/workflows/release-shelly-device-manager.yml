@@ -11,8 +11,18 @@ on:
       - '.github/workflows/release-shelly-device-manager.yml'
   workflow_dispatch:
     inputs:
+      bump:
+        description: 'Bump APP_VERSION (takes precedence; cannot be combined with version).'
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - none
+          - patch
+          - minor
+          - major
       version:
-        description: 'Override version (e.g., 1.0.42). Leave blank to use APP_VERSION from source.'
+        description: 'Override version (e.g., 1.0.42). Leave blank to use APP_VERSION from source. Cannot combine with bump.'
         required: false
         type: string
 
@@ -29,12 +39,41 @@ jobs:
         with:
           fetch-depth: 0  # Full history needed for git log changelog range and tag resolution
 
-      - name: Determine version (override or extract from source)
+      - name: Determine version (bump, override, or extract from source)
         id: version
         env:
           OVERRIDE_VERSION: ${{ github.event.inputs.version }}
+          BUMP: ${{ github.event.inputs.bump }}
         run: |
-          if [ -n "$OVERRIDE_VERSION" ]; then
+          if [ -n "$OVERRIDE_VERSION" ] && [ -n "$BUMP" ] && [ "$BUMP" != "none" ]; then
+            echo "ERROR: Cannot set both 'bump' and 'version'. Choose one."
+            exit 1
+          fi
+
+          if [ -n "$BUMP" ] && [ "$BUMP" != "none" ]; then
+            CURRENT=$(grep -m 1 '@Field.*APP_VERSION' Apps/ShellyDeviceManager.groovy \
+              | sed -n 's/.*APP_VERSION *= *"\([0-9.]*\)".*/\1/p')
+
+            if [ -z "$CURRENT" ]; then
+              echo "ERROR: Could not extract APP_VERSION from source"
+              exit 1
+            fi
+
+            MAJOR=$(printf '%s' "$CURRENT" | cut -d. -f1)
+            MINOR=$(printf '%s' "$CURRENT" | cut -d. -f2)
+            PATCH=$(printf '%s' "$CURRENT" | cut -d. -f3)
+
+            case "$BUMP" in
+              patch) PATCH=$((PATCH + 1)) ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              *)     echo "ERROR: Invalid bump value '$BUMP'"; exit 1 ;;
+            esac
+
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            echo "override=true" >> "$GITHUB_OUTPUT"
+            echo "Bumping APP_VERSION from ${CURRENT} to ${VERSION} (${BUMP})"
+          elif [ -n "$OVERRIDE_VERSION" ]; then
             if ! printf '%s' "$OVERRIDE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
               echo "ERROR: Manual version '$OVERRIDE_VERSION' must be in format X.Y.Z"
               exit 1
