@@ -44,6 +44,7 @@ jobs:
         env:
           OVERRIDE_VERSION: ${{ github.event.inputs.version }}
           BUMP: ${{ github.event.inputs.bump }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ -n "$OVERRIDE_VERSION" ] && [ -n "$BUMP" ] && [ "$BUMP" != "none" ]; then
             echo "ERROR: Cannot set both 'bump' and 'version'. Choose one."
@@ -89,8 +90,32 @@ jobs:
               echo "ERROR: Could not extract APP_VERSION from source"
               exit 1
             fi
-            echo "override=false" >> "$GITHUB_OUTPUT"
-            echo "Using APP_VERSION from source: $VERSION"
+
+            # On push events: if the version in source has already been released, auto-bump
+            # the patch number until we find an unused tag. This guarantees that every push
+            # to master that touches the app or its drivers produces a new patch release,
+            # even when the author didn't manually bump APP_VERSION before pushing.
+            if [ "$EVENT_NAME" = "push" ] && git rev-parse --verify --quiet "refs/tags/app-v${VERSION}" >/dev/null; then
+              ORIGINAL="$VERSION"
+              MAJOR=$(printf '%s' "$VERSION" | cut -d. -f1)
+              MINOR=$(printf '%s' "$VERSION" | cut -d. -f2)
+              PATCH=$(printf '%s' "$VERSION" | cut -d. -f3)
+
+              while : ; do
+                PATCH=$((PATCH + 1))
+                CANDIDATE="${MAJOR}.${MINOR}.${PATCH}"
+                if ! git rev-parse --verify --quiet "refs/tags/app-v${CANDIDATE}" >/dev/null; then
+                  VERSION="$CANDIDATE"
+                  break
+                fi
+              done
+
+              echo "override=true" >> "$GITHUB_OUTPUT"
+              echo "Auto-bumping APP_VERSION from ${ORIGINAL} to ${VERSION} (push event; previous tag already released)"
+            else
+              echo "override=false" >> "$GITHUB_OUTPUT"
+              echo "Using APP_VERSION from source: $VERSION"
+            fi
           fi
 
           TAG="app-v${VERSION}"
