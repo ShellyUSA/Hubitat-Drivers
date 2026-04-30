@@ -16577,6 +16577,10 @@ void componentRefresh(def childDevice) {
             if (refreshTypeName.contains('DALI Dimmer') ||
                 refreshTypeName.contains('Linkedgo ST1820') ||
                 refreshTypeName.contains('Linkedgo ST802')) {
+                if (refreshTypeName.contains('Linkedgo')) {
+                    logTrace("componentRefresh Linkedgo dispatch: typeName=${refreshTypeName}, status keys=${deviceStatus?.keySet()}")
+                    logTrace("componentRefresh Linkedgo full status=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(deviceStatus))}")
+                }
                 childDevice.distributeStatus(deviceStatus)
             } else {
                 // Single child refresh: only update this child
@@ -17213,7 +17217,9 @@ Map componentLinkedgoGetComponents(def childDevice) {
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoGetComponents', method: 'Shelly.GetComponents', params: [include: ['config']]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        logTrace("componentLinkedgoGetComponents: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
+        logTrace("componentLinkedgoGetComponents: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
         List<Map> components = json?.result?.components as List<Map>
         if (!components) {
             logWarn("componentLinkedgoGetComponents: empty components list for ${childDevice.displayName}")
@@ -17221,8 +17227,8 @@ Map componentLinkedgoGetComponents(def childDevice) {
         }
         components.each { Map comp ->
             String key = comp.key?.toString()
-            Map config = comp.config as Map
-            String role = config?.role?.toString()
+            // Schema-flexible role lookup — LinkedGo firmware may surface 'role' under config, attrs, meta, or top-level
+            String role = (comp.config?.role ?: comp.attrs?.role ?: comp.meta?.role ?: comp.role)?.toString()
             if (!key || !role) { return }
             String[] parts = key.split(':')
             if (parts.length != 2) { return }
@@ -17255,7 +17261,9 @@ Map componentLinkedgoGetServiceConfig(def childDevice) {
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoGetServiceConfig', method: 'Service.GetConfig', params: [id: 0]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        logTrace("componentLinkedgoGetServiceConfig: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
+        logTrace("componentLinkedgoGetServiceConfig: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
         Map config = json?.result as Map
         logDebug("componentLinkedgoGetServiceConfig: ${childDevice.displayName} config: ${config}")
         return config
@@ -17285,7 +17293,9 @@ void componentLinkedgoSetNumber(def childDevice, String role, Number value) {
             params: [owner: 'service:0', role: role, value: value]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         logDebug("componentLinkedgoSetNumber: ${childDevice.displayName} ${role}=${value}")
-        postCommandSync(command, uri)
+        logTrace("componentLinkedgoSetNumber: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
+        LinkedHashMap json = postCommandSync(command, uri)
+        logTrace("componentLinkedgoSetNumber: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
     } catch (Exception e) {
         logError("componentLinkedgoSetNumber exception for ${childDevice.displayName}: ${e.message}")
     }
@@ -17311,7 +17321,9 @@ void componentLinkedgoSetEnum(def childDevice, String role, String value) {
             params: [owner: 'service:0', role: role, value: value]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         logDebug("componentLinkedgoSetEnum: ${childDevice.displayName} ${role}=${value}")
-        postCommandSync(command, uri)
+        logTrace("componentLinkedgoSetEnum: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
+        LinkedHashMap json = postCommandSync(command, uri)
+        logTrace("componentLinkedgoSetEnum: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
     } catch (Exception e) {
         logError("componentLinkedgoSetEnum exception for ${childDevice.displayName}: ${e.message}")
     }
@@ -17345,7 +17357,9 @@ void componentLinkedgoSetBoolean(def childDevice, Integer instanceId, String rol
             params: [id: instanceId, value: value]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         logDebug("componentLinkedgoSetBoolean: ${childDevice.displayName} ${role} (id=${instanceId})=${value}")
-        postCommandSync(command, uri)
+        logTrace("componentLinkedgoSetBoolean: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
+        LinkedHashMap json = postCommandSync(command, uri)
+        logTrace("componentLinkedgoSetBoolean: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
     } catch (Exception e) {
         logError("componentLinkedgoSetBoolean exception for ${childDevice.displayName}: ${e.message}")
     }

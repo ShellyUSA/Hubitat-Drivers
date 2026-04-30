@@ -149,19 +149,27 @@ private void schedulePolling() {
 
 private void ensureVirtualMap() {
   Map vm = state.virtualMap as Map
-  if (vm && !vm.isEmpty()) { return }
+  if (vm && !vm.isEmpty()) {
+    logTrace("ensureVirtualMap: cache hit (${vm})")
+    return
+  }
   Map fetched = parent?.componentLinkedgoGetComponents(device) as Map
+  logTrace("ensureVirtualMap: parent returned ${fetched}")
   if (fetched && !fetched.isEmpty()) {
     state.virtualMap = fetched
     logDebug("ensureVirtualMap populated: ${fetched}")
   } else {
-    logWarn('ensureVirtualMap: parent returned empty map — RPC writes will be deferred')
+    logTrace('ensureVirtualMap: parent returned empty map — RPC writes will be deferred')
   }
 }
 
 private void ensureServiceConfig() {
-  if (state.serviceConfig) { return }
+  if (state.serviceConfig) {
+    logTrace("ensureServiceConfig: cache hit")
+    return
+  }
   Map fetched = parent?.componentLinkedgoGetServiceConfig(device) as Map
+  logTrace("ensureServiceConfig: parent returned ${fetched}")
   if (fetched) {
     state.serviceConfig = fetched
     logDebug("ensureServiceConfig populated: ${fetched}")
@@ -199,14 +207,18 @@ void setCoolingSetpoint(BigDecimal temp) {
 }
 
 private void writeTargetTemperature(BigDecimal temp) {
+  logTrace("writeTargetTemperature: input=${temp}, scale=${location.temperatureScale}")
   ensureServiceConfig()
   BigDecimal tempC = (location.temperatureScale == 'F') ? ((temp - 32) * 5.0 / 9.0) : temp
   BigDecimal minC = readTempRangeMin()
   BigDecimal maxC = readTempRangeMax()
+  logTrace("writeTargetTemperature: tempC=${tempC}, range=[${minC}..${maxC}]")
   if (tempC < minC) { tempC = minC }
   if (tempC > maxC) { tempC = maxC }
   tempC = tempC.setScale(1, BigDecimal.ROUND_HALF_UP)
+  logTrace("writeTargetTemperature: clamped tempC=${tempC}, sending Number.Set")
   parent?.componentLinkedgoSetNumber(device, 'target_temperature', tempC)
+  runIn(2, 'refresh', [overwrite: true])
 }
 
 /**
@@ -232,6 +244,7 @@ void setThermostatMode(String mode) {
   }
   parent?.componentLinkedgoSetEnum(device, 'working_mode', deviceMode)
   setBooleanRole('enable', true)
+  // setBooleanRole already schedules a refresh; runIn[overwrite:true] coalesces
 }
 
 void heat() { setThermostatMode('heat') }
@@ -268,6 +281,7 @@ void setThermostatFanMode(String fanmode) {
       deviceSpeed = 'auto'
   }
   parent?.componentLinkedgoSetEnum(device, 'fan_speed', deviceSpeed)
+  runIn(2, 'refresh', [overwrite: true])
 }
 
 void fanAuto() { setThermostatFanMode('auto') }
@@ -292,6 +306,7 @@ void setWorkingMode(String mode) {
   parent?.componentLinkedgoSetEnum(device, 'working_mode', mode)
   // Optimistic update — distributeStatus will confirm on next poll
   sendEvent(name: 'workingMode', value: mode, descriptionText: "Working mode set to ${mode}")
+  runIn(2, 'refresh', [overwrite: true])
 }
 
 /**
@@ -303,6 +318,7 @@ void setTargetHumidity(BigDecimal rh) {
   if (value < 40) { value = 40 }
   if (value > 75) { value = 75 }
   parent?.componentLinkedgoSetNumber(device, 'target_humidity', value)
+  runIn(2, 'refresh', [overwrite: true])
 }
 
 /**
@@ -334,11 +350,13 @@ private void setBooleanRole(String role, Boolean value) {
   ensureVirtualMap()
   Map vm = (state.virtualMap ?: [:]) as Map
   Integer id = vm[role] as Integer
+  logTrace("setBooleanRole: role=${role}, value=${value}, resolved id=${id}, full virtualMap=${vm}")
   if (id == null) {
-    logWarn("setBooleanRole: no instance ID for '${role}' — virtualMap not yet populated; refresh and retry")
+    logTrace("setBooleanRole: no instance ID for '${role}' — virtualMap not yet populated; refresh and retry")
     return
   }
   parent?.componentLinkedgoSetBoolean(device, id, role, value)
+  runIn(2, 'refresh', [overwrite: true])
 }
 
 private BigDecimal readTempRangeMin() {
@@ -368,61 +386,73 @@ private BigDecimal readTempRangeMax() {
 // ╚══════════════════════════════════════════════════════════════╝
 
 void distributeStatus(Map status) {
-  if (!status) { return }
-  ensureVirtualMap()
-  ensureServiceConfig()
+  try {
+    if (shouldLogLevel('trace')) {
+      logJson([distributeStatus_input: status])
+    }
+    if (!status) { return }
+    ensureVirtualMap()
+    ensureServiceConfig()
 
-  Map<String, Integer> virtualMap = (state.virtualMap ?: [:]) as Map<String, Integer>
-  if (virtualMap.isEmpty()) {
-    logWarn('distributeStatus: virtualMap empty — cannot route updates this cycle')
-    sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
-    return
-  }
-
-  Map<String, String> reverseMap = [:]
-  virtualMap.each { String role, Object id ->
-    reverseMap[id.toString()] = role
-  }
-
-  String scale = location.temperatureScale ?: 'F'
-  Boolean staleDetected = false
-
-  status.each { k, v ->
-    String key = k.toString()
-    if (!(v instanceof Map)) { return }
-    Map data = v as Map
-    if (!key.startsWith('boolean:') && !key.startsWith('number:') && !key.startsWith('enum:')) { return }
-
-    String[] parts = key.split(':')
-    if (parts.length != 2) { return }
-    String idStr = parts[1]
-    String role = reverseMap[idStr]
-    if (!role) {
-      try {
-        Integer idNum = idStr as Integer
-        if (idNum >= 200) { staleDetected = true }
-      } catch (NumberFormatException ignored) {}
-      logTrace("distributeStatus: no role mapping for ${key}; skipping")
+    Map<String, Integer> virtualMap = (state.virtualMap ?: [:]) as Map<String, Integer>
+    logTrace("distributeStatus: virtualMap=${virtualMap}, serviceConfig keys=${(state.serviceConfig as Map)?.keySet()}")
+    if (virtualMap.isEmpty()) {
+      logTrace('distributeStatus: virtualMap empty — cannot route updates this cycle')
+      sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
       return
     }
 
-    handleRoleUpdate(role, data, scale)
+    Map<String, String> reverseMap = [:]
+    virtualMap.each { String role, Object id ->
+      reverseMap[id.toString()] = role
+    }
+    logTrace("distributeStatus: reverseMap=${reverseMap}")
+
+    String scale = location.temperatureScale ?: 'F'
+    Boolean staleDetected = false
+
+    status.each { k, v ->
+      String key = k.toString()
+      if (!(v instanceof Map)) { return }
+      Map data = v as Map
+      if (!key.startsWith('boolean:') && !key.startsWith('number:') && !key.startsWith('enum:')) { return }
+
+      String[] parts = key.split(':')
+      if (parts.length != 2) { return }
+      String idStr = parts[1]
+      String role = reverseMap[idStr]
+      logTrace("distributeStatus iter: key=${key}, idStr=${idStr}, resolved role=${role}, data=${data}")
+      if (!role) {
+        try {
+          Integer idNum = idStr as Integer
+          if (idNum >= 200) { staleDetected = true }
+        } catch (NumberFormatException ignored) {}
+        logTrace("distributeStatus: no role mapping for ${key}; skipping")
+        return
+      }
+
+      handleRoleUpdate(role, data, scale)
+    }
+
+    if (staleDetected) {
+      logDebug('distributeStatus: stale virtualMap detected — clearing cache for next refresh')
+      state.remove('virtualMap')
+    }
+
+    // Both thermostatMode (from enable + workingMode) and thermostatOperatingState
+    // are derived from multiple roles, so compute them after iteration is done
+    deriveMode()
+    updateOperatingState(scale)
+
+    sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+  } catch (Exception e) {
+    logError("distributeStatus internal exception: ${e.message}")
+    e.printStackTrace()
   }
-
-  if (staleDetected) {
-    logDebug('distributeStatus: stale virtualMap detected — clearing cache for next refresh')
-    state.remove('virtualMap')
-  }
-
-  // Both thermostatMode (from enable + workingMode) and thermostatOperatingState
-  // are derived from multiple roles, so compute them after iteration is done
-  deriveMode()
-  updateOperatingState(scale)
-
-  sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
 }
 
 private void handleRoleUpdate(String role, Map data, String scale) {
+  logTrace("handleRoleUpdate: role=${role}, value=${data.value}, scale=${scale}")
   if (data.value == null) { return }
 
   switch (role) {
