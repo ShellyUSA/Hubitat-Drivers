@@ -93,7 +93,7 @@ void installed() {
   // Advertise supported modes/fan-modes for dashboards
   sendEvent(name: 'supportedThermostatModes', value: '["heat","cool","auto","off"]')
   sendEvent(name: 'supportedThermostatFanModes', value: '["auto","circulate","on"]')
-  parent?.componentRefresh(device)
+  fetchAndDistribute()
   initialize()
 }
 
@@ -112,12 +112,32 @@ void initialize() {
 
 void refresh() {
   logDebug('refresh() called')
-  parent?.componentRefresh(device)
+  fetchAndDistribute()
 }
 
 void scheduledPoll() {
   logDebug('scheduledPoll() triggered')
-  parent?.componentRefresh(device)
+  fetchAndDistribute()
+}
+
+/**
+ * Owns the polling control flow: queries the device via the parent app's
+ * Linkedgo-specific fetch helper, logs the response shape in device context
+ * (where this driver's logs live), and dispatches to distributeStatus().
+ *
+ * This intentionally bypasses the parent's generic componentRefresh()
+ * dispatcher — that path is designed for switch/cover/light multi-component
+ * devices and obscures failures in app-context logs.
+ */
+private void fetchAndDistribute() {
+  Map status = parent?.componentLinkedgoFetchStatus(device) as Map
+  Integer keyCount = status?.size() ?: 0
+  logTrace("fetchAndDistribute: parent returned ${keyCount} status keys: ${status?.keySet()}")
+  if (!status) {
+    logWarn('fetchAndDistribute: parent returned null/empty status — device may be unreachable')
+    return
+  }
+  distributeStatus(status)
 }
 
 private void schedulePolling() {
@@ -147,8 +167,22 @@ private void schedulePolling() {
 // ║  Virtual-Component Cache                                     ║
 // ╚══════════════════════════════════════════════════════════════╝
 
+/**
+ * Ensures state.virtualMap (role -> "type:id" string) is populated by querying
+ * Shelly.GetComponents via the parent app. Caches written by older versions
+ * of this driver stored bare Integer ids; if a legacy cache is detected it
+ * is cleared so the next fetch repopulates with the type-aware "type:id"
+ * format. Without this, paired Tuya components (e.g. boolean:202 enable +
+ * number:202 target_temperature) would clobber each other in the reverse
+ * lookup used by distributeStatus.
+ */
 private void ensureVirtualMap() {
   Map vm = state.virtualMap as Map
+  if (vm && !vm.isEmpty() && vm.values().every { it instanceof Integer }) {
+    logDebug('ensureVirtualMap: legacy Integer cache detected, clearing for re-fetch in type:id format')
+    state.remove('virtualMap')
+    vm = null
+  }
   if (vm && !vm.isEmpty()) {
     logTrace("ensureVirtualMap: cache hit (${vm})")
     return
@@ -349,12 +383,18 @@ private void relayDeviceSettings() {
 private void setBooleanRole(String role, Boolean value) {
   ensureVirtualMap()
   Map vm = (state.virtualMap ?: [:]) as Map
-  Integer id = vm[role] as Integer
-  logTrace("setBooleanRole: role=${role}, value=${value}, resolved id=${id}, full virtualMap=${vm}")
-  if (id == null) {
-    logTrace("setBooleanRole: no instance ID for '${role}' — virtualMap not yet populated; refresh and retry")
+  String compKey = vm[role] as String
+  logTrace("setBooleanRole: role=${role}, value=${value}, resolved compKey=${compKey}, full virtualMap=${vm}")
+  if (!compKey) {
+    logTrace("setBooleanRole: no component key for '${role}' — virtualMap not yet populated; refresh and retry")
     return
   }
+  String[] parts = compKey.split(':')
+  if (parts.length != 2 || parts[0] != 'boolean') {
+    logWarn("setBooleanRole: '${role}' resolves to ${compKey}, expected a boolean component — skipping write")
+    return
+  }
+  Integer id = parts[1] as Integer
   parent?.componentLinkedgoSetBoolean(device, id, role, value)
   runIn(2, 'refresh', [overwrite: true])
 }
@@ -394,7 +434,7 @@ void distributeStatus(Map status) {
     ensureVirtualMap()
     ensureServiceConfig()
 
-    Map<String, Integer> virtualMap = (state.virtualMap ?: [:]) as Map<String, Integer>
+    Map<String, String> virtualMap = (state.virtualMap ?: [:]) as Map<String, String>
     logTrace("distributeStatus: virtualMap=${virtualMap}, serviceConfig keys=${(state.serviceConfig as Map)?.keySet()}")
     if (virtualMap.isEmpty()) {
       logTrace('distributeStatus: virtualMap empty — cannot route updates this cycle')
@@ -402,9 +442,12 @@ void distributeStatus(Map status) {
       return
     }
 
+    // Reverse map for "type:id" -> role lookup. Keying by the full component
+    // key (not just the numeric id) is essential for Tuya-bridged devices that
+    // expose paired boolean/number components sharing a numeric id.
     Map<String, String> reverseMap = [:]
-    virtualMap.each { String role, Object id ->
-      reverseMap[id.toString()] = role
+    virtualMap.each { String role, Object compKey ->
+      reverseMap[compKey.toString()] = role
     }
     logTrace("distributeStatus: reverseMap=${reverseMap}")
 
@@ -417,14 +460,11 @@ void distributeStatus(Map status) {
       Map data = v as Map
       if (!key.startsWith('boolean:') && !key.startsWith('number:') && !key.startsWith('enum:')) { return }
 
-      String[] parts = key.split(':')
-      if (parts.length != 2) { return }
-      String idStr = parts[1]
-      String role = reverseMap[idStr]
-      logTrace("distributeStatus iter: key=${key}, idStr=${idStr}, resolved role=${role}, data=${data}")
+      String role = reverseMap[key]
+      logTrace("distributeStatus iter: key=${key}, resolved role=${role}, data=${data}")
       if (!role) {
         try {
-          Integer idNum = idStr as Integer
+          Integer idNum = key.split(':')[1] as Integer
           if (idNum >= 200) { staleDetected = true }
         } catch (NumberFormatException ignored) {}
         logTrace("distributeStatus: no role mapping for ${key}; skipping")
