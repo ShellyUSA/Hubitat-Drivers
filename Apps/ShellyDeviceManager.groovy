@@ -16570,17 +16570,11 @@ void componentRefresh(def childDevice) {
             syncCoverConfigForParentChildren(parentDni, ipAddress)
         } else {
             String refreshTypeName = childDevice.typeName ?: ''
-            // DALI Dimmer and Linkedgo virtual-component thermostats both consume the full
-            // deviceStatus map directly (they don't have a single componentType/componentId
-            // pairing — DALI maps lights dynamically; Linkedgo maps virtual instance IDs
-            // to roles via state.virtualMap built from Shelly.GetComponents).
-            if (refreshTypeName.contains('DALI Dimmer') ||
-                refreshTypeName.contains('Linkedgo ST1820') ||
-                refreshTypeName.contains('Linkedgo ST802')) {
-                if (refreshTypeName.contains('Linkedgo')) {
-                    logTrace("componentRefresh Linkedgo dispatch: typeName=${refreshTypeName}, status keys=${deviceStatus?.keySet()}")
-                    logTrace("componentRefresh Linkedgo full status=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(deviceStatus))}")
-                }
+            // DALI Dimmer consumes the full deviceStatus map directly because it maps
+            // lights dynamically and has no single componentType/componentId pairing.
+            // (Linkedgo thermostats also need the full map but own their own polling
+            // flow via componentLinkedgoFetchStatus → driver-side distributeStatus.)
+            if (refreshTypeName.contains('DALI Dimmer')) {
                 childDevice.distributeStatus(deviceStatus)
             } else {
                 // Single child refresh: only update this child
@@ -17198,16 +17192,20 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
 // postCommandSync (which itself is non-static).
 
 /**
- * Queries Shelly.GetComponents and returns a role->id map for all virtual
- * components owned by service:0. The driver caches the result in
- * state.virtualMap and re-fetches when stale (instance ID seen in status
- * not present in cached map).
+ * Queries Shelly.GetComponents and returns a role->"type:id" map for all virtual
+ * components owned by service:0. The driver caches the result in state.virtualMap
+ * and re-fetches when stale (component key seen in status not present in cached map).
+ *
+ * The full "type:id" key (e.g. "boolean:202", "number:202") is preserved in the
+ * value because Tuya-bridged devices reuse the same numeric instance id across
+ * boolean / number / enum component types — collapsing to id-only would conflate
+ * paired components like enable (boolean:202) and target_temperature (number:202).
  *
  * @param childDevice The Linkedgo child device
- * @return Map of role (String) -> instance ID (Integer); empty map on failure
+ * @return Map of role (String) -> component key (String, "type:id"); empty map on failure
  */
 Map componentLinkedgoGetComponents(def childDevice) {
-    Map<String, Integer> result = [:]
+    Map<String, String> result = [:]
     try {
         String ip = childDevice.getDataValue('ipAddress')
         if (!ip) {
@@ -17230,17 +17228,43 @@ Map componentLinkedgoGetComponents(def childDevice) {
             // Schema-flexible role lookup — LinkedGo firmware may surface 'role' under config, attrs, meta, or top-level
             String role = (comp.config?.role ?: comp.attrs?.role ?: comp.meta?.role ?: comp.role)?.toString()
             if (!key || !role) { return }
-            String[] parts = key.split(':')
-            if (parts.length != 2) { return }
-            try {
-                result[role] = parts[1] as Integer
-            } catch (NumberFormatException ignored) {}
+            if (key.split(':').length != 2) { return }
+            result[role] = key
         }
         logDebug("componentLinkedgoGetComponents: discovered ${result.size()} role mappings for ${childDevice.displayName}: ${result}")
     } catch (Exception e) {
         logError("componentLinkedgoGetComponents exception for ${childDevice.displayName}: ${e.message}")
     }
     return result
+}
+
+/**
+ * Linkedgo-specific status fetch. Returns the full Shelly.GetStatus result map
+ * to the calling driver, which then distributes it locally via distributeStatus().
+ *
+ * This bypasses componentRefresh()'s generic parent/child dispatch (which is
+ * designed for switch/cover/light multi-component devices) so the Linkedgo
+ * driver owns the full request → response → distribute flow. Crucially, every
+ * step then logs in device context, where users typically read driver logs —
+ * the parent dispatcher's logs live in app context and are easy to miss.
+ *
+ * @param childDevice The Linkedgo child device
+ * @return The full Shelly.GetStatus result map, or null on failure
+ */
+Map componentLinkedgoFetchStatus(def childDevice) {
+    try {
+        String ip = childDevice.getDataValue('ipAddress')
+        if (!ip) {
+            logError("componentLinkedgoFetchStatus: no IP for ${childDevice.displayName}")
+            return null
+        }
+        Map status = queryDeviceStatus(ip)
+        logTrace("componentLinkedgoFetchStatus: ${childDevice.displayName} returning ${status?.size() ?: 0} keys")
+        return status
+    } catch (Exception e) {
+        logError("componentLinkedgoFetchStatus exception for ${childDevice.displayName}: ${e.message}")
+        return null
+    }
 }
 
 /**
