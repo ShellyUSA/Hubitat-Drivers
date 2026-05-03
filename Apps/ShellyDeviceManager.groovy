@@ -17239,32 +17239,58 @@ Map componentLinkedgoGetComponents(def childDevice) {
 }
 
 /**
- * Linkedgo-specific status fetch. Returns the full Shelly.GetStatus result map
- * to the calling driver, which then distributes it locally via distributeStatus().
+ * Linkedgo-specific status fetch. Issues Shelly.GetComponents with
+ * include: ['status'] and flattens the response to {type:id -> status submap}
+ * — the shape distributeStatus() in the driver expects.
  *
- * This bypasses componentRefresh()'s generic parent/child dispatch (which is
- * designed for switch/cover/light multi-component devices) so the Linkedgo
- * driver owns the full request → response → distribute flow. Crucially, every
- * step then logs in device context, where users typically read driver logs —
- * the parent dispatcher's logs live in app context and are easy to miss.
+ * Shelly.GetStatus is NOT used here. On Tuya-bridged virtual-component devices
+ * (ST1820, ST802), Shelly.GetStatus returns only system-level keys (ble, cloud,
+ * mqtt, service:0, sys, wifi, ws) — the boolean:* / number:* / enum:* virtual
+ * components are absent. Shelly.GetComponents with include:['status'] returns
+ * them. Same pattern as the BLU Gateway enrichment at line ~4575.
+ *
+ * Pagination: the LinkedGo thermostats expose ~6-8 virtual components, well
+ * under one page. Offset iteration is not required today.
  *
  * @param childDevice The Linkedgo child device
- * @return The full Shelly.GetStatus result map, or null on failure
+ * @return Map of "type:id" (String) -> status submap (Map). Empty on failure;
+ *         driver's `if (!status)` guard treats empty same as null.
  */
 Map componentLinkedgoFetchStatus(def childDevice) {
+    Map<String, Map> result = [:]
     try {
         String ip = childDevice.getDataValue('ipAddress')
         if (!ip) {
             logError("componentLinkedgoFetchStatus: no IP for ${childDevice.displayName}")
-            return null
+            return result
         }
-        Map status = queryDeviceStatus(ip)
-        logTrace("componentLinkedgoFetchStatus: ${childDevice.displayName} returning ${status?.size() ?: 0} keys")
-        return status
+        String uri = "http://${ip}/rpc"
+        LinkedHashMap command = [id: 0, src: 'linkedgoFetchStatus', method: 'Shelly.GetComponents',
+                                 params: [include: ['status']]]
+        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+        logTrace("componentLinkedgoFetchStatus: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
+        LinkedHashMap json = postCommandSync(command, uri)
+        logTrace("componentLinkedgoFetchStatus: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
+
+        List<Map> components = json?.result?.components as List<Map>
+        if (!components) {
+            logWarn("componentLinkedgoFetchStatus: empty/null components list for ${childDevice.displayName}")
+            return result
+        }
+
+        components.each { Map comp ->
+            String key = comp.key?.toString()
+            if (!key) { return }
+            if (!key.startsWith('boolean:') && !key.startsWith('number:') && !key.startsWith('enum:')) { return }
+            if (!(comp.status instanceof Map)) { return }
+            result[key] = comp.status as Map
+        }
+
+        logDebug("componentLinkedgoFetchStatus: ${childDevice.displayName} returning ${result.size()} component statuses: ${result.keySet()}")
     } catch (Exception e) {
         logError("componentLinkedgoFetchStatus exception for ${childDevice.displayName}: ${e.message}")
-        return null
     }
+    return result
 }
 
 /**
