@@ -706,18 +706,7 @@ void appButtonHandler(String buttonName) {
     }
 
     if (buttonName == 'btnForceRebuildDrivers') {
-        Map allDrivers = state.autoDrivers ?: [:]
-        if (allDrivers.isEmpty()) {
-            appendLog('warn', 'No tracked drivers to update')
-        } else {
-            logInfo("Manual force update of all drivers requested")
-            appendLog('info', "Updating ${allDrivers.size()} driver(s)...")
-            state.lastAutoconfVersion = getAppVersion()
-            reinstallAllTrackedDrivers()
-        }
-        // Sweep orphaned ShellyDeviceManager drivers (catches both tracked + manually uploaded test drivers)
-        sweepAllUnusedShellyHubDrivers()
-        sendEvent(name: 'driverRebuildStatus', value: 'swept')
+        startBulkDriverUpdate()
     }
 
     if (buttonName == 'btnToggleAutoDrivers') {
@@ -748,14 +737,11 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName.startsWith('btnUpdateDriver|')) {
         String trackingKey = buttonName.minus('btnUpdateDriver|')
-        logInfo("Manual update requested for driver: ${trackingKey}")
-        Boolean success = reinstallSingleDriver(trackingKey)
-        if (success) {
-            appendLog('info', "Updated driver: ${trackingKey}")
-        } else {
-            appendLog('warn', "Failed to update driver: ${trackingKey}")
-        }
-        sendEvent(name: 'driverRebuildStatus', value: 'updated')
+        startSingleDriverUpdate(trackingKey)
+    }
+
+    if (buttonName == 'btnCancelDriverUpdate') {
+        cancelBulkDriverUpdate()
     }
 
     // === Device Configuration Table Buttons ===
@@ -3823,9 +3809,66 @@ private static String formatTimeForDisplay(String timeStr) {
 }
 
 /**
+ * Renders the progress banner that appears at the top of the driver
+ * management table while a serialized update queue is running, or for ~30 s
+ * after the queue completes (to show the final summary). Driven by
+ * {@code state.driverUpdateProgress}, which is populated by
+ * {@link #enqueueAndStartDriverUpdate} and cleared by
+ * {@link #clearDriverUpdateProgress}.
+ *
+ * @param prog The state.driverUpdateProgress map (must be non-null)
+ * @return HTML for the banner block
+ */
+private String renderDriverUpdateProgressBanner(Map prog) {
+    StringBuilder sb = new StringBuilder()
+    Integer total = (prog.total ?: 0) as Integer
+    Integer completed = (prog.completed ?: 0) as Integer
+    Integer errors = (prog.errors ?: 0) as Integer
+    Boolean active = prog.active == true
+
+    if (active) {
+        Integer attempted = completed + errors
+        Integer pctDone = total > 0 ? Math.min(100, (attempted * 100 / total) as Integer) : 0
+        String currentName = (prog.currentName ?: 'preparing…').toString()
+        String position = "${Math.min(attempted + 1, total)} of ${total}"
+
+        sb.append("<div style='background:#E3F2FD;border-left:4px solid #2196F3;padding:10px 14px;margin:8px 0;border-radius:3px'>")
+        sb.append("<b>Updating driver ${position}</b>: ${currentName}<br>")
+        sb.append("<div style='background:#BBDEFB;height:10px;border-radius:3px;margin:8px 0;overflow:hidden'>")
+        sb.append("<div style='background:#2196F3;height:100%;width:${pctDone}%;transition:width 0.5s ease'></div>")
+        sb.append('</div>')
+        sb.append("<div style='font-size:13px'>")
+        sb.append("${completed} updated")
+        if (errors > 0) {
+            sb.append(", <span style='color:#D32F2F'>${errors} error(s)</span>")
+        }
+        sb.append(' &middot; Drivers update one at a time, 10 seconds apart, to avoid overloading the hub. ')
+        sb.append(buttonLink('btnCancelDriverUpdate', 'Cancel', '#D32F2F', '14px'))
+        sb.append('</div></div>')
+    } else {
+        // Completed banner — shown for 30 s
+        String borderColor = errors > 0 ? '#F57C00' : '#388E3C'
+        String headerColor = errors > 0 ? '#E65100' : '#2E7D32'
+        sb.append("<div style='background:#F1F8E9;border-left:4px solid ${borderColor};padding:10px 14px;margin:8px 0;border-radius:3px'>")
+        sb.append("<b style='color:${headerColor}'>Update complete</b>: ${completed} of ${total} updated")
+        if (errors > 0) {
+            sb.append(", ${errors} error(s)")
+            String lastError = prog.lastError?.toString()
+            if (lastError) {
+                sb.append("<br><span style='font-size:12px;color:#666'>Last error: ${lastError}</span>")
+            }
+        }
+        sb.append('</div>')
+    }
+    return sb.toString()
+}
+
+/**
  * Renders the driver management section as an MDL table showing all tracked
  * drivers with version status and per-driver update buttons. Used both for
  * initial page render and SSR updates via {@code driverRebuildStatus} event.
+ * When a serialized update queue is active or recently completed, prepends
+ * a progress banner via {@link #renderDriverUpdateProgressBanner}.
  *
  * @return HTML string for the driver management table
  */
@@ -3833,6 +3876,12 @@ private String renderDriverManagementHtml() {
     StringBuilder sb = new StringBuilder()
     String currentVersion = getAppVersion()
     Map allDrivers = state.autoDrivers ?: [:]
+
+    // Progress banner — shown while a queue is active or just completed
+    Map prog = state.driverUpdateProgress as Map
+    if (prog != null && (prog.active == true || prog.finishedAt != null)) {
+        sb.append(renderDriverUpdateProgressBanner(prog))
+    }
 
     if (allDrivers.isEmpty()) {
         sb.append('<p>No drivers are currently tracked.</p>')
@@ -4794,6 +4843,18 @@ void initialize() {
     state.remove('driverGeneration')
     state.remove('pendingFoundShellyEvent')
 
+    // Recover from in-flight driver update queue across a hub reboot. runIn
+    // schedules don't survive reboots, so a queue with active=true would
+    // otherwise be stranded. We abort rather than resume — silently restarting
+    // a partially-completed queue would surprise the user. They can re-click
+    // Update All if they want to retry.
+    if (state.driverUpdateProgress?.active == true) {
+        appendLog('warn', 'Driver update queue was in progress at reboot — clearing stale state')
+        state.remove('driverUpdateQueue')
+        state.remove('driverUpdateProgress')
+        sendEvent(name: 'driverRebuildStatus', value: 'cleared')
+    }
+
     // Clean up stale driver tracking entries from old app versions
     pruneStaleDriverTracking()
 
@@ -4809,7 +4870,7 @@ void initialize() {
         state.lastAutoconfVersion = currentVersion
         if (settings?.rebuildOnUpdate != false) {
             logInfo("App version changed from ${lastVersion} to ${currentVersion}, updating drivers")
-            reinstallAllTrackedDrivers()
+            startBulkDriverUpdate()
         } else {
             logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver update disabled)")
         }
@@ -4819,7 +4880,7 @@ void initialize() {
         Boolean hasOutdated = allDrivers.any { key, info -> info.version != currentVersion }
         if (hasOutdated && settings?.rebuildOnUpdate != false) {
             logInfo("Found outdated drivers at app version ${currentVersion}, triggering update")
-            reinstallAllTrackedDrivers()
+            startBulkDriverUpdate()
         } else {
             logDebug("App version unchanged (${currentVersion}), no driver update needed")
         }
@@ -8745,10 +8806,18 @@ private void appendLog(String level, String msg) {
             state.recentLogs = state.recentLogs[-300..-1]
         }
 
-        // Push the most recent 10 lines to the app UI for live updates
-        String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
-        String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-        app.sendEvent(name: 'recentLogs', value: recentPayload)
+        // Throttle the UI sendEvent: coalesce bursts to at most 1/sec. The buffer
+        // is always updated; we only skip the UI ping when fired too frequently.
+        // Without this, rapid appendLog calls (e.g. inside async callbacks) burst-flood
+        // the per-app sendEvent rate limiter and produce LimitExceededException errors.
+        Long lastFire = (state.lastLogEventTimestamp ?: 0L) as Long
+        Long nowMs = now()
+        if (nowMs - lastFire >= 1000L) {
+            String logs = state.recentLogs.reverse().take(10).join('\n')
+            String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
+            app.sendEvent(name: 'recentLogs', value: recentPayload)
+            state.lastLogEventTimestamp = nowMs
+        }
     }
 }
 
@@ -14096,90 +14165,476 @@ private String resolveComponentDriverFileName(String driverName) {
 }
 
 /**
- * Reinstalls a single tracked driver by its tracking key.
- * Handles both prebuilt drivers (downloaded as generated .groovy files) and
- * component drivers (fetched individually from GitHub).
- *
- * @param trackingKey The key in {@code state.autoDrivers} (e.g., "ShellyDeviceManager.Shelly Autoconf Switch")
- * @return true if the driver was successfully updated, false otherwise
+ * Public entry point for "Update All Drivers" button. Queues every tracked
+ * driver and starts the serialized async worker. Refuses re-entry if a queue
+ * is already running. Replaces the synchronous tight-loop that previously
+ * generated excessive hub load on the per-app sendEvent rate limiter.
  */
-private Boolean reinstallSingleDriver(String trackingKey) {
-    Map allDrivers = state.autoDrivers ?: [:]
+void startBulkDriverUpdate() {
+    initializeDriverTracking()
 
-    // GString-safe lookup: keys may be GStrings in state
+    if (isDriverUpdateInProgress()) {
+        appendLog('warn', 'Driver update already in progress; ignoring duplicate request')
+        return
+    }
+
+    Map driverSnapshot = new LinkedHashMap((state.autoDrivers ?: [:]) as Map)
+    if (driverSnapshot.isEmpty()) {
+        appendLog('warn', 'No tracked drivers to update')
+        return
+    }
+
+    List<String> queue = driverSnapshot.keySet().collect { it.toString() }
+    enqueueAndStartDriverUpdate(queue, "Updating ${queue.size()} driver(s) to v${getAppVersion()}…")
+}
+
+/**
+ * Public entry point for the per-row "Update" button. Queues a single driver
+ * through the same async path so the UI behaves identically to bulk updates.
+ *
+ * @param trackingKey The key in state.autoDrivers identifying the driver to update
+ */
+void startSingleDriverUpdate(String trackingKey) {
+    initializeDriverTracking()
+
+    if (isDriverUpdateInProgress()) {
+        appendLog('warn', "Driver update already in progress; ignoring request for ${trackingKey}")
+        return
+    }
+
+    Map allDrivers = state.autoDrivers ?: [:]
+    if (!allDrivers.find { k, v -> k.toString() == trackingKey }) {
+        appendLog('warn', "Tracking key not found: ${trackingKey}")
+        return
+    }
+
+    enqueueAndStartDriverUpdate([trackingKey], "Updating driver: ${trackingKey}")
+}
+
+/**
+ * Returns true if a serialized driver update is currently active.
+ * Used by entry points to refuse re-entry and by the UI to render the banner.
+ */
+private Boolean isDriverUpdateInProgress() {
+    Map prog = state.driverUpdateProgress as Map
+    return prog?.active == true
+}
+
+/**
+ * Initializes queue state and kicks off the async worker. Both bulk and
+ * single-driver entry points funnel through here so progress tracking and
+ * SSR refresh fires identically regardless of how the queue was started.
+ *
+ * @param trackingKeys Ordered list of tracking keys to process
+ * @param startMessage User-facing log message describing the operation
+ */
+private void enqueueAndStartDriverUpdate(List<String> trackingKeys, String startMessage) {
+    state.lastAutoconfVersion = getAppVersion()
+    state.driverUpdateQueue = trackingKeys.collect { it.toString() }
+    state.driverUpdateProgress = [
+        active: true,
+        total: trackingKeys.size(),
+        completed: 0,
+        errors: 0,
+        current: null,
+        currentName: null,
+        startedAt: now(),
+        finishedAt: null,
+        lastError: null
+    ]
+    appendLog('info', startMessage)
+    sendEvent(name: 'driverRebuildStatus', value: 'starting')
+    runIn(0, 'processNextDriverUpdate')
+}
+
+/**
+ * Worker entry — invoked by {@code runIn}. Pops the next tracking key from
+ * the queue, resolves its source URL (prebuilt or component), and kicks off
+ * the async download → list → install chain. Re-schedules itself 10 s after
+ * each driver completes via {@link #installDriverCallback}, NOT here.
+ */
+void processNextDriverUpdate() {
+    if (!isDriverUpdateInProgress()) {
+        return
+    }
+
+    List<String> queue = (state.driverUpdateQueue ?: []) as List<String>
+    if (queue.isEmpty()) {
+        finalizeBulkDriverUpdate()
+        return
+    }
+
+    String trackingKey = queue.remove(0).toString()
+    state.driverUpdateQueue = queue
+
+    Map allDrivers = state.autoDrivers ?: [:]
     Map.Entry matchEntry = allDrivers.find { k, v -> k.toString() == trackingKey }
     if (!matchEntry) {
-        logWarn("reinstallSingleDriver: tracking key not found: ${trackingKey}")
-        return false
+        handleDriverUpdateFailure(trackingKey, 'Tracking key disappeared during update')
+        return
     }
 
     Map info = matchEntry.value as Map
     String driverName = (info.name ?: '').toString()
     String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
     Boolean isComponent = info.isComponentDriver ?: false
-    String version = getAppVersion()
 
-    if (isComponent) {
-        String fileName = resolveComponentDriverFileName(driverName)
-        if (!fileName) {
-            logWarn("reinstallSingleDriver: cannot resolve file for component driver '${driverName}'")
-            return false
-        }
-        logInfo("Updating component driver: ${driverName} (${fileName})")
-        fetchAndInstallComponentDriver(fileName, driverName)
-        return true
-    }
+    state.driverUpdateProgress.current = trackingKey
+    state.driverUpdateProgress.currentName = baseName
+    sendEvent(name: 'driverRebuildStatus', value: 'progress')
 
-    // Prebuilt driver path
-    if (PREBUILT_DRIVERS.containsKey(baseName)) {
-        List<String> components = (info.components ?: []) as List<String>
-        Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-        return installPrebuiltDriver(baseName, components, pmMap, version)
-    }
-
-    if (baseName.startsWith('Shelly Autoconf') && baseName.contains('Parent')) {
-        logWarn("No prebuilt driver for '${baseName}'. Falling back to Shelly Autoconf Parent.")
-        List<String> components = (info.components ?: []) as List<String>
-        Map<String, Boolean> pmMap = (info.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
-        return installPrebuiltDriver('Shelly Autoconf Parent', components, pmMap, version)
-    }
-
-    logWarn("reinstallSingleDriver: no prebuilt driver for '${baseName}' — cannot update")
-    return false
-}
-
-/**
- * Reinstalls all tracked drivers (both prebuilt and component) with the current app version.
- * Called on app version change to update driver version suffixes. Delegates each driver
- * to {@link #reinstallSingleDriver} for unified prebuilt/component handling.
- */
-private void reinstallAllTrackedDrivers() {
-    initializeDriverTracking()
-
-    String version = getAppVersion()
-    // Defensive snapshot: reinstallSingleDriver() may mutate state.autoDrivers during each iteration,
-    // so we must iterate over a detached copy to avoid ConcurrentModificationException.
-    Map driverSnapshot = new LinkedHashMap((state.autoDrivers ?: [:]) as Map)
-    if (driverSnapshot.isEmpty()) {
-        logInfo("No tracked drivers to update")
+    String fileUrl = resolveDriverSourceUrl(driverName, baseName, isComponent)
+    if (!fileUrl) {
+        handleDriverUpdateFailure(trackingKey,
+            isComponent ? "Cannot resolve filename for component driver '${driverName}'"
+                        : "No prebuilt driver source for '${baseName}'")
         return
     }
 
-    logInfo("Updating ${driverSnapshot.size()} driver(s) to v${version}...")
-    appendLog('info', "Updating ${driverSnapshot.size()} driver(s) to v${version}...")
+    Map params = [
+        uri: fileUrl,
+        contentType: 'text/plain',
+        timeout: 30
+    ]
+    asynchttpGet('downloadDriverCallback', params, [
+        trackingKey: trackingKey,
+        driverName: driverName,
+        baseName: baseName,
+        isComponent: isComponent
+    ])
+}
 
-    int updated = 0
-    int errors = 0
-    driverSnapshot.each { key, info ->
-        Boolean success = reinstallSingleDriver(key.toString())
-        if (success) { updated++ } else { errors++ }
+/**
+ * Builds the GitHub raw URL for a driver's source file. Returns null if the
+ * driver type can't be resolved (not in PREBUILT_DRIVERS and no component
+ * file mapping). Mirrors the URL-building logic from the legacy synchronous
+ * path so behavior is identical.
+ *
+ * @param driverName  The full driver name (may include version suffix)
+ * @param baseName    The driver name with any version suffix stripped
+ * @param isComponent true if this is a component driver, false for a prebuilt
+ * @return The raw.githubusercontent.com URL, or null if unresolvable
+ */
+private String resolveDriverSourceUrl(String driverName, String baseName, Boolean isComponent) {
+    if (isComponent) {
+        String fileName = resolveComponentDriverFileName(driverName)
+        if (!fileName) { return null }
+        return "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/UniversalDrivers/UniversalComponentDrivers/${fileName}?v=${now()}"
+    }
+    String repoPath = (PREBUILT_DRIVERS[baseName] ?: '').toString()
+    if (!repoPath && baseName.startsWith('Shelly Autoconf') && baseName.contains('Parent')) {
+        // Fallback to the generic Autoconf Parent for unmapped *Parent driver names
+        repoPath = (PREBUILT_DRIVERS['Shelly Autoconf Parent'] ?: '').toString()
+    }
+    if (!repoPath) { return null }
+    return "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${repoPath}"
+}
+
+/**
+ * Async callback for the GitHub source download. Validates the driver's
+ * source name (mirrors the safety check from {@link #installPrebuiltDriver}),
+ * patches in the versioned name suffix for prebuilt drivers, then kicks off
+ * step 2 (list existing hub drivers).
+ */
+void downloadDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) {
+    String trackingKey = data?.trackingKey?.toString()
+
+    if (response?.hasError() || response?.status != 200) {
+        handleDriverUpdateFailure(trackingKey,
+            "Download HTTP ${response?.status ?: 'error'}: ${response?.errorMessage ?: ''}")
+        return
     }
 
-    logInfo("Driver update complete: ${updated} updated, ${errors} error(s)")
-    appendLog('info', "Driver update complete: ${updated} updated, ${errors} error(s)")
+    String sourceCode = response.data?.toString() ?: ''
+    if (!sourceCode) {
+        handleDriverUpdateFailure(trackingKey, 'Downloaded source is empty')
+        return
+    }
 
-    // Fire app event to trigger SSR update on main page
+    Boolean isComponent = data.isComponent as Boolean
+    String baseName = data.baseName?.toString() ?: ''
+    String version = getAppVersion()
+    String installedName
+
+    if (isComponent) {
+        // Component drivers keep their bare name (no version suffix in the driver itself)
+        installedName = data.driverName?.toString() ?: baseName
+    } else {
+        // Prebuilt drivers: validate source name, then patch with version suffix.
+        // Mirrors the safety check from installPrebuiltDriver lines 8030-8044.
+        java.util.regex.Matcher m = (sourceCode =~ /definition\s*\(\s*name:\s*'([^']+)'/)
+        if (!m.find()) {
+            handleDriverUpdateFailure(trackingKey, 'Cannot determine source driver name')
+            return
+        }
+        String sourceDriverName = m.group(1)
+        String expectedSourceName = (PREBUILT_DRIVER_SOURCE_NAME_OVERRIDE[baseName] ?: baseName).toString()
+        if (sourceDriverName != expectedSourceName) {
+            handleDriverUpdateFailure(trackingKey,
+                "Expected source '${expectedSourceName}' but found '${sourceDriverName}'")
+            return
+        }
+        installedName = "${baseName} v${version}".toString()
+        sourceCode = sourceCode.replaceFirst(/(definition\s*\(\s*name:\s*')[^']+'/,
+            "\$1${installedName}'")
+    }
+
+    Map nextData = [
+        trackingKey: trackingKey,
+        driverName: data.driverName,
+        baseName: baseName,
+        isComponent: isComponent,
+        installedName: installedName,
+        sourceCode: sourceCode
+    ]
+
+    Map listParams = [
+        uri: 'http://127.0.0.1:8080',
+        path: '/device/drivers',
+        contentType: 'application/json',
+        timeout: 5
+    ]
+    asynchttpGet('listExistingDriversCallback', listParams, nextData)
+}
+
+/**
+ * Async callback for the hub driver listing query. Decides whether this is
+ * an update of an existing driver (matched by base name + namespace) or a
+ * fresh create, then fires the install POST. Mirrors the install-vs-update
+ * branch logic from {@link #installDriver} at line 8086.
+ */
+void listExistingDriversCallback(hubitat.scheduling.AsyncResponse response, Map data) {
+    String trackingKey = data?.trackingKey?.toString()
+
+    if (response?.hasError() || response?.status != 200) {
+        handleDriverUpdateFailure(trackingKey, "Driver list HTTP ${response?.status ?: 'error'}")
+        return
+    }
+
+    String installedName = data.installedName?.toString()
+    String baseName = data.baseName?.toString()
+    String namespace = 'ShellyDeviceManager'
+
+    Map respJson = response.getJson() as Map
+    List drivers = (respJson?.drivers ?: []) as List
+    Map existingDriver = drivers.find { entry ->
+        Map d = entry as Map
+        if (d?.type != 'usr') { return false }
+        if (d?.namespace?.toString() != namespace) { return false }
+        if (d?.name?.toString() == installedName) { return true }
+        // Match older versioned names with same base
+        String existingBase = d?.name?.toString()?.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        return existingBase == baseName
+    } as Map
+
+    String sourceCode = data.sourceCode?.toString() ?: ''
+    String encodedSource = java.net.URLEncoder.encode(sourceCode, 'UTF-8')
+
+    Map params
+    Boolean isUpdate
+    String existingId = null
+
+    if (existingDriver) {
+        existingId = existingDriver.id?.toString()
+        String existingVersion = (existingDriver.version ?: 1).toString()
+        String body = "id=${existingId}&version=${existingVersion}&source=${encodedSource}"
+        params = [
+            uri: 'http://127.0.0.1:8080',
+            path: '/driver/ajax/update',
+            headers: ['Content-Type': 'application/x-www-form-urlencoded'],
+            body: body,
+            timeout: 30,
+            requestContentType: 'application/x-www-form-urlencoded'
+        ]
+        isUpdate = true
+    } else {
+        String body = "id=&version=1&source=${encodedSource}&create=Create"
+        params = [
+            uri: 'http://127.0.0.1:8080',
+            path: '/driver/save',
+            headers: ['Content-Type': 'application/x-www-form-urlencoded'],
+            body: body,
+            timeout: 30,
+            requestContentType: 'application/x-www-form-urlencoded'
+        ]
+        isUpdate = false
+    }
+
+    // Don't propagate sourceCode to the next callback — it's already in the body
+    Map nextData = [
+        trackingKey: trackingKey,
+        driverName: data.driverName,
+        baseName: baseName,
+        isComponent: data.isComponent,
+        installedName: installedName,
+        isUpdate: isUpdate,
+        existingId: existingId
+    ]
+
+    asynchttpPost('installDriverCallback', params, nextData)
+}
+
+/**
+ * Async callback for the final install POST. On success, mutates
+ * {@code state.autoDrivers[trackingKey].version} so the SSR-rendered table
+ * picks up the new version on the next render. Always schedules the next
+ * driver via {@code runIn(10, 'processNextDriverUpdate')}, even on failure
+ * (errors don't abort the queue).
+ */
+void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) {
+    String trackingKey = data?.trackingKey?.toString()
+    String installedName = data?.installedName?.toString()
+    Boolean isUpdate = data?.isUpdate as Boolean
+    Boolean success = false
+    String failureReason = null
+
+    if (isUpdate) {
+        // /driver/ajax/update returns JSON {status: 'success', ...}
+        if (response?.status == 200 && !response?.hasError()) {
+            try {
+                Map respJson = response.getJson() as Map
+                if (respJson?.status?.toString() == 'success') {
+                    success = true
+                } else {
+                    failureReason = "Update rejected: ${respJson?.errorMessage ?: 'Unknown error'}"
+                }
+            } catch (Exception e) {
+                failureReason = "Update parse error: ${e.message}"
+            }
+        } else {
+            failureReason = "Update HTTP ${response?.status}: ${response?.errorMessage ?: ''}"
+        }
+    } else {
+        // /driver/save returns 302 on success (form redirect), 200 with errors on failure
+        if (response?.status == 302) {
+            // Verify the driver actually exists on the hub. fetchHubitatDriverIdByName
+            // is a single sync HTTP call and only runs on the create path, which is rare.
+            if (fetchHubitatDriverIdByName(installedName) != null) {
+                success = true
+            } else {
+                failureReason = 'Driver not found on hub after create — likely compile error'
+            }
+        } else if (response?.status == 200) {
+            failureReason = 'Create returned HTTP 200 — likely compile error in driver source'
+        } else {
+            failureReason = "Create HTTP ${response?.status}: ${response?.errorMessage ?: ''}"
+        }
+    }
+
+    if (success) {
+        Map allDrivers = state.autoDrivers ?: [:]
+        Map.Entry matchEntry = allDrivers.find { k, v -> k.toString() == trackingKey }
+        if (matchEntry != null) {
+            // Mutate the stored map in place. We do NOT do `state.autoDrivers[trackingKey] = info`
+            // because the existing key may be a GString (from interpolation at registration time)
+            // and `trackingKey` is a String — a fresh write would create a duplicate entry,
+            // since GString.hashCode() != String.hashCode() for identical text.
+            Map info = matchEntry.value as Map
+            info.version = getAppVersion()
+            info.lastUpdated = now()
+            // Component drivers keep their bare name; prebuilt drivers carry the version suffix
+            if (!(data.isComponent as Boolean)) {
+                info.name = installedName
+            }
+        }
+        Integer completed = ((state.driverUpdateProgress.completed ?: 0) as Integer) + 1
+        state.driverUpdateProgress.completed = completed
+        appendLog('info', "Updated: ${data.baseName ?: installedName}")
+    } else {
+        Integer errors = ((state.driverUpdateProgress.errors ?: 0) as Integer) + 1
+        state.driverUpdateProgress.errors = errors
+        state.driverUpdateProgress.lastError = failureReason
+        appendLog('warn', "Failed to update ${data.baseName ?: installedName}: ${failureReason}")
+    }
+
+    state.driverUpdateProgress.current = null
+    state.driverUpdateProgress.currentName = null
+    sendEvent(name: 'driverRebuildStatus', value: 'progress')
+
+    runIn(10, 'processNextDriverUpdate')
+}
+
+/**
+ * Centralized failure handler for the pre-install steps (resolution, download,
+ * listing). Increments the error counter, logs the reason, fires SSR refresh,
+ * and schedules the next driver after 10 s. Used when an error occurs before
+ * the install POST is reached, so that {@link #installDriverCallback}'s
+ * runIn(10) chain hand-off is preserved.
+ *
+ * @param trackingKey The tracking key of the failed driver (for log context)
+ * @param reason      Human-readable failure reason
+ */
+private void handleDriverUpdateFailure(String trackingKey, String reason) {
+    appendLog('warn', "Driver update failed for ${trackingKey}: ${reason}")
+    Map prog = state.driverUpdateProgress as Map
+    if (prog != null) {
+        prog.errors = ((prog.errors ?: 0) as Integer) + 1
+        prog.lastError = reason
+        prog.current = null
+        prog.currentName = null
+    }
+    sendEvent(name: 'driverRebuildStatus', value: 'progress')
+    runIn(10, 'processNextDriverUpdate')
+}
+
+/**
+ * Called by {@link #processNextDriverUpdate} when the queue is empty. Marks
+ * progress complete, runs the orphan sweep (deferred from the original button
+ * handler so it fires after all installs complete, not before), and schedules
+ * the progress banner to clear after 30 s.
+ */
+private void finalizeBulkDriverUpdate() {
+    Map prog = state.driverUpdateProgress as Map
+    Integer completed = (prog?.completed ?: 0) as Integer
+    Integer errors = (prog?.errors ?: 0) as Integer
+
+    appendLog('info', "Driver update complete: ${completed} updated, ${errors} error(s)")
+
+    if (prog != null) {
+        prog.active = false
+        prog.finishedAt = now()
+        prog.current = null
+        prog.currentName = null
+    }
+
+    // Sweep orphaned drivers AFTER the queue completes — deferred from the
+    // original btnForceRebuildDrivers handler so it doesn't compete with the
+    // install POSTs for hub I/O.
+    sweepAllUnusedShellyHubDrivers()
     sendEvent(name: 'driverRebuildStatus', value: 'complete')
+
+    runIn(30, 'clearDriverUpdateProgress')
+}
+
+/**
+ * Removes the queue/progress state 30 s after completion so the banner fades
+ * away and the next click starts cleanly. Public because Hubitat invokes it
+ * by name via {@code runIn}.
+ */
+void clearDriverUpdateProgress() {
+    state.remove('driverUpdateQueue')
+    state.remove('driverUpdateProgress')
+    sendEvent(name: 'driverRebuildStatus', value: 'cleared')
+}
+
+/**
+ * Cancels an in-progress queue. Drains the remaining queue so the next
+ * {@link #processNextDriverUpdate} fires {@link #finalizeBulkDriverUpdate}
+ * immediately. Doesn't cancel the in-flight HTTP call — its callback will
+ * still run, but the queue is empty so processNextDriverUpdate finalizes
+ * after that.
+ */
+void cancelBulkDriverUpdate() {
+    if (!isDriverUpdateInProgress()) {
+        return
+    }
+    appendLog('info', 'Driver update cancelled by user')
+    state.driverUpdateQueue = []
+    Map prog = state.driverUpdateProgress as Map
+    if (prog != null) {
+        prog.lastError = 'Cancelled by user'
+    }
+    sendEvent(name: 'driverRebuildStatus', value: 'cancelling')
 }
 
 /* #endregion Driver Auto-Update */
@@ -14218,14 +14673,13 @@ void scheduledDriverUpdate() {
 
     if (hasOutdated) {
         logInfo("Scheduled driver update: found outdated drivers, rebuilding...")
-        appendLog('info', 'Scheduled driver auto-update starting...')
-        state.lastAutoconfVersion = currentVersion
-        reinstallAllTrackedDrivers()
+        appendLog('info', 'Scheduled driver auto-update starting…')
+        startBulkDriverUpdate()
+        // sweepAllUnusedShellyHubDrivers runs inside finalizeBulkDriverUpdate after the queue completes
     } else {
         logDebug("Scheduled driver update: all ${allDrivers.size()} driver(s) up to date (v${currentVersion})")
+        sweepAllUnusedShellyHubDrivers()
     }
-
-    sweepAllUnusedShellyHubDrivers()
 }
 
 // ═══════════════════════════════════════════════════════════════
