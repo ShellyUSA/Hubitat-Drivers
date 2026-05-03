@@ -5151,7 +5151,7 @@ ChildDeviceWrapper getShellyDevice(String dni) {return getChildDevice(dni)}
 @CompileStatic
 ChildDeviceWrapper getVoltageChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceIntegerDataValue(it,'adcId') == id}
+  return allChildren.find{getChildDeviceIntegerDataValue(it,'voltageId') == id}
 }
 
 @CompileStatic
