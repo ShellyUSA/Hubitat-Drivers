@@ -20,9 +20,17 @@
  * thermostatFanMode (auto/circulate/on) by collapsing low→circulate and
  * medium/high→on. Writes from Hubitat: auto→auto, circulate→low, on→medium.
  *
+ * Switch semantics: 'switch' reflects the inferred HVAC output state
+ * (on=heating/cooling/fan-only, off=idle), not the thermostat's enable/sleep
+ * state. The device doesn't expose its output relays through the Virtual
+ * Components RPC, so the state is inferred from current vs. target
+ * temperature using the device's own temp_hysteresis dead-band (read from
+ * Service.GetConfig). on()/off() toggle the enable state (wake/sleep),
+ * matching the device's physical UX.
+ *
  * Communication: WiFi, always-awake. Polling-only in v1 (no webhooks).
  *
- * Version: 1.0.0
+ * Version: 1.1.0
  */
 
 metadata {
@@ -415,6 +423,24 @@ private BigDecimal readTempRangeMax() {
   return 30.0G
 }
 
+/**
+ * Returns the device's relay-control hysteresis in °C. Used by
+ * updateOperatingStateAndSwitch() to define the dead band around the
+ * setpoint where the inferred operating state holds its previous value.
+ *
+ * Falls back to 1.0 °C if the service config hasn't been fetched yet or
+ * the field is missing — typical HVAC default. (Floor heating uses ~0.5 °C;
+ * HVAC blowers use a wider band to avoid short-cycling the compressor.)
+ */
+private BigDecimal readTempHysteresisC() {
+  Map sc = state.serviceConfig as Map
+  Object hyst = sc?.temp_hysteresis
+  if (hyst instanceof Number) {
+    return (hyst as BigDecimal)
+  }
+  return 1.0G
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Thermostat Commands                                     ║
 // ╚══════════════════════════════════════════════════════════════╝
@@ -479,10 +505,11 @@ void distributeStatus(Map status) {
       state.remove('virtualMap')
     }
 
-    // Both thermostatMode (from enable + workingMode) and thermostatOperatingState
-    // are derived from multiple roles, so compute them after iteration is done
+    // thermostatMode (from enable + workingMode), thermostatOperatingState,
+    // and 'switch' are all derived from multiple roles, so compute them
+    // once after the iteration is done.
     deriveMode()
-    updateOperatingState(scale)
+    updateOperatingStateAndSwitch()
 
     sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
   } catch (Exception e) {
@@ -498,10 +525,11 @@ private void handleRoleUpdate(String role, Map data, String scale) {
   switch (role) {
     case 'enable':
       Boolean enabled = data.value as Boolean
-      sendEvent(name: 'switch', value: enabled ? 'on' : 'off',
-        descriptionText: "Thermostat is ${enabled ? 'on' : 'off'}")
-      // thermostatMode is derived from enable + working_mode together at the end
-      // of the iteration via deriveMode(), so order-of-arrival doesn't matter
+      // Track in state so deriveMode() and updateOperatingStateAndSwitch()
+      // don't need to read it back from a Hubitat attribute. 'switch' is no
+      // longer driven from enable — it reflects the inferred HVAC output
+      // state, computed in updateOperatingStateAndSwitch().
+      state.enabled = enabled
       logInfo("Thermostat ${enabled ? 'on' : 'off'}")
       break
 
@@ -512,6 +540,9 @@ private void handleRoleUpdate(String role, Map data, String scale) {
       break
 
     case 'current_temperature':
+      // Cache raw °C for the operating-state inference (which compares
+      // against target in °C using the device's hysteresis).
+      state.lastCurrentTempC = data.value
       BigDecimal temp = scaleTemp(data.value as BigDecimal, scale)
       sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
         descriptionText: "Temperature is ${temp}°${scale}")
@@ -519,6 +550,7 @@ private void handleRoleUpdate(String role, Map data, String scale) {
       break
 
     case 'target_temperature':
+      state.lastTargetTempC = data.value
       BigDecimal temp = scaleTemp(data.value as BigDecimal, scale)
       sendEvent(name: 'heatingSetpoint', value: temp, unit: "°${scale}",
         descriptionText: "Heating setpoint is ${temp}°${scale}")
@@ -568,14 +600,13 @@ private void handleRoleUpdate(String role, Map data, String scale) {
 }
 
 /**
- * Derives Hubitat thermostatMode from the latest switch (enable) value
- * and workingMode attribute. enable=false forces 'off'; enable=true
+ * Derives Hubitat thermostatMode from the cached enable state and the
+ * latest workingMode attribute. enable=false forces 'off'; enable=true
  * maps the working_mode value (heat/cool/auto pass through; dry/fan_only
  * leave thermostatMode at its previous value).
  */
 private void deriveMode() {
-  String enabledStr = device.currentValue('switch')
-  Boolean enabled = (enabledStr == 'on')
+  Boolean enabled = state.enabled ? true : false
   String workingMode = device.currentValue('workingMode')?.toString()
   String currentMode = device.currentValue('thermostatMode')?.toString()
   String newMode
@@ -596,37 +627,77 @@ private void deriveMode() {
 }
 
 /**
- * Recomputes thermostatOperatingState from current attribute values.
- * Heuristic since the device's documented spec doesn't expose a direct
- * output / operating-state field.
+ * Computes 'thermostatOperatingState' and 'switch' from the cached enable
+ * state, working mode, and current/target temperatures (in °C).
+ *
+ * The device does not expose its heat/cool relay outputs through the
+ * Virtual Components RPC, so the state is inferred using the same
+ * hysteresis-band logic the device firmware uses to drive the relays:
+ *
+ *   - enable=false  : idle / switch=off
+ *   - working_mode=fan_only : fan only / switch=on (fan is running)
+ *   - heat mode, current < target - hysteresis/2 : heating / switch=on
+ *   - cool mode, current > target + hysteresis/2 : cooling / switch=on
+ *   - auto mode follows whichever side of the band the room is on
+ *   - within dead band : hold previous (avoids false flips on noise)
+ *
+ * Polling lag means the inferred state can trail the actual relay by up
+ * to one poll interval, but it tracks the relay's behaviour in steady
+ * state. The dead band reads from temp_hysteresis when present and falls
+ * back to a 1.0 °C HVAC-typical default when the device firmware doesn't
+ * expose it.
  */
-private void updateOperatingState(String scale) {
+private void updateOperatingStateAndSwitch() {
+  Boolean enabled = state.enabled ? true : false
   String mode = device.currentValue('thermostatMode')?.toString()
   String workingMode = device.currentValue('workingMode')?.toString()
-  String enabledStr = device.currentValue('switch')
-  Boolean enabled = (enabledStr == 'on')
-  BigDecimal temperature = device.currentValue('temperature') as BigDecimal
-  BigDecimal setpoint = device.currentValue('thermostatSetpoint') as BigDecimal
+  BigDecimal currentC = state.lastCurrentTempC as BigDecimal
+  BigDecimal targetC = state.lastTargetTempC as BigDecimal
   String currentOp = device.currentValue('thermostatOperatingState')?.toString()
 
-  String newOp = 'idle'
+  String newOp
   if (!enabled || mode == 'off') {
     newOp = 'idle'
   } else if (workingMode == 'fan_only') {
     newOp = 'fan only'
-  } else if (mode == 'heat' && temperature != null && setpoint != null && temperature < setpoint) {
-    newOp = 'heating'
-  } else if (mode == 'cool' && temperature != null && setpoint != null && temperature > setpoint) {
-    newOp = 'cooling'
-  } else if (mode == 'auto' && temperature != null && setpoint != null) {
-    if (temperature < setpoint) { newOp = 'heating' }
-    else if (temperature > setpoint) { newOp = 'cooling' }
-    else { newOp = 'idle' }
+  } else if (currentC == null || targetC == null) {
+    // Temps not yet cached — hold previous (default idle).
+    newOp = currentOp ?: 'idle'
+  } else {
+    BigDecimal halfHyst = readTempHysteresisC() / 2.0G
+    BigDecimal lowerBound = targetC - halfHyst
+    BigDecimal upperBound = targetC + halfHyst
+
+    if (mode == 'heat') {
+      if (currentC < lowerBound)      { newOp = 'heating' }
+      else if (currentC > upperBound) { newOp = 'idle' }
+      else                            { newOp = currentOp ?: 'idle' }
+    } else if (mode == 'cool') {
+      if (currentC > upperBound)      { newOp = 'cooling' }
+      else if (currentC < lowerBound) { newOp = 'idle' }
+      else                            { newOp = currentOp ?: 'idle' }
+    } else if (mode == 'auto') {
+      if (currentC < lowerBound)      { newOp = 'heating' }
+      else if (currentC > upperBound) { newOp = 'cooling' }
+      else                            { newOp = currentOp ?: 'idle' }
+    } else {
+      // dry / unknown — leave previous (rare path; safest default).
+      newOp = currentOp ?: 'idle'
+    }
   }
 
   if (newOp != currentOp) {
     sendEvent(name: 'thermostatOperatingState', value: newOp,
       descriptionText: "Operating state: ${newOp}")
+  }
+
+  // Switch reflects the HVAC output: anything actively running is 'on'.
+  String newSwitch = (newOp == 'idle') ? 'off' : 'on'
+  String currentSwitch = device.currentValue('switch')?.toString()
+  if (newSwitch != currentSwitch) {
+    sendEvent(name: 'switch', value: newSwitch,
+      descriptionText: "HVAC output: ${newSwitch} (${newOp})")
+    logInfo("HVAC output: ${newSwitch} (${newOp})")
   }
 }
 

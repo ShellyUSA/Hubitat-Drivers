@@ -10,16 +10,29 @@
  * Roles: enable, current_temperature, target_temperature, current_humidity,
  *        anti_freeze, child_lock
  *
- * Mode: heat-only. ThermostatMode enum: ['heat', 'off'].
+ * Mode: heat-only. ThermostatMode enum: ['heat', 'off']. The device exposes
+ * the full Hubitat 'Thermostat' composite capability for compatibility with
+ * heating schedule apps; cool/auto/fan/emergency-heat commands are accepted
+ * with a warning and treated as no-ops or aliased to heat/off as appropriate.
+ *
+ * Switch semantics: 'switch' reflects the inferred heat-output relay state
+ * (on=heating, off=idle), not the thermostat's enable/sleep state. The device
+ * doesn't expose its relay output via the Virtual Components RPC, so the
+ * state is inferred from current vs. target temperature using the device's
+ * own temp_hysteresis dead-band (read from Service.GetConfig). on()/off()
+ * toggle the enable state (wake/sleep), matching the device's physical UX.
  *
  * Communication: WiFi, always-awake. Polling-only in v1 (no webhooks).
  *
- * Version: 1.0.0
+ * Version: 1.1.0
  */
 
 metadata {
   definition(name: 'Shelly Linkedgo ST1820', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+    capability 'Thermostat'
     capability 'ThermostatHeatingSetpoint'
+    capability 'ThermostatMode'
+    capability 'ThermostatOperatingState'
     capability 'TemperatureMeasurement'
     capability 'RelativeHumidityMeasurement'
     capability 'Switch'
@@ -29,7 +42,6 @@ metadata {
     command 'setAntiFreeze', [[name: 'Enabled', type: 'ENUM', constraints: ['true', 'false'], description: 'Enable or disable anti-freeze protection']]
     command 'setChildLock', [[name: 'Enabled', type: 'ENUM', constraints: ['true', 'false'], description: 'Enable or disable physical button lock']]
 
-    attribute 'thermostatMode', 'enum', ['heat', 'off']
     attribute 'antiFreezeEnabled', 'enum', ['true', 'false']
     attribute 'childLockEnabled', 'enum', ['true', 'false']
     attribute 'lastUpdated', 'string'
@@ -70,13 +82,23 @@ void installed() {
   String scale = location.temperatureScale ?: 'F'
   BigDecimal defaultSetpoint = (scale == 'F') ? 68.0 : 20.0
   sendEvent(name: 'thermostatMode', value: 'off', descriptionText: 'Initialized')
+  sendEvent(name: 'thermostatOperatingState', value: 'idle', descriptionText: 'Initialized')
+  sendEvent(name: 'thermostatFanMode', value: 'auto', descriptionText: 'Initialized')
   sendEvent(name: 'switch', value: 'off', descriptionText: 'Initialized')
   sendEvent(name: 'heatingSetpoint', value: defaultSetpoint, unit: "°${scale}", descriptionText: 'Initialized')
+  sendEvent(name: 'coolingSetpoint', value: defaultSetpoint, unit: "°${scale}", descriptionText: 'Initialized')
+  sendEvent(name: 'thermostatSetpoint', value: defaultSetpoint, unit: "°${scale}", descriptionText: 'Initialized')
   sendEvent(name: 'temperature', value: 0, unit: "°${scale}", descriptionText: 'Initialized')
   sendEvent(name: 'humidity', value: 0, unit: '%', descriptionText: 'Initialized')
   sendEvent(name: 'antiFreezeEnabled', value: 'false', descriptionText: 'Initialized')
   sendEvent(name: 'childLockEnabled', value: 'false', descriptionText: 'Initialized')
   sendEvent(name: 'lastUpdated', value: 'Never')
+  // Advertise supported modes for dashboards / heating-schedule apps. Only
+  // 'heat' and 'off' are real modes for this device; the fan list is a stub
+  // because Thermostat composite requires the attribute even though the
+  // device has no fan.
+  sendEvent(name: 'supportedThermostatModes', value: '["heat","off"]')
+  sendEvent(name: 'supportedThermostatFanModes', value: '["auto"]')
   fetchAndDistribute()
   initialize()
 }
@@ -235,19 +257,79 @@ void setHeatingSetpoint(BigDecimal temp) {
 }
 
 /**
- * Turns the thermostat on (sets enable=true). Convenience for Switch capability.
+ * Sets the Hubitat ThermostatMode. Maps:
+ *   off  -> Boolean.Set enable=false (puts the device into sleep mode)
+ *   heat -> Boolean.Set enable=true  (wakes the device into heating mode)
+ * Any other mode is logged as a warning and treated as 'heat' since this is
+ * a heat-only floor-heating thermostat.
+ *
+ * @param mode One of 'heat' or 'off'
+ */
+void setThermostatMode(String mode) {
+  logDebug("setThermostatMode(${mode}) called")
+  if (mode == 'off') {
+    setEnableState(false)
+    return
+  }
+  if (mode != 'heat') {
+    logWarn("setThermostatMode: '${mode}' not supported by ST1820 (heat-only); treating as 'heat'")
+  }
+  setEnableState(true)
+}
+
+void heat() { setThermostatMode('heat') }
+
+/**
+ * Switch capability. on()/off() control the thermostat's enable state
+ * (wake/sleep), matching the device's physical power button. This is
+ * intentionally NOT symmetric with the 'switch' attribute — the attribute
+ * reflects the inferred heat-output relay state, while these commands toggle
+ * whether the thermostat is awake and operating at all.
  */
 void on() {
   logDebug('on() called')
   setEnableState(true)
 }
 
-/**
- * Turns the thermostat off (sets enable=false).
- */
 void off() {
   logDebug('off() called')
   setEnableState(false)
+}
+
+// ─── Heat-only stubs for the Thermostat composite capability ──────────
+// The ST1820 has no cooling, no fan, and no scheduling RPC. These
+// commands are required by the 'Thermostat' capability contract but
+// are accepted as no-ops with a warning so heating-schedule apps can
+// drive the device without crashing on unsupported method calls.
+
+void cool() {
+  logWarn('cool() not supported by ST1820 (heat-only); ignoring')
+}
+
+void auto() {
+  logWarn('auto() not supported by ST1820 (heat-only); treating as heat()')
+  heat()
+}
+
+void emergencyHeat() {
+  logWarn('emergencyHeat() not supported by ST1820; treating as heat()')
+  heat()
+}
+
+void setCoolingSetpoint(BigDecimal temp) {
+  logWarn("setCoolingSetpoint(${temp}) not supported by ST1820 (heat-only); ignoring")
+}
+
+void setThermostatFanMode(String fanmode) {
+  logWarn("setThermostatFanMode(${fanmode}) not supported by ST1820 (no fan); ignoring")
+}
+
+void fanAuto()      { setThermostatFanMode('auto') }
+void fanCirculate() { setThermostatFanMode('circulate') }
+void fanOn()        { setThermostatFanMode('on') }
+
+void setSchedule(schedule) {
+  logWarn("setSchedule(${schedule}) not implemented for ST1820")
 }
 
 /**
@@ -334,6 +416,23 @@ private BigDecimal readTempRangeMax() {
   return 30.0G
 }
 
+/**
+ * Returns the device's relay-control hysteresis in °C. Used by
+ * updateOperatingStateAndSwitch() to define the dead band around the
+ * setpoint where the inferred operating state holds its previous value.
+ *
+ * Falls back to 0.5 °C if the service config hasn't been fetched yet or
+ * the field is missing — typical floor-heating thermostat default.
+ */
+private BigDecimal readTempHysteresisC() {
+  Map sc = state.serviceConfig as Map
+  Object hyst = sc?.temp_hysteresis
+  if (hyst instanceof Number) {
+    return (hyst as BigDecimal)
+  }
+  return 0.5G
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Thermostat Commands                                     ║
 // ╚══════════════════════════════════════════════════════════════╝
@@ -407,6 +506,11 @@ void distributeStatus(Map status) {
       state.remove('virtualMap')
     }
 
+    // 'switch' and 'thermostatOperatingState' depend on the combined view of
+    // enable + current_temperature + target_temperature, so they're computed
+    // once after all roles for this poll have been processed.
+    updateOperatingStateAndSwitch()
+
     sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
   } catch (Exception e) {
     logError("distributeStatus internal exception: ${e.message}")
@@ -429,10 +533,10 @@ private void handleRoleUpdate(String role, Map data, String scale) {
   switch (role) {
     case 'enable':
       Boolean enabled = data.value as Boolean
+      // 'switch' is no longer driven from enable — it now reflects the
+      // inferred heat-output relay state, computed in updateOperatingStateAndSwitch().
       sendEvent(name: 'thermostatMode', value: enabled ? 'heat' : 'off',
         descriptionText: "Thermostat mode is ${enabled ? 'heat' : 'off'}")
-      sendEvent(name: 'switch', value: enabled ? 'on' : 'off',
-        descriptionText: "Thermostat is ${enabled ? 'on' : 'off'}")
       logInfo("Thermostat ${enabled ? 'on' : 'off'}")
       break
 
@@ -449,6 +553,9 @@ private void handleRoleUpdate(String role, Map data, String scale) {
       break
 
     case 'current_temperature':
+      // Cache raw °C for the operating-state inference (which compares
+      // against target in °C using the device's hysteresis).
+      state.lastCurrentTempC = data.value
       BigDecimal temp = scaleTemp(data.value as BigDecimal, scale)
       sendEvent(name: 'temperature', value: temp, unit: "°${scale}",
         descriptionText: "Temperature is ${temp}°${scale}")
@@ -456,9 +563,17 @@ private void handleRoleUpdate(String role, Map data, String scale) {
       break
 
     case 'target_temperature':
+      state.lastTargetTempC = data.value
       BigDecimal temp = scaleTemp(data.value as BigDecimal, scale)
       sendEvent(name: 'heatingSetpoint', value: temp, unit: "°${scale}",
         descriptionText: "Heating setpoint is ${temp}°${scale}")
+      // Mirror to coolingSetpoint and thermostatSetpoint so heating-schedule
+      // apps that read either field via the Thermostat composite see the
+      // correct value. This is heat-only — they all hold the same setpoint.
+      sendEvent(name: 'coolingSetpoint', value: temp, unit: "°${scale}",
+        descriptionText: "Cooling setpoint is ${temp}°${scale}")
+      sendEvent(name: 'thermostatSetpoint', value: temp, unit: "°${scale}",
+        descriptionText: "Setpoint is ${temp}°${scale}")
       logInfo("Heating setpoint: ${temp}°${scale}")
       break
 
@@ -470,6 +585,63 @@ private void handleRoleUpdate(String role, Map data, String scale) {
 
     default:
       logTrace("handleRoleUpdate: unhandled role '${role}'")
+  }
+}
+
+/**
+ * Computes 'thermostatOperatingState' and 'switch' from the latest enable
+ * state and the cached current/target temperatures (in °C). The device does
+ * not expose its heat-output relay through the Virtual Components RPC — the
+ * underlying Tuya DP 163 (3=on, 4=off) is internal — so the state is
+ * inferred using the same hysteresis-band logic the device firmware uses to
+ * drive the relay:
+ *
+ *   - enable=false     : idle / switch=off
+ *   - current < target - hysteresis/2  : heating / switch=on
+ *   - current > target + hysteresis/2  : idle    / switch=off
+ *   - within dead band : hold previous (avoids false flips on noise)
+ *
+ * Polling lag means the inferred state can trail the actual relay by up to
+ * one poll interval, but it tracks the relay's behaviour in steady state.
+ */
+private void updateOperatingStateAndSwitch() {
+  Boolean enabled = (device.currentValue('thermostatMode')?.toString() == 'heat')
+  BigDecimal currentC = state.lastCurrentTempC as BigDecimal
+  BigDecimal targetC = state.lastTargetTempC as BigDecimal
+  String currentOp = device.currentValue('thermostatOperatingState')?.toString()
+
+  String newOp
+  if (!enabled) {
+    newOp = 'idle'
+  } else if (currentC == null || targetC == null) {
+    // First poll before both values are cached — hold previous (default idle).
+    newOp = currentOp ?: 'idle'
+  } else {
+    BigDecimal halfHyst = readTempHysteresisC() / 2.0G
+    BigDecimal lowerBound = targetC - halfHyst
+    BigDecimal upperBound = targetC + halfHyst
+    if (currentC < lowerBound) {
+      newOp = 'heating'
+    } else if (currentC > upperBound) {
+      newOp = 'idle'
+    } else {
+      // In the hysteresis dead-band — hold previous to mirror the relay's
+      // own behaviour (it doesn't flip in this band either).
+      newOp = currentOp ?: 'idle'
+    }
+  }
+
+  if (newOp != currentOp) {
+    sendEvent(name: 'thermostatOperatingState', value: newOp,
+      descriptionText: "Operating state: ${newOp}")
+  }
+
+  String newSwitch = (newOp == 'heating') ? 'on' : 'off'
+  String currentSwitch = device.currentValue('switch')?.toString()
+  if (newSwitch != currentSwitch) {
+    sendEvent(name: 'switch', value: newSwitch,
+      descriptionText: "Heat output: ${newSwitch}")
+    logInfo("Heat output: ${newSwitch}")
   }
 }
 
