@@ -3824,6 +3824,15 @@ private String renderDriverUpdateProgressBanner(Map prog) {
     Integer total = (prog.total ?: 0) as Integer
     Integer completed = (prog.completed ?: 0) as Integer
     Integer errors = (prog.errors ?: 0) as Integer
+    // Defensive: clamp counters to total so a duplicate callback (or a stale
+    // late-firing async response from a previous queue) can never render as
+    // "21 of 15 updated". The processedKeys de-dupe in the callback layer is
+    // the primary defense; this is belt-and-braces.
+    if (total > 0) {
+        if (completed > total) { completed = total }
+        if (errors > total) { errors = total }
+        if ((completed + errors) > total) { errors = total - completed }
+    }
     Boolean active = prog.active == true
 
     if (active) {
@@ -3877,8 +3886,20 @@ private String renderDriverManagementHtml() {
     String currentVersion = getAppVersion()
     Map allDrivers = state.autoDrivers ?: [:]
 
-    // Progress banner — shown while a queue is active or just completed
+    // Progress banner — shown while a queue is active or just completed.
+    // The completed banner is supposed to fade after 30 s via runIn(30,
+    // 'clearDriverUpdateProgress'), but if that schedule is dropped the
+    // banner would stick forever. Auto-suppress (and lazy-clear state) if
+    // finishedAt is older than 60 s, so a page refresh always recovers.
     Map prog = state.driverUpdateProgress as Map
+    if (prog != null && prog.active != true && prog.finishedAt != null) {
+        Long finishedAt = (prog.finishedAt as Long) ?: 0L
+        if (now() - finishedAt > 60000L) {
+            state.remove('driverUpdateQueue')
+            state.remove('driverUpdateProgress')
+            prog = null
+        }
+    }
     if (prog != null && (prog.active == true || prog.finishedAt != null)) {
         sb.append(renderDriverUpdateProgressBanner(prog))
     }
@@ -14166,9 +14187,15 @@ private String resolveComponentDriverFileName(String driverName) {
 
 /**
  * Public entry point for "Update All Drivers" button. Queues every tracked
- * driver and starts the serialized async worker. Refuses re-entry if a queue
- * is already running. Replaces the synchronous tight-loop that previously
- * generated excessive hub load on the per-app sendEvent rate limiter.
+ * driver whose installed version differs from the running app version, then
+ * starts the serialized async worker. Refuses re-entry if a queue is already
+ * running. Replaces the synchronous tight-loop that previously generated
+ * excessive hub load on the per-app sendEvent rate limiter.
+ *
+ * Drivers already on the current version are skipped — there's nothing to
+ * reinstall, and re-running them wastes ~12 s per driver while the user
+ * watches the banner. The per-row "Update" button still forces a refresh for
+ * users who want to reinstall on demand (e.g., after a hub-side compile error).
  */
 void startBulkDriverUpdate() {
     initializeDriverTracking()
@@ -14184,8 +14211,19 @@ void startBulkDriverUpdate() {
         return
     }
 
-    List<String> queue = driverSnapshot.keySet().collect { it.toString() }
-    enqueueAndStartDriverUpdate(queue, "Updating ${queue.size()} driver(s) to v${getAppVersion()}…")
+    String currentVersion = getAppVersion()
+    List<String> queue = driverSnapshot.findAll { k, v ->
+        String installed = ((v as Map)?.version ?: '').toString()
+        return installed != currentVersion
+    }.keySet().collect { it.toString() }
+
+    if (queue.isEmpty()) {
+        appendLog('info', "All ${driverSnapshot.size()} tracked driver(s) already on v${currentVersion} — nothing to do")
+        logInfo("Update All: all ${driverSnapshot.size()} tracked driver(s) already on v${currentVersion}")
+        return
+    }
+
+    enqueueAndStartDriverUpdate(queue, "Updating ${queue.size()} driver(s) to v${currentVersion}…")
 }
 
 /**
@@ -14240,11 +14278,18 @@ private void enqueueAndStartDriverUpdate(List<String> trackingKeys, String start
         currentName: null,
         startedAt: now(),
         finishedAt: null,
-        lastError: null
+        lastError: null,
+        // processedKeys is a List<String> on disk (Sets don't survive JSON
+        // round-trips). Used to prevent double-counting when a late-firing
+        // callback from a previous queue lands inside this one's progress map.
+        processedKeys: []
     ]
     appendLog('info', startMessage)
+    logInfo("Driver update queue started: ${trackingKeys.size()} driver(s)")
     sendEvent(name: 'driverRebuildStatus', value: 'starting')
-    runIn(0, 'processNextDriverUpdate')
+    // Use 1s rather than 0s — Hubitat's scheduler can silently drop runIn(0)
+    // calls, leaving the queue stranded with the banner stuck at "preparing…".
+    runIn(1, 'processNextDriverUpdate')
 }
 
 /**
@@ -14255,6 +14300,7 @@ private void enqueueAndStartDriverUpdate(List<String> trackingKeys, String start
  */
 void processNextDriverUpdate() {
     if (!isDriverUpdateInProgress()) {
+        logInfo('processNextDriverUpdate: no active update in progress, exiting')
         return
     }
 
@@ -14279,8 +14325,17 @@ void processNextDriverUpdate() {
     String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
     Boolean isComponent = info.isComponentDriver ?: false
 
-    state.driverUpdateProgress.current = trackingKey
-    state.driverUpdateProgress.currentName = baseName
+    // Mutate progress map locally then reassign — Hubitat persists top-level
+    // state.X = ... assignments reliably, but nested mutations like
+    // state.X.field = ... can be dropped across runIn boundaries on some
+    // firmware versions, leaving the banner frozen at "preparing…".
+    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    prog.current = trackingKey
+    prog.currentName = baseName
+    state.driverUpdateProgress = prog
+    Integer position = (((prog.completed ?: 0) as Integer) + ((prog.errors ?: 0) as Integer) + 1)
+    Integer total = (prog.total ?: 0) as Integer
+    logInfo("Updating driver: ${baseName} (${position} of ${total})")
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
 
     String fileUrl = resolveDriverSourceUrl(driverName, baseName, isComponent)
@@ -14521,14 +14576,29 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
         }
     }
 
+    // Mutate progress map locally then reassign — see processNextDriverUpdate
+    // for why nested mutations on state.driverUpdateProgress can't be trusted
+    // to persist across runIn boundaries.
+    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+
+    // Track which trackingKeys have already been counted in this queue so a
+    // duplicate or late-firing callback can't double-count completed/errors.
+    // The processed set must always be a Set<String>, even if state was
+    // serialized to/from a List on disk.
+    Set<String> processedKeys = new HashSet<String>()
+    if (prog.processedKeys instanceof Collection) {
+        ((Collection) prog.processedKeys).each { processedKeys.add(it.toString()) }
+    }
+    Boolean alreadyCounted = trackingKey != null && processedKeys.contains(trackingKey)
+    if (trackingKey != null) {
+        processedKeys.add(trackingKey)
+        prog.processedKeys = new ArrayList<String>(processedKeys)
+    }
+
     if (success) {
         Map allDrivers = state.autoDrivers ?: [:]
         Map.Entry matchEntry = allDrivers.find { k, v -> k.toString() == trackingKey }
         if (matchEntry != null) {
-            // Mutate the stored map in place. We do NOT do `state.autoDrivers[trackingKey] = info`
-            // because the existing key may be a GString (from interpolation at registration time)
-            // and `trackingKey` is a String — a fresh write would create a duplicate entry,
-            // since GString.hashCode() != String.hashCode() for identical text.
             Map info = matchEntry.value as Map
             info.version = getAppVersion()
             info.lastUpdated = now()
@@ -14536,19 +14606,32 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
             if (!(data.isComponent as Boolean)) {
                 info.name = installedName
             }
+            // Re-write under the ORIGINAL matchEntry.key (could be a GString,
+            // could be a String) to avoid creating a duplicate entry, AND to
+            // force Hubitat to persist the nested mutation. Without the
+            // top-level state.autoDrivers reassign, info.version may not
+            // survive across runIn boundaries — that was the cause of drivers
+            // showing as still-outdated after a "successful" update.
+            allDrivers[matchEntry.key] = info
+            state.autoDrivers = allDrivers
         }
-        Integer completed = ((state.driverUpdateProgress.completed ?: 0) as Integer) + 1
-        state.driverUpdateProgress.completed = completed
+        if (!alreadyCounted) {
+            prog.completed = ((prog.completed ?: 0) as Integer) + 1
+        }
         appendLog('info', "Updated: ${data.baseName ?: installedName}")
+        logInfo("Driver updated successfully: ${data.baseName ?: installedName} (${prog.completed} of ${prog.total})")
     } else {
-        Integer errors = ((state.driverUpdateProgress.errors ?: 0) as Integer) + 1
-        state.driverUpdateProgress.errors = errors
-        state.driverUpdateProgress.lastError = failureReason
+        if (!alreadyCounted) {
+            prog.errors = ((prog.errors ?: 0) as Integer) + 1
+        }
+        prog.lastError = failureReason
         appendLog('warn', "Failed to update ${data.baseName ?: installedName}: ${failureReason}")
+        logWarn("Driver update failed: ${data.baseName ?: installedName} — ${failureReason}")
     }
 
-    state.driverUpdateProgress.current = null
-    state.driverUpdateProgress.currentName = null
+    prog.current = null
+    prog.currentName = null
+    state.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
 
     runIn(10, 'processNextDriverUpdate')
@@ -14566,13 +14649,28 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
  */
 private void handleDriverUpdateFailure(String trackingKey, String reason) {
     appendLog('warn', "Driver update failed for ${trackingKey}: ${reason}")
-    Map prog = state.driverUpdateProgress as Map
-    if (prog != null) {
-        prog.errors = ((prog.errors ?: 0) as Integer) + 1
-        prog.lastError = reason
-        prog.current = null
-        prog.currentName = null
+    logWarn("Driver update failed for ${trackingKey}: ${reason}")
+    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+
+    // Dedupe: if the same trackingKey is reported failed twice (late-firing
+    // callback into a new queue, or retry path), don't double-count.
+    Set<String> processedKeys = new HashSet<String>()
+    if (prog.processedKeys instanceof Collection) {
+        ((Collection) prog.processedKeys).each { processedKeys.add(it.toString()) }
     }
+    Boolean alreadyCounted = trackingKey != null && processedKeys.contains(trackingKey)
+    if (trackingKey != null) {
+        processedKeys.add(trackingKey)
+        prog.processedKeys = new ArrayList<String>(processedKeys)
+    }
+    if (!alreadyCounted) {
+        prog.errors = ((prog.errors ?: 0) as Integer) + 1
+    }
+
+    prog.lastError = reason
+    prog.current = null
+    prog.currentName = null
+    state.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
     runIn(10, 'processNextDriverUpdate')
 }
@@ -14584,18 +14682,18 @@ private void handleDriverUpdateFailure(String trackingKey, String reason) {
  * the progress banner to clear after 30 s.
  */
 private void finalizeBulkDriverUpdate() {
-    Map prog = state.driverUpdateProgress as Map
-    Integer completed = (prog?.completed ?: 0) as Integer
-    Integer errors = (prog?.errors ?: 0) as Integer
+    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    Integer completed = (prog.completed ?: 0) as Integer
+    Integer errors = (prog.errors ?: 0) as Integer
 
     appendLog('info', "Driver update complete: ${completed} updated, ${errors} error(s)")
+    logInfo("Driver update queue complete: ${completed} updated, ${errors} error(s)")
 
-    if (prog != null) {
-        prog.active = false
-        prog.finishedAt = now()
-        prog.current = null
-        prog.currentName = null
-    }
+    prog.active = false
+    prog.finishedAt = now()
+    prog.current = null
+    prog.currentName = null
+    state.driverUpdateProgress = prog
 
     // Sweep orphaned drivers AFTER the queue completes — deferred from the
     // original btnForceRebuildDrivers handler so it doesn't compete with the
@@ -14629,11 +14727,11 @@ void cancelBulkDriverUpdate() {
         return
     }
     appendLog('info', 'Driver update cancelled by user')
+    logInfo('Driver update cancelled by user')
     state.driverUpdateQueue = []
-    Map prog = state.driverUpdateProgress as Map
-    if (prog != null) {
-        prog.lastError = 'Cancelled by user'
-    }
+    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    prog.lastError = 'Cancelled by user'
+    state.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'cancelling')
 }
 
