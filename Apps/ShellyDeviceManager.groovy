@@ -14690,9 +14690,46 @@ void scheduledDriverUpdate() {
  * Checks for a newer version of this app on GitHub Releases and updates
  * the installed app code if a newer version is available. Scheduled daily
  * at the user-configured time (default 3AM) when auto-update is enabled.
+ *
+ * Safety gates applied before the source replacement is committed:
+ *   1. Concurrency lock — abort if a driver-update is in progress, or if
+ *      another app-update is already running.
+ *   2. SHA-256 integrity check (primary) — download the .sha256 sidecar
+ *      committed alongside the release, compute the SHA-256 of the source
+ *      we just downloaded, and abort on mismatch or missing sidecar. This
+ *      is the strongest gate: any byte-level tampering, truncation, or
+ *      wrong-file substitution is caught here.
+ *   3. Size sanity check (defense in depth) — abort if the downloaded
+ *      source is suspiciously short (< 50KB). The real app is hundreds of
+ *      KB; anything tiny is a truncated download or an error page. Should
+ *      already be caught by gate 2; included so the failure mode is
+ *      diagnosable even if the sidecar is unavailable.
+ *   4. Structural sanity check (defense in depth) — abort if the source
+ *      doesn't contain the expected definition() block, namespace marker,
+ *      and at least the uninstalled() lifecycle handler. Belt-and-braces
+ *      backup to gates 2 and 3.
+ *
+ * If any gate trips, the running app is left untouched and the failure is
+ * logged loudly so the user can investigate before the next scheduled
+ * check.
  */
 void checkForAppUpdate() {
     logInfo("Checking for app updates...")
+
+    // Gate 1a: don't run during a driver-update — drivers are being updated
+    // in waves, and replacing the app source mid-wave would orphan the queue.
+    if (state.driverUpdateProgress?.active == true) {
+        logWarn("Auto-update: driver update in progress; skipping app update this cycle")
+        appendLog('warn', 'App auto-update skipped: driver update in progress')
+        return
+    }
+
+    // Gate 1b: don't run if another app-update is already in flight.
+    if (state.appUpdateInProgress == true) {
+        logWarn("Auto-update: app update already in progress; skipping")
+        appendLog('warn', 'App auto-update skipped: previous update still in progress')
+        return
+    }
 
     String latestVersion = getLatestGitHubReleaseVersion()
     if (!latestVersion) {
@@ -14722,7 +14759,42 @@ void checkForAppUpdate() {
         return
     }
 
-    Boolean success = updateAppCode(newSource)
+    // Gate 2: verify SHA-256 against the .sha256 sidecar committed alongside
+    // the release. This is the strongest integrity check — it catches any
+    // byte-level discrepancy between the source we downloaded and what the
+    // release-pipeline committed. Sidecar absence is treated as a hard
+    // failure: every release built by the post-integrity-rollout workflow
+    // includes one, so missing means either a stale tag from before the
+    // rollout (one-time manual update needed) or a tampered/incomplete
+    // release.
+    String checksumError = verifyAppSourceChecksum(newSource, tag)
+    if (checksumError != null) {
+        logError("Auto-update aborted (${latestVersion}): ${checksumError}")
+        appendLog('error', "Auto-update aborted: ${checksumError}")
+        return
+    }
+
+    // Gates 3 + 4: structural validation. Already covered by gate 2 in
+    // practice, but kept as defense in depth in case gate 2 has a subtle
+    // bug or the sidecar mechanism is ever bypassed.
+    String validationError = validateAppSourceBeforeInstall(newSource, latestVersion)
+    if (validationError != null) {
+        logError("Auto-update aborted (${latestVersion}): ${validationError}")
+        appendLog('error', "Auto-update aborted: ${validationError}")
+        return
+    }
+
+    state.appUpdateInProgress = true
+    Boolean success = false
+    try {
+        success = updateAppCode(newSource)
+    } finally {
+        // Always clear the lock — even if updateAppCode threw, the source
+        // replacement either succeeded or failed; either way the next
+        // scheduled run should be allowed to retry.
+        state.remove('appUpdateInProgress')
+    }
+
     if (success) {
         logInfo("App updated to version ${latestVersion}")
         appendLog('info', "App updated to ${latestVersion}")
@@ -14730,6 +14802,120 @@ void checkForAppUpdate() {
         logError("Failed to update app code to ${latestVersion}")
         appendLog('error', "Auto-update failed: could not apply update")
     }
+}
+
+/**
+ * Validates a downloaded app source payload before it is committed via
+ * /app/ajax/update. Returns null when the source passes all sanity checks
+ * and is safe to install; otherwise returns a human-readable failure
+ * reason that the caller logs and surfaces in the activity log.
+ *
+ * The checks are intentionally cheap and conservative — false positives
+ * (rejecting a valid release) are far less harmful than a false negative
+ * (clobbering the app with garbage that Hubitat fails to load, which
+ * removes the installed-app instance from the UI).
+ *
+ * @param source The downloaded source code
+ * @param version The release version tag being applied (for logging only)
+ * @return null if the source is safe to install, or a failure reason
+ */
+@CompileStatic
+private String validateAppSourceBeforeInstall(String source, String version) {
+    if (source == null) {
+        return "downloaded source is null"
+    }
+
+    // Size floor: the real app is several hundred KB. Anything under 50KB is
+    // a stub, an error page, a truncated download, or a malicious payload.
+    Integer minimumBytes = 50000
+    Integer actualBytes = source.length()
+    if (actualBytes < minimumBytes) {
+        return "downloaded source is suspiciously small (${actualBytes} bytes; minimum ${minimumBytes})"
+    }
+
+    // Structural markers: every legitimate version of this app contains
+    // these. If any is missing, the payload is not a valid Shelly Device
+    // Manager source file.
+    if (!source.contains("definition(")) {
+        return "downloaded source has no definition() block"
+    }
+    if (!source.contains("namespace: 'ShellyDeviceManager'") &&
+        !source.contains('namespace: "ShellyDeviceManager"')) {
+        return "downloaded source has wrong namespace (not ShellyDeviceManager)"
+    }
+    if (!source.contains("name: 'Shelly Device Manager'") &&
+        !source.contains('name: "Shelly Device Manager"')) {
+        return "downloaded source has wrong app name"
+    }
+    if (!source.contains("void uninstalled()")) {
+        return "downloaded source missing uninstalled() lifecycle handler"
+    }
+    if (!source.contains("componentLinkedgoFetchStatus")) {
+        return "downloaded source missing componentLinkedgoFetchStatus (would break Linkedgo polling)"
+    }
+
+    return null
+}
+
+/**
+ * Verifies that the downloaded app source matches the SHA-256 sidecar
+ * committed alongside the release. The sidecar is generated by the GitHub
+ * Actions release workflow and lives at the same git tag, fetched via
+ * raw.githubusercontent.com.
+ *
+ * Format of the sidecar (standard `sha256sum` output):
+ *   <64-hex-chars>  Apps/ShellyDeviceManager.groovy
+ *
+ * The verifier splits on whitespace and takes the first token, which is the
+ * lowercase hex SHA-256. Comparison is case-insensitive against the digest
+ * produced by the existing sha256() helper (which is also lowercase hex,
+ * but the case-insensitivity protects against a future format change).
+ *
+ * Encoding note: the source comes back from downloadFile() as a String
+ * decoded from raw.githubusercontent.com (UTF-8). sha256() re-encodes via
+ * String.getBytes("UTF-8") before hashing. This round-trip is lossless for
+ * UTF-8 source files (which all repo files are), so the digest computed
+ * here matches the digest computed by `sha256sum` on the runner during the
+ * release workflow.
+ *
+ * Returns null if the source matches the expected SHA-256, otherwise a
+ * human-readable failure reason. A missing or malformed sidecar is a
+ * hard failure: every release after the integrity-rollout workflow change
+ * has one, so its absence indicates either a release predating the rollout
+ * (one-time manual update) or a tampered release.
+ *
+ * @param source The downloaded app source code
+ * @param tag The release tag (e.g., "app-v1.2.3"), used to fetch the sidecar
+ * @return null on match, or a failure reason string
+ */
+private String verifyAppSourceChecksum(String source, String tag) {
+    String checksumUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/Apps/ShellyDeviceManager.groovy.sha256"
+    String checksumContent = downloadFile(checksumUrl)
+    if (!checksumContent) {
+        return "could not download SHA-256 sidecar from ${checksumUrl} — release may predate integrity verification (manual update required this once) or sidecar is missing/inaccessible"
+    }
+
+    // Standard sha256sum output: "<hex>  <path>". tokenize() splits on
+    // whitespace runs and discards empties; take the first token.
+    List<String> tokens = checksumContent.trim().tokenize()
+    if (tokens.isEmpty()) {
+        return "SHA-256 sidecar is empty"
+    }
+    String expected = tokens[0]
+    if (!(expected ==~ /[0-9a-fA-F]{64}/)) {
+        // Truncate the input in the error message to avoid log bloat from
+        // an HTML error page or other unexpected content.
+        String preview = checksumContent.length() > 80 ? "${checksumContent.take(80)}..." : checksumContent
+        return "SHA-256 sidecar has unexpected format (expected 64 hex chars as first token): '${preview}'"
+    }
+
+    String actual = sha256(source)
+    if (!expected.equalsIgnoreCase(actual)) {
+        return "SHA-256 mismatch — expected ${expected}, computed ${actual}; refusing to install possibly-tampered or truncated source"
+    }
+
+    logDebug("Auto-update: SHA-256 verified (${actual})")
+    return null
 }
 
 /**

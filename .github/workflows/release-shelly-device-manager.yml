@@ -123,9 +123,11 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved version=${VERSION}, tag=${TAG}"
 
-      - name: Apply version to source files
+      - name: Apply version and update SHA-256 sidecar
         run: |
-          # When manually overridden, rewrite the @Field APP_VERSION line first
+          # When manually overridden, rewrite the @Field APP_VERSION line first.
+          # $VERSION and $OVERRIDE come from `env:` below (set from validated
+          # workflow outputs); they are never inlined as ${{ }} into shell.
           if [ "$OVERRIDE" = "true" ]; then
             sed -i "s/\(@Field.*APP_VERSION *= *\)\"[0-9.]*\"/\1\"${VERSION}\"/" Apps/ShellyDeviceManager.groovy
           fi
@@ -133,18 +135,31 @@ jobs:
           # Matches exactly 4-space-indented 'version:' with a quoted numeric value — targets definition() only
           sed -i "s/\(    version: \)\"[0-9.]*\"/\1\"${VERSION}\"/" Apps/ShellyDeviceManager.groovy
 
-          if git diff --quiet Apps/ShellyDeviceManager.groovy; then
-            echo "Source files already at version ${VERSION}"
+          # Compute SHA-256 of the (possibly version-updated) source file and
+          # write a sidecar in standard `sha256sum` format ("<hex>  <path>").
+          # The app's auto-update verifier downloads this sidecar from
+          # raw.githubusercontent.com at the same tag, splits on whitespace,
+          # and compares the first token to the SHA-256 of the source it just
+          # downloaded. A mismatch aborts install, preventing tampered or
+          # truncated payloads from being applied via /app/ajax/update.
+          sha256sum Apps/ShellyDeviceManager.groovy > Apps/ShellyDeviceManager.groovy.sha256
+
+          # Stage both files. The cached-diff check below covers both new and
+          # modified paths (untracked files don't show in `git diff` until
+          # they are added to the index).
+          git add Apps/ShellyDeviceManager.groovy Apps/ShellyDeviceManager.groovy.sha256
+
+          if git diff --cached --quiet -- Apps/ShellyDeviceManager.groovy Apps/ShellyDeviceManager.groovy.sha256; then
+            echo "Source and SHA-256 sidecar already up to date for version ${VERSION}"
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add Apps/ShellyDeviceManager.groovy
             if [ "$OVERRIDE" = "true" ]; then
-              git commit -m "chore: bump APP_VERSION to ${VERSION} [skip ci]"
-              echo "Committed and pushed APP_VERSION bump to ${VERSION}"
+              git commit -m "chore: bump APP_VERSION to ${VERSION} + refresh SHA-256 [skip ci]"
+              echo "Committed APP_VERSION bump to ${VERSION} and SHA-256 sidecar"
             else
-              git commit -m "chore: sync definition() version to APP_VERSION ${VERSION} [skip ci]"
-              echo "Committed and pushed definition() version sync"
+              git commit -m "chore: sync definition() version to ${VERSION} + refresh SHA-256 [skip ci]"
+              echo "Committed definition() version sync and SHA-256 sidecar"
             fi
             git push
           fi
@@ -208,13 +223,17 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
           VERSION="${{ steps.version.outputs.version }}"
 
-          # No --target: release tags HEAD which includes the sync commit (if any)
+          # No --target: release tags HEAD which includes the sync commit (if any).
+          # Both the source file and its SHA-256 sidecar are uploaded as release
+          # assets so the integrity-verified URL pattern works for either fetch
+          # mechanism (raw.githubusercontent.com OR releases/download/...).
           gh release create "$TAG" \
             --title "Shelly Device Manager ${VERSION}" \
             --notes-file changelog.md \
-            Apps/ShellyDeviceManager.groovy
+            Apps/ShellyDeviceManager.groovy \
+            Apps/ShellyDeviceManager.groovy.sha256
 
-          echo "Release ${TAG} created"
+          echo "Release ${TAG} created with source + SHA-256 sidecar"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

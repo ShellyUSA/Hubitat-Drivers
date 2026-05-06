@@ -15,12 +15,18 @@
  * heating schedule apps; cool/auto/fan/emergency-heat commands are accepted
  * with a warning and treated as no-ops or aliased to heat/off as appropriate.
  *
- * Switch semantics: 'switch' reflects the inferred heat-output relay state
- * (on=heating, off=idle), not the thermostat's enable/sleep state. The device
- * doesn't expose its relay output via the Virtual Components RPC, so the
- * state is inferred from current vs. target temperature using the device's
- * own temp_hysteresis dead-band (read from Service.GetConfig). on()/off()
- * toggle the enable state (wake/sleep), matching the device's physical UX.
+ * Switch semantics: 'switch' tracks the thermostat's enable/sleep state
+ * (on=enabled, off=disabled). on()/off() toggle the enable state, matching
+ * the device's physical power button. The device's heat-output relay is not
+ * exposed via the Virtual Components RPC and is intentionally NOT inferred
+ * here — drivers that need PWM output from a relay-state proxy should
+ * compute it externally based on temperature/setpoint deltas.
+ *
+ * thermostatOperatingState (heating / idle) IS inferred from current vs.
+ * target temperature using the device's temp_hysteresis dead-band, since
+ * the Hubitat Thermostat composite capability requires this attribute and
+ * dashboards use it for tile coloring. Polling lag means the inferred
+ * operating state can trail the device's actual relay by up to one poll.
  *
  * Communication: WiFi, always-awake. Polling-only in v1 (no webhooks).
  *
@@ -137,7 +143,19 @@ void scheduledPoll() {
  * devices and obscures failures in app-context logs.
  */
 private void fetchAndDistribute() {
-  Map status = parent?.componentLinkedgoFetchStatus(device) as Map
+  // Wrap the parent call in a try so a transient app-side exception (parent
+  // torn down during auto-update, RPC timeout, sandbox dispatch oddity)
+  // doesn't crash the scheduled poll. The poll will retry on the next
+  // cron tick. componentLinkedgoFetchStatus has its own try/catch but we
+  // also defend at this seam in case the issue is upstream of that wrapper
+  // (e.g., Hubitat's app-method dispatch itself failing).
+  Map status = null
+  try {
+    status = parent?.componentLinkedgoFetchStatus(device) as Map
+  } catch (Exception e) {
+    logWarn("fetchAndDistribute: parent call threw exception (${e.message ?: '(no message)'}); will retry on next poll")
+    return
+  }
   Integer keyCount = status?.size() ?: 0
   logTrace("fetchAndDistribute: parent returned ${keyCount} status keys: ${status?.keySet()}")
   if (!status) {
@@ -418,8 +436,8 @@ private BigDecimal readTempRangeMax() {
 
 /**
  * Returns the device's relay-control hysteresis in °C. Used by
- * updateOperatingStateAndSwitch() to define the dead band around the
- * setpoint where the inferred operating state holds its previous value.
+ * updateOperatingState() to define the dead band around the setpoint
+ * where the inferred operating state holds its previous value.
  *
  * Falls back to 0.5 °C if the service config hasn't been fetched yet or
  * the field is missing — typical floor-heating thermostat default.
@@ -506,10 +524,12 @@ void distributeStatus(Map status) {
       state.remove('virtualMap')
     }
 
-    // 'switch' and 'thermostatOperatingState' depend on the combined view of
-    // enable + current_temperature + target_temperature, so they're computed
-    // once after all roles for this poll have been processed.
-    updateOperatingStateAndSwitch()
+    // 'thermostatOperatingState' depends on the combined view of enable +
+    // current_temperature + target_temperature, so it's computed once after
+    // all roles for this poll have been processed. 'switch' is updated
+    // directly inside handleRoleUpdate(case 'enable') and tracks the
+    // device's enable/sleep state.
+    updateOperatingState()
 
     sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
   } catch (Exception e) {
@@ -533,8 +553,13 @@ private void handleRoleUpdate(String role, Map data, String scale) {
   switch (role) {
     case 'enable':
       Boolean enabled = data.value as Boolean
-      // 'switch' is no longer driven from enable — it now reflects the
-      // inferred heat-output relay state, computed in updateOperatingStateAndSwitch().
+      // Cache in state so updateOperatingState() can read enable synchronously
+      // without going through device.currentValue('switch'), which may not yet
+      // reflect the sendEvent below if the event is still queued in the same
+      // execution pass.
+      state.enabled = enabled
+      sendEvent(name: 'switch', value: enabled ? 'on' : 'off',
+        descriptionText: "Thermostat is ${enabled ? 'on' : 'off'}")
       sendEvent(name: 'thermostatMode', value: enabled ? 'heat' : 'off',
         descriptionText: "Thermostat mode is ${enabled ? 'heat' : 'off'}")
       logInfo("Thermostat ${enabled ? 'on' : 'off'}")
@@ -589,23 +614,31 @@ private void handleRoleUpdate(String role, Map data, String scale) {
 }
 
 /**
- * Computes 'thermostatOperatingState' and 'switch' from the latest enable
- * state and the cached current/target temperatures (in °C). The device does
- * not expose its heat-output relay through the Virtual Components RPC — the
- * underlying Tuya DP 163 (3=on, 4=off) is internal — so the state is
- * inferred using the same hysteresis-band logic the device firmware uses to
- * drive the relay:
+ * Computes 'thermostatOperatingState' from the cached enable state and the
+ * current/target temperatures (in °C). The device does not expose its
+ * heat-output relay through the Virtual Components RPC — the underlying
+ * Tuya DP 163 (3=on, 4=off) is internal — so the inferred state mirrors
+ * the same hysteresis-band logic the device firmware uses to drive the
+ * relay:
  *
- *   - enable=false     : idle / switch=off
- *   - current < target - hysteresis/2  : heating / switch=on
- *   - current > target + hysteresis/2  : idle    / switch=off
+ *   - enable=false     : idle
+ *   - current < target - hysteresis/2  : heating
+ *   - current > target + hysteresis/2  : idle
  *   - within dead band : hold previous (avoids false flips on noise)
  *
- * Polling lag means the inferred state can trail the actual relay by up to
- * one poll interval, but it tracks the relay's behaviour in steady state.
+ * 'switch' is NOT updated here — it tracks the device's enable/sleep state
+ * directly via handleRoleUpdate(case 'enable'). This attribute exists
+ * primarily to satisfy the Hubitat Thermostat composite capability
+ * contract; polling lag means the inferred operating state can trail the
+ * device's actual relay by up to one poll interval.
  */
-private void updateOperatingStateAndSwitch() {
-  Boolean enabled = (device.currentValue('thermostatMode')?.toString() == 'heat')
+private void updateOperatingState() {
+  // Read from state.enabled (set in handleRoleUpdate case 'enable') rather
+  // than device.currentValue('switch'). The 'switch' event is fired by
+  // sendEvent earlier in the same distributeStatus() pass, and Hubitat's
+  // event queue may not have committed it yet when currentValue() is
+  // called from this method.
+  Boolean enabled = state.enabled ? true : false
   BigDecimal currentC = state.lastCurrentTempC as BigDecimal
   BigDecimal targetC = state.lastTargetTempC as BigDecimal
   String currentOp = device.currentValue('thermostatOperatingState')?.toString()
@@ -634,14 +667,6 @@ private void updateOperatingStateAndSwitch() {
   if (newOp != currentOp) {
     sendEvent(name: 'thermostatOperatingState', value: newOp,
       descriptionText: "Operating state: ${newOp}")
-  }
-
-  String newSwitch = (newOp == 'heating') ? 'on' : 'off'
-  String currentSwitch = device.currentValue('switch')?.toString()
-  if (newSwitch != currentSwitch) {
-    sendEvent(name: 'switch', value: newSwitch,
-      descriptionText: "Heat output: ${newSwitch}")
-    logInfo("Heat output: ${newSwitch}")
   }
 }
 

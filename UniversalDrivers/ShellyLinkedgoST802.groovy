@@ -20,13 +20,18 @@
  * thermostatFanMode (auto/circulate/on) by collapsing low→circulate and
  * medium/high→on. Writes from Hubitat: auto→auto, circulate→low, on→medium.
  *
- * Switch semantics: 'switch' reflects the inferred HVAC output state
- * (on=heating/cooling/fan-only, off=idle), not the thermostat's enable/sleep
- * state. The device doesn't expose its output relays through the Virtual
- * Components RPC, so the state is inferred from current vs. target
- * temperature using the device's own temp_hysteresis dead-band (read from
- * Service.GetConfig). on()/off() toggle the enable state (wake/sleep),
- * matching the device's physical UX.
+ * Switch semantics: 'switch' tracks the thermostat's enable/sleep state
+ * (on=enabled, off=disabled). on()/off() toggle the enable state, matching
+ * the device's physical power button. The device's heat/cool/fan output
+ * relays are not exposed via the Virtual Components RPC and are
+ * intentionally NOT inferred here.
+ *
+ * thermostatOperatingState (heating / cooling / fan only / idle) IS
+ * inferred from current vs. target temperature using the device's
+ * temp_hysteresis dead-band, since the Hubitat Thermostat composite
+ * capability requires this attribute and dashboards use it for tile
+ * coloring. Polling lag means the inferred state can trail the device's
+ * actual relays by up to one poll interval.
  *
  * Communication: WiFi, always-awake. Polling-only in v1 (no webhooks).
  *
@@ -138,7 +143,19 @@ void scheduledPoll() {
  * devices and obscures failures in app-context logs.
  */
 private void fetchAndDistribute() {
-  Map status = parent?.componentLinkedgoFetchStatus(device) as Map
+  // Wrap the parent call in a try so a transient app-side exception (parent
+  // torn down during auto-update, RPC timeout, sandbox dispatch oddity)
+  // doesn't crash the scheduled poll. The poll will retry on the next
+  // cron tick. componentLinkedgoFetchStatus has its own try/catch but we
+  // also defend at this seam in case the issue is upstream of that wrapper
+  // (e.g., Hubitat's app-method dispatch itself failing).
+  Map status = null
+  try {
+    status = parent?.componentLinkedgoFetchStatus(device) as Map
+  } catch (Exception e) {
+    logWarn("fetchAndDistribute: parent call threw exception (${e.message ?: '(no message)'}); will retry on next poll")
+    return
+  }
   Integer keyCount = status?.size() ?: 0
   logTrace("fetchAndDistribute: parent returned ${keyCount} status keys: ${status?.keySet()}")
   if (!status) {
@@ -425,8 +442,8 @@ private BigDecimal readTempRangeMax() {
 
 /**
  * Returns the device's relay-control hysteresis in °C. Used by
- * updateOperatingStateAndSwitch() to define the dead band around the
- * setpoint where the inferred operating state holds its previous value.
+ * updateOperatingState() to define the dead band around the setpoint
+ * where the inferred operating state holds its previous value.
  *
  * Falls back to 1.0 °C if the service config hasn't been fetched yet or
  * the field is missing — typical HVAC default. (Floor heating uses ~0.5 °C;
@@ -505,11 +522,13 @@ void distributeStatus(Map status) {
       state.remove('virtualMap')
     }
 
-    // thermostatMode (from enable + workingMode), thermostatOperatingState,
-    // and 'switch' are all derived from multiple roles, so compute them
-    // once after the iteration is done.
+    // thermostatMode (from enable + workingMode) and thermostatOperatingState
+    // are derived from multiple roles, so compute them once after the
+    // iteration is done. 'switch' is updated directly inside
+    // handleRoleUpdate(case 'enable') and tracks the device's enable/sleep
+    // state.
     deriveMode()
-    updateOperatingStateAndSwitch()
+    updateOperatingState()
 
     sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
   } catch (Exception e) {
@@ -525,11 +544,15 @@ private void handleRoleUpdate(String role, Map data, String scale) {
   switch (role) {
     case 'enable':
       Boolean enabled = data.value as Boolean
-      // Track in state so deriveMode() and updateOperatingStateAndSwitch()
-      // don't need to read it back from a Hubitat attribute. 'switch' is no
-      // longer driven from enable — it reflects the inferred HVAC output
-      // state, computed in updateOperatingStateAndSwitch().
+      // Cache in state so deriveMode() and updateOperatingState() can read
+      // enable synchronously without going through device.currentValue('switch'),
+      // which may not yet reflect the sendEvent below if the event is still
+      // queued in the same execution pass.
       state.enabled = enabled
+      sendEvent(name: 'switch', value: enabled ? 'on' : 'off',
+        descriptionText: "Thermostat is ${enabled ? 'on' : 'off'}")
+      // thermostatMode is derived from enable + working_mode together at the
+      // end of the iteration via deriveMode(), so order-of-arrival doesn't matter.
       logInfo("Thermostat ${enabled ? 'on' : 'off'}")
       break
 
@@ -627,27 +650,29 @@ private void deriveMode() {
 }
 
 /**
- * Computes 'thermostatOperatingState' and 'switch' from the cached enable
- * state, working mode, and current/target temperatures (in °C).
+ * Computes 'thermostatOperatingState' from the cached enable state, working
+ * mode, and current/target temperatures (in °C).
  *
  * The device does not expose its heat/cool relay outputs through the
  * Virtual Components RPC, so the state is inferred using the same
  * hysteresis-band logic the device firmware uses to drive the relays:
  *
- *   - enable=false  : idle / switch=off
- *   - working_mode=fan_only : fan only / switch=on (fan is running)
- *   - heat mode, current < target - hysteresis/2 : heating / switch=on
- *   - cool mode, current > target + hysteresis/2 : cooling / switch=on
+ *   - enable=false  : idle
+ *   - working_mode=fan_only : fan only
+ *   - heat mode, current < target - hysteresis/2 : heating
+ *   - cool mode, current > target + hysteresis/2 : cooling
  *   - auto mode follows whichever side of the band the room is on
  *   - within dead band : hold previous (avoids false flips on noise)
  *
- * Polling lag means the inferred state can trail the actual relay by up
- * to one poll interval, but it tracks the relay's behaviour in steady
- * state. The dead band reads from temp_hysteresis when present and falls
- * back to a 1.0 °C HVAC-typical default when the device firmware doesn't
- * expose it.
+ * 'switch' is NOT updated here — it tracks the device's enable/sleep state
+ * directly via handleRoleUpdate(case 'enable'). This attribute exists
+ * primarily to satisfy the Hubitat Thermostat composite capability
+ * contract; polling lag means the inferred operating state can trail the
+ * device's actual relays by up to one poll interval. The dead band reads
+ * from temp_hysteresis when present and falls back to a 1.0 °C HVAC-typical
+ * default when the device firmware doesn't expose it.
  */
-private void updateOperatingStateAndSwitch() {
+private void updateOperatingState() {
   Boolean enabled = state.enabled ? true : false
   String mode = device.currentValue('thermostatMode')?.toString()
   String workingMode = device.currentValue('workingMode')?.toString()
@@ -689,15 +714,6 @@ private void updateOperatingStateAndSwitch() {
   if (newOp != currentOp) {
     sendEvent(name: 'thermostatOperatingState', value: newOp,
       descriptionText: "Operating state: ${newOp}")
-  }
-
-  // Switch reflects the HVAC output: anything actively running is 'on'.
-  String newSwitch = (newOp == 'idle') ? 'off' : 'on'
-  String currentSwitch = device.currentValue('switch')?.toString()
-  if (newSwitch != currentSwitch) {
-    sendEvent(name: 'switch', value: newSwitch,
-      descriptionText: "HVAC output: ${newSwitch} (${newOp})")
-    logInfo("HVAC output: ${newSwitch} (${newOp})")
   }
 }
 
