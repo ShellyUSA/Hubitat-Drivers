@@ -3812,11 +3812,13 @@ private static String formatTimeForDisplay(String timeStr) {
  * Renders the progress banner that appears at the top of the driver
  * management table while a serialized update queue is running, or for ~30 s
  * after the queue completes (to show the final summary). Driven by
- * {@code state.driverUpdateProgress}, which is populated by
+ * {@code atomicState.driverUpdateProgress}, which is populated by
  * {@link #enqueueAndStartDriverUpdate} and cleared by
- * {@link #clearDriverUpdateProgress}.
+ * {@link #clearDriverUpdateProgress}. Stored in atomicState so the banner
+ * reflects writes committed by in-flight async callbacks before they would
+ * otherwise flush at end-of-execution.
  *
- * @param prog The state.driverUpdateProgress map (must be non-null)
+ * @param prog The atomicState.driverUpdateProgress map (must be non-null)
  * @return HTML for the banner block
  */
 private String renderDriverUpdateProgressBanner(Map prog) {
@@ -3884,19 +3886,21 @@ private String renderDriverUpdateProgressBanner(Map prog) {
 private String renderDriverManagementHtml() {
     StringBuilder sb = new StringBuilder()
     String currentVersion = getAppVersion()
-    Map allDrivers = state.autoDrivers ?: [:]
+    // Read via atomicState so the table sees the latest version writes
+    // committed by an in-flight installDriverCallback chain.
+    Map allDrivers = atomicState.autoDrivers ?: [:]
 
     // Progress banner — shown while a queue is active or just completed.
     // The completed banner is supposed to fade after 30 s via runIn(30,
     // 'clearDriverUpdateProgress'), but if that schedule is dropped the
     // banner would stick forever. Auto-suppress (and lazy-clear state) if
     // finishedAt is older than 60 s, so a page refresh always recovers.
-    Map prog = state.driverUpdateProgress as Map
+    Map prog = atomicState.driverUpdateProgress as Map
     if (prog != null && prog.active != true && prog.finishedAt != null) {
         Long finishedAt = (prog.finishedAt as Long) ?: 0L
         if (now() - finishedAt > 60000L) {
-            state.remove('driverUpdateQueue')
-            state.remove('driverUpdateProgress')
+            atomicState.remove('driverUpdateQueue')
+            atomicState.remove('driverUpdateProgress')
             prog = null
         }
     }
@@ -4869,10 +4873,10 @@ void initialize() {
     // otherwise be stranded. We abort rather than resume — silently restarting
     // a partially-completed queue would surprise the user. They can re-click
     // Update All if they want to retry.
-    if (state.driverUpdateProgress?.active == true) {
+    if (atomicState.driverUpdateProgress?.active == true) {
         appendLog('warn', 'Driver update queue was in progress at reboot — clearing stale state')
-        state.remove('driverUpdateQueue')
-        state.remove('driverUpdateProgress')
+        atomicState.remove('driverUpdateQueue')
+        atomicState.remove('driverUpdateProgress')
         sendEvent(name: 'driverRebuildStatus', value: 'cleared')
     }
 
@@ -14205,7 +14209,11 @@ void startBulkDriverUpdate() {
         return
     }
 
-    Map driverSnapshot = new LinkedHashMap((state.autoDrivers ?: [:]) as Map)
+    // Read autoDrivers via atomicState so we see the latest version writes
+    // committed by any in-flight installDriverCallback. Avoids the race where
+    // the second click of Update All re-queues drivers that an in-flight
+    // queue's callback just successfully updated.
+    Map driverSnapshot = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
     if (driverSnapshot.isEmpty()) {
         appendLog('warn', 'No tracked drivers to update')
         return
@@ -14254,7 +14262,11 @@ void startSingleDriverUpdate(String trackingKey) {
  * Used by entry points to refuse re-entry and by the UI to render the banner.
  */
 private Boolean isDriverUpdateInProgress() {
-    Map prog = state.driverUpdateProgress as Map
+    // Read via atomicState so we see the latest value committed by any
+    // in-flight callback or scheduled worker — without this, a callback that
+    // just set active=false would not be visible to a duplicate Update All
+    // click until the next state-flush boundary.
+    Map prog = atomicState.driverUpdateProgress as Map
     return prog?.active == true
 }
 
@@ -14268,8 +14280,16 @@ private Boolean isDriverUpdateInProgress() {
  */
 private void enqueueAndStartDriverUpdate(List<String> trackingKeys, String startMessage) {
     state.lastAutoconfVersion = getAppVersion()
-    state.driverUpdateQueue = trackingKeys.collect { it.toString() }
-    state.driverUpdateProgress = [
+    // Use atomicState for the queue and progress map. These values are read
+    // and mutated by async-HTTP callbacks (downloadDriverCallback ->
+    // listExistingDriversCallback -> installDriverCallback) and by
+    // runIn-scheduled workers (processNextDriverUpdate) — i.e., they cross
+    // execution boundaries. Plain state writes only flush to disk when the
+    // current method exits cleanly, so a callback's mutation can be invisible
+    // (or silently overwritten) when the next scheduled worker runs. See
+    // memory/hubitat_atomic_state.md for the full rationale.
+    atomicState.driverUpdateQueue = new ArrayList<String>(trackingKeys.collect { it.toString() })
+    atomicState.driverUpdateProgress = [
         active: true,
         total: trackingKeys.size(),
         completed: 0,
@@ -14282,7 +14302,7 @@ private void enqueueAndStartDriverUpdate(List<String> trackingKeys, String start
         // processedKeys is a List<String> on disk (Sets don't survive JSON
         // round-trips). Used to prevent double-counting when a late-firing
         // callback from a previous queue lands inside this one's progress map.
-        processedKeys: []
+        processedKeys: new ArrayList<String>()
     ]
     appendLog('info', startMessage)
     logInfo("Driver update queue started: ${trackingKeys.size()} driver(s)")
@@ -14304,16 +14324,27 @@ void processNextDriverUpdate() {
         return
     }
 
-    List<String> queue = (state.driverUpdateQueue ?: []) as List<String>
-    if (queue.isEmpty()) {
+    List<String> rawQueue = (atomicState.driverUpdateQueue ?: []) as List<String>
+    if (rawQueue.isEmpty()) {
         finalizeBulkDriverUpdate()
         return
     }
 
-    String trackingKey = queue.remove(0).toString()
-    state.driverUpdateQueue = queue
+    // Pop the head and persist the shorter queue immediately via atomicState
+    // so the next runIn-scheduled worker sees the advanced queue. Without
+    // immediate persistence (i.e., with plain state), the shorter queue
+    // might not flush before the next callback runs, causing the same head
+    // item to be processed repeatedly — that was the original 7-attempts-
+    // per-driver bug. We build a fresh ArrayList rather than mutating
+    // rawQueue in place; atomicState commits on assignment, but mutations
+    // on the returned list are NOT auto-detected as writes.
+    String trackingKey = rawQueue.get(0).toString()
+    List<String> newQueue = rawQueue.size() > 1
+        ? new ArrayList<String>(rawQueue.subList(1, rawQueue.size()))
+        : new ArrayList<String>()
+    atomicState.driverUpdateQueue = newQueue
 
-    Map allDrivers = state.autoDrivers ?: [:]
+    Map allDrivers = atomicState.autoDrivers ?: [:]
     Map.Entry matchEntry = allDrivers.find { k, v -> k.toString() == trackingKey }
     if (!matchEntry) {
         handleDriverUpdateFailure(trackingKey, 'Tracking key disappeared during update')
@@ -14325,17 +14356,17 @@ void processNextDriverUpdate() {
     String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
     Boolean isComponent = info.isComponentDriver ?: false
 
-    // Mutate progress map locally then reassign — Hubitat persists top-level
-    // state.X = ... assignments reliably, but nested mutations like
-    // state.X.field = ... can be dropped across runIn boundaries on some
-    // firmware versions, leaving the banner frozen at "preparing…".
-    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    // Read prog into a fresh LinkedHashMap and write back via atomicState —
+    // same cross-execution-boundary concern as the queue: the next callback
+    // (downloadDriverCallback) needs to see currentName/current immediately,
+    // and the SSR re-render fired by sendEvent below depends on it.
+    Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
     prog.current = trackingKey
     prog.currentName = baseName
-    state.driverUpdateProgress = prog
+    atomicState.driverUpdateProgress = prog
     Integer position = (((prog.completed ?: 0) as Integer) + ((prog.errors ?: 0) as Integer) + 1)
     Integer total = (prog.total ?: 0) as Integer
-    logInfo("Updating driver: ${baseName} (${position} of ${total})")
+    logInfo("Updating driver: ${baseName} (${position} of ${total}) [queue size after pop: ${newQueue.size()}]")
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
 
     String fileUrl = resolveDriverSourceUrl(driverName, baseName, isComponent)
@@ -14576,15 +14607,17 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
         }
     }
 
-    // Mutate progress map locally then reassign — see processNextDriverUpdate
-    // for why nested mutations on state.driverUpdateProgress can't be trusted
-    // to persist across runIn boundaries.
-    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    // Read prog from atomicState into a fresh LinkedHashMap. This callback
+    // runs in a separate execution from processNextDriverUpdate, and the
+    // runIn(10, 'processNextDriverUpdate') below will fire yet another
+    // execution that needs to see our writes — atomicState gives us
+    // commit-on-assignment so all three executions stay coherent.
+    Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
 
     // Track which trackingKeys have already been counted in this queue so a
     // duplicate or late-firing callback can't double-count completed/errors.
-    // The processed set must always be a Set<String>, even if state was
-    // serialized to/from a List on disk.
+    // The processed set is a List<String> on disk (Sets don't survive JSON);
+    // we rebuild a HashSet for fast .contains() lookup.
     Set<String> processedKeys = new HashSet<String>()
     if (prog.processedKeys instanceof Collection) {
         ((Collection) prog.processedKeys).each { processedKeys.add(it.toString()) }
@@ -14596,24 +14629,25 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
     }
 
     if (success) {
-        Map allDrivers = state.autoDrivers ?: [:]
+        // atomicState.autoDrivers commits the version mutation immediately,
+        // so the SSR-rendered table picks up the new version on the next
+        // render even if multiple driver-update executions are in flight.
+        // Read into a fresh LinkedHashMap so we can assign back unambiguously.
+        Map allDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
         Map.Entry matchEntry = allDrivers.find { k, v -> k.toString() == trackingKey }
         if (matchEntry != null) {
-            Map info = matchEntry.value as Map
+            Map info = new LinkedHashMap(matchEntry.value as Map)
             info.version = getAppVersion()
             info.lastUpdated = now()
             // Component drivers keep their bare name; prebuilt drivers carry the version suffix
             if (!(data.isComponent as Boolean)) {
                 info.name = installedName
             }
-            // Re-write under the ORIGINAL matchEntry.key (could be a GString,
-            // could be a String) to avoid creating a duplicate entry, AND to
-            // force Hubitat to persist the nested mutation. Without the
-            // top-level state.autoDrivers reassign, info.version may not
-            // survive across runIn boundaries — that was the cause of drivers
-            // showing as still-outdated after a "successful" update.
+            // Re-write under the ORIGINAL matchEntry.key to preserve key type
+            // (could be GString from interpolation, could be String from JSON
+            // round-trip) and avoid creating a duplicate entry.
             allDrivers[matchEntry.key] = info
-            state.autoDrivers = allDrivers
+            atomicState.autoDrivers = allDrivers
         }
         if (!alreadyCounted) {
             prog.completed = ((prog.completed ?: 0) as Integer) + 1
@@ -14631,7 +14665,7 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
 
     prog.current = null
     prog.currentName = null
-    state.driverUpdateProgress = prog
+    atomicState.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
 
     runIn(10, 'processNextDriverUpdate')
@@ -14650,7 +14684,7 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
 private void handleDriverUpdateFailure(String trackingKey, String reason) {
     appendLog('warn', "Driver update failed for ${trackingKey}: ${reason}")
     logWarn("Driver update failed for ${trackingKey}: ${reason}")
-    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
 
     // Dedupe: if the same trackingKey is reported failed twice (late-firing
     // callback into a new queue, or retry path), don't double-count.
@@ -14670,7 +14704,7 @@ private void handleDriverUpdateFailure(String trackingKey, String reason) {
     prog.lastError = reason
     prog.current = null
     prog.currentName = null
-    state.driverUpdateProgress = prog
+    atomicState.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
     runIn(10, 'processNextDriverUpdate')
 }
@@ -14682,7 +14716,7 @@ private void handleDriverUpdateFailure(String trackingKey, String reason) {
  * the progress banner to clear after 30 s.
  */
 private void finalizeBulkDriverUpdate() {
-    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
     Integer completed = (prog.completed ?: 0) as Integer
     Integer errors = (prog.errors ?: 0) as Integer
 
@@ -14693,7 +14727,7 @@ private void finalizeBulkDriverUpdate() {
     prog.finishedAt = now()
     prog.current = null
     prog.currentName = null
-    state.driverUpdateProgress = prog
+    atomicState.driverUpdateProgress = prog
 
     // Sweep orphaned drivers AFTER the queue completes — deferred from the
     // original btnForceRebuildDrivers handler so it doesn't compete with the
@@ -14710,8 +14744,8 @@ private void finalizeBulkDriverUpdate() {
  * by name via {@code runIn}.
  */
 void clearDriverUpdateProgress() {
-    state.remove('driverUpdateQueue')
-    state.remove('driverUpdateProgress')
+    atomicState.remove('driverUpdateQueue')
+    atomicState.remove('driverUpdateProgress')
     sendEvent(name: 'driverRebuildStatus', value: 'cleared')
 }
 
@@ -14728,10 +14762,10 @@ void cancelBulkDriverUpdate() {
     }
     appendLog('info', 'Driver update cancelled by user')
     logInfo('Driver update cancelled by user')
-    state.driverUpdateQueue = []
-    Map prog = (state.driverUpdateProgress ?: [:]) as Map
+    atomicState.driverUpdateQueue = new ArrayList<String>()
+    Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
     prog.lastError = 'Cancelled by user'
-    state.driverUpdateProgress = prog
+    atomicState.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'cancelling')
 }
 
@@ -14816,7 +14850,7 @@ void checkForAppUpdate() {
 
     // Gate 1a: don't run during a driver-update — drivers are being updated
     // in waves, and replacing the app source mid-wave would orphan the queue.
-    if (state.driverUpdateProgress?.active == true) {
+    if (atomicState.driverUpdateProgress?.active == true) {
         logWarn("Auto-update: driver update in progress; skipping app update this cycle")
         appendLog('warn', 'App auto-update skipped: driver update in progress')
         return
