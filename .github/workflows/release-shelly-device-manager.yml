@@ -127,7 +127,9 @@ jobs:
         run: |
           # When manually overridden, rewrite the @Field APP_VERSION line first.
           # $VERSION and $OVERRIDE come from `env:` below (set from validated
-          # workflow outputs); they are never inlined as ${{ }} into shell.
+          # workflow outputs) — they are never inlined as GitHub-Actions
+          # expression syntax into the shell, which would be a command-injection
+          # vector if the values weren't pre-validated.
           if [ "$OVERRIDE" = "true" ]; then
             sed -i "s/\(@Field.*APP_VERSION *= *\)\"[0-9.]*\"/\1\"${VERSION}\"/" Apps/ShellyDeviceManager.groovy
           fi
