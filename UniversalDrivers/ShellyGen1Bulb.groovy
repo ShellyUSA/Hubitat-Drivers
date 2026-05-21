@@ -309,6 +309,10 @@ void refresh() {
 void on() {
   logDebug('on() called')
   parent?.componentLightOn(device)
+  // Action-URL webhook delivery isn't guaranteed (and only carries on/off — never brightness/color/CT).
+  // Schedule a delayed refresh so all attributes reflect actual device state within ~2s of the command.
+  // runIn debounces: rapid commands (color picker drag) collapse to a single final refresh.
+  runIn(2, 'refresh')
 }
 
 /**
@@ -317,6 +321,7 @@ void on() {
 void off() {
   logDebug('off() called')
   parent?.componentLightOff(device)
+  runIn(2, 'refresh')
 }
 
 /**
@@ -329,6 +334,7 @@ void off() {
 void setLevel(BigDecimal level, BigDecimal duration = 0) {
   logDebug("setLevel(${level}, ${duration}) called")
   parent?.componentSetLevel(device, level as Integer, duration as Integer)
+  runIn(2, 'refresh')
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -351,6 +357,7 @@ void setColor(Map colorMap) {
   logDebug("setColor(${colorMap}) called")
   if (colorMap == null) { return }
   parent?.componentSetColor(device, colorMap)
+  runIn(2, 'refresh')
 }
 
 /**
@@ -395,6 +402,7 @@ void setColorTemperature(BigDecimal colorTemp, BigDecimal level = null, BigDecim
   BigDecimal clampedTemp = Math.max(ctMin, Math.min(ctMax, colorTemp.intValue()))
 
   parent?.componentSetColorTemperature(device, clampedTemp, level, transitionTime)
+  runIn(2, 'refresh')
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

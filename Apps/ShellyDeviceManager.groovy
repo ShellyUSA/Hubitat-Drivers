@@ -38,6 +38,10 @@
 @Field static ConcurrentHashMap<String, Long> bleLastContact =
     new java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+/** High-water mark for the most-recent contactTime already persisted by flushBleDiscoveryVolatile.
+ *  Used to skip rewriting state.deviceConfigs for MACs with no new advertisements since the last flush. */
+@Field static volatile long bleLastContactFlushTime = 0L
+
 /** Throttle timestamp for BLE table SSR updates — replaces state.lastBleTableUpdate */
 @Field static volatile long lastBleTableSSR = 0L
 
@@ -48,6 +52,11 @@
 /** Best RSSI per broadcast per MAC — tracks strongest signal across gateways for current PID */
 @Field static ConcurrentHashMap<String, Map> bleRssiTracker =
     new java.util.concurrent.ConcurrentHashMap<String, Map>()
+
+/** Cached bleModel per MAC — populated at child-creation time, read on every advertisement.
+ *  Avoids a per-advertisement child.getDataValue() lookup in routeBleEventToChild(). */
+@Field static ConcurrentHashMap<String, String> bleModelCache =
+    new java.util.concurrent.ConcurrentHashMap<String, String>()
 
 /** Cached hub temperature scale — avoids getLocation() call per advertisement */
 @Field static volatile String cachedTempScale = null
@@ -11512,6 +11521,9 @@ private void createBleDevice(String mac) {
         ]
         state.deviceConfigs = deviceConfigs
 
+        // Prime the model cache so routeBleEventToChild() skips the per-advertisement child.getDataValue() lookup
+        bleModelCache.put(macKey, bleModel)
+
         // Update discovery state
         bleInfo.isCreated = true
         bleInfo.hubDeviceId = childDevice.id
@@ -11563,6 +11575,7 @@ private void removeBleDevice(String mac) {
         bleLastContact.remove(macKey)
         bleDiscoveryVolatile.remove(macKey)
         bleRssiTracker.remove(macKey)
+        bleModelCache.remove(macKey)
 
         // Update discovery state
         Map discoveredBle = state.discoveredBleDevices ?: [:]
@@ -11597,15 +11610,23 @@ private void removeBleDevice(String mac) {
  * @param child Pre-fetched child device (must not be null)
  */
 private void routeBleEventToChild(String mac, Map bleData, Object child) {
+    String macKey = mac.toString()
     String tempScale = getCachedTemperatureScale()
     ChildDeviceWrapper childDevice = child as ChildDeviceWrapper
-    String bleModel = childGetDeviceDataValueHelper(childDevice, 'bleModel')
+
+    // bleModel is immutable per child — cache lookup avoids a per-advertisement getDataValue read.
+    // Cache misses (e.g. post-reboot) fall back to the helper and prime the cache.
+    String bleModel = bleModelCache.get(macKey)
+    if (bleModel == null) {
+        bleModel = childGetDataValueHelper(childDevice, 'bleModel')
+        if (bleModel != null) { bleModelCache.put(macKey, bleModel) }
+    }
+
     Boolean childSupportsRemoteRaw = childHasAttributeHelper(childDevice, 'rawChannel')
     Boolean isRemoteControlZb = childSupportsRemoteRaw && ((bleModel == 'SBRC-005B') || isBleRemoteControlZbPayload(bleData))
     List<Map> events = buildBleEvents(bleData, tempScale, isRemoteControlZb)
 
     // Get or create last-sent cache for this MAC
-    String macKey = mac.toString()
     Map<String, String> lastSent = bleLastSentValues.get(macKey)
     if (lastSent == null) {
         bleLastSentValues.putIfAbsent(macKey, new ConcurrentHashMap<String, String>())
@@ -11922,10 +11943,15 @@ private void flushBleDiscoveryVolatile() {
         state.discoveredBleDevices = discoveredBle
     }
 
-    // Also flush lastBleContact to state.deviceConfigs for reboot persistence
+    // Also flush lastBleContact to state.deviceConfigs for reboot persistence — but only for MACs
+    // whose contactTime advanced since the previous flush. Without this guard, every flush rewrites
+    // the full state.deviceConfigs whenever any BLU device received any advertisement in the window,
+    // even if all contact times were already persisted on the previous flush.
+    Long previousContactFlushTime = bleLastContactFlushTime
     Map deviceConfigs = state.deviceConfigs ?: [:]
     Boolean configChanged = false
     bleLastContact.each { String macKey, Long contactTime ->
+        if (contactTime <= previousContactFlushTime) { return }
         Map config = deviceConfigs[macKey] as Map
         if (config) {
             config.lastBleContact = contactTime
@@ -11936,6 +11962,7 @@ private void flushBleDiscoveryVolatile() {
     if (configChanged) {
         state.deviceConfigs = deviceConfigs
     }
+    bleLastContactFlushTime = nowMs
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -13315,9 +13342,9 @@ private Boolean childHasAttributeHelper(ChildDeviceWrapper child, String attribu
   return child.hasAttribute(attribute)
 }
 
-/** Helper for child.getDeviceDataValue() calls */
-private String childGetDeviceDataValueHelper(ChildDeviceWrapper child, String name) {
-  return child.getDeviceDataValue(name)
+/** Helper for child.getDataValue() calls */
+private String childGetDataValueHelper(ChildDeviceWrapper child, String name) {
+  return child.getDataValue(name)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -13708,19 +13735,14 @@ Boolean childHasAttribute(ChildDeviceWrapper child, String attributeName) {
   return childHasAttributeHelper(child, attributeName)
 }
 
-String getParentDeviceDataValue(String dataValueName) {
-  def parentObj = getParentHelper()
-  return parentObj?.getDeviceDataValue(dataValueName)
-}
-
 @CompileStatic
 Integer getChildDeviceIntegerDataValue(ChildDeviceWrapper child, String dataValueName) {
-  return childGetDeviceDataValueHelper(child, dataValueName) as Integer
+  return childGetDataValueHelper(child, dataValueName) as Integer
 }
 
 @CompileStatic
 String getChildDeviceDataValue(ChildDeviceWrapper child, String dataValueName) {
-  return childGetDeviceDataValueHelper(child, dataValueName)
+  return childGetDataValueHelper(child, dataValueName)
 }
 
 @CompileStatic
