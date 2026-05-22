@@ -6,11 +6,13 @@
  *
  * Wakes and fires action URL callbacks on:
  *   - Flood detected / flood cleared (flood_detected_url / flood_gone_url)
- *   - Temperature threshold crossings (over_temp_url / under_temp_url)
+ *   - Temperature threshold crossings (temp_over_url / temp_under_url)
+ *   - Periodic report (report_url) — bare GET serves as a wake-up trigger; the
+ *     query-parameter data is discarded by Hubitat, but the callback lets us poll
+ *     for fresh sensor data while the device is briefly awake.
  *
- * Note: No report_url / sensor_report mechanism — unlike H&T, the SHWT-1 has
- * no periodic wake-up URL. All wake-ups are event-driven. Temperature and battery
- * data are polled via GET /status when the device wakes for a flood or threshold event.
+ * Temperature and battery data are polled via GET /status whenever the device wakes
+ * for any of the above events.
  *
  * User-configurable preferences (temperature_offset, temperature_threshold)
  * are synced bidirectionally: device-to-driver on first refresh, driver-to-device
@@ -238,6 +240,13 @@ private void routeActionUrlCallback(Map params) {
       break
     case 'temp_under':
       logWarn('Under-temperature threshold exceeded')
+      parent?.componentRefresh(device)
+      break
+
+    case 'sensor_report':
+      // Periodic wake-up trigger — bare GET arrives while device is awake. Poll
+      // for current sensor data (battery, temperature, water status).
+      logInfo('Sensor wake-up report received — requesting status poll')
       parent?.componentRefresh(device)
       break
 

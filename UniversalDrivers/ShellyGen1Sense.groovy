@@ -1,7 +1,7 @@
 /**
  * Shelly Gen1 Sense
  *
- * Pre-built standalone driver for the Gen 1 Shelly Sense (SHSN-1).
+ * Pre-built standalone driver for the Gen 1 Shelly Sense (SHSEN-1).
  * Battery-powered multisensor with PIR motion, temperature, humidity,
  * illuminance, and an IR blaster for controlling external devices.
  *

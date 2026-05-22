@@ -287,6 +287,25 @@ private void routeActionUrlCallback(Map params) {
       parent?.componentRefresh(device)
       break
 
+    case 'temp_over':
+      // SHDW-2 only — over-temperature threshold callback. SHDW-1 has no internal
+      // temperature sensor, so this case will never fire for v1 devices.
+      logWarn('Over-temperature threshold exceeded')
+      parent?.componentRefresh(device)
+      break
+    case 'temp_under':
+      // SHDW-2 only — under-temperature threshold callback.
+      logWarn('Under-temperature threshold exceeded')
+      parent?.componentRefresh(device)
+      break
+
+    case 'sensor_report':
+      // Periodic wake-up trigger — bare GET arrives while device is awake. Use the
+      // window to poll for current sensor data (battery, temperature, lux).
+      logInfo('Sensor wake-up report received — requesting status poll')
+      parent?.componentRefresh(device)
+      break
+
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
       return  // Don't update lastUpdated for unhandled callbacks

@@ -93,7 +93,7 @@
     'SH2LED-1':  'Shelly Gen1 Duo',      // Dual-white LED controller
     'SHSPOT-1':  'Shelly Gen1 Duo',      // Spot light
     'SHGS-1':    'Shelly Gen1 Gas Sensor',
-    'SHSN-1':    'Shelly Gen1 Sense',
+    'SHSEN-1':    'Shelly Gen1 Sense',
     'SHUNI-1':   'Shelly Gen1 Uni Parent',
     // SHRGBW2 intentionally excluded — requires dynamic mode detection (color vs white)
 ]
@@ -347,18 +347,18 @@
     'SHUNI-1':   'Shelly Uni',
     'SHTRV-01':  'Shelly TRV',
     'SHSM-01':   'Shelly Smoke',
-    'SHSN-1':    'Shelly Sense',
+    'SHSEN-1':    'Shelly Sense',
 ]
 
 /** Gen 1 type codes that are battery-powered. All battery devices are excluded from
  *  periodic polling via {@link #isBatteryPoweredDevice}. Devices that are also
  *  unreachable most of the time (truly sleepy) are identified by
- *  {@link #isSleepyBatteryDevice} — SHMOS-*, SHSN-1 and SHTRV-01 are always-awake
+ *  {@link #isSleepyBatteryDevice} — SHMOS-*, SHSEN-1 and SHTRV-01 are always-awake
  *  and NOT sleepy, even though they run on battery. */
 @Field static final Set<String> GEN1_BATTERY_TYPES = [
     'SHHT-1', 'SHWT-1', 'SHDW-1', 'SHDW-2',
     'SHMOS-01', 'SHMOS-02', 'SHBTN-1', 'SHBTN-2',
-    'SHTRV-01', 'SHSM-01', 'SHSN-1',
+    'SHTRV-01', 'SHSM-01', 'SHSEN-1',
 ] as Set<String>
 
 /**
@@ -400,7 +400,7 @@
     'shellyuni':        'SHUNI-1',
     'shellytrv':        'SHTRV-01',
     'shellysmoke':      'SHSM-01',
-    'shellysense':      'SHSN-1',
+    'shellysense':      'SHSEN-1',
 ]
 
 definition(
@@ -2777,7 +2777,6 @@ private void installGen1ActionUrls(String ipAddress) {
     clearGen1ActionUrls(ipAddress)
 
     def childDevice = findChildDeviceByIp(ipAddress)
-    Integer installed = 0
     Integer failed = 0
 
     requiredActions.each { Map action ->
@@ -2799,28 +2798,120 @@ private void installGen1ActionUrls(String ipAddress) {
         }
 
         if (result != null) {
-            installed++
             logDebug("Configured ${action.name} on ${ipAddress}: ${callbackUrl}")
         } else {
+            // HTTP-level failure (timeout, connection refused, etc.). The verification phase
+            // below will also flag this as unverified since the URL never reached the device.
             failed++
             logWarn("Failed to configure ${action.name} on ${ipAddress}")
         }
     }
 
-    String deviceName = childDevice?.displayName ?: ipAddress
-    logInfo("Gen 1 action URL provisioning: ${installed}/${requiredActions.size()} configured on ${deviceName}" +
-            (failed > 0 ? " (${failed} failed)" : ''))
-    appendLog('info', "Gen 1 action URLs: ${installed}/${requiredActions.size()} on ${deviceName}")
+    // Post-install verification: re-read the device's actual configured actions and confirm
+    // each URL persisted. HTTP 200 alone is unreliable — some firmware versions accept and
+    // silently discard the URL (the SHCB-1 regression pattern). One extra GET against
+    // /settings/actions catches future silent-deprecation regressions automatically.
+    Map verifyResult = verifyGen1ActionUrls(ipAddress, requiredActions, baseCallbackUrl)
+    Integer verified = verifyResult.verified as Integer
+    Integer unverified = verifyResult.unverified as Integer
+    List<String> mismatches = (verifyResult.mismatches ?: []) as List<String>
 
-    // Track provisioning state for battery devices
+    String deviceName = childDevice?.displayName ?: ipAddress
+    String summary = "Gen 1 action URL provisioning: ${verified}/${requiredActions.size()} verified on ${deviceName}"
+    if (failed > 0) { summary += " (${failed} HTTP failed)" }
+    if (unverified > 0) {
+        summary += " (${unverified} did not persist: ${mismatches.join(', ')})"
+    }
+    logInfo(summary)
+    appendLog('info', "Gen 1 action URLs: ${verified}/${requiredActions.size()} verified on ${deviceName}")
+
+    // Track provisioning state: only mark fully installed if HTTP-success AND verification succeed.
+    // This ensures attemptGen1ActionUrlInstallOnWake() will retry on the next wake-up if any URL
+    // silently no-op'd.
     if (childDevice) {
         String dni = childDevice.deviceNetworkId
         Map config = state.deviceConfigs?.get(dni) as Map
         if (config) {
-            config.gen1ActionUrlsInstalled = (failed == 0)
+            config.gen1ActionUrlsInstalled = (failed == 0 && unverified == 0)
             state.deviceConfigs[dni] = config
         }
     }
+}
+
+/**
+ * Verifies that Gen 1 action URLs configured by {@link #installGen1ActionUrls(String)}
+ * actually persisted on the device. Some firmware versions silently discard the URL
+ * while still returning HTTP 200 to the configuration request (the SHCB-1 regression
+ * pattern). This function re-reads {@code /settings/actions} (and optionally
+ * {@code /settings} for {@code configType: 'component'} entries like SHHT-1's
+ * {@code report_url}) and confirms each URL is present and {@code enabled: true}.
+ * <p>
+ * For {@code configType: 'actions'}, an entry is verified iff
+ * {@code actionsMap[param][actionIndex].enabled == true} and the entry's
+ * {@code urls} list contains the expected callback URL.
+ * For {@code configType: 'component'}, an entry is verified iff the device's
+ * {@code /settings} JSON has {@code [param]} set to exactly the expected URL.
+ *
+ * @param ipAddress The Gen 1 device IP
+ * @param requiredActions The action definitions from {@link #getGen1RequiredActionUrls(String)}
+ * @param baseCallbackUrl The hub URL prefix used to reconstruct expected URLs (e.g.
+ *        {@code "http://192.168.1.4:39501"})
+ * @return Map with {@code verified} (Integer), {@code unverified} (Integer), and
+ *         {@code mismatches} (List&lt;String&gt; of failing action names for diagnostics)
+ */
+private Map verifyGen1ActionUrls(String ipAddress, List<Map> requiredActions, String baseCallbackUrl) {
+    Map actionsResponse = sendGen1Get(ipAddress, 'settings/actions')
+    Map actionsMap = (actionsResponse?.get('actions') as Map) ?: [:]
+    Map<String, Map> componentSettingsCache = [:]  // Lazily fetched per-endpoint /settings results
+
+    Integer verified = 0
+    Integer unverified = 0
+    List<String> mismatches = []
+
+    requiredActions.each { Map action ->
+        String expectedUrl = "${baseCallbackUrl}/${action.dst}/${action.cid}".toString()
+        String configType = (action.configType?.toString()) ?: 'actions'
+        Boolean ok = false
+
+        if (configType == 'actions') {
+            String param = action.param.toString()
+            Integer idx = (action.actionIndex ?: 0) as Integer
+            Object entriesObj = actionsMap.get(param)
+            if (entriesObj instanceof List) {
+                List entries = (List) entriesObj
+                if (idx < entries.size() && entries.get(idx) instanceof Map) {
+                    Map entry = (Map) entries.get(idx)
+                    Boolean enabled = entry.get('enabled') as Boolean
+                    Object urlsObj = entry.get('urls')
+                    List urls = (urlsObj instanceof List) ? (List) urlsObj : []
+                    if (enabled == true && urls.contains(expectedUrl)) {
+                        ok = true
+                    }
+                }
+            }
+        } else if (configType == 'component') {
+            // Lazily fetch the component-level /settings response per endpoint (typically only
+            // SHHT-1 hits this path, for its 'settings/report_url').
+            String endpoint = action.endpoint.toString()
+            if (!componentSettingsCache.containsKey(endpoint)) {
+                componentSettingsCache.put(endpoint, sendGen1Get(ipAddress, endpoint))
+            }
+            Map settings = componentSettingsCache.get(endpoint)
+            String currentValue = settings?.get(action.param.toString())?.toString()
+            if (currentValue == expectedUrl) {
+                ok = true
+            }
+        }
+
+        if (ok) {
+            verified++
+        } else {
+            unverified++
+            mismatches.add("${action.name} (${action.param})".toString())
+        }
+    }
+
+    return [verified: verified, unverified: unverified, mismatches: mismatches]
 }
 
 private Boolean isScriptInstalledAndRunning(String ipAddress, String scriptName) {
@@ -2902,63 +2993,91 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
     Map deviceStatus = deviceInfo.deviceStatus as Map ?: [:]
     List<Map> actions = []
 
-    // Relay switch action URLs (component settings endpoint)
+    // Relay switch action URLs
+    // Per Shelly Gen 1 API docs, /settings/relay/{cid} accepts ONLY config params (name, default_state,
+    // max_power, etc.) — NOT URL params. URL configuration must go through /settings/actions on FW 1.8+
+    // (https://shelly-api-docs.shelly.cloud/gen1/). The same regression that broke SHCB-1 webhooks
+    // affects all per-component URL endpoints. Cross-reference: openHAB issue
+    // https://github.com/openhab/openhab-addons/issues/10012.
+    // Models that document over_power_url under /settings/relay/{cid} per Shelly Gen 1 docs.
+    // Non-PM relays (e.g., SHSW-1, SHPLG-S) silently no-op the call, but skipping it avoids
+    // sending a request the firmware will discard.
+    Set<String> overPowerCapableTypes = ['SHSW-PM', 'SHSW-25', 'SHEM', 'SHEM-3'] as Set<String>
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('switch:')) {
             Integer cid = key.split(':')[1] as Integer
             actions.add([endpoint: "settings/relay/${cid}", param: 'out_on_url',
-                dst: 'switch_on', cid: cid, name: "Relay ${cid} On", configType: 'component'])
+                dst: 'switch_on', cid: cid, name: "Relay ${cid} On",
+                configType: 'actions', actionIndex: cid])
             actions.add([endpoint: "settings/relay/${cid}", param: 'out_off_url',
-                dst: 'switch_off', cid: cid, name: "Relay ${cid} Off", configType: 'component'])
-            actions.add([endpoint: "settings/relay/${cid}", param: 'over_power_url',
-                dst: 'over_power', cid: cid, name: "Relay ${cid} Over Power", configType: 'component'])
+                dst: 'switch_off', cid: cid, name: "Relay ${cid} Off",
+                configType: 'actions', actionIndex: cid])
+            if (overPowerCapableTypes.contains(typeCode)) {
+                actions.add([endpoint: "settings/relay/${cid}", param: 'over_power_url',
+                    dst: 'over_power', cid: cid, name: "Relay ${cid} Over Power",
+                    configType: 'actions', actionIndex: cid])
+            }
         }
     }
 
-    // Cover/roller action URLs (component settings endpoint)
+    // Cover/roller action URLs — same FW 1.8+ migration as relay above.
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('cover:')) {
             Integer cid = key.split(':')[1] as Integer
             actions.add([endpoint: "settings/roller/${cid}", param: 'roller_open_url',
-                dst: 'cover_open', cid: cid, name: "Roller ${cid} Open", configType: 'component'])
+                dst: 'cover_open', cid: cid, name: "Roller ${cid} Open",
+                configType: 'actions', actionIndex: cid])
             actions.add([endpoint: "settings/roller/${cid}", param: 'roller_close_url',
-                dst: 'cover_close', cid: cid, name: "Roller ${cid} Close", configType: 'component'])
+                dst: 'cover_close', cid: cid, name: "Roller ${cid} Close",
+                configType: 'actions', actionIndex: cid])
             actions.add([endpoint: "settings/roller/${cid}", param: 'roller_stop_url',
-                dst: 'cover_stop', cid: cid, name: "Roller ${cid} Stop", configType: 'component'])
+                dst: 'cover_stop', cid: cid, name: "Roller ${cid} Stop",
+                configType: 'actions', actionIndex: cid])
         }
     }
 
-    // Light/dimmer action URLs (component settings endpoint)
-    // RGBW2 in color mode uses /settings/color/{cid} instead of /settings/light/{cid}
+    // Light/dimmer action URLs
+    // Gen 1 firmware v1.10+ stores light action URLs in the multi-URL /settings/actions array,
+    // not the legacy /settings/light/{cid}?out_on_url=... single-value form. The old form returns
+    // HTTP 200 on newer firmware but silently ignores the parameter — the URL never persists
+    // on the device. Use /settings/actions (configType:'actions') for reliability across firmware.
+    // The endpoint/settingsPath field is kept for diagnostic logging; the install path uses
+    // /settings/actions hardcoded when configType is 'actions'.
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('light:')) {
             Integer cid = key.split(':')[1] as Integer
             String settingsPath = (typeCode == 'SHRGBW2') ? "settings/color/${cid}" : "settings/light/${cid}"
             actions.add([endpoint: settingsPath, param: 'out_on_url',
-                dst: 'light_on', cid: cid, name: "Light ${cid} On", configType: 'component'])
+                dst: 'light_on', cid: cid, name: "Light ${cid} On",
+                configType: 'actions', actionIndex: 0])
             actions.add([endpoint: settingsPath, param: 'out_off_url',
-                dst: 'light_off', cid: cid, name: "Light ${cid} Off", configType: 'component'])
+                dst: 'light_off', cid: cid, name: "Light ${cid} Off",
+                configType: 'actions', actionIndex: 0])
         }
     }
 
-    // White channel action URLs (RGBW2 in white mode)
+    // White channel action URLs (RGBW2 in white mode) — FW 1.8+ migration to /settings/actions.
+    // Note: docs do still list out_on_url/out_off_url under /settings/white/{cid} params for backward
+    // compat, but the actions form is canonical and avoids the same silent-no-op risk seen on SHCB-1.
     deviceStatus.each { k, v ->
         String key = k.toString()
         if (key.startsWith('white:')) {
             Integer cid = key.split(':')[1] as Integer
             actions.add([endpoint: "settings/white/${cid}", param: 'out_on_url',
-                dst: 'white_on', cid: cid, name: "White ${cid} On", configType: 'component'])
+                dst: 'white_on', cid: cid, name: "White ${cid} On",
+                configType: 'actions', actionIndex: cid])
             actions.add([endpoint: "settings/white/${cid}", param: 'out_off_url',
-                dst: 'white_off', cid: cid, name: "White ${cid} Off", configType: 'component'])
+                dst: 'white_off', cid: cid, name: "White ${cid} Off",
+                configType: 'actions', actionIndex: cid])
         }
     }
 
     // Input action URLs for switch devices with inputs (SHSW-1, SHSW-PM, etc.)
-    // For switch devices, input push URLs are configured on the relay endpoint (settings/relay/{cid})
-    // SHUNI-1 is excluded: its inputs are independent from the relay and use settings/input/{cid} instead
+    // Migrated to /settings/actions per FW 1.8+. SHUNI-1 is excluded here and handled below because
+    // its inputs use a different action set on the Uni docs.
     Boolean hasSwitches = deviceStatus.keySet().any { Object k -> k.toString().startsWith('switch:') }
     if (hasSwitches && typeCode != 'SHUNI-1') {
         deviceStatus.each { k, v ->
@@ -2966,42 +3085,69 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
             if (key.startsWith('input:')) {
                 Integer cid = key.split(':')[1] as Integer
                 actions.add([endpoint: "settings/relay/${cid}", param: 'shortpush_url',
-                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push", configType: 'component'])
+                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push",
+                    configType: 'actions', actionIndex: cid])
                 actions.add([endpoint: "settings/relay/${cid}", param: 'longpush_url',
-                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push", configType: 'component'])
+                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push",
+                    configType: 'actions', actionIndex: cid])
             }
         }
     }
 
-    // Shelly i3 input action URLs (pure input device — uses settings/input endpoint)
+    // Shelly i3 input action URLs — migrated to /settings/actions per FW 1.8+.
+    // The Shelly i3 docs (shelly-i3-settings-input-index) confirm /settings/input/{cid} accepts only
+    // config params (reset, name, btn_type, btn_reverse), not URL params.
     if (typeCode == 'SHIX3-1') {
         deviceStatus.each { k, v ->
             String key = k.toString()
             if (key.startsWith('input:')) {
                 Integer cid = key.split(':')[1] as Integer
                 actions.add([endpoint: "settings/input/${cid}", param: 'shortpush_url',
-                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push", configType: 'component'])
+                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push",
+                    configType: 'actions', actionIndex: cid])
                 actions.add([endpoint: "settings/input/${cid}", param: 'longpush_url',
-                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push", configType: 'component'])
+                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push",
+                    configType: 'actions', actionIndex: cid])
                 actions.add([endpoint: "settings/input/${cid}", param: 'double_shortpush_url',
-                    dst: 'input_double', cid: cid, name: "Input ${cid} Double Push", configType: 'component'])
+                    dst: 'input_double', cid: cid, name: "Input ${cid} Double Push",
+                    configType: 'actions', actionIndex: cid])
+                // Shelly i3 also supports additional multi-event and toggle-mode events per docs
+                // (shelly-i3-settings-actions). Triple-tap, mixed-sequence, and on/off toggle
+                // events have no standard Hubitat capability mapping — the driver handlers log
+                // them; users can subscribe via custom rules.
+                actions.add([endpoint: "settings/input/${cid}", param: 'triple_shortpush_url',
+                    dst: 'input_triple', cid: cid, name: "Input ${cid} Triple Push",
+                    configType: 'actions', actionIndex: cid])
+                actions.add([endpoint: "settings/input/${cid}", param: 'shortpush_longpush_url',
+                    dst: 'input_short_long', cid: cid, name: "Input ${cid} Short+Long",
+                    configType: 'actions', actionIndex: cid])
+                actions.add([endpoint: "settings/input/${cid}", param: 'longpush_shortpush_url',
+                    dst: 'input_long_short', cid: cid, name: "Input ${cid} Long+Short",
+                    configType: 'actions', actionIndex: cid])
+                actions.add([endpoint: "settings/input/${cid}", param: 'btn_on_url',
+                    dst: 'input_on', cid: cid, name: "Input ${cid} Toggle On",
+                    configType: 'actions', actionIndex: cid])
+                actions.add([endpoint: "settings/input/${cid}", param: 'btn_off_url',
+                    dst: 'input_off', cid: cid, name: "Input ${cid} Toggle Off",
+                    configType: 'actions', actionIndex: cid])
             }
         }
     }
 
-    // SHUNI-1 input action URLs — inputs are independent from the relay, use settings/input/{cid}
-    // Also supports double_shortpush_url for double-tap events
+    // SHUNI-1 input action URLs — migrated to /settings/actions per FW 1.8+. Per Uni docs
+    // (shelly-uni-settings-actions), Uni supports shortpush_url and longpush_url indexed 0-1
+    // (one per relay channel). It does NOT support double_shortpush_url — that was a code error.
     if (typeCode == 'SHUNI-1') {
         deviceStatus.each { k, v ->
             String key = k.toString()
             if (key.startsWith('input:')) {
                 Integer cid = key.split(':')[1] as Integer
-                actions.add([endpoint: "settings/input/${cid}", param: 'shortpush_url',
-                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push", configType: 'component'])
-                actions.add([endpoint: "settings/input/${cid}", param: 'longpush_url',
-                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push", configType: 'component'])
-                actions.add([endpoint: "settings/input/${cid}", param: 'double_shortpush_url',
-                    dst: 'input_double', cid: cid, name: "Input ${cid} Double Push", configType: 'component'])
+                actions.add([endpoint: 'settings/actions', param: 'shortpush_url',
+                    dst: 'input_short', cid: cid, name: "Input ${cid} Short Push",
+                    configType: 'actions', actionIndex: cid])
+                actions.add([endpoint: 'settings/actions', param: 'longpush_url',
+                    dst: 'input_long', cid: cid, name: "Input ${cid} Long Push",
+                    configType: 'actions', actionIndex: cid])
             }
         }
     }
@@ -3019,10 +3165,13 @@ private List<Map> getGen1RequiredActionUrls(String ipAddress) {
  * Sensors use the /settings/actions endpoint for event-driven URLs.
  * <p>
  * Note: {@code report_url} is generally unusable because it passes URL parameters
- * that Hubitat silently drops. However, for H&T (SHHT-1), {@code report_url} is used
+ * that Hubitat silently drops. However, several sensors expose {@code report_url}
  * as a <b>wake-up trigger only</b> — the query-parameter data is ignored, but the bare
  * GET request arrives at Hubitat, allowing the app to immediately poll {@code /status}
- * for the actual sensor data while the device is briefly awake.
+ * for the actual sensor data while the device is briefly awake. Devices using this
+ * pattern: H&T (SHHT-1, on {@code /settings}), Flood (SHWT-1), Door/Window 1 & 2
+ * (SHDW-1, SHDW-2), and Motion 2 (SHMOS-02) — all on {@code /settings/actions} except
+ * H&T, which is a documented endpoint quirk.
  *
  * @param typeCode The Gen 1 device type code (e.g., {@code SHHT-1}, {@code SHWT-1})
  * @return List of action URL definition maps for the sensor type
@@ -3032,19 +3181,22 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
 
     switch (typeCode) {
         case 'SHHT-1':  // H&T temperature/humidity sensor
-            // report_url: set on /settings directly (not /settings/actions).
-            // Query params are stripped by Hubitat, but the bare GET arrives as
-            // dst=sensor_report, triggering an immediate /status poll while the device is awake.
+            // report_url: set on /settings directly (NOT /settings/actions). This is a documented
+            // H&T-specific endpoint quirk — openHAB confirms via Shelly1HttpApi.java line 632, and
+            // Shelly forum threads confirm. Query params are stripped by Hubitat, but the bare GET
+            // arrives as dst=sensor_report, triggering an immediate /status poll while awake.
             actions.add([endpoint: 'settings', param: 'report_url',
                 dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'component'])
-            // Threshold URLs via /settings/actions (array-based)
-            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
+            // Threshold URLs via /settings/actions. Canonical param names per Shelly docs are
+            // temp_over_url / temp_under_url / hum_over_url / hum_under_url — NOT
+            // over_temp_url etc. (the old code had the suffix order inverted).
+            actions.add([endpoint: 'settings/actions', param: 'temp_over_url',
                 dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
+            actions.add([endpoint: 'settings/actions', param: 'temp_under_url',
                 dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'over_hum_url',
+            actions.add([endpoint: 'settings/actions', param: 'hum_over_url',
                 dst: 'hum_over', cid: 0, name: 'Humidity Over', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'under_hum_url',
+            actions.add([endpoint: 'settings/actions', param: 'hum_under_url',
                 dst: 'hum_under', cid: 0, name: 'Humidity Under', configType: 'actions', actionIndex: 0])
             break
 
@@ -3053,10 +3205,15 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'flood_detected', cid: 0, name: 'Flood Detected', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'flood_gone_url',
                 dst: 'flood_gone', cid: 0, name: 'Flood Gone', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
+            // Canonical names: temp_over_url / temp_under_url (NOT over_temp_url etc.)
+            actions.add([endpoint: 'settings/actions', param: 'temp_over_url',
                 dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
+            actions.add([endpoint: 'settings/actions', param: 'temp_under_url',
                 dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
+            // report_url: bare GET serves as periodic wake-up trigger (query params dropped by
+            // Hubitat — the driver's sensor_report handler fires an immediate /status poll).
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             break
 
         case 'SHDW-1':  // Door/Window v1 — actions array
@@ -3064,9 +3221,12 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'contact_open', cid: 0, name: 'Contact Open', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'close_url',
                 dst: 'contact_close', cid: 0, name: 'Contact Close', configType: 'actions', actionIndex: 0])
+            // report_url: wake-up trigger (driver's sensor_report handler does /status poll).
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             break
 
-        case 'SHDW-2':  // Door/Window v2 — actions array, plus vibration and lux thresholds
+        case 'SHDW-2':  // Door/Window v2 — actions array, plus vibration, lux, and temp thresholds
             actions.add([endpoint: 'settings/actions', param: 'open_url',
                 dst: 'contact_open', cid: 0, name: 'Contact Open', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'close_url',
@@ -3077,6 +3237,14 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'lux_dark', cid: 0, name: 'Dark', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'twilight_url',
                 dst: 'lux_twilight', cid: 0, name: 'Twilight', configType: 'actions', actionIndex: 0])
+            // SHDW-2 adds temperature threshold events (SHDW-1 lacks an internal temp sensor).
+            actions.add([endpoint: 'settings/actions', param: 'temp_over_url',
+                dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'temp_under_url',
+                dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
+            // report_url: wake-up trigger (driver's sensor_report handler does /status poll).
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
             break
 
         case 'SHBTN-1':  // Button v1
@@ -3092,7 +3260,6 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
             break
 
         case 'SHMOS-01':  // Motion v1
-        case 'SHMOS-02':  // Motion v2
             actions.add([endpoint: 'settings/actions', param: 'motion_on',
                 dst: 'motion_on', cid: 0, name: 'Motion On', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'motion_off',
@@ -3103,23 +3270,37 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'tamper_alarm_off', cid: 0, name: 'Tamper Off', configType: 'actions', actionIndex: 0])
             break
 
-        case 'SHSN-1':  // Shelly Sense — motion + threshold URLs under /settings/actions
+        case 'SHMOS-02':  // Motion v2 — adds lux-conditional motion variants, temperature
+                          // thresholds, and periodic report (per Shelly Motion 2 docs).
             actions.add([endpoint: 'settings/actions', param: 'motion_on',
                 dst: 'motion_on', cid: 0, name: 'Motion On', configType: 'actions', actionIndex: 0])
             actions.add([endpoint: 'settings/actions', param: 'motion_off',
                 dst: 'motion_off', cid: 0, name: 'Motion Off', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
+            actions.add([endpoint: 'settings/actions', param: 'tamper_alarm_on',
+                dst: 'tamper_alarm_on', cid: 0, name: 'Tamper On', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'tamper_alarm_off',
+                dst: 'tamper_alarm_off', cid: 0, name: 'Tamper Off', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'motion_dark',
+                dst: 'motion_dark', cid: 0, name: 'Motion (Dark)', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'motion_twilight',
+                dst: 'motion_twilight', cid: 0, name: 'Motion (Twilight)', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'motion_bright',
+                dst: 'motion_bright', cid: 0, name: 'Motion (Bright)', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'temp_over_url',
                 dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
+            actions.add([endpoint: 'settings/actions', param: 'temp_under_url',
                 dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'over_hum_url',
-                dst: 'hum_over', cid: 0, name: 'Humidity Over', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'under_hum_url',
-                dst: 'hum_under', cid: 0, name: 'Humidity Under', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'over_lux_url',
-                dst: 'lux_over', cid: 0, name: 'Lux Over', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'under_lux_url',
-                dst: 'lux_under', cid: 0, name: 'Lux Under', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'report_url',
+                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
+            break
+
+        case 'SHSEN-1':  // Shelly Sense
+            // Per Shelly Gen 1 docs (shelly-sense-settings), Shelly Sense has NO /settings/actions
+            // endpoint and NO documented URL actions. Its only configurable params are
+            // temperature_units, pir_motion_duration_time, pir_motion_led, schedule. The previous
+            // code path (motion_on, threshold URLs, etc.) was sending HTTP calls to a non-existent
+            // endpoint on every reinit. Case kept for the typeCode match so we don't fall to
+            // default and log an unhandled-type warning; no actions to register.
             break
 
         case 'SHTRV-01':  // TRV — valve open/close
@@ -3129,19 +3310,15 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
                 dst: 'valve_close', cid: 0, name: 'Valve Close', configType: 'actions', actionIndex: 0])
             break
 
-        case 'SHSM-01':  // Smoke sensor — all URLs under /settings/actions
-            // NOTE: report_url assumed to be in /settings/actions (needs hardware verification;
-            // H&T uses /settings directly for report_url, but Smoke may differ)
-            actions.add([endpoint: 'settings/actions', param: 'report_url',
-                dst: 'sensor_report', cid: 0, name: 'Sensor Report', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'smoke_detected_url',
-                dst: 'smoke_detected', cid: 0, name: 'Smoke Detected', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'smoke_cleared_url',
-                dst: 'smoke_cleared', cid: 0, name: 'Smoke Cleared', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'over_temp_url',
-                dst: 'temp_over', cid: 0, name: 'Temperature Over', configType: 'actions', actionIndex: 0])
-            actions.add([endpoint: 'settings/actions', param: 'under_temp_url',
-                dst: 'temp_under', cid: 0, name: 'Temperature Under', configType: 'actions', actionIndex: 0])
+        case 'SHSM-01':  // Smoke sensor
+            // Per Shelly Gen 1 docs (shelly-smoke-settings-actions), the ONLY documented action URLs
+            // are fire_detected_url and fire_gone_url. The previous code path attempted report_url,
+            // smoke_detected_url, smoke_cleared_url, over_temp_url, under_temp_url — none of which
+            // exist on this device. Five wrong URLs replaced with the two correct ones.
+            actions.add([endpoint: 'settings/actions', param: 'fire_detected_url',
+                dst: 'smoke_detected', cid: 0, name: 'Fire Detected', configType: 'actions', actionIndex: 0])
+            actions.add([endpoint: 'settings/actions', param: 'fire_gone_url',
+                dst: 'smoke_cleared', cid: 0, name: 'Fire Gone', configType: 'actions', actionIndex: 0])
             break
 
         case 'SHUNI-1':  // Shelly Uni — ADC + external sensor threshold URLs
@@ -6232,10 +6409,10 @@ private void syncGen1MotionSettings(String ipAddress, def childDevice, String ge
  *
  * @param ipAddress The Sense device's IP address
  * @param childDevice The Sense child device
- * @param gen1Type The Gen 1 type code (must be SHSN-1)
+ * @param gen1Type The Gen 1 type code (must be SHSEN-1)
  */
 private void syncGen1SenseSettings(String ipAddress, def childDevice, String gen1Type) {
-    if (!childDevice || gen1Type != 'SHSN-1') { return }
+    if (!childDevice || gen1Type != 'SHSEN-1') { return }
 
     Map gen1Settings = sendGen1Get(ipAddress, 'settings')
     if (!gen1Settings) {
@@ -7245,7 +7422,7 @@ static Map inferGen1BatteryComponents(String typeCode) {
                 'temperature:0': [:],
                 'devicepower:0': [:]
             ]
-        case 'SHSN-1':  // Shelly Sense — motion, temp, humidity, lux, battery
+        case 'SHSEN-1':  // Shelly Sense — motion, temp, humidity, lux, battery
             return [
                 'motion:0': [:],
                 'temperature:0': [:],
@@ -7573,8 +7750,8 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
         ]
     }
 
-    // Shelly Sense (SHSN-1): top-level 'motion' boolean (not inside 'sensor' object)
-    if (typeCode == 'SHSN-1' && gen1Status?.containsKey('motion') && !normalized.containsKey('motion:0')) {
+    // Shelly Sense (SHSEN-1): top-level 'motion' boolean (not inside 'sensor' object)
+    if (typeCode == 'SHSEN-1' && gen1Status?.containsKey('motion') && !normalized.containsKey('motion:0')) {
         normalized['motion:0'] = [motion: gen1Status.motion as Boolean]
     }
 
@@ -16326,7 +16503,7 @@ void componentGasUnmute(def childDevice) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Shelly Sense IR Blaster Commands (SHSN-1)
+// Shelly Sense IR Blaster Commands (SHSEN-1)
 // ═══════════════════════════════════════════════════════════════
 
 /**

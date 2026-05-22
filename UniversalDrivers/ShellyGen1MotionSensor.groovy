@@ -247,6 +247,24 @@ private void routeActionUrlCallback(Map params) {
       parent?.componentRefresh(device)
       break
 
+    case 'motion_dark':
+    case 'motion_twilight':
+    case 'motion_bright':
+      // SHMOS-02 fires these alongside motion_on with a lux-condition hint. The primary
+      // motion_on callback already sets motion active; treat these as wake-up cues to
+      // refresh lux/battery/temperature while the device is awake.
+      logDebug("Motion (${params.dst}) — polling for current readings")
+      parent?.componentRefresh(device)
+      break
+
+    case 'temp_over':
+    case 'temp_under':
+      // SHMOS-02 temperature threshold callbacks — refresh status to capture the
+      // current temperature reading while the device is awake.
+      logInfo("Temperature threshold crossed (${params.dst}) — polling for current value")
+      parent?.componentRefresh(device)
+      break
+
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${params.dst}")
   }

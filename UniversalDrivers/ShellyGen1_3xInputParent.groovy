@@ -323,6 +323,24 @@ private void routeActionUrlCallback(Map params) {
     case 'input_double':
       events.add([name: 'doubleTapped', value: 1, isStateChange: true, descriptionText: 'Button was double-tapped'])
       break
+    case 'input_triple':
+    case 'input_short_long':
+    case 'input_long_short':
+    case 'input_on':
+    case 'input_off':
+      // Shelly i3 docs expose these as additional URL events beyond short/long/double.
+      // Hubitat has no standard capability for triple-tap, mixed-sequence, or toggle-state
+      // events from an input device, so we log them and refresh the child's lastUpdated
+      // without emitting button events. Consumers wanting to react can extend this driver
+      // or subscribe via a custom integration. Return early to skip the short/long/double
+      // aggregation block below (whose nested ternary would otherwise misclassify them).
+      logInfo("Input ${componentId + 1}: ${dst} event")
+      String childDniExt = "${device.deviceNetworkId}-input-${componentId}"
+      com.hubitat.app.DeviceWrapper childExt = getChildDevice(childDniExt)
+      if (childExt) {
+        childExt.sendEvent(name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss'))
+      }
+      return
     default:
       logDebug("routeActionUrlCallback: unhandled dst=${dst}")
       return
