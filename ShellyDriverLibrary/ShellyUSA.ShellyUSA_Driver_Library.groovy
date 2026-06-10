@@ -1,5 +1,5 @@
 /**
- * Version: 2.17.1
+ * Version: 2.17.2
  */
 library(
   name: 'ShellyUSA_Driver_Library',
