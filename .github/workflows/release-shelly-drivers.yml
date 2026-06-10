@@ -260,25 +260,52 @@ jobs:
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
           TAG="v${NEW_VERSION}"
 
-          gh release create "$TAG" \
-            --title "Shelly Drivers ${NEW_VERSION}" \
-            --notes-file changelog.md
+          # GitHub's API intermittently returns transient 401/5xx errors
+          # (e.g. during incidents); retry with backoff instead of aborting
+          # a half-published release.
+          gh_retry() {
+            local attempt=1 max_attempts=5
+            until "$@"; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "FAILED after ${max_attempts} attempts: $*"
+                return 1
+              fi
+              echo "Attempt ${attempt} failed: $* -- retrying in $((attempt * 15))s..."
+              sleep $((attempt * 15))
+              attempt=$((attempt + 1))
+            done
+          }
 
-          echo "Release $TAG created, uploading assets..."
+          # Idempotent create: a re-run after a partial upload failure must
+          # not die because the release already exists.
+          if gh release view "$TAG" --json name >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping creation"
+          else
+            gh_retry gh release create "$TAG" \
+              --title "Shelly Drivers ${NEW_VERSION}" \
+              --notes-file changelog.md || {
+              # The existence check above may itself have hit a transient
+              # error; tolerate create failing because the release exists.
+              gh release view "$TAG" --json name >/dev/null 2>&1 || exit 1
+              echo "Release $TAG already exists"
+            }
+          fi
+
+          echo "Release $TAG ready, uploading assets..."
 
           for file in release-files/*; do
             if [ -f "$file" ]; then
               echo "Uploading: $file"
-              gh release upload "$TAG" "$file" --clobber
+              gh_retry gh release upload "$TAG" "$file" --clobber
             fi
           done
 
-          gh release upload "$TAG" "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" --clobber
+          gh_retry gh release upload "$TAG" "ShellyUSA_Driver_Library-v${NEW_VERSION}.zip" --clobber
 
           for manifest in PackageManifests/*/packageManifest.json; do
             if [ -f "$manifest" ]; then
               echo "Uploading: $manifest"
-              gh release upload "$TAG" "$manifest" --clobber
+              gh_retry gh release upload "$TAG" "$manifest" --clobber
             fi
           done
 
