@@ -343,6 +343,8 @@ void getPreferencesFromShellyDevice() {
       Set<String> lights = shellyGetConfigResult.keySet().findAll{it.startsWith('light')}
       Set<String> rgbs = shellyGetConfigResult.keySet().findAll{it.startsWith('rgb:')}
       Set<String> rgbws = shellyGetConfigResult.keySet().findAll{it.startsWith('rgbw')}
+      Set<String> floods = shellyGetConfigResult.keySet().findAll{it.startsWith('flood')}
+      Set<String> voltmeters = shellyGetConfigResult.keySet().findAll{it.startsWith('voltmeter')}
 
       logDebug("Found Switches: ${switches}")
       logDebug("Found Inputs: ${inputs}")
@@ -355,6 +357,8 @@ void getPreferencesFromShellyDevice() {
       logDebug("Found Lights: ${lights}")
       logDebug("Found RGBs: ${rgbs}")
       logDebug("Found RGBWs: ${rgbws}")
+      logDebug("Found Floods: ${floods}")
+      logDebug("Found Voltmeters: ${voltmeters}")
 
       if(switches?.size() > 0) {
         logDebug('One or more switches found, running Switch.GetConfig for each...')
@@ -551,6 +555,30 @@ void getPreferencesFromShellyDevice() {
       } else {
         logDebug('No RGBWs found...')
       }
+
+      if(floods?.size() > 0) {
+        logDebug('One or more floods found...')
+        floods.each{ flood ->
+          Integer id = flood.tokenize(':')[1] as Integer
+          logDebug("Flood ID: ${id}")
+          setDeviceDataValue('floodId', "${id}")
+        }
+      } else {
+        logDebug('No floods found...')
+      }
+
+      if(voltmeters?.size() > 0) {
+        logDebug('One or more voltmeters found...')
+        if(hasNoChildrenNeeded() == false) {
+          voltmeters.each{ vm ->
+            Integer id = vm.tokenize(':')[1] as Integer
+            logDebug("Creating child device for voltmeter:${id}...")
+            ChildDeviceWrapper child = createChildVoltmeter(id)
+          }
+        }
+      } else {
+        logDebug('No voltmeters found...')
+      }
     } else {
       getPreferencesFromShellyDeviceGen1()
     }
@@ -745,8 +773,13 @@ void configure() {
     }
 
     if(isGen1Device() == true) {
-      try {setDeviceActionsGen1()}
-      catch(e) {logDebug("No device actions configured. Encountered error :${e}")}
+      Integer reportedGen = getIntegerDeviceDataValue('gen')
+      if(reportedGen != null && reportedGen > 1) {
+        logWarn("This driver only supports Gen1 devices, but this device reports gen=${reportedGen}. Skipping Gen1 action setup — switch to the matching Gen2+ driver (e.g. 'Shelly Flood Gen4 (Webhook)' for the Gen4 flood sensor) and run Configure again.")
+      } else {
+        try {setDeviceActionsGen1()}
+        catch(e) {logDebug("No device actions configured. Encountered error :${e}")}
+      }
     } else if(wsShouldBeConnected() == false) {
       try {setDeviceActionsGen2()}
       catch(e) {logDebug("No device actions configured. Encountered error :${e}")}
@@ -3745,6 +3778,35 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
       logTrace("Update: ${prettyJson(update)}")
     }
+
+    if(k.startsWith('flood')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.alarm != null) {
+        Boolean alarm = update?.alarm as Boolean
+        if(alarm != null) { setFloodOn(alarm) }
+      }
+      List<String> errors = (List<String>)update?.errors
+      if(errors?.contains('cable_unplugged') == true) {
+        logWarn('Flood sensor reports sensing cable unplugged')
+      }
+    }
+
+    if(k.startsWith('voltmeter')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      id = update?.id as Integer
+      if(update?.voltage != null && update?.voltage != '') {
+        BigDecimal voltage = update?.voltage as BigDecimal
+        if(voltage != null) { setVoltage(voltage, id) }
+      }
+    }
+
+    if(k.startsWith('devicepower')) {
+      LinkedHashMap update = (LinkedHashMap)v
+      LinkedHashMap battery = (LinkedHashMap)update?.battery
+      Integer percent = battery?.percent as Integer
+      if(percent != null) { setBatteryPercent(percent) }
+    }
   }
   setLastUpdated()
 }
@@ -4201,6 +4263,12 @@ void parseGen2Message(String raw) {
   else if(query[0] == 'smoke.alarm')      {setSmokeState('detected', query[1] as Integer)}
   else if(query[0] == 'smoke.alarm_off')  {setSmokeState('clear', query[1] as Integer)}
   else if(query[0] == 'smoke.alarm_test') {setSmokeState('tested', query[1] as Integer)}
+  else if(query[0] == 'flood.alarm')           {setFloodOn(true)}
+  else if(query[0] == 'flood.alarm_off')       {setFloodOn(false)}
+  else if(query[0] == 'flood.cable_unplugged') {logWarn('Flood sensor reports sensing cable unplugged')}
+  else if(query[0].startsWith('voltmeter.') && query[1] == 'voltage' && query.size() == 4) {
+    setVoltage(new BigDecimal(query[2]), id)
+  }
   else if(query[0].startsWith('light.o')) {
     String command = query[0]
     id = query[1] as Integer
@@ -4476,6 +4544,8 @@ void setDeviceActionsGen2() {
     Set<String> lights = shellyGetConfigResult.keySet().findAll{it.startsWith('light')}
     Set<String> rgbs = shellyGetConfigResult.keySet().findAll{it.startsWith('rgb:')}
     Set<String> rgbws = shellyGetConfigResult.keySet().findAll{it.startsWith('rgbw')}
+    Set<String> floods = shellyGetConfigResult.keySet().findAll{it.startsWith('flood')}
+    Set<String> voltmeters = shellyGetConfigResult.keySet().findAll{it.startsWith('voltmeter')}
 
     logDebug("Found Switches: ${switches}")
     logDebug("Found Inputs: ${inputs}")
@@ -4487,6 +4557,8 @@ void setDeviceActionsGen2() {
     logDebug("Found Lights: ${lights}")
     logDebug("Found RGBs: ${rgbs}")
     logDebug("Found RGBWs: ${rgbws}")
+    logDebug("Found Floods: ${floods}")
+    logDebug("Found Voltmeters: ${voltmeters}")
 
     // LinkedHashMap inputConfig = (LinkedHashMap)shellyGetConfigResult[inp]
     // String inputType = (inputConfig?.type as String).capitalize()
@@ -4498,6 +4570,7 @@ void setDeviceActionsGen2() {
       if(val != null && val.size() > 0) {
         attrs = ((LinkedHashMap)val).attrs as List<LinkedHashMap>
       }
+      if(attrs == null) { attrs = [] }
       logDebug("Processing type: ${type} with value: ${prettyJson(val)}")
 
 
@@ -4592,6 +4665,23 @@ void setDeviceActionsGen2() {
           logDebug("Processing webhook for rgbw:${cid}...")
           processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
         }
+      } else if(type.startsWith('flood')) {
+        floods.each{ flood ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[flood]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for flood:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
+      } else if(type == 'voltmeter.change') {
+        // voltmeter.measurement is deliberately skipped to conserve device webhook slots
+        voltmeters.each{ vm ->
+          LinkedHashMap conf = (LinkedHashMap)shellyGetConfigResult[vm]
+          Integer cid = conf?.id as Integer
+          String name = "hubitat.${type}".toString()
+          logDebug("Processing webhook for voltmeter:${cid}...")
+          processWebhookCreateOrUpdate(name, cid, currentWebhooks, type, attrs)
+        }
       }
     }
   }
@@ -4614,8 +4704,8 @@ void processWebhookCreateOrUpdate(String name, Integer cid, List<LinkedHashMap> 
           if(hook?.name == "${name}.${event}.${cid}".toString()) {currentWebhook = hook}
         }
         logDebug("Current Webhook: ${currentWebhook}")
-        if(event == 'tF') {
-          logTrace('Skipping webhook creating for F changes, no need to send both C and F to Hubitat')
+        if(event == 'tF' || event == 'xvoltage') {
+          logTrace("Skipping webhook creation for ${event}, not needed by Hubitat")
         } else {
           webhookCreateOrUpdate(type, event, cid, currentWebhook)
         }
@@ -5136,6 +5226,30 @@ ChildDeviceWrapper createChildVoltage(Integer id) {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
       child.updateDataValue('adcId',"${id}")
       child.updateDataValue('polling','true')
+      return child
+    }
+    catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
+  } else { return child }
+}
+
+/**
+ * Creates a child device for a Gen2+ Voltmeter component, e.g. an Add-On analog input configured as a voltmeter.
+ * Updates arrive via webhooks/websocket/status refresh, so no 'polling' data value is set.
+ *
+ * @param id The voltmeter component ID (Add-On peripherals use IDs 100+)
+ * @return The created (or already existing) child device
+ */
+@CompileStatic
+ChildDeviceWrapper createChildVoltmeter(Integer id) {
+  String driverName = "Shelly Polling Voltage Sensor Component"
+  String dni = "${getThisDeviceDNI()}-voltmeter${id}"
+  ChildDeviceWrapper child = getShellyDevice(dni)
+  if (child == null) {
+    String label = "${thisDevice().getLabel()} - Voltmeter ${id}"
+    logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
+    try {
+      child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
+      child.updateDataValue('adcId',"${id}")
       return child
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
