@@ -1,4 +1,3 @@
-@Field static ConcurrentHashMap<String, MessageDigest> messageDigests = new java.util.concurrent.ConcurrentHashMap<String, MessageDigest>()
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
 @Field static ConcurrentHashMap<String, Boolean> foundDevices = new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
@@ -45,6 +44,13 @@
 /** Throttle timestamp for BLE table SSR updates — replaces state.lastBleTableUpdate */
 @Field static volatile long lastBleTableSSR = 0L
 
+/** BLE table page-activity window — SSR events are only worth firing while a page session
+ *  is plausibly open. Set on every table render; checked before firing 'bleTable' events. */
+@Field static volatile long blePageActiveUntil = 0L
+
+/** How long after the last BLE table render the page is considered open (5 minutes) */
+@Field static final long BLE_PAGE_ACTIVE_MS = 300000L
+
 /** Last-sent event values per MAC/attribute — suppresses duplicate sendEvent calls */
 @Field static ConcurrentHashMap<String, Map<String, String>> bleLastSentValues =
     new java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
@@ -63,6 +69,15 @@
 
 /** Expiry timestamp for cachedTempScale (refresh every 5 minutes) */
 @Field static volatile long tempScaleCacheTime = 0L
+
+/** Cached parse of component_driver.json — avoids a GitHub download per webhook/script reconciliation pass */
+@Field static volatile Map componentJsonCache = null
+
+/** Timestamp of the cached component_driver.json parse */
+@Field static volatile long componentJsonCacheTime = 0L
+
+/** TTL for the component_driver.json cache (1 hour) */
+@Field static final long COMPONENT_JSON_CACHE_MS = 3600000L
 
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
@@ -89,6 +104,8 @@
     'SHCL-255':  'Shelly Gen1 Bulb',     // Color Bulb variant
     'SHVIN-1':   'Shelly Gen1 Single Dimmer',
     'SHDIMW-1':  'Shelly Gen1 Single Dimmer', // Wall-mount dimmer
+    'SHDM-1':    'Shelly Gen1 Single Dimmer', // Shelly Dimmer
+    'SHDM-2':    'Shelly Gen1 Single Dimmer', // Shelly Dimmer 2
     'SHBDUO-1':  'Shelly Gen1 Duo',
     'SH2LED-1':  'Shelly Gen1 Duo',      // Dual-white LED controller
     'SHSPOT-1':  'Shelly Gen1 Duo',      // Spot light
@@ -270,6 +287,9 @@
     'SBMO-003ZB':  [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion ZB',      modelCode: 'SBMO-003ZB'],
     'SBTR-001AEU': [driverName: null,                      friendlyModel: 'Shelly BLU TRV',            modelCode: 'SBTR-001AEU'],
     'SBWS-90CM':   [driverName: null,                      friendlyModel: 'Shelly BLU Weather Station', modelCode: 'SBWS-90CM'],
+    'SBHT-203C':   [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T ZB',         modelCode: 'SBHT-203C'],
+    'SBMO-103Z':   [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion ZB',      modelCode: 'SBMO-103Z'],
+    'SBDW-103C':   [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window ZB', modelCode: 'SBDW-103C'],
 ]
 
 /**
@@ -292,6 +312,9 @@
     0x0015: [driverName: 'Shelly BLU WallSwitch4', friendlyModel: 'Shelly BLU Wall Switch 4 ZB DK', modelCode: 'SBBT-104CEU'],
     0x0016: [driverName: 'Shelly BLU Button4',     friendlyModel: 'Shelly BLU RC Button 4 ZB', modelCode: 'SBBT-104CUS'],
     0x0017: [driverName: 'Shelly BLU Button1',     friendlyModel: 'Shelly BLU Button Tough 1 ZB', modelCode: 'SBBT-102C'],
+    0x0011: [driverName: 'Shelly BLU HT',          friendlyModel: 'Shelly BLU H&T ZB',         modelCode: 'SBHT-203C'],
+    0x0013: [driverName: 'Shelly BLU Motion',      friendlyModel: 'Shelly BLU Motion ZB',      modelCode: 'SBMO-103Z'],
+    0x0014: [driverName: 'Shelly BLU DoorWindow',  friendlyModel: 'Shelly BLU Door/Window ZB', modelCode: 'SBDW-103C'],
 ]
 
 // Script names (as they appear on the Shelly device) that are managed by this app.
@@ -551,7 +574,7 @@ Map mainPage() {
                 String deleteIp = state.pendingDeleteIp as String
                 def deleteDevice = findChildDeviceByIp(deleteIp)
                 String deleteName = deleteDevice ? deleteDevice.displayName : deleteIp
-                paragraph "<b style='color:#F44336'>Are you sure you want to remove '${deleteName}' (${deleteIp})?</b>"
+                paragraph "<b style='color:#F44336'>Are you sure you want to remove '${escapeHtml(deleteName?.toString())}' (${deleteIp})?</b>"
                 input 'btnConfirmDelete', 'button', title: 'Yes, Remove Device', submitOnChange: true
                 input 'btnCancelDelete', 'button', title: 'Cancel', submitOnChange: true
             }
@@ -589,7 +612,7 @@ Map mainPage() {
             Map bleInfo = (state.discoveredBleDevices ?: [:])[deleteMac] as Map
             String deleteName = bleInfo?.hubDeviceName ?: bleInfo?.friendlyModel ?: deleteMac
             section() {
-                paragraph "<b style='color:#F44336'>Are you sure you want to remove BLE device '${deleteName}' (${deleteMac})?</b>"
+                paragraph "<b style='color:#F44336'>Are you sure you want to remove BLE device '${escapeHtml(deleteName?.toString())}' (${deleteMac})?</b>"
                 input 'btnConfirmBleDelete', 'button', title: 'Yes, Remove BLE Device', submitOnChange: true
                 input 'btnCancelBleDelete', 'button', title: 'Cancel', submitOnChange: true
             }
@@ -669,7 +692,7 @@ Map mainPage() {
             // Check both settings and state — settings may be null briefly after removeSetting().
             String rawDisplay = settings?.displayLogLevel?.toString()
             if (!rawDisplay || rawDisplay == 'null') { rawDisplay = state.displayLogLevel?.toString() }
-            String storedDisplay = rawDisplay ? (levelOrder.contains(rawDisplay.toLowerCase()) ? rawDisplay.toLowerCase() : (levelLabels.find { k, v -> v.equalsIgnoreCase(rawOverall) }?.key)) : null
+            String storedDisplay = rawDisplay ? (levelOrder.contains(rawDisplay.toLowerCase()) ? rawDisplay.toLowerCase() : (levelLabels.find { k, v -> v.equalsIgnoreCase(rawDisplay) }?.key)) : null
 
             String validatedDisplay = (storedDisplay && storedDisplay in allowedDisplay) ? storedDisplay : overallLevel
 
@@ -690,7 +713,10 @@ Map mainPage() {
 
             String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
             String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${recentPayload}</pre>"
+            // Escape for the initial HTML render — log lines embed device-supplied names and
+            // <pre> does NOT suppress HTML parsing. (Subsequent app-state client-side updates
+            // set textContent, so the event payload itself must stay unescaped.)
+            paragraph "<pre class='app-state-${app.id}-recentLogs' style='white-space:pre-wrap; font-size:12px; line-height:1.2;'>${escapeHtml(recentPayload)}</pre>"
         }
     }
 }
@@ -702,7 +728,7 @@ Map mainPage() {
  * @param buttonName The name of the button that was clicked
  */
 void appButtonHandler(String buttonName) {
-    if (buttonName == 'btnExtendScan') { extendDiscovery(60) }
+    if (buttonName == 'btnExtendScan') { extendDiscovery(600) }
 
     if (buttonName == 'btnManualDiscover') {
         String rawInput = settings?.manualDeviceIp?.toString()?.trim()
@@ -1559,15 +1585,18 @@ private String buildDeviceRow(Map entry) {
 
     String indicators = "${genBadge}${onlineDot}${fwIcon}"
     if (isCreated && entry.hubDeviceId) {
-        String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${entry.hubDeviceName}'>${entry.hubDeviceName}</a>"
+        // Device names originate from the Shelly device itself (network-controlled) —
+        // escape before interpolating into HTML to prevent script/attribute injection
+        String safeName = escapeHtml(entry.hubDeviceName?.toString())
+        String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank' title='${safeName}'>${safeName}</a>"
         str.append("<td class='device-link'>${devLink}${indicators}</td>")
     } else {
-        str.append("<td>${entry.shellyName ?: 'Unknown'}${indicators}</td>")
+        str.append("<td>${escapeHtml((entry.shellyName ?: 'Unknown').toString())}${indicators}</td>")
     }
 
     // Column 2: Device label (click to edit for created devices)
     if (isCreated && entry.hubDeviceId) {
-        String currentLabel = (entry.hubDeviceLabel ?: entry.hubDeviceName ?: '') as String
+        String currentLabel = escapeHtml((entry.hubDeviceLabel ?: entry.hubDeviceName ?: '') as String)
         String editIcon = "<iconify-icon icon='material-symbols:edit' style='font-size:14px;vertical-align:middle;margin-left:4px'></iconify-icon>"
         String editBtn = buttonLink("editLabel|${ip}", "${currentLabel} ${editIcon}", "#424242", "14px")
         str.append("<td>${editBtn}</td>")
@@ -1741,6 +1770,21 @@ private String buttonLink(String btnName, String linkText, String color = "#1A77
     "<div style='display:inline-block'><div class='submitOnChange' onclick='buttonClick(this)' " +
     "style='color:${color};cursor:pointer;font-size:${font}'>${linkText}</div></div>" +
     "<input type='hidden' name='settings[${btnName}]' value=''>"
+}
+
+/**
+ * Escapes HTML special characters in a string before interpolation into page markup.
+ * Device names, labels, and mDNS hostnames originate from the Shelly device itself —
+ * i.e., from the network — and must never reach the admin page unescaped.
+ *
+ * @param value The raw string (may be null)
+ * @return The escaped string, or an empty string for null input
+ */
+@CompileStatic
+private static String escapeHtml(String value) {
+    if (value == null) { return '' }
+    return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        .replace('"', '&quot;').replace("'", '&#39;')
 }
 
 /**
@@ -1923,7 +1967,8 @@ private Map buildDeviceStatusCacheEntry(String ip) {
                     createdCount++
                     List<String> urls = hook.urls as List<String>
                     Boolean isEnabled = hook.enable as Boolean
-                    if (urls?.any { it?.contains(hubIp) } && isEnabled) {
+                    // Empty hubIp would make contains() match every URL — only count when the hub IP is known
+                    if (hubIp && urls?.any { it?.contains(hubIp) } && isEnabled) {
                         enabledCount++
                     }
                 }
@@ -2140,7 +2185,7 @@ private void updateComponentDriversForDevice(Map config) {
     Set<String> updatedDrivers = [] as Set
 
     componentTypes.each { String baseType ->
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'presencezone', 'voltmeter'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'cct', 'blutrv', 'presencezone', 'voltmeter'].contains(baseType)) { return }
 
         String compDriverName = getComponentDriverName(baseType, parentHasPM)
         if (!compDriverName || updatedDrivers.contains(compDriverName)) { return }
@@ -2558,8 +2603,13 @@ private void installRequiredActionsForIp(String ipAddress) {
         String hookUrl = "${baseUrl}/${action.dst}/${cid}"
         if (urlParams) { hookUrl += "/${urlParams}" }
 
+        // Only adopt webhooks this app owns (hubitat_sdm_ prefix, or legacy hubitat. prefix).
+        // A user-created webhook on the same event/cid must not be renamed or have its URLs replaced —
+        // Shelly supports multiple webhooks per event, so we create our own alongside it.
         Map existing = existingHooks.find { Map h ->
-            h.event == event && (h.cid as Integer) == cid
+            String hName = h.name as String
+            h.event == event && (h.cid as Integer) == cid &&
+                (hName?.startsWith('hubitat_sdm_') || hName?.startsWith('hubitat.'))
         }
 
         if (existing) {
@@ -4880,22 +4930,41 @@ private Map queryDeviceStatus(String ipAddress) {
  * @return Map with keys: events, supplementalTokenGroups, skippedEvents; or null on failure
  */
 private Map fetchWebhookDefinitions() {
-    String branch = GITHUB_BRANCH
-    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/UniversalDrivers"
-    String componentJsonUrl = "${baseUrl}/component_driver.json"
+    return fetchComponentDriverJson()?.webhookDefinitions as Map
+}
 
+/**
+ * Fetches and parses component_driver.json from GitHub, with an in-memory cache.
+ * The parsed map is cached in a {@code @Field static} for COMPONENT_JSON_CACHE_MS so a
+ * single provisioning pass (which needs both webhookDefinitions and capabilities, per
+ * device) performs at most one download instead of one per consumer per device.
+ * On download/parse failure a stale cached copy is served when available.
+ *
+ * @return Parsed component_driver.json as a Map, or null on failure with no cache
+ */
+private Map fetchComponentDriverJson() {
+    long nowMs = now()
+    Map cached = componentJsonCache
+    if (cached != null && (nowMs - componentJsonCacheTime) < COMPONENT_JSON_CACHE_MS) {
+        return cached
+    }
+
+    String branch = GITHUB_BRANCH
+    String componentJsonUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/UniversalDrivers/component_driver.json"
     String jsonContent = downloadFile(componentJsonUrl)
     if (!jsonContent) {
         logError("Failed to fetch component_driver.json from GitHub")
-        return null
+        return cached
     }
 
     try {
         Map componentData = slurper.parseText(jsonContent) as Map
-        return componentData?.webhookDefinitions as Map
+        componentJsonCache = componentData
+        componentJsonCacheTime = nowMs
+        return componentData
     } catch (Exception e) {
-        logError("Failed to parse component_driver.json webhookDefinitions: ${e.message}")
-        return null
+        logError("Failed to parse component_driver.json: ${e.message}")
+        return cached
     }
 }
 
@@ -4950,23 +5019,7 @@ private Boolean isGen1DeviceReachable(String ipAddress) {
  * @return List of capability maps, or null on failure
  */
 private List<Map> fetchCapabilityDefinitions() {
-    String branch = GITHUB_BRANCH
-    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/UniversalDrivers"
-    String componentJsonUrl = "${baseUrl}/component_driver.json"
-
-    String jsonContent = downloadFile(componentJsonUrl)
-    if (!jsonContent) {
-        logError("Failed to fetch component_driver.json from GitHub")
-        return null
-    }
-
-    try {
-        Map componentData = slurper.parseText(jsonContent) as Map
-        return componentData?.capabilities as List<Map>
-    } catch (Exception e) {
-        logError("Failed to parse component_driver.json: ${e.message}")
-        return null
-    }
+    return fetchComponentDriverJson()?.capabilities as List<Map>
 }
 
 /**
@@ -5087,8 +5140,10 @@ void initialize() {
         }
     } else {
         // Even if app version hasn't changed, check if any tracked drivers are outdated
-        Map allDrivers = state.autoDrivers ?: [:]
-        Boolean hasOutdated = allDrivers.any { key, info -> info.version != currentVersion }
+        Map allDrivers = atomicState.autoDrivers ?: [:]
+        // Ignore entries with a null version (partially-written tracking) — treating them as
+        // outdated would trigger a bulk driver update on every app save / hub reboot
+        Boolean hasOutdated = allDrivers.any { key, info -> info.version && info.version.toString() != currentVersion }
         if (hasOutdated && settings?.rebuildOnUpdate != false) {
             logInfo("Found outdated drivers at app version ${currentVersion}, triggering update")
             startBulkDriverUpdate()
@@ -5309,19 +5364,15 @@ void updateDiscoveryTimer() {
  * Updates the recent logs display in the UI.
  * Retrieves the most recent 10 log entries from state, reverses them
  * (most recent first), and sends them to the UI via an app event.
- * Reschedules itself every second while discovery is running to provide
- * real-time log updates.
+ * Fires once for initial page population — ongoing updates are pushed by
+ * appendLog() (throttled to 1/sec) whenever a log line is actually added,
+ * so a polling loop here would only re-send identical payloads.
  */
 void updateRecentLogs() {
     // Send the most recent 10 log lines to the browser for the app-state binding
     String logs = state.recentLogs ? state.recentLogs.reverse().take(10).join('\n') : ''
     String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
     app.sendEvent(name: 'recentLogs', value: recentPayload)
-
-    // Continue updating once per second while discovery is running
-    if (state.discoveryRunning) {
-        runIn(1, 'updateRecentLogs')
-    }
 }
 
 /**
@@ -6904,8 +6955,11 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
         state.asyncFetchQueue = [:] as Map
     }
 
-    // Check if this IP is already queued or in progress
-    if (state.asyncFetchQueue[ipKey]) {
+    // Skip only when a fetch is actively queued or running. Entries with status
+    // 'completed'/'failed' are deliberately re-queued — sleepy battery devices that were
+    // unreachable on a previous attempt must be retryable on later discovery passes.
+    String existingStatus = (state.asyncFetchQueue[ipKey] as Map)?.status?.toString()
+    if (existingStatus in ['queued', 'in_progress']) {
         logDebug("Async fetch already queued for ${ipKey}")
         return
     }
@@ -6917,12 +6971,16 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
         attempts: 0
     ]
 
-    // Calculate staggered delay (100ms per queued device to avoid network flooding)
-    Integer queueSize = state.asyncFetchQueue.size()
+    // Calculate staggered delay (100ms per actively queued device to avoid network flooding)
+    Integer queueSize = (state.asyncFetchQueue as Map).count { Object k, Object v ->
+        ((v as Map)?.status?.toString() in ['queued', 'in_progress'])
+    } as Integer
     Integer delayMs = 100 + (queueSize * 100)
 
     logDebug("Scheduling async device info fetch for ${ipKey} in ${delayMs}ms")
-    runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey]])
+    // overwrite:false is required — the default overwrite:true would cancel the pending
+    // fetch for every previously scheduled device when a discovery batch queues several
+    runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey], overwrite: false])
 }
 
 /**
@@ -6942,40 +7000,48 @@ void processAsyncDeviceInfoFetch(Map data) {
     logDebug("Processing async device info fetch for ${ipKey} (attempt ${attempt}/${maxAttempts})")
 
     // Update queue status
-    Map queueEntry = state.asyncFetchQueue[ipKey] as Map
+    Map queueEntry = (state.asyncFetchQueue as Map)?.get(ipKey) as Map
     if (queueEntry) {
         queueEntry.status = 'in_progress'
         queueEntry.startedAt = now()
         state.asyncFetchQueue[ipKey] = queueEntry
     }
 
+    // fetchAndStoreDeviceInfo handles its own exceptions and reports success via its
+    // return value — retries must be driven off that, not off exceptions (which never
+    // propagate). The try/catch remains as a safety net for unexpected errors.
+    Boolean fetchSucceeded = false
+    String failureMessage = null
     try {
-        fetchAndStoreDeviceInfo(ipKey)
+        fetchSucceeded = fetchAndStoreDeviceInfo(ipKey)
+    } catch (Exception e) {
+        failureMessage = e.message ?: e.toString()
+    }
 
-        // Mark as completed
+    if (fetchSucceeded) {
         if (queueEntry) {
             queueEntry.status = 'completed'
             queueEntry.completedAt = now()
             state.asyncFetchQueue[ipKey] = queueEntry
         }
-
         logDebug("Async fetch completed for ${ipKey}")
-
-    } catch (Exception e) {
-        if (attempt < maxAttempts) {
-            Integer delayMs = attempt * 2000
-            logDebug("Async fetch attempt ${attempt}/${maxAttempts} failed for ${ipKey}: ${e.message} — retrying in ${delayMs}ms")
-            runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, attempt: attempt + 1]])
-            return  // Skip cleanup — retry is pending
+    } else if (attempt < maxAttempts) {
+        Integer delayMs = attempt * 2000
+        logDebug("Async fetch attempt ${attempt}/${maxAttempts} failed for ${ipKey}${failureMessage ? ": ${failureMessage}" : ''} — retrying in ${delayMs}ms")
+        if (queueEntry) {
+            queueEntry.status = 'queued'
+            queueEntry.attempts = attempt
+            state.asyncFetchQueue[ipKey] = queueEntry
         }
-
+        runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, attempt: attempt + 1], overwrite: false])
+        return  // Skip cleanup — retry is pending
+    } else {
         // Final attempt failed
-        logDebug("Async fetch failed for ${ipKey} after ${maxAttempts} attempts: ${e.message}")
-
+        logDebug("Async fetch failed for ${ipKey} after ${maxAttempts} attempts${failureMessage ? ": ${failureMessage}" : ''}")
         if (queueEntry) {
             queueEntry.status = 'failed'
             queueEntry.failedAt = now()
-            queueEntry.error = e.message
+            if (failureMessage) { queueEntry.error = failureMessage }
             state.asyncFetchQueue[ipKey] = queueEntry
         }
     }
@@ -7029,13 +7095,15 @@ private void cleanupAsyncFetchQueue() {
  * </ul>
  *
  * @param ipKey The IP address key identifying the device in discoveredShellys map
+ * @return true when device info was successfully fetched and stored, false otherwise
+ *         (drives the retry scheduling in processAsyncDeviceInfoFetch)
  */
-private void fetchAndStoreDeviceInfo(String ipKey) {
-    if (!ipKey) { return }
+private Boolean fetchAndStoreDeviceInfo(String ipKey) {
+    if (!ipKey) { return false }
     Map device = state.discoveredShellys[ipKey]
     if (!device) {
         appendLog('warn', "Get Device Info: no discovered entry for ${ipKey}")
-        return
+        return false
     }
 
     String ip = (device.ipAddress ?: ipKey).toString()
@@ -7074,8 +7142,9 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         appendLog('debug', "Getting Gen 1 device info from ${ip}")
         if (fetchGen1DeviceInfo(ipKey, device)) {
             sendFoundShellyEvents()
+            return true
         }
-        return
+        return false
     }
 
     String rpcUri = (port == 80) ? "http://${ip}/rpc" : "http://${ip}:${port}/rpc"
@@ -7090,7 +7159,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         Map deviceInfo = (deviceInfoResp instanceof Map && deviceInfoResp.containsKey('result')) ? deviceInfoResp.result : deviceInfoResp
         if (!deviceInfo) {
             appendLog('warn', "No device info returned from ${ip} — device may be offline or not Gen2+")
-            return
+            return false
         }
 
         LinkedHashMap configCmd = shellyGetConfigCommand('discovery')
@@ -7140,8 +7209,16 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
         LinkedHashMap webhookSupportedCmd = webhookListSupportedCommand('discovery')
         LinkedHashMap webhookSupportedResp = postCommandSync(webhookSupportedCmd, rpcUri)
         List<String> supportedWebhookEvents = []
-        if (webhookSupportedResp?.result?.types) {
-            supportedWebhookEvents = (webhookSupportedResp.result.types as Map).keySet().collect { it.toString() }
+        // Firmware variations: 'types' is a Map on current builds, a List on some older
+        // builds, and very old firmware used 'hook_types'. A blind Map cast would throw
+        // and abort the whole fetch, misrouting the device into the Gen 1 fallback.
+        Object supportedTypes = webhookSupportedResp?.result?.types ?: webhookSupportedResp?.result?.hook_types
+        if (supportedTypes instanceof Map) {
+            supportedWebhookEvents = (supportedTypes as Map).keySet().collect { it.toString() }
+        } else if (supportedTypes instanceof List) {
+            supportedWebhookEvents = (supportedTypes as List).collect { it.toString() }
+        }
+        if (supportedWebhookEvents) {
             logDebug("fetchAndStoreDeviceInfo: supported webhook events: ${supportedWebhookEvents}")
         }
         device.supportedWebhookEvents = supportedWebhookEvents
@@ -7184,6 +7261,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
 
         sendFoundShellyEvents()
         determineDeviceDriver(deviceStatus, ipKey)
+        return true
     } catch (Exception e) {
         String errorMsg = e.message ?: e.toString() ?: e.class.simpleName
         logDebug("fetchAndStoreDeviceInfo exception: ${e.class.name}: ${errorMsg}")
@@ -7200,7 +7278,7 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
             logDebug("fetchAndStoreDeviceInfo: RPC failed for ${ip}, trying Gen 1 REST API")
             if (fetchGen1DeviceInfo(ipKey, device)) {
                 sendFoundShellyEvents()
-                return
+                return true
             }
 
             // Last resort: hostname-based identification for sleeping/unreachable Gen 1 devices
@@ -7229,12 +7307,13 @@ private void fetchAndStoreDeviceInfo(String ipKey) {
                     determineDeviceDriver(device.deviceStatus, ipKey)
                     sendFoundShellyEvents()
                 }
-                return
+                return true
             }
         }
 
         appendLog('error', "Failed to get device info from ${ip}: ${errorMsg}")
     }
+    return false
 }
 
 /**
@@ -7540,6 +7619,10 @@ static Map normalizeGen1Status(Map gen1Status, Map gen1Settings, String typeCode
     if (meters) {
         for (int i = 0; i < meters.size(); i++) {
             Map meterData = meters[i] as Map ?: [:]
+            // Devices without metering hardware (e.g., Shelly 1) still report a meter stub
+            // with is_valid:false and power:0.0 — injecting it would misclassify the device
+            // as power-monitoring and select a PM driver whose readings stay 0 forever
+            if (meterData.is_valid == false) { continue }
             // Associate with switch, cover, light, or white component at same index
             String switchKey = "switch:${i}".toString()
             String coverKey = "cover:${i}".toString()
@@ -7821,7 +7904,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     Set<String> recognizedTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'input', 'pm1', 'pm', 'em', 'em1',
         'smoke', 'gas', 'temperature', 'humidity', 'devicepower', 'illuminance', 'voltmeter',
         'flood', 'contact', 'lux', 'tilt', 'motion', 'presence', 'presencezone', 'valve', 'thermostat', 'adc',
-        'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui', 'dali', 'service'] as Set
+        'blugw', 'blutrv', 'plugs_ui', 'powerstrip_ui', 'dali', 'service', 'tamper'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
@@ -7832,9 +7915,10 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         components.add(k.toString())
 
         // Check if this component has power monitoring
-        // em, em1, pm1 are inherently power monitoring components
-        Boolean hasPM = (baseType == 'em' || baseType == 'em1' || baseType == 'pm1')
-        if (!hasPM && v instanceof Map && (baseType == 'switch' || baseType == 'cover' || baseType == 'light' || baseType == 'rgb' || baseType == 'rgbw' || baseType == 'cct')) {
+        // em, em1, pm1, pm are inherently power monitoring components
+        // ('pm' is the Power Strip Gen4 per-outlet meter component)
+        Boolean hasPM = (baseType == 'em' || baseType == 'em1' || baseType == 'pm1' || baseType == 'pm')
+        if (!hasPM && v instanceof Map && (baseType == 'switch' || baseType == 'cover' || baseType == 'light' || baseType == 'white' || baseType == 'rgb' || baseType == 'rgbw' || baseType == 'cct')) {
             hasPM = v.voltage != null || v.current != null || v.power != null ||
                     v.apower != null || v.aenergy != null
         }
@@ -7887,7 +7971,10 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Determine driver name for discovered components and install prebuilt driver
     if (components.size() > 0) {
         Boolean isParent = needsParentChild
-        Boolean isGen1 = ipKey ? (state.discoveredShellys[ipKey]?.isGen1 as Boolean ?: false) : false
+        // NOTE: discoveredShellys entries carry gen='1', NOT an isGen1 boolean (that key only
+        // exists on deviceStatusCache entries) — reading isGen1 here was a regression that
+        // routed every Gen 1 device through Gen 2 shape-based naming
+        Boolean isGen1 = ipKey ? isGen1DeviceByIp(ipKey) : false
 
         // Model-specific driver override for Gen 1 devices (e.g., Plugs)
         String gen1TypeCode = ipKey ? state.discoveredShellys[ipKey]?.gen1Type?.toString() : null
@@ -8053,6 +8140,28 @@ private String resolveGen2DedicatedDriverName(String ipKey, List<String> compone
         if (idMatch) {
             logDebug("resolveGen2DedicatedDriverName: matched by id-prefix '${idMatch.key}' for ipKey ${ipKey}")
             return idMatch.value
+        }
+
+        // The Gen 4 entries in GEN2_MODEL_CODE_DRIVER_OVERRIDE / GEN2_2PM_G4_MODEL_CODES are
+        // keyed by id-prefix style names (e.g. 'shelly1g4', 'shellypowerstrip4g4'), not
+        // Shelly.GetDeviceInfo model codes (e.g. 'S4SW-001X16EU'), so the modelCode lookup
+        // below never matches them — match against the device id prefix here instead.
+        Map.Entry<String, String> codeIdMatch = GEN2_MODEL_CODE_DRIVER_OVERRIDE.find { String k, String v ->
+            deviceId.startsWith(k.toLowerCase() + '-')
+        }
+        if (codeIdMatch) {
+            logDebug("resolveGen2DedicatedDriverName: matched by model-code id-prefix '${codeIdMatch.key}' for ipKey ${ipKey}")
+            return codeIdMatch.value
+        }
+
+        String g42pmPrefix = GEN2_2PM_G4_MODEL_CODES.find { String code -> deviceId.startsWith(code + '-') }
+        if (g42pmPrefix) {
+            Boolean hasCoverProfile = components.any { String component ->
+                component == 'cover' || component.startsWith('cover:')
+            }
+            return hasCoverProfile ?
+                'Shelly Autoconf Single Cover PM 2PM Gen4 Parent' :
+                'Shelly Autoconf 2x Switch PM 2PM Gen4 Parent'
         }
     }
 
@@ -8305,6 +8414,17 @@ private Boolean installPrebuiltDriver(String driverName, List<String> components
     if (!repoPath) {
         logDebug("installPrebuiltDriver: no pre-built driver found for '${driverName}'")
         return false
+    }
+
+    // Idempotency: skip the GitHub download and hub-side recompile when this exact
+    // versioned driver is already installed — driver compilation is one of the most
+    // expensive operations on the hub and was previously repeated for every newly
+    // identified device of an already-supported type.
+    String versionedName = "${driverName} v${version}"
+    if (isDriverOnHub(versionedName, 'ShellyDeviceManager')) {
+        logDebug("installPrebuiltDriver: '${versionedName}' already installed, skipping download")
+        registerAutoDriver(versionedName, 'ShellyDeviceManager', version, components, componentPowerMonitoring)
+        return true
     }
 
     String rawUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${repoPath}"
@@ -8694,6 +8814,7 @@ private String getComponentDriverFileName(String componentType, Boolean hasPower
         'light': [default: 'ShellyDimmerComponent.groovy'],
         'rgb': [default: 'ShellyRGBComponent.groovy'],
         'rgbw': [default: 'ShellyRGBWComponent.groovy'],
+        'cct': [default: 'ShellyCCTComponent.groovy'],
         'input': [default: 'ShellyInputButtonComponent.groovy'],
         'em': [default: 'ShellyEMComponent.groovy'],
         'adc': [default: 'ShellyPollingVoltageSensorComponent.groovy'],
@@ -8728,6 +8849,7 @@ private String getComponentDriverName(String componentType, Boolean hasPowerMoni
         'light': [default: 'Shelly Autoconf Dimmer'],
         'rgb': [default: 'Shelly Autoconf RGB'],
         'rgbw': [default: 'Shelly Autoconf RGBW'],
+        'cct': [default: 'Shelly Autoconf CCT'],
         'input': [default: 'Shelly Autoconf Input Button'],
         'em': [default: 'Shelly Autoconf EM'],
         'adc': [default: 'Shelly Autoconf Polling Voltage Sensor'],
@@ -8806,7 +8928,8 @@ private void fetchAndInstallComponentDriver(String fileName, String driverName) 
     String version = getAppVersion()
     String key = "ShellyDeviceManager.${driverName}"
     initializeDriverTracking()
-    state.autoDrivers[key] = [
+    Map autoDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
+    autoDrivers[key] = [
         name: driverName,
         namespace: 'ShellyDeviceManager',
         version: version,
@@ -8815,6 +8938,7 @@ private void fetchAndInstallComponentDriver(String fileName, String driverName) 
         lastUpdated: now(),
         devicesUsing: []
     ]
+    atomicState.autoDrivers = autoDrivers
 
     logInfo("Installed component driver: ${driverName}")
 }
@@ -8835,7 +8959,7 @@ private void installComponentDriversForDevice(Map deviceInfo) {
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
-        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'blutrv', 'presencezone', 'voltmeter'].contains(baseType)) { return }
+        if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'cct', 'blutrv', 'presencezone', 'voltmeter'].contains(baseType)) { return }
 
         Boolean hasPM = componentPowerMonitoring[key] ?: false
         String driverName = getComponentDriverName(baseType, hasPM)
@@ -9872,7 +9996,22 @@ void uploadScriptChunk(Map data) {
     LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, chunk, !first)
     if (hasAuth) { putCmd.auth = getAuth() }
 
-    LinkedHashMap result = postCommandSync(putCmd, uri)
+    // postCommandSync RETHROWS transport exceptions. Without this guard, a device dropping
+    // offline mid-upload aborted the scheduled execution before cleanup: the multi-KB script
+    // source stayed in state forever and neither callback fired, silently stalling the
+    // script-install queue with a truncated script left on the device.
+    LinkedHashMap result
+    try {
+        result = postCommandSync(putCmd, uri)
+    } catch (Exception e) {
+        String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${e.message ?: e.toString()}"
+        logError(errMsg)
+        state.remove(codeStateKey)
+        if (errorCallback) {
+            "${errorCallback}"(completionData + [error: errMsg])
+        }
+        return
+    }
 
     if (result?.error) {
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${result.error}"
@@ -10414,6 +10553,8 @@ LinkedHashMap bleGetConfigCommand(String src = 'bleGetConfig') {
 
 @CompileStatic
 LinkedHashMap bleSetConfigCommand(Boolean enable, Boolean rpcEnable, Boolean observerEnable) {
+  // Per the Gen2+ BLE component spec, rpc and observer are nested objects
+  // ({rpc:{enable}, observer:{enable}}) — flat booleans are rejected with -103
   LinkedHashMap command = [
     "id" : 0,
     "src" : "bleSetConfig",
@@ -10422,8 +10563,8 @@ LinkedHashMap bleSetConfigCommand(Boolean enable, Boolean rpcEnable, Boolean obs
       "id" : 0,
       "config": [
         "enable": enable,
-        "rpc": rpcEnable,
-        "observer": observerEnable
+        "rpc": ["enable": rpcEnable],
+        "observer": ["enable": observerEnable]
       ]
     ]
   ]
@@ -11041,7 +11182,7 @@ void em1DataResetCounters(Integer id = 0, String src = 'em1DataResetCounters') {
 @CompileStatic
 void resetCountersCallback(AsyncResponse response, Map data = null) {
   logTrace('Processing reset counters callback')
-  if(responseIsValid(response) == true) {
+  if(responseIsValid(response) == true && shouldLogOverall('trace')) {
     Map json = (LinkedHashMap)response.getJson()
     logTrace("resetCountersCallback JSON: ${prettyJson(json)}")
   }
@@ -11074,10 +11215,15 @@ LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
   params.requestContentType = 'application/json'
   params.body = command
   params.timeout = 10
-  logTrace("postCommandSync sending to ${params.uri}: ${prettyJson(params)}")
+  // Gate the trace interpolation — GString placeholders evaluate eagerly, so an ungated
+  // prettyJson() would serialize the full request/response on EVERY RPC even with trace off
+  if(shouldLogOverall('trace')) { logTrace("postCommandSync sending to ${params.uri}: ${prettyJson(params)}") }
   try {
     httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
-    setAuthIsEnabled(false)
+    // Only clear the auth flag when the request succeeded WITHOUT credentials attached —
+    // clearing it after an auth-assisted success forced a 401 re-handshake on every
+    // subsequent command to a password-protected device
+    if(command.auth == null) { setAuthIsEnabled(false) }
   } catch(HttpResponseException ex) {
     if(ex.getStatusCode() != 401) {
       logWarn("HTTP Exception (${ex.getStatusCode()}): ${ex.message ?: ex.toString()}")
@@ -11104,7 +11250,7 @@ LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
     logError("postCommandSync exception for ${describeDeviceForUri(params.uri as String)}: ${ex.class.simpleName}: ${ex.message ?: ex.toString()}")
     throw ex
   }
-  logTrace("postCommandSync returned from ${params.uri}: ${prettyJson(json)}")
+  if(shouldLogOverall('trace')) { logTrace("postCommandSync returned from ${params.uri}: ${prettyJson(json)}") }
   return json
 }
 
@@ -11124,9 +11270,10 @@ void postCommandAsync(LinkedHashMap command, String callbackMethod = '') {
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
-  logTrace("postCommandAsync sending: ${prettyJson(params)}")
+  if(shouldLogOverall('trace')) { logTrace("postCommandAsync sending: ${prettyJson(params)}") }
   asynchttpPost('postCommandAsyncCallback', params, [params:params, command:command, attempt:1, callbackMethod:callbackMethod])
-  setAuthIsEnabled(false)
+  // NOTE: deliberately no setAuthIsEnabled(false) here — this is the dispatch path and the
+  // request outcome is not yet known; clearing the flag here broke auth for the follow-up 401
 }
 
 void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
@@ -11163,10 +11310,10 @@ LinkedHashMap postSync(LinkedHashMap command) {
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
-  logTrace("postCommandSync sending: ${prettyJson(params)}")
+  if(shouldLogOverall('trace')) { logTrace("postSync sending: ${prettyJson(params)}") }
   try {
     httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
-    setAuthIsEnabled(false)
+    if(command.auth == null) { setAuthIsEnabled(false) }
   } catch(HttpResponseException ex) {
     logWarn("Exception: ${ex}")
     setAuthIsEnabled(true)
@@ -11180,7 +11327,7 @@ LinkedHashMap postSync(LinkedHashMap command) {
       logError('Auth failed a second time. Double check password correctness.')
     }
   }
-  logTrace("postCommandSync returned: ${prettyJson(json)}")
+  if(shouldLogOverall('trace')) { logTrace("postSync returned: ${prettyJson(json)}") }
   return json
 }
 
@@ -11291,10 +11438,11 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
     }
 
     // Throttle BLE table SSR updates to avoid exceeding hub event rate limits.
-    // At most once per 10 seconds — BLE advertisements arrive frequently.
-    // Uses @Field volatile instead of state to avoid a state write per batch.
+    // At most once per 10 seconds — BLE advertisements arrive frequently — and only
+    // while a page session is plausibly open (the event triggers a full table re-render
+    // server-side; firing it 24/7 was ~8,600 wasted hub events per day).
     Long nowMs = now()
-    if (nowMs - lastBleTableSSR > 10000L) {
+    if (nowMs < blePageActiveUntil && nowMs - lastBleTableSSR > 10000L) {
         lastBleTableSSR = nowMs
         sendEvent(name: 'bleTable', value: 'update')
     }
@@ -11375,6 +11523,13 @@ private void processBleReport(String gatewayName, Map bleData) {
  */
 @CompileStatic
 private static Integer checkBlePidAndRssi(String mac, Integer pid, Integer rssi, String gatewayName) {
+    // pid is optional in BTHome — devices that omit it report as -1. Treating -1 like a
+    // real pid permanently deduped such devices after their first report (the ring buffer
+    // only evicts after 10 distinct pids, which never arrive). Always process them fully.
+    if (pid == null || pid == -1) {
+        bleRssiTracker.put(mac, [pid: -1, rssi: rssi != null ? rssi : ((Integer) (-127)), gateway: gatewayName])
+        return (Integer) 0
+    }
     List<Integer> pids = blePidCache.get(mac)
     if (pids == null) {
         blePidCache.putIfAbsent(mac, (List<Integer>) [])
@@ -11733,12 +11888,12 @@ private void removeBleDevice(String mac) {
         Map config = deviceConfigs[macKey] as Map
         if (config?.driverName) {
             String driverKey = "ShellyDeviceManager.${config.driverName}".toString()
-            Map allDrivers = state.autoDrivers ?: [:]
+            Map allDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
             Map driverEntry = allDrivers[driverKey] as Map
             if (driverEntry?.devicesUsing instanceof List) {
                 (driverEntry.devicesUsing as List).remove(macKey)
                 allDrivers[driverKey] = driverEntry
-                state.autoDrivers = allDrivers
+                atomicState.autoDrivers = allDrivers
             }
         }
 
@@ -12083,7 +12238,7 @@ void checkBlePresence() {
         }
     }
 
-    if (anyChanged) {
+    if (anyChanged && now() < blePageActiveUntil) {
         sendEvent(name: 'bleTable', value: 'presence')
     }
 }
@@ -12183,7 +12338,12 @@ private void enableBleGateway(String ip) {
     bleLogInfo("Enabling Bluetooth on ${ip}...")
     LinkedHashMap bleCmd = bleSetConfigCommand(true, true, true)
     if (hasAuth) { bleCmd.auth = getAuth() }
-    postCommandSync(bleCmd, uri)
+    LinkedHashMap bleResult = postCommandSync(bleCmd, uri)
+    if (bleResult?.error) {
+        bleLogError("BLE.SetConfig failed on ${ip}: ${bleResult.error}")
+        appendLog('error', "Failed to enable Bluetooth on ${ip}: ${bleResult.error}")
+        return
+    }
 
     // Step 2: Download BLE helper script from GitHub
     String branch = GITHUB_BRANCH
@@ -12319,7 +12479,10 @@ private void disableBleGateway(String ip) {
     bleLogInfo("Disabling BLE observer on ${ip}...")
     LinkedHashMap bleCmd = bleSetConfigCommand(true, true, false)
     if (hasAuth) { bleCmd.auth = getAuth() }
-    postCommandSync(bleCmd, uri)
+    LinkedHashMap bleResult = postCommandSync(bleCmd, uri)
+    if (bleResult?.error) {
+        bleLogWarn("BLE.SetConfig (observer off) failed on ${ip}: ${bleResult.error}")
+    }
 
     bleLogInfo("BLE gateway disabled on ${ip}")
 }
@@ -12346,6 +12509,8 @@ private Boolean isBleGatewayEnabled(String ip) {
  * @return HTML string with SSR wrapper, CSS, and table markup
  */
 private String displayBleDeviceTable() {
+    // Mark the page session active so BLE-advertisement SSR updates fire (see handleBleRelay)
+    blePageActiveUntil = now() + BLE_PAGE_ACTIVE_MS
     String tableMarkup = renderBleTableMarkup()
     return "<span class='ssr-app-state-${getAppIdHelper()}-bleTable' id='ble-table'>" +
         "<div id='ble-table-wrapper'>${tableMarkup}</div></span>"
@@ -12444,13 +12609,13 @@ private String renderBleTableMarkup() {
         String gateway = entry.lastGateway ?: '—'
         Boolean isCreated = entry.isCreated ?: false
 
-        // Device name column
+        // Device name column — names/models derive from BLE advertisements (network-controlled), escape them
         String deviceCell
         if (isCreated && entry.hubDeviceId) {
-            String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank'>${entry.hubDeviceName ?: friendlyModel}</a>"
+            String devLink = "<a href='/device/edit/${entry.hubDeviceId}' target='_blank'>${escapeHtml((entry.hubDeviceName ?: friendlyModel) as String)}</a>"
             deviceCell = "<td class='device-link'>${devLink}</td>"
         } else {
-            deviceCell = "<td>${friendlyModel}</td>"
+            deviceCell = "<td>${escapeHtml(friendlyModel)}</td>"
         }
 
         // RSSI color
@@ -12618,6 +12783,7 @@ ChildDeviceWrapper createChildDimmer(Integer id) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
+  if (child == null) { return null }
   child.updateDataValue('switchLevelId',"${id}")
   return child
 }
@@ -12635,6 +12801,7 @@ ChildDeviceWrapper createChildRGB(Integer id) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
+  if (child == null) { return null }
   child.updateDataValue('rgbId',"${id}")
   return child
 }
@@ -12652,6 +12819,7 @@ ChildDeviceWrapper createChildRGBW(Integer id) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
+  if (child == null) { return null }
   child.updateDataValue('rgbwId',"${id}")
   return child
 }
@@ -12669,6 +12837,7 @@ ChildDeviceWrapper createChildPmSwitch(Integer id) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
+  if (child == null) { return null }
   child.updateDataValue('switchId',"${id}")
   child.updateDataValue('hasPM','true')
   child.updateDataValue('currentId', "${id}")
@@ -12692,6 +12861,7 @@ ChildDeviceWrapper createChildEM(Integer id, String phase) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
+  if (child == null) { return null }
   child.updateDataValue('currentId', "${id}")
   child.updateDataValue('powerId', "${id}")
   child.updateDataValue('voltageId', "${id}")
@@ -12716,6 +12886,7 @@ ChildDeviceWrapper createChildEM1(Integer id) {
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
+  if (child == null) { return null }
   child.updateDataValue('currentId', "${id}")
   child.updateDataValue('powerId', "${id}")
   child.updateDataValue('voltageId', "${id}")
@@ -12771,6 +12942,7 @@ ChildDeviceWrapper createChildCover(Integer id, String driverName = 'Shelly Auto
 @CompileStatic
 ChildDeviceWrapper createChildPmCover(Integer id) {
   ChildDeviceWrapper child = createChildCover(id, 'Shelly Autoconf Cover PM')
+  if (child == null) { return null }
   child.updateDataValue('hasPM','true')
   child.updateDataValue('currentId', "${id}")
   child.updateDataValue('energyId', "${id}")
@@ -12803,7 +12975,7 @@ ChildDeviceWrapper createChildHumidity(Integer id) {
   String dni = "${getThisDeviceDNI()}-humidity${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
-    String label = "${getAppLabel()} - Temperature ${id}"
+    String label = "${getAppLabel()} - Humidity ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
@@ -13210,7 +13382,16 @@ LinkedHashMap getAuth() {
   if(authMap == null || authMap.size() == 0) {return [:]}
   String realm = authMap['realm']
   String ha1 = "admin:${realm}:${getPassword()}".toString()
-  Long nonce = Long.valueOf(authMap['nonce'].toString())
+  // Shelly sends the digest nonce hex-encoded (e.g. nonce="60dc59c6"); the JSON auth
+  // object requires its numeric value. Base-10 parsing throws NumberFormatException for
+  // any nonce containing a-f (~94% of them). Decimal fallback is defensive only.
+  String nonceStr = authMap['nonce'].toString()
+  Long nonce
+  try {
+    nonce = Long.parseLong(nonceStr, 16)
+  } catch (NumberFormatException ignored) {
+    nonce = Long.valueOf(nonceStr)
+  }
   String nc = (authMap['nc']).toString()
   Long cnonce = now()
   String ha2 = '6370ec69915103833b5222b368555393393f098bfbfbb59f47e0590af135f062'
@@ -13230,7 +13411,9 @@ LinkedHashMap getAuth() {
 
 @CompileStatic
 String sha256(String base) {
-  MessageDigest digest = getMessageDigest()
+  // Fresh instance per call — MessageDigest is not thread-safe, and a shared cached
+  // instance corrupts hashes when concurrent executions interleave digest() calls
+  MessageDigest digest = MessageDigest.getInstance('SHA-256')
   byte[] hash = digest.digest(base.getBytes("UTF-8"))
   StringBuffer hexString = new StringBuffer()
   for (int i = 0; i < hash.length; i++) {
@@ -13239,13 +13422,6 @@ String sha256(String base) {
     hexString.append(hex);
   }
   return hexString.toString()
-}
-
-@CompileStatic
-MessageDigest getMessageDigest() {
-  if(messageDigests == null) { messageDigests = new ConcurrentHashMap<String, MessageDigest>() }
-  if(!messageDigests.containsKey(getThisDeviceDNI())) { messageDigests[getThisDeviceDNI()] = MessageDigest.getInstance("SHA-256") }
-  return messageDigests[getThisDeviceDNI()]
 }
 
 @CompileStatic
@@ -13263,8 +13439,11 @@ void setAuthMap(LinkedHashMap map) {
 
 @CompileStatic
 Boolean authIsEnabled() {
-  // In app context, use state instead of device data values
-  return getAppState('authEnabled') == true
+  // In app context, use state instead of device data values.
+  // Must read through the Boolean accessor: getAppState() declares a String return type,
+  // which coerces a stored Boolean true to "true" — making 'value == true' always false
+  // (this silently disabled digest auth entirely).
+  return getAppStateBoolean('authEnabled')
 }
 @CompileStatic
 void setAuthIsEnabled(Boolean auth) {
@@ -13275,6 +13454,19 @@ void setAuthIsEnabled(Boolean auth) {
 String getAppState(String key) {
   return state[key]
 }
+
+/**
+ * Reads a Boolean value from app state without the String coercion that
+ * getAppState()'s declared return type applies (Boolean true -> "true").
+ *
+ * @param key The state key to read
+ * @return true only when the stored value is Boolean true or the string "true"
+ */
+private Boolean getAppStateBoolean(String key) {
+  Object value = state[key]
+  return value == true || value?.toString() == 'true'
+}
+
 void setAppState(String key, value) {
   state[key] = value
 }
@@ -13479,8 +13671,23 @@ private void sendAppEventHelper(Map properties) {
 // Device/Child Operation Helpers (non-static for dynamic dispatch)
 // ═══════════════════════════════════════════════════════════════
 
-/** Helper for dev.updateSetting() calls */
+/**
+ * Helper for dev.updateSetting() calls. Skips the write when the setting already
+ * holds the target value: updateSetting() triggers the driver's updated(), and the
+ * shipped component drivers' updated() relays settings straight back to the app for
+ * another SetConfig POST — so unconditional writes during config sync caused an echo
+ * loop of redundant RPC traffic on every refresh.
+ */
 private void deviceUpdateSettingHelper(DeviceWrapper dev, String name, Object value) {
+  if (value instanceof Map && value.containsKey('value')) {
+    try {
+      Object current = dev.getSetting(name)
+      Object target = (value as Map).value
+      if (current != null && current.toString() == target?.toString()) { return }
+    } catch (Exception ignored) {
+      // getSetting unavailable or comparison failed — fall through to the write
+    }
+  }
   dev.updateSetting(name, value)
 }
 
@@ -14447,7 +14654,7 @@ void startSingleDriverUpdate(String trackingKey) {
         return
     }
 
-    Map allDrivers = state.autoDrivers ?: [:]
+    Map allDrivers = atomicState.autoDrivers ?: [:]
     if (!allDrivers.find { k, v -> k.toString() == trackingKey }) {
         appendLog('warn', "Tracking key not found: ${trackingKey}")
         return
@@ -14466,7 +14673,25 @@ private Boolean isDriverUpdateInProgress() {
     // just set active=false would not be visible to a duplicate Update All
     // click until the next state-flush boundary.
     Map prog = atomicState.driverUpdateProgress as Map
-    return prog?.active == true
+    if (prog?.active != true) { return false }
+
+    // Stall watchdog: a dead async callback (uncaught exception, dropped response)
+    // would otherwise strand active=true forever — refusing all future driver updates
+    // AND permanently skipping the daily app auto-update. Each queue step paces at
+    // ~10s, so 10 minutes with zero progress means the chain is dead, not busy.
+    Long lastActivity = (prog.lastActivityAt ?: prog.startedAt ?: 0L) as Long
+    if (now() - lastActivity > 600000L) {
+        logWarn('Driver update queue stalled for >10 minutes — auto-clearing stuck progress state')
+        appendLog('warn', 'Driver update queue stalled — auto-reset by watchdog')
+        Map cleared = new LinkedHashMap(prog)
+        cleared.active = false
+        cleared.finishedAt = now()
+        cleared.lastError = cleared.lastError ?: 'Stalled — auto-reset by watchdog'
+        atomicState.driverUpdateProgress = cleared
+        atomicState.driverUpdateQueue = []
+        return false
+    }
+    return true
 }
 
 /**
@@ -14562,6 +14787,7 @@ void processNextDriverUpdate() {
     Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
     prog.current = trackingKey
     prog.currentName = baseName
+    prog.lastActivityAt = now()
     atomicState.driverUpdateProgress = prog
     Integer position = (((prog.completed ?: 0) as Integer) + ((prog.errors ?: 0) as Integer) + 1)
     Integer total = (prog.total ?: 0) as Integer
@@ -14864,6 +15090,7 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
 
     prog.current = null
     prog.currentName = null
+    prog.lastActivityAt = now()
     atomicState.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
 
@@ -14903,6 +15130,7 @@ private void handleDriverUpdateFailure(String trackingKey, String reason) {
     prog.lastError = reason
     prog.current = null
     prog.currentName = null
+    prog.lastActivityAt = now()
     atomicState.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
     runIn(10, 'processNextDriverUpdate')
@@ -14998,7 +15226,7 @@ void scheduledDriverUpdate() {
         return
     }
 
-    Map allDrivers = state.autoDrivers ?: [:]
+    Map allDrivers = atomicState.autoDrivers ?: [:]
     String currentVersion = getAppVersion()
     Boolean hasOutdated = allDrivers.any { String key, Object info -> (info as Map).version != currentVersion }
 
@@ -15298,8 +15526,17 @@ private Boolean isNewerVersion(String candidate, String current) {
     String c = candidate.startsWith('v') ? candidate.substring(1) : candidate
     String r = current.startsWith('v') ? current.substring(1) : current
 
-    List<Integer> candidateParts = c.tokenize('.').collect { it as Integer }
-    List<Integer> currentParts = r.tokenize('.').collect { it as Integer }
+    // Non-numeric segments (e.g., a '1.0.0-rc1' pre-release tag) must not abort the
+    // scheduled update check with an uncaught NumberFormatException
+    List<Integer> candidateParts
+    List<Integer> currentParts
+    try {
+        candidateParts = c.tokenize('.').collect { it as Integer }
+        currentParts = r.tokenize('.').collect { it as Integer }
+    } catch (NumberFormatException ignored) {
+        logWarn("isNewerVersion: non-numeric version segment in '${candidate}' vs '${current}' — treating as not newer")
+        return false
+    }
 
     // Pad to equal length
     while (candidateParts.size() < currentParts.size()) { candidateParts.add(0) }
@@ -15356,12 +15593,15 @@ private Boolean updateAppCode(String sourceCode) {
 
         Boolean result = false
         httpPost(updateParams) { resp ->
+            // /app/ajax/update returns HTTP 200 with {status:'error', errorMessage:...} on
+            // compile failure — only an explicit status:'success' is a real success.
+            // Treating any 200 as success masked permanently failing updates as "updated".
             if (resp?.data?.status == 'success') {
                 logInfo("Auto-update: app code updated successfully")
                 result = true
             } else if (resp?.status == 200) {
-                logInfo("Auto-update: app code update returned HTTP 200")
-                result = true
+                String errorMessage = resp?.data?.errorMessage ?: resp?.data?.status ?: 'unknown error'
+                logError("Auto-update: hub rejected app code update: ${errorMessage}")
             } else {
                 logError("Auto-update: update failed - HTTP ${resp?.status}")
             }
@@ -15475,11 +15715,15 @@ private String getInstalledAppVersion(String cookie, Integer appCodeId) {
     }
 }
 
+// NOTE: All autoDrivers tracking access goes through atomicState. The driver-update
+// callbacks commit version bumps mid-execution via atomicState; a plain-state writer
+// flushing its stale snapshot at end-of-execution would silently revert those bumps
+// (lost-update race), causing just-updated drivers to be re-queued on the next pass.
 private void initializeDriverTracking() {
-  if(!state.autoDrivers) {
-    state.autoDrivers = [:]
+  if(!atomicState.autoDrivers) {
+    atomicState.autoDrivers = [:]
   }
-  logDebug("Driver tracking initialized, currently tracking ${state.autoDrivers.size()} drivers")
+  logDebug("Driver tracking initialized, currently tracking ${(atomicState.autoDrivers as Map).size()} drivers")
 }
 
 /**
@@ -15489,7 +15733,7 @@ private void initializeDriverTracking() {
  * This prevents accumulation of old-version entries across app updates.
  */
 private void pruneStaleDriverTracking() {
-    Map autoDrivers = state.autoDrivers
+    Map autoDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
     if (!autoDrivers || autoDrivers.size() <= 1) { return }
 
     // Group entries by base driver name (without version suffix)
@@ -15531,7 +15775,7 @@ private void pruneStaleDriverTracking() {
     }
 
     if (removed > 0) {
-        state.autoDrivers = autoDrivers
+        atomicState.autoDrivers = autoDrivers
         logInfo("Pruned ${removed} stale driver tracking entry(s)")
     }
 }
@@ -15548,7 +15792,7 @@ private void pruneStaleDriverTracking() {
  * @param namesToCheck Driver names to check, or null to sweep all tracked drivers
  */
 private void deleteUnusedTrackedDrivers(Collection<String> namesToCheck = null) {
-    Map<String, Map> allTracked = state.autoDrivers as Map ?: [:]
+    Map<String, Map> allTracked = atomicState.autoDrivers as Map ?: [:]
     if (allTracked.isEmpty()) { return }
 
     List<Set<String>> usedNames = collectAllManagedDeviceTypeNames()
@@ -15717,12 +15961,14 @@ private void registerAutoDriver(String driverName, String namespace, String vers
 
   String key = "${namespace}.${driverName}"
 
+  // Work on a local copy and commit once via atomicState (see initializeDriverTracking note)
+  Map autoDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
+
   // Remove old version entries for the same base driver name
   // The base name is the driver name without the version suffix (e.g., "Shelly Autoconf Single Switch PM")
   String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
   List<String> keysToRemove = []
-  // Snapshot keys to avoid ConcurrentModificationException from concurrent state mutations
-  new LinkedHashMap((state.autoDrivers ?: [:]) as Map).each { k, v ->
+  autoDrivers.each { k, v ->
     Map trackedDriver = v as Map
     String trackedDriverName = trackedDriver?.name?.toString() ?: ''
     String trackedNamespace = trackedDriver?.namespace?.toString() ?: ''
@@ -15733,22 +15979,24 @@ private void registerAutoDriver(String driverName, String namespace, String vers
   }
   keysToRemove.each { String oldKey ->
     logDebug("Removing old driver tracking entry: ${oldKey}")
-    state.autoDrivers.remove(oldKey)
+    autoDrivers.remove(oldKey)
   }
 
-  // Preserve existing devicesUsing list if updating an existing entry
-  List<String> existingDevices = state.autoDrivers[key]?.devicesUsing ?: []
+  // Preserve existing devicesUsing list and install timestamp if updating an existing entry
+  Map existingEntry = autoDrivers[key] as Map
+  List<String> existingDevices = (existingEntry?.devicesUsing ?: []) as List<String>
 
-  state.autoDrivers[key] = [
+  autoDrivers[key] = [
     name: driverName,
     namespace: namespace,
     version: version,
     components: components,
     componentPowerMonitoring: componentPowerMonitoring,
-    installedAt: state.autoDrivers[key]?.installedAt ?: now(),
+    installedAt: existingEntry?.installedAt ?: now(),
     lastUpdated: now(),
     devicesUsing: existingDevices
   ]
+  atomicState.autoDrivers = autoDrivers
 
   logInfo("Registered auto-generated driver: ${key} with components: ${components}")
 }
@@ -15761,13 +16009,13 @@ private void registerAutoDriver(String driverName, String namespace, String vers
  * @param driverName Exact driver name as stored in {@code state.autoDrivers[key].name}
  */
 private void removeDriverFromTracking(String driverName) {
-    Map autoDrivers = state.autoDrivers as Map ?: [:]
+    Map autoDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
     String keyToRemove = autoDrivers.find { String k, Object v ->
         (v as Map)?.name == driverName
     }?.key?.toString()
     if (keyToRemove) {
         autoDrivers.remove(keyToRemove)
-        state.autoDrivers = autoDrivers
+        atomicState.autoDrivers = autoDrivers
         logDebug("removeDriverFromTracking: removed '${driverName}' from tracking")
     }
 }
@@ -15785,17 +16033,19 @@ private void associateDeviceWithDriver(String driverName, String namespace, Stri
   initializeDriverTracking()
 
   String key = "${namespace}.${driverName}"
-  if(!state.autoDrivers[key]) {
+  Map autoDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
+  Map entry = autoDrivers[key] as Map
+  if(!entry) {
     logWarn("Cannot associate device ${deviceDNI} with unknown driver ${key}")
     return
   }
 
-  if(!state.autoDrivers[key].devicesUsing) {
-    state.autoDrivers[key].devicesUsing = []
-  }
-
-  if(!state.autoDrivers[key].devicesUsing.contains(deviceDNI)) {
-    state.autoDrivers[key].devicesUsing.add(deviceDNI)
+  List devicesUsing = (entry.devicesUsing instanceof List) ? entry.devicesUsing as List : []
+  if(!devicesUsing.contains(deviceDNI)) {
+    devicesUsing.add(deviceDNI)
+    entry.devicesUsing = devicesUsing
+    autoDrivers[key] = entry
+    atomicState.autoDrivers = autoDrivers
     logDebug("Associated device ${deviceDNI} with driver ${key}")
   }
 }
@@ -16990,6 +17240,37 @@ private void processWebhookParams(String parentDni, Map params) {
  * @param params The parsed query parameters
  * @return List of event maps to send to the child device
  */
+/**
+ * Parses a webhook path-segment token to Integer, tolerating decimal strings
+ * (e.g., "50.5" lux) and the literal "null" token. A bare 'as Integer' throws
+ * NumberFormatException on decimals, which discarded ALL events from that
+ * webhook — including piggybacked battery data.
+ *
+ * @param value The raw token value
+ * @return The rounded Integer, or null when missing/unparseable
+ */
+@CompileStatic
+private static Integer toIntegerSafe(Object value) {
+    BigDecimal parsed = toBigDecimalSafe(value)
+    return parsed != null ? parsed.setScale(0, BigDecimal.ROUND_HALF_UP).intValue() : null
+}
+
+/**
+ * Parses a webhook path-segment token to BigDecimal, tolerating the literal
+ * "null" token (sent when a template field is absent on the device) and
+ * malformed values.
+ *
+ * @param value The raw token value
+ * @return The parsed BigDecimal, or null when missing/unparseable
+ */
+@CompileStatic
+private static BigDecimal toBigDecimalSafe(Object value) {
+    if (value == null) { return null }
+    String s = value.toString()
+    if (!s || s == 'null') { return null }
+    try { return new BigDecimal(s) } catch (NumberFormatException ignored) { return null }
+}
+
 private List<Map> buildWebhookEvents(String dst, Map params) {
     List<Map> events = []
 
@@ -17012,27 +17293,27 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
         // New discrete cover webhooks (pos still comes via template query param)
         case 'cover_open':
             events.add([name: 'windowShade', value: 'open', descriptionText: 'Window shade is open'])
-            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            if (toIntegerSafe(params.pos) != null) { events.add([name: 'position', value: toIntegerSafe(params.pos), unit: '%']) }
             break
         case 'cover_closed':
             events.add([name: 'windowShade', value: 'closed', descriptionText: 'Window shade is closed'])
-            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            if (toIntegerSafe(params.pos) != null) { events.add([name: 'position', value: toIntegerSafe(params.pos), unit: '%']) }
             break
         case 'cover_stopped':
             events.add([name: 'windowShade', value: 'partially open', descriptionText: 'Window shade is partially open'])
-            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            if (toIntegerSafe(params.pos) != null) { events.add([name: 'position', value: toIntegerSafe(params.pos), unit: '%']) }
             break
         case 'cover_opening':
             events.add([name: 'windowShade', value: 'opening', descriptionText: 'Window shade is opening'])
-            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            if (toIntegerSafe(params.pos) != null) { events.add([name: 'position', value: toIntegerSafe(params.pos), unit: '%']) }
             break
         case 'cover_closing':
             events.add([name: 'windowShade', value: 'closing', descriptionText: 'Window shade is closing'])
-            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            if (toIntegerSafe(params.pos) != null) { events.add([name: 'position', value: toIntegerSafe(params.pos), unit: '%']) }
             break
         case 'cover_calibrating':
             events.add([name: 'windowShade', value: 'unknown', descriptionText: 'Window shade is calibrating'])
-            if (params.pos != null) { events.add([name: 'position', value: params.pos as Integer, unit: '%']) }
+            if (toIntegerSafe(params.pos) != null) { events.add([name: 'position', value: toIntegerSafe(params.pos), unit: '%']) }
             break
         case 'covermon':  // legacy
             if (params.state != null) {
@@ -17057,11 +17338,16 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
 
         case 'temperature':
             String scale = getLocationHelper()?.temperatureScale ?: 'F'
+            BigDecimal tCVal = toBigDecimalSafe(params.tC)
+            BigDecimal tFVal = toBigDecimalSafe(params.tF)
+            // Convert when only the other unit is present — the old fallback recorded a raw
+            // Fahrenheit number labeled °C on a Celsius hub (and dropped tC-only payloads
+            // entirely on a Fahrenheit hub)
             BigDecimal temp = null
-            if (scale == 'C' && params.tC) {
-                temp = params.tC as BigDecimal
-            } else if (params.tF) {
-                temp = params.tF as BigDecimal
+            if (scale == 'C') {
+                temp = tCVal != null ? tCVal : (tFVal != null ? fToC(tFVal).setScale(1, BigDecimal.ROUND_HALF_UP) : null)
+            } else {
+                temp = tFVal != null ? tFVal : (tCVal != null ? cToF(tCVal).setScale(1, BigDecimal.ROUND_HALF_UP) : null)
             }
             if (temp != null) {
                 events.add([name: 'temperature', value: temp,
@@ -17070,8 +17356,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             break
 
         case 'humidity':
-            if (params.rh != null) {
-                events.add([name: 'humidity', value: params.rh as BigDecimal,
+            if (toBigDecimalSafe(params.rh) != null) {
+                events.add([name: 'humidity', value: toBigDecimalSafe(params.rh),
                     unit: '%', descriptionText: "Humidity is ${params.rh}%"])
             }
             break
@@ -17129,8 +17415,9 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             break
 
         case 'illuminance':
-            if (params.lux != null) {
-                events.add([name: 'illuminance', value: params.lux as Integer,
+            // Shelly lux values can be fractional — toIntegerSafe rounds instead of throwing
+            if (toIntegerSafe(params.lux) != null) {
+                events.add([name: 'illuminance', value: toIntegerSafe(params.lux),
                     unit: 'lux', descriptionText: "Illuminance is ${params.lux} lux"])
             }
             break
@@ -17138,8 +17425,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
         // Light (dimmer) webhooks
         case 'light_on':
             events.add([name: 'switch', value: 'on', descriptionText: 'Light turned on'])
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
             break
@@ -17147,8 +17434,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             events.add([name: 'switch', value: 'off', descriptionText: 'Light turned off'])
             break
         case 'light_change':
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
             break
@@ -17156,8 +17443,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
         // RGB webhooks
         case 'rgb_on':
             events.add([name: 'switch', value: 'on', descriptionText: 'RGB light turned on'])
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
             break
@@ -17165,8 +17452,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             events.add([name: 'switch', value: 'off', descriptionText: 'RGB light turned off'])
             break
         case 'rgb_change':
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
             break
@@ -17174,8 +17461,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
         // RGBW webhooks
         case 'rgbw_on':
             events.add([name: 'switch', value: 'on', descriptionText: 'RGBW light turned on'])
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
             break
@@ -17183,8 +17470,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             events.add([name: 'switch', value: 'off', descriptionText: 'RGBW light turned off'])
             break
         case 'rgbw_change':
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
             break
@@ -17192,31 +17479,31 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
         // CCT webhooks
         case 'cct_on':
             events.add([name: 'switch', value: 'on', descriptionText: 'CCT light turned on'])
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
-            if (params.ct != null) {
-                events.add([name: 'colorTemperature', value: params.ct as Integer, unit: 'K'])
+            if (toIntegerSafe(params.ct) != null) {
+                events.add([name: 'colorTemperature', value: toIntegerSafe(params.ct), unit: 'K'])
             }
             break
         case 'cct_off':
             events.add([name: 'switch', value: 'off', descriptionText: 'CCT light turned off'])
             break
         case 'cct_change':
-            if (params.brightness != null) {
-                events.add([name: 'level', value: params.brightness as Integer,
+            if (toIntegerSafe(params.brightness) != null) {
+                events.add([name: 'level', value: toIntegerSafe(params.brightness),
                     unit: '%', descriptionText: "Level is ${params.brightness}%"])
             }
-            if (params.ct != null) {
-                events.add([name: 'colorTemperature', value: params.ct as Integer, unit: 'K'])
+            if (toIntegerSafe(params.ct) != null) {
+                events.add([name: 'colorTemperature', value: toIntegerSafe(params.ct), unit: 'K'])
             }
             break
 
         // Input analog webhooks
         case 'input_analog':
-            if (params.percent != null) {
-                events.add([name: 'percent', value: params.percent as BigDecimal,
+            if (toBigDecimalSafe(params.percent) != null) {
+                events.add([name: 'percent', value: toBigDecimalSafe(params.percent),
                     unit: '%', descriptionText: "Analog input is ${params.percent}%"])
             }
             break
@@ -17260,8 +17547,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
     }
 
     // Battery data piggybacked on any webhook (from supplemental token groups)
-    if (params.battPct != null) {
-        events.add([name: 'battery', value: params.battPct as Integer,
+    if (toIntegerSafe(params.battPct) != null) {
+        events.add([name: 'battery', value: toIntegerSafe(params.battPct),
             unit: '%', descriptionText: "Battery is ${params.battPct}%"])
     }
 
@@ -19645,6 +19932,9 @@ private void updateChildFromStatus(def child, String componentType, Map statusDa
             break
 
         case 'light':
+        case 'white':
+            // 'white' (RGBW2 white-mode channels) carries the same output/brightness shape
+            // as 'light' — without this case white children got zero events on refresh
             if (statusData.output != null) {
                 String switchState = statusData.output ? 'on' : 'off'
                 events.add([name: 'switch', value: switchState,

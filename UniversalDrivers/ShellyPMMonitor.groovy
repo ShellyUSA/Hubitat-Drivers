@@ -310,6 +310,7 @@ private void sendPmReportingIntervalToKVS() {
  */
 void refresh() {
   logDebug("refresh() called")
+  parent?.componentRefresh(device)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

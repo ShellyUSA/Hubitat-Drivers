@@ -768,6 +768,19 @@ void stopPositionChange() {
 }
 
 /**
+ * Starts movement of all covers in the given direction (WindowShade capability command).
+ * Without this method the Hubitat UI button throws MissingMethodException.
+ *
+ * @param direction Either 'open' or 'close'
+ */
+void startPositionChange(String direction) {
+  logDebug("Parent startPositionChange(${direction}) called")
+  if (direction == 'open') { open() }
+  else if (direction == 'close') { close() }
+  else { logWarn("startPositionChange: unknown direction '${direction}'") }
+}
+
+/**
  * Resets energy monitoring counters for all covers.
  */
 void resetEnergyMonitors() {

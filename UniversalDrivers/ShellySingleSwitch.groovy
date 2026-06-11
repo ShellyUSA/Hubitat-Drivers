@@ -317,6 +317,7 @@ private void routeWebhookParams(Map params) {
  */
 void refresh() {
   logDebug("refresh() called")
+  parent?.componentRefresh(device)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

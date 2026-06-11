@@ -357,6 +357,19 @@ void stopPositionChange() {
   parent?.componentStop(device)
 }
 
+/**
+ * Starts cover movement in the given direction (WindowShade capability command).
+ * Without this method the Hubitat UI button throws MissingMethodException.
+ *
+ * @param direction Either 'open' or 'close'
+ */
+void startPositionChange(String direction) {
+  logDebug("startPositionChange(${direction}) called")
+  if (direction == 'open') { open() }
+  else if (direction == 'close') { close() }
+  else { logWarn("startPositionChange: unknown direction '${direction}'") }
+}
+
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  END Cover Commands                                          ║
 // ╚══════════════════════════════════════════════════════════════╝

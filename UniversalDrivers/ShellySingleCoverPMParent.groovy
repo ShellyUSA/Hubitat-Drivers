@@ -665,6 +665,19 @@ void stopPositionChange() {
 }
 
 /**
+ * Starts cover movement in the given direction (WindowShade capability command).
+ * Without this method the Hubitat UI button throws MissingMethodException.
+ *
+ * @param direction Either 'open' or 'close'
+ */
+void startPositionChange(String direction) {
+  logDebug("startPositionChange(${direction}) called")
+  if (direction == 'open') { open() }
+  else if (direction == 'close') { close() }
+  else { logWarn("startPositionChange: unknown direction '${direction}'") }
+}
+
+/**
  * Maps a Shelly cover state string to a Hubitat windowShade value.
  *
  * @param coverState The Shelly cover state
