@@ -1034,14 +1034,8 @@ private static Map<String, Integer> powerstripUiRgbToHsv(List<Integer> rgb) {
 @CompileStatic
 private static Map buildPowerstripUiColorConfig(List<Integer> rgb, Integer brightness) {
   Map colorEntry = [rgb: rgb, brightness: brightness]
-  // Power Strip Gen4 has 4 outlets (switch:0–3); include all to ensure uniform color.
-  // The device ignores extra entries for unused outlets, so this is safe.
-  Map colors = [
-    'switch:0': [on: colorEntry, off: colorEntry],
-    'switch:1': [on: colorEntry, off: colorEntry],
-    'switch:2': [on: colorEntry, off: colorEntry],
-    'switch:3': [on: colorEntry, off: colorEntry]
-  ]
+  // POWERSTRIP_UI accepts only switch:0; that entry applies to all outlet LEDs.
+  Map colors = ['switch:0': [on: colorEntry, off: colorEntry]]
   return [config: [leds: [mode: 'switch', colors: colors]]]
 }
 

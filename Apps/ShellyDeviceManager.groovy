@@ -19727,6 +19727,7 @@ void parentSendCommand(def parentDevice, String method, Map params) {
         return
     }
 
+    params = normalizePowerstripUiSetConfigParams(method, params)
     logDebug("parentSendCommand from ${parentDevice.displayName}: ${method} with params ${params}")
 
     // Gen 1: route standard RPC method names to Gen 1 REST endpoints
@@ -19790,6 +19791,54 @@ void parentSendCommand(def parentDevice, String method, Map params) {
     } else {
         logDebug("parentSendCommand success: ${method} → ${response}")
     }
+}
+
+/**
+ * Normalizes POWERSTRIP_UI.SetConfig params for Shelly Power Strip Gen4.
+ *
+ * The device accepts only the single color entry `switch:0`; that entry applies
+ * to all outlet LEDs. Older parent drivers generated `switch:0` through
+ * `switch:3`, which causes RPC error -103: "Invalid argument 'switch'".
+ * Keeping this app-side guard fixes already-installed drivers as well as future
+ * manager-driven commands.
+ *
+ * @param method The Shelly RPC method name
+ * @param params The original RPC params map
+ * @return A params map compatible with POWERSTRIP_UI.SetConfig
+ */
+private Map normalizePowerstripUiSetConfigParams(String method, Map params) {
+    if (method != 'POWERSTRIP_UI.SetConfig') { return params }
+
+    Map config = params?.config as Map
+    Map leds = config?.leds as Map
+    Map colors = leds?.colors as Map
+    if (!colors) { return params }
+
+    Map switchColor = colors['switch:0'] as Map
+    if (!switchColor) {
+        def firstSwitchEntry = colors.find { k, v -> k?.toString()?.startsWith('switch:') }
+        switchColor = firstSwitchEntry?.value as Map
+    }
+    if (!switchColor) { return params }
+
+    Map normalizedColors = [:]
+    normalizedColors['switch:0'] = switchColor
+    colors.each { k, v ->
+        String key = k?.toString()
+        if (key && !key.startsWith('switch:')) {
+            normalizedColors[key] = v
+        }
+    }
+
+    if (normalizedColors == colors) { return params }
+
+    Map normalizedParams = new LinkedHashMap(params)
+    Map normalizedConfig = new LinkedHashMap(config)
+    Map normalizedLeds = new LinkedHashMap(leds)
+    normalizedLeds.colors = normalizedColors
+    normalizedConfig.leds = normalizedLeds
+    normalizedParams.config = normalizedConfig
+    return normalizedParams
 }
 
 /**
