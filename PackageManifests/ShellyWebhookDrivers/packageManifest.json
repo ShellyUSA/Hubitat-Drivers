@@ -225,6 +225,13 @@
       "required": false
     },
     {
+      "id": "5a138edc-b0f8-452d-89cd-b33bf9c6c2ba",
+      "name": "Shelly Flood Gen4",
+      "namespace": "ShellyUSA",
+      "location": "https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v2.16.2/ShellyFloodGen4-v2.16.2.groovy",
+      "required": false
+    },
+    {
       "id": "0f01c8d2-3cb7-4d99-828e-da2a44d6fa91",
       "name": "Shelly Gas",
       "namespace": "ShellyUSA",
