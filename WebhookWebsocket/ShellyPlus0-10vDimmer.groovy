@@ -8,9 +8,19 @@ metadata {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
+    capability 'Switch'
+    capability 'SwitchLevel' //level - NUMBER, unit:%
+    capability 'Light'
 
   }
 }
 
 @Field static Boolean WS = true
 @Field static Boolean DEVICEISBLUGATEWAY = true
+
+void deviceSpecificConfigure() {
+  Integer index = 0
+  setDeviceDataValue('switchId', "${index}")
+  setDeviceDataValue('lightId', "${index}")
+  setDeviceDataValue('switchLevelId', "${index}")
+}

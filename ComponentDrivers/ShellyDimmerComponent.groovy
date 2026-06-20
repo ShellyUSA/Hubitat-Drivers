@@ -6,6 +6,7 @@
 metadata {
   definition (name: 'Shelly Dimmer Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'Light' //switch - ENUM ["on", "off"]
+    capability 'Switch' //switch - ENUM ["on", "off"]
     capability 'SwitchLevel' //level - NUMBER, unit:%
     capability 'ChangeLevel'
 

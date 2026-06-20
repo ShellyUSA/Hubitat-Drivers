@@ -329,10 +329,28 @@ void getPreferencesFromShellyDevice() {
     Integer gen = shellyResults?.gen as Integer
     if(gen != null && gen > 1) {
       logDebug('Device is generation 2 or newer... Getting current config from device...')
-      Map shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
-      logDebug("Shelly.GetConfig Result: ${prettyJson(shellyGetConfigResult)}")
+        Map shellyGetConfigResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetConfigCommand())?.result
+        logDebug("Shelly.GetConfig Result: ${prettyJson(shellyGetConfigResult)}")
 
-      Set<String> switches = shellyGetConfigResult.keySet().findAll{it.startsWith('switch')}
+        if(shellyGetConfigResult == null || shellyGetConfigResult.size() == 0) {
+          logWarn('Shelly.GetConfig returned null/empty (possible 413 from oversized response) — trying Shelly.GetComponents as fallback...')
+          Map shellyGetComponentsResult = (LinkedHashMap<String, Object>)parentPostCommandSync(shellyGetComponentsCommand())?.result
+          if(shellyGetComponentsResult?.components != null && (shellyGetComponentsResult.components as List)?.size() > 0) {
+            List<Map> components = (List<Map>)shellyGetComponentsResult.components
+            shellyGetConfigResult = [:]
+            components.each{ component ->
+              String key = component?.key as String
+              Map config = component?.config as Map
+              if(key != null && config != null) { shellyGetConfigResult[key] = config }
+            }
+            logDebug("Shelly.GetComponents fallback succeeded — discovered ${shellyGetConfigResult.size()} components: ${shellyGetConfigResult.keySet()}")
+          } else {
+            logWarn('Shelly.GetComponents also returned null/empty. Device component IDs will be discovered from websocket status messages.')
+            return
+          }
+        }
+
+        Set<String> switches = shellyGetConfigResult.keySet().findAll{it.startsWith('switch')}
       Set<String> inputs = shellyGetConfigResult.keySet().findAll{it.startsWith('input')}
       Set<String> covers = shellyGetConfigResult.keySet().findAll{it.startsWith('cover')}
       Set<String> temps = shellyGetConfigResult.keySet().findAll{it.startsWith('temperature')}
@@ -1783,15 +1801,15 @@ void setValvePositionState(Integer level, Integer id = 0) {
 @CompileStatic
 void setSwitchLevelAttribute(Integer level, Integer id = 0) {
   if(level != null) {
-    if(getDeviceDataValue('switchLevelId') == null && getDeviceDataValue('switchLevelId') != id){
-      List<ChildDeviceWrapper> children = getSwitchLevelChildren()
-      if(children != null && children.size() > 0) {
-        sendChildDeviceEvent([name: 'level', value: level], getSwitchLevelChildById(id))
-      }
-    } else {
+    Integer parentSwitchLevelId = getIntegerDeviceDataValue('switchLevelId')
+    List<ChildDeviceWrapper> children = getSwitchLevelChildren()
+    ChildDeviceWrapper child = getSwitchLevelChildById(id)
+    if(children != null && children.size() > 0 && child != null) {
+      sendChildDeviceEvent([name: 'level', value: level], child)
+    }
+    if(parentSwitchLevelId != null && parentSwitchLevelId == id) {
       sendDeviceEvent([name: 'level', value: level])
     }
-
   }
 }
 
@@ -2030,11 +2048,12 @@ void setLevel(BigDecimal level, BigDecimal duration) {
         parentPostCommandAsync(rgbwSetCommand(id: getIntegerDeviceDataValue('rgbwId'), brightness: l, transitionDuration: d))
       }
     } else if(deviceIsDimmer(thisDevice()) == true) {
+      Boolean turnOn = l > 0
       if(duration == null) {
-        parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l))
+        parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), on: turnOn, brightness: l))
       } else {
-        Integer d = boundedLevel(duration as Integer, 0, 900)
-        parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), brightness: l, transitionDuration: d))
+        BigDecimal d = duration as BigDecimal
+        parentPostCommandAsync(lightSetCommand(id: getIntegerDeviceDataValue('switchLevelId'), on: turnOn, brightness: l, transitionDuration: d))
       }
     }
   }
@@ -2235,6 +2254,17 @@ LinkedHashMap shellyGetConfigCommand(String src = 'shellyGetConfig') {
     "src":src,
     "method":"Shelly.GetConfig",
     "params":[:]
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap shellyGetComponentsCommand(String src = 'shellyGetComponents') {
+  LinkedHashMap command = [
+    "id":0,
+    "src":src,
+    "method":"Shelly.GetComponents",
+    "params":["include":["config"]]
   ]
   return command
 }
@@ -3048,11 +3078,19 @@ LinkedHashMap lightGetStatusCommand(Integer id = 0, src = 'lightGetStatus') {
 }
 
 @CompileStatic
+private BigDecimal shellyTransitionSeconds(BigDecimal seconds) {
+  if (seconds == null || seconds <= 0) { return null }
+  if (seconds < 0.5G) { return 0.5G }
+  if (seconds > 10800G) { return 10800G }
+  return seconds
+}
+
+@CompileStatic
 LinkedHashMap lightSetCommand(
   Integer id = 0,
   Boolean on = null,
   Integer brightness = null,
-  Integer transitionDuration = null,
+  BigDecimal transitionDuration = null,
   Integer toggleAfter = null,
   Integer offset = null,
   src = 'lightSet'
@@ -3070,7 +3108,10 @@ LinkedHashMap lightSetCommand(
   }
   if(on != null) {command.params["on"] = on}
   if(brightness != null) {command.params["brightness"] = brightness}
-  if(transitionDuration != null) {command.params["transition_duration"] = transitionDuration}
+  if(transitionDuration != null) {
+    BigDecimal transitionSeconds = shellyTransitionSeconds(transitionDuration)
+    if (transitionSeconds != null) { command.params["transition_duration"] = transitionSeconds }
+  }
   if(toggleAfter != null) {command.params["toggle_after"] = toggleAfter}
   if(offset != null && brightness == null) {command.params["offset"] = offset}
   return command
@@ -3093,7 +3134,10 @@ LinkedHashMap lightSetCommand(LinkedHashMap args) {
   }
   if(args?.on != null) {command.params["on"] = args?.on}
   if(args?.brightness != null) {command.params["brightness"] = args?.brightness}
-  if(args?.transitionDuration != null) {command.params["transition_duration"] = args?.transitionDuration}
+  if(args?.transitionDuration != null) {
+    BigDecimal transitionSeconds = shellyTransitionSeconds(args?.transitionDuration as BigDecimal)
+    if (transitionSeconds != null) { command.params["transition_duration"] = transitionSeconds }
+  }
   if(args?.toggleAfter != null) {command.params["toggle_after"] = args?.toggleAfter}
   if(args?.offset != null && args?.brightness == null) {command.params["offset"] = args?.offset}
   return command
@@ -3158,7 +3202,7 @@ LinkedHashMap lightSetAllCommand(
   Integer id = 0,
   Boolean on = null,
   Integer brightness = null,
-  Integer transitionDuration = null,
+  BigDecimal transitionDuration = null,
   Integer toggleAfter = null,
   Integer offset = null,
   src = 'lightSet'
@@ -3176,7 +3220,10 @@ LinkedHashMap lightSetAllCommand(
   }
   if(on != null) {command.params["on"] = on}
   if(brightness != null) {command.params["brightness"] = brightness}
-  if(transitionDuration != null) {command.params["transition_duration"] = transitionDuration}
+  if(transitionDuration != null) {
+    BigDecimal transitionSeconds = shellyTransitionSeconds(transitionDuration)
+    if (transitionSeconds != null) { command.params["transition_duration"] = transitionSeconds }
+  }
   if(toggleAfter != null) {command.params["toggle_after"] = toggleAfter}
   if(offset != null && brightness == null) {command.params["offset"] = offset}
   return command
@@ -3437,7 +3484,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
-    if(k.startsWith('cover')) {
+    else if(k.startsWith('cover')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.current_pos != null) {
@@ -3480,7 +3527,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
-    if(k.startsWith('pm1')) {
+    else if(k.startsWith('pm1')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.current != null && update?.current != '') {
@@ -3510,7 +3557,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
-    if(k.startsWith('em1')) {
+    else if(k.startsWith('em1')) {
       LinkedHashMap update = (LinkedHashMap)v
       logTrace("Processing EM1 update: ${prettyJson(update)}")
       id = update?.id as Integer
@@ -3550,7 +3597,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
-    if(k.startsWith('em:') || k.startsWith('emdata:')) {
+    else if(k.startsWith('em:') || k.startsWith('emdata:')) {
       LinkedHashMap update = (LinkedHashMap)v
       logTrace("Processing EM update: ${prettyJson(update)}")
       id = update?.id as Integer
@@ -3669,7 +3716,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     }
 
     // Inputs
-    if(k.startsWith('input')) {
+    else if(k.startsWith('input')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
 
@@ -3693,7 +3740,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     }
 
     // Temperatures
-    if(k.startsWith('temperature')) {
+    else if(k.startsWith('temperature')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
 
@@ -3704,7 +3751,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     }
 
     // Humidities
-    if(k.startsWith('humidity')) {
+    else if(k.startsWith('humidity')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.rh != null) {
@@ -3714,7 +3761,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     }
 
     // Lights
-    if(k.startsWith('light')) {
+    else if(k.startsWith('light')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.brightness != null) {
@@ -3727,7 +3774,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
-    if(k.startsWith('rgb')) {
+    else if(k.startsWith('rgb')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       ChildDeviceWrapper child = getRGBChildById(id)
@@ -3779,7 +3826,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       logTrace("Update: ${prettyJson(update)}")
     }
 
-    if(k.startsWith('flood')) {
+    else if(k.startsWith('flood')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.alarm != null) {
@@ -3792,7 +3839,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
-    if(k.startsWith('voltmeter')) {
+    else if(k.startsWith('voltmeter')) {
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.voltage != null && update?.voltage != '') {
@@ -3801,7 +3848,7 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       }
     }
 
-    if(k.startsWith('devicepower')) {
+    else if(k.startsWith('devicepower')) {
       LinkedHashMap update = (LinkedHashMap)v
       LinkedHashMap battery = (LinkedHashMap)update?.battery
       Integer percent = battery?.percent as Integer
@@ -3834,30 +3881,39 @@ void processWebsocketMessagesBluetoothEvents(LinkedHashMap json) {
             sendEventToShellyBluetoothHelper("shellyBLEButtonDeviceEvents", buttons, address)
           }
           if(address != null && address != '' && evtData?.battery != null) {
-            sendEventToShellyBluetoothHelper("shellyBLEBatteryEvents", evtData?.battery as Integer, address)
+            sendEventToShellyBluetoothHelper("shellyBLEBatteryEvents", firstBTHomeValue(evtData?.battery) as Integer, address)
           }
           if(address != null && address != '' && evtData?.illuminance != null) {
-            sendEventToShellyBluetoothHelper("shellyBLEIlluminanceEvents", evtData?.illuminance as Integer, address)
+            sendEventToShellyBluetoothHelper("shellyBLEIlluminanceEvents", firstBTHomeValue(evtData?.illuminance) as Integer, address)
           }
           if(address != null && address != '' && evtData?.rotation != null) {
-            sendEventToShellyBluetoothHelper("shellyBLERotationEvents", evtData?.rotation as BigDecimal, address)
+            sendEventToShellyBluetoothHelper("shellyBLERotationEvents", firstBTHomeValue(evtData?.rotation) as BigDecimal, address)
           }
-          if(address != null && address != '' && evtData?.rotation != null) {
-            sendEventToShellyBluetoothHelper("shellyBLEWindowEvents", evtData?.window as Integer, address)
+          if(address != null && address != '' && evtData?.window != null) {
+            sendEventToShellyBluetoothHelper("shellyBLEWindowEvents", firstBTHomeValue(evtData?.window) as Integer, address)
           }
           if(address != null && address != '' && evtData?.motion != null) {
-            sendEventToShellyBluetoothHelper("shellyBLEMotionEvents", evtData?.motion as Integer, address)
+            sendEventToShellyBluetoothHelper("shellyBLEMotionEvents", firstBTHomeValue(evtData?.motion) as Integer, address)
           }
           if(address != null && address != '' && evtData?.temperature != null) {
-            sendEventToShellyBluetoothHelper("shellyBLETemperatureEvents", evtData?.temperature as BigDecimal, address)
+            sendEventToShellyBluetoothHelper("shellyBLETemperatureEvents", firstBTHomeValue(evtData?.temperature) as BigDecimal, address)
           }
           if(address != null && address != '' && evtData?.humidity != null) {
-            sendEventToShellyBluetoothHelper("shellyBLEHumidityEvents", evtData?.humidity as Integer, address)
+            sendEventToShellyBluetoothHelper("shellyBLEHumidityEvents", firstBTHomeValue(evtData?.humidity) as Integer, address)
           }
         }
       }
     }
   }
+}
+
+@CompileStatic
+Object firstBTHomeValue(Object value) {
+  if(value instanceof List) {
+    List values = (List)value
+    return values.size() > 0 ? values[0] : null
+  }
+  return value
 }
 
 @CompileStatic
@@ -4899,20 +4955,31 @@ LinkedHashMap decodeLanMessage(String message) {
 @CompileStatic
 void enableBluReportingToHE() {
   enableBluetooth()
+  Boolean scriptCreated = false
   LinkedHashMap s = getBleShellyBluId()
   if(s == null) {
     logDebug('HubitatBLEHelper script not found on device, creating script...')
     postCommandSync(scriptCreateCommand())
+    scriptCreated = true
     s = getBleShellyBluId()
   }
   Integer id = s?.id as Integer
   if(id != null) {
+    if(scriptCreated == false && s?.name == 'HubitatBLEHelper' && s?.enable == true && s?.running == true) {
+      logDebug('Bluetooth Helper is installed, enabled, and running')
+      logDebug('Skipping Shelly Bluetooth Helper upload during configure...')
+      return
+    }
     postCommandSync(scriptStopCommand(id))
-    logDebug('Getting latest Shelly Bluetooth Helper script...')
-    String js = getBleShellyBluJs()
-    logDebug('Sending latest Shelly Bluetooth Helper to device...')
-    postCommandSync(scriptPutCodeCommand(id, js, false))
-    logDebug('Enabling Shelly Bluetooth HelperShelly Bluetooth Helper on device...')
+    if(scriptCreated == true) {
+      logDebug('Getting latest Shelly Bluetooth Helper script...')
+      String js = getBleShellyBluJs()
+      logDebug('Sending latest Shelly Bluetooth Helper to device...')
+      postCommandSync(scriptPutCodeCommand(id, js, false))
+    } else {
+      logDebug('Shelly Bluetooth Helper already exists, enabling/starting without uploading code...')
+    }
+    logDebug('Enabling Shelly Bluetooth Helper on device...')
     postCommandSync(scriptEnableCommand(id))
     logDebug('Starting Shelly Bluetooth Helper on device...')
     postCommandSync(scriptStartCommand(id))
@@ -5001,6 +5068,7 @@ ChildDeviceWrapper createChildDimmer(Integer id) {
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
   }
   child.updateDataValue('switchLevelId',"${id}")
+  child.updateDataValue('switchId',"${id}")
   return child
 }
 
@@ -5576,17 +5644,22 @@ LinkedHashMap postCommandSync(LinkedHashMap command) {
     httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
     setAuthIsEnabled(false)
   } catch(HttpResponseException ex) {
-    if(ex.getStatusCode() != 401) {logWarn("Exception: ${ex}")}
-    setAuthIsEnabled(true)
-    String authToProcess = ex.getResponse().getAllHeaders().find{ it.getValue().contains('nonce')}.getValue().replace('Digest ', '')
-    authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
-    processUnauthorizedMessage("{${authToProcess}}".toString())
-    try {
-      if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-      params.body = command
-      httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
-    } catch(HttpResponseException ex2) {
-      logError('Auth failed a second time. Double check password correctness.')
+    if(ex.getStatusCode() == 401) {
+      setAuthIsEnabled(true)
+      String authToProcess = ex.getResponse()?.getAllHeaders()?.find{ it.getValue().contains('nonce')}?.getValue()?.replace('Digest ', '')
+      if(authToProcess != null && authToProcess != '') {
+        authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
+        processUnauthorizedMessage("{${authToProcess}}".toString())
+        try {
+          if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+          params.body = command
+          httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+        } catch(HttpResponseException ex2) {
+          logError('Auth failed a second time. Double check password correctness.')
+        }
+      }
+    } else {
+      logWarn("Exception: ${ex}")
     }
   }
   logTrace("postCommandSync returned: ${prettyJson(json)}")
@@ -5621,7 +5694,7 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
     Map command = data.command
     setAuthIsEnabled(true)
     // logWarn("Error headers: ${response?.getHeaders()}")
-    String authToProcess = response?.getHeaders().find{ it.getValue().contains('nonce')}.getValue().replace('Digest ', '')
+    String authToProcess = response?.getHeaders().find{ it.getValue().contains('nonce')}?.getValue()?.replace('Digest ', '')
     authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
     processUnauthorizedMessage("{${authToProcess}}".toString())
     if(authIsEnabled() == true && getAuth().size() > 0) {
@@ -5653,16 +5726,21 @@ LinkedHashMap postSync(LinkedHashMap command) {
     httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
     setAuthIsEnabled(false)
   } catch(HttpResponseException ex) {
-    logWarn("Exception: ${ex}")
-    setAuthIsEnabled(true)
-    String authToProcess = ex.getResponse().getAllHeaders().find{ it.getValue().contains('nonce')}.getValue().replace('Digest ', '')
-    authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
-    processUnauthorizedMessage("{${authToProcess}}".toString())
-    try {
-      if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-      httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
-    } catch(HttpResponseException ex2) {
-      logError('Auth failed a second time. Double check password correctness.')
+    if(ex.getStatusCode() == 401) {
+      setAuthIsEnabled(true)
+      String authToProcess = ex.getResponse()?.getAllHeaders()?.find{ it.getValue().contains('nonce')}?.getValue()?.replace('Digest ', '')
+      if(authToProcess != null && authToProcess != '') {
+        authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
+        processUnauthorizedMessage("{${authToProcess}}".toString())
+        try {
+          if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+          httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+        } catch(HttpResponseException ex2) {
+          logError('Auth failed a second time. Double check password correctness.')
+        }
+      }
+    } else {
+      logWarn("Exception: ${ex}")
     }
   }
   logTrace("postCommandSync returned: ${prettyJson(json)}")
