@@ -11,3 +11,5 @@ watch_and_push.sh
 /.claude
 *.class
 .worktrees
+.hubitat/metadata.json3
+.hubitat/oldmetadata.json
