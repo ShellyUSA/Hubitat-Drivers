@@ -2069,6 +2069,13 @@ private Set<String> getHubDeviceDnis() {
  * @param ipAddress The IP address of the Shelly device to reinitialize
  */
 void reinitializeDevice(String ipAddress) {
+    // Guard against recursive reinit triggered by a driver switch below.
+    // addChildDevice fires updated() which may call back into this method.
+    if (atomicState.driverSwitchInProgress == true) {
+        logDebug("reinitializeDevice: driver switch in progress, deferring reinit for ${ipAddress}")
+        return
+    }
+
     def childDevice = findChildDeviceByIp(ipAddress)
     if (!childDevice) {
         logError("reinitializeDevice: no child device found for ${ipAddress}")
@@ -2132,6 +2139,20 @@ void reinitializeDevice(String ipAddress) {
     // This resets the preference to ON, re-enabling LED control after reinit.
     if (hasPlugsUi || hasPowerstripUi) {
         childDevice.updateSetting('enableLedControl', [type: 'bool', value: true])
+    }
+
+    // Step 7: Check if a more appropriate driver was detected for this device's
+    // current components. Handles cases like Shelly 2PM switching from relay mode
+    // to cover mode, or devices that were initially assigned a generic driver.
+    String newDriverVersioned = (discoveredDevice?.generatedDriverName ?: '').toString()
+    if (newDriverVersioned) {
+        String newBaseName = newDriverVersioned.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        String currentTypeName = childDevice.typeName ?: ''
+        String currentBaseName = currentTypeName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        if (newBaseName && newBaseName != currentBaseName) {
+            logInfo("Driver change detected for ${ipAddress}: '${currentBaseName}' → '${newBaseName}'")
+            switchDeviceDriver(childDevice, ipAddress, newDriverVersioned, newBaseName)
+        }
     }
 
     logInfo("Reinitialization complete for ${ipAddress}")
@@ -2207,6 +2228,134 @@ private void updateComponentDriversForDevice(Map config) {
             logInfo("Updating component driver '${compDriverName}' from GitHub...")
             fetchAndInstallComponentDriver(fileName, compDriverName)
         }
+    }
+}
+
+/**
+ * Switches an existing device to a newly-detected driver that better matches
+ * its current components. Handles both monolithic and parent-child devices.
+ * Uses addChildDevice with the same DNI to update the driver in-place,
+ * preserving the device label and network ID.
+ *
+ * @param childDevice The current child device to re-driver
+ * @param ipAddress The device IP address
+ * @param newDriverVersioned The versioned driver name (e.g. "Shelly Autoconf Single Switch PM v3.2.1")
+ * @param newBaseName The base driver name without version suffix
+ */
+private void switchDeviceDriver(def childDevice, String ipAddress, String newDriverVersioned, String newBaseName) {
+    String dni = childDevice.deviceNetworkId
+    String currentLabel = childDevice.label ?: childDevice.displayName ?: ''
+    String oldTypeName = childDevice.typeName ?: ''
+    Map deviceInfo = state.discoveredShellys[ipAddress] as Map
+    if (!deviceInfo) {
+        logError("switchDeviceDriver: no discovery data for ${ipAddress}")
+        return
+    }
+    Map deviceStatus = deviceInfo?.deviceStatus ?: [:]
+    Map<String, Boolean> componentPowerMonitoring = (deviceInfo?.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
+    Boolean needsParentChild = deviceInfo?.needsParentChild ?: false
+
+    // Ensure the new driver is installed on the hub (determineDeviceDriver already
+    // installed it, but verify in case of an error)
+    if (!ensureDriverInstalled(newDriverVersioned, deviceInfo)) {
+        logError("Cannot switch device to '${newDriverVersioned}': driver not installed on hub")
+        appendLog('error', "Driver switch failed: ${newBaseName} not installed")
+        return
+    }
+
+    // Install component drivers for parent-child devices BEFORE creating the device,
+    // so the driver's installed() can create children immediately.
+    if (needsParentChild) {
+        installComponentDriversForDevice(deviceInfo)
+
+        // Special cases: Plus Uni and Pill need all component driver variants installed upfront
+        if (newBaseName == 'Shelly Autoconf Plus Uni Parent') {
+            installPlusUniComponentDrivers()
+        } else if (newBaseName == 'Shelly Autoconf Pill Parent') {
+            installPillComponentDrivers()
+        }
+    }
+
+    // Build fresh data properties for the new driver.
+    // Mirrors createMonolithicDevice / createMultiComponentDevice but preserves the existing label.
+    String shellyGen = (deviceInfo?.gen ?: '2').toString()
+    Map dataMap = [
+        ipAddress: ipAddress,
+        shellyModel: (deviceInfo?.model ?: 'Unknown').toString(),
+        shellyId: (deviceInfo?.id ?: dni).toString(),
+        shellyMac: (deviceInfo?.mac ?: '').toString(),
+        shellyGen: shellyGen
+    ]
+    if (deviceInfo?.gen1Type) { dataMap.gen1Type = deviceInfo.gen1Type.toString() }
+
+    // Pre-detect UI components
+    Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') } ||
+            childDevice.getDataValue('hasPlugsUi') == 'true'
+    Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') } ||
+            childDevice.getDataValue('hasPowerstripUi') == 'true'
+    if (hasPlugsUi) { dataMap.hasPlugsUi = 'true' }
+    if (hasPowerstripUi) { dataMap.hasPowerstripUi = 'true' }
+
+    if (needsParentChild) {
+        dataMap.isParentDevice = 'true'
+
+        // Build component and PM component lists
+        List<String> components = []
+        List<String> pmComponents = []
+        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc',
+            'temperature', 'humidity', 'illuminance', 'blutrv', 'presencezone', 'voltmeter'] as Set
+        deviceStatus.each { k, v ->
+            String key = k.toString()
+            String baseType = key.contains(':') ? key.split(':')[0] : key
+            if (childComponentTypes.contains(baseType)) {
+                components.add(key)
+                if (componentPowerMonitoring[key]) { pmComponents.add(key) }
+            }
+        }
+        dataMap.components = components.join(',')
+        if (pmComponents) { dataMap.pmComponents = pmComponents.join(',') }
+
+        // EM parent: set switchId for relay/contactor control
+        if (newBaseName.contains('EM Parent')) {
+            dataMap.switchId = newBaseName.contains('Gen1') ? '0' : '100'
+        }
+    }
+
+    Map deviceProps = [
+        name: currentLabel,
+        label: currentLabel,
+        data: dataMap
+    ]
+
+    logInfo("Switching device driver: '${oldTypeName}' → '${newDriverVersioned}'")
+    appendLog('info', "Switching driver: ${oldTypeName} → ${newBaseName}")
+
+    // Set recursion guard — addChildDevice triggers updated() which may call
+    // reinitializeDevice again. The guard prevents an infinite loop.
+    atomicState.driverSwitchInProgress = true
+    try {
+        def updatedDevice = addChildDevice('ShellyDeviceManager', newDriverVersioned, dni, deviceProps)
+        state.remove('hubDnisCachedAt')
+
+        logInfo("Device driver switched: ${currentLabel} → '${newBaseName}'")
+        appendLog('info', "Driver switched to: ${newBaseName}")
+
+        // Update driver tracking: move device from old driver to new driver
+        if (oldTypeName) {
+            disassociateDeviceFromDriver(oldTypeName, 'ShellyDeviceManager', dni)
+        }
+        associateDeviceWithDriver(newDriverVersioned, 'ShellyDeviceManager', dni)
+
+        // Update stored device config with new driver name
+        storeDeviceConfig(dni, deviceInfo, newDriverVersioned, needsParentChild, [])
+
+        // Update the caller's device reference
+        childDevice = updatedDevice
+    } catch (Exception e) {
+        logError("Failed to switch device driver: ${e.message}")
+        appendLog('error', "Driver switch failed: ${e.message}")
+    } finally {
+        atomicState.remove('driverSwitchInProgress')
     }
 }
 
@@ -2368,7 +2517,8 @@ void installNextScript(Map data) {
                 currentScriptName: scriptName,
                 currentScriptId: scriptId,
                 isUpdate: isUpdate,
-                queueIndex: queueIndex
+                queueIndex: queueIndex,
+                expectedCodeLength: scriptCode.length()
             ]
         ])
     } catch (Exception ex) {
@@ -2386,37 +2536,79 @@ void installNextScript(Map data) {
  *
  * @param data Map containing queue state plus currentScriptId, currentScriptName, isUpdate
  */
-void scriptInstallStepComplete(Map data) {
-    Integer scriptId = data.currentScriptId as Integer
-    String scriptName = data.currentScriptName as String
-    Boolean isUpdate = data.isUpdate as Boolean
-    String uri = data.uri as String
-    Boolean hasAuth = data.hasAuth as Boolean
-    String deviceDisplayName = data.deviceDisplayName as String
-    Integer installed = (data.installed as Integer) + 1
-    Integer updated = (data.updated as Integer) + (isUpdate ? 1 : 0)
-    Integer queueIndex = data.queueIndex as Integer
+	void scriptInstallStepComplete(Map data) {
+	    Integer scriptId = data.currentScriptId as Integer
+	    String scriptName = data.currentScriptName as String
+	    Boolean isUpdate = data.isUpdate as Boolean
+	    String uri = data.uri as String
+	    Boolean hasAuth = data.hasAuth as Boolean
+	    String deviceDisplayName = data.deviceDisplayName as String
+	    Integer queueIndex = data.queueIndex as Integer
+	    Integer retryCount = (data.retryCount ?: 0) as Integer
 
-    try {
-        LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-        if (hasAuth) { enableCmd.auth = getAuth() }
-        postCommandSync(enableCmd, uri)
+	    // Verify uploaded code length matches expected (catch truncation early)
+	    Integer expectedLen = data.expectedCodeLength as Integer
+	    if (expectedLen != null && expectedLen > 0) {
+	        LinkedHashMap getCodeCmd = scriptGetCodeCommand(scriptId, 0, 1)
+	        if (hasAuth) { getCodeCmd.auth = getAuth() }
+	        LinkedHashMap codeResult = postCommandSync(getCodeCmd, uri)
+	        Integer uploadedLen = codeResult?.result?.len as Integer
+	        if (uploadedLen != null && uploadedLen != expectedLen) {
+	            logWarn("Script '${scriptName}' appears truncated: uploaded ${uploadedLen}B, expected ${expectedLen}B")
+	            if (retryCount < 1) {
+	                logInfo("Retrying upload of '${scriptName}' (attempt ${retryCount + 1})...")
+	                appendLog('warn', "Retrying truncated upload of ${scriptName}")
+	                retryScriptUpload(data)
+	                return
+	            }
+	            logError("Script '${scriptName}' remains truncated after retry — upload may be too large for device")
+	            appendLog('error', "Failed to fully upload ${scriptName} (${uploadedLen}/${expectedLen}B)")
+	            installNextScript(data + [queueIndex: queueIndex + 1])
+	            return
+	        }
+	    }
 
-        LinkedHashMap startCmd = scriptStartCommand(scriptId)
-        if (hasAuth) { startCmd.auth = getAuth() }
-        postCommandSync(startCmd, uri)
+	    Integer installed = data.installed as Integer
+	    Integer updated = data.updated as Integer
 
-        String action = isUpdate ? 'Updated' : 'Installed'
-        logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
-        appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
-    } catch (Exception ex) {
-        logWarn("Failed to enable/start script '${scriptName}' after upload: ${ex.message} — continuing with next script")
-        appendLog('warn', "Failed to enable/start ${scriptName}: ${ex.message}")
-    }
+	    try {
+	        LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+	        if (hasAuth) { enableCmd.auth = getAuth() }
+	        LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
+	        if (enableResult?.error) {
+	            logWarn("Script.Enable failed for '${scriptName}': ${enableResult.error}")
+	            appendLog('warn', "Failed to enable ${scriptName}: ${enableResult.error?.message ?: enableResult.error}")
+	        } else {
+	            LinkedHashMap startCmd = scriptStartCommand(scriptId)
+	            if (hasAuth) { startCmd.auth = getAuth() }
+	            LinkedHashMap startResult = postCommandSync(startCmd, uri)
+	            if (startResult?.error) {
+	                String errMsg = startResult.error?.message ?: startResult.error?.toString() ?: 'unknown error'
+	                Boolean isSyntax = errMsg.contains('syntax_error') || errMsg.contains('SyntaxError')
+	                if (isSyntax && retryCount < 1) {
+	                    logWarn("Script '${scriptName}' has syntax error (truncated upload) — retrying")
+	                    appendLog('warn', "Retrying upload of ${scriptName} (syntax error)")
+	                    retryScriptUpload(data)
+	                    return
+	                }
+	                logError("Script.Start failed for '${scriptName}': ${errMsg}")
+	                appendLog('error', "Failed to start ${scriptName}: ${errMsg}")
+	            } else {
+	                installed++
+	                if (isUpdate) { updated++ }
+	                String action = isUpdate ? 'Updated' : 'Installed'
+	                logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
+	                appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
+	            }
+	        }
+	    } catch (Exception ex) {
+	        logWarn("Failed to enable/start script '${scriptName}' after upload: ${ex.message} — continuing with next script")
+	        appendLog('warn', "Failed to enable/start ${scriptName}: ${ex.message}")
+	    }
 
-    // Continue with next script in queue
-    installNextScript(data + [queueIndex: queueIndex + 1, installed: installed, updated: updated])
-}
+	    // Continue with next script in queue
+	    installNextScript(data + [queueIndex: queueIndex + 1, installed: installed, updated: updated])
+	}
 
 /**
  * Error callback when a script's chunk upload fails.
@@ -2436,6 +2628,88 @@ void scriptInstallStepError(Map data) {
 
     // Continue with next script in queue
     installNextScript(data + [queueIndex: queueIndex + 1])
+}
+
+/**
+ * Retries uploading a script after detection of truncation or syntax error.
+ * Re-downloads the script code from GitHub, stops the existing script slot,
+ * and restarts the async chunk upload with an incremented retry count.
+ *
+ * @param data Map containing queue state from the failed upload attempt
+ */
+void retryScriptUpload(Map data) {
+    Integer scriptId = data.currentScriptId as Integer
+    String scriptName = data.currentScriptName as String
+    Integer queueIndex = data.queueIndex as Integer
+    Integer retryCount = ((data.retryCount ?: 0) as Integer) + 1
+    String uri = data.uri as String
+    Boolean hasAuth = data.hasAuth as Boolean
+    String baseUrl = data.baseUrl as String
+    String ipAddress = data.ipAddress as String
+    String deviceDisplayName = data.deviceDisplayName as String
+    List<String> scriptQueue = data.scriptQueue as List<String>
+
+    if (queueIndex >= scriptQueue.size()) {
+        logError("retryScriptUpload: invalid queue index ${queueIndex}")
+        return
+    }
+
+    String scriptFile = scriptQueue[queueIndex]
+
+    // Re-download script code from GitHub
+    String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
+    if (!scriptCode) {
+        logError("Retry failed: cannot re-download ${scriptFile}")
+        appendLog('error', "Failed to retry ${scriptName}: download failed")
+        installNextScript(data + [queueIndex: queueIndex + 1])
+        return
+    }
+
+    try {
+        // Stop the existing (corrupted) script before re-uploading
+        LinkedHashMap stopCmd = scriptStopCommand(scriptId)
+        if (hasAuth) { stopCmd.auth = getAuth() }
+        postCommandSync(stopCmd, uri)
+    } catch (Exception ex) {
+        logDebug("retryScriptUpload: stop before retry failed (non-fatal): ${ex.message}")
+    }
+
+    // Store fresh code in state for chunked upload
+    String codeStateKey = "scriptUpload_${scriptId}".toString()
+    state[codeStateKey] = scriptCode
+
+    // Build lightweight completionData — script code stays in state
+    Map lightContext = [
+        ipAddress: ipAddress,
+        deviceDisplayName: deviceDisplayName,
+        uri: uri,
+        hasAuth: hasAuth,
+        baseUrl: baseUrl,
+        installedScripts: data.installedScripts,
+        scriptQueue: scriptQueue,
+        installed: data.installed,
+        updated: data.updated,
+        reconcileActionsAfterInstall: data.reconcileActionsAfterInstall
+    ]
+
+    uploadScriptChunk([
+        scriptId: scriptId,
+        codeStateKey: codeStateKey,
+        uri: uri,
+        hasAuth: hasAuth,
+        offset: 0,
+        chunkNum: 0,
+        completionCallback: 'scriptInstallStepComplete',
+        errorCallback: 'scriptInstallStepError',
+        completionData: lightContext + [
+            currentScriptName: scriptName,
+            currentScriptId: scriptId,
+            isUpdate: true,  // script slot already exists; treat as update
+            queueIndex: queueIndex,
+            retryCount: retryCount,
+            expectedCodeLength: scriptCode.length()
+        ]
+    ])
 }
 
 /**
@@ -2536,12 +2810,29 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
             if (!enabled) {
                 LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
                 if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
-                postCommandSync(enableCmd, uri)
+                LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
+                if (enableResult?.error) {
+                    logWarn("Script.Enable failed for '${name}': ${enableResult.error}")
+                    appendLog('warn', "Failed to enable ${name}: ${enableResult.error?.message ?: enableResult.error}")
+                    return
+                }
             }
             if (!running) {
                 LinkedHashMap startCmd = scriptStartCommand(scriptId)
                 if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
-                postCommandSync(startCmd, uri)
+                LinkedHashMap startResult = postCommandSync(startCmd, uri)
+                if (startResult?.error) {
+                    String errMsg = startResult.error?.message ?: startResult.error?.toString() ?: 'unknown error'
+                    Boolean isSyntax = errMsg.contains('syntax_error') || errMsg.contains('SyntaxError')
+                    if (isSyntax) {
+                        logWarn("Script '${name}' has syntax error (possibly truncated) — try 'Install Scripts' to re-upload")
+                        appendLog('warn', "Cannot start ${name}: script appears truncated — reinstall recommended")
+                    } else {
+                        logWarn("Script.Start failed for '${name}': ${errMsg}")
+                        appendLog('warn', "Failed to start ${name}: ${errMsg}")
+                    }
+                    return
+                }
             }
 
             logInfo("Script '${name}' is now enabled and running")
@@ -10064,10 +10355,22 @@ void uploadScriptChunk(Map data) {
     // offline mid-upload aborted the scheduled execution before cleanup: the multi-KB script
     // source stayed in state forever and neither callback fired, silently stalling the
     // script-install queue with a truncated script left on the device.
+    //
+    // SocketTimeoutException retry: Shelly devices under load may drop chunk uploads.
+    // Retry up to 5 times with progressive backoff (1s, 3s, 5s, 10s, 15s) before giving up.
+    Integer chunkRetryCount = (data.chunkRetryCount ?: 0) as Integer
     LinkedHashMap result
     try {
         result = postCommandSync(putCmd, uri)
     } catch (Exception e) {
+        Boolean isTimeout = e.toString()?.contains('SocketTimeout') || e.message?.contains('timed out')
+        if (isTimeout && chunkRetryCount < 5) {
+            Integer[] retryDelays = [1000, 3000, 5000, 10000, 15000]
+            Integer delay = retryDelays[chunkRetryCount]
+            logWarn("Script upload chunk ${chunkNum} (offset ${offset}) timed out - retrying in ${delay}ms (attempt ${chunkRetryCount + 1}/5)")
+            runInMillis(delay, 'uploadScriptChunk', [data: data + [chunkRetryCount: chunkRetryCount + 1]])
+            return
+        }
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${e.message ?: e.toString()}"
         logError(errMsg)
         state.remove(codeStateKey)
@@ -12497,11 +12800,21 @@ void enableBleGatewayComplete(Map data) {
     // Step 5: Enable and start
     LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
     if (hasAuth) { enableCmd.auth = getAuth() }
-    postCommandSync(enableCmd, uri)
+    LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
+    if (enableResult?.error) {
+        bleLogWarn("Script.Enable failed for HubitatBLEHelper on ${ip}: ${enableResult.error}")
+        appendLog('warn', "Failed to enable BLE script on ${ip}: ${enableResult.error?.message ?: enableResult.error}")
+        return
+    }
 
     LinkedHashMap startCmd = scriptStartCommand(scriptId)
     if (hasAuth) { startCmd.auth = getAuth() }
-    postCommandSync(startCmd, uri)
+    LinkedHashMap startResult = postCommandSync(startCmd, uri)
+    if (startResult?.error) {
+        bleLogWarn("Script.Start failed for HubitatBLEHelper on ${ip}: ${startResult.error}")
+        appendLog('warn', "Failed to start BLE script on ${ip}: ${startResult.error?.message ?: startResult.error}")
+        return
+    }
 
     // Step 6: Write hub IP to KVS
     writeHubitatIpToKVS(ip)
@@ -16131,6 +16444,46 @@ private void associateDeviceWithDriver(String driverName, String namespace, Stri
     autoDrivers[key] = entry
     atomicState.autoDrivers = autoDrivers
     logDebug("Associated device ${deviceDNI} with driver ${key}")
+  }
+}
+
+/**
+ * Removes a device association from an auto-generated driver's tracking.
+ * Reverse of {@link #associateDeviceWithDriver}.
+ *
+ * @param driverName The driver name (may be versioned, e.g. "Shelly Autoconf Single Switch v3.2.1")
+ * @param namespace The driver namespace
+ * @param deviceDNI The device network ID to disassociate
+ */
+private void disassociateDeviceFromDriver(String driverName, String namespace, String deviceDNI) {
+  initializeDriverTracking()
+
+  String key = "${namespace}.${driverName}"
+  Map autoDrivers = new LinkedHashMap((atomicState.autoDrivers ?: [:]) as Map)
+  Map entry = autoDrivers[key] as Map
+  if (!entry) {
+    // Driver may have been registered under a non-versioned key; try base name lookup
+    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+    Map.Entry match = autoDrivers.find { String k, Object v ->
+      String trackedBase = ((v as Map)?.name?.toString() ?: '').replaceAll(/\s+v\d+(\.\d+)*$/, '')
+      return ((v as Map)?.namespace?.toString() ?: '') == namespace && trackedBase == baseName
+    }
+    if (match) {
+      key = match.key.toString()
+      entry = match.value as Map
+    }
+  }
+  if (!entry) {
+    logDebug("Cannot disassociate device ${deviceDNI}: driver ${key} not found in tracking")
+    return
+  }
+
+  List devicesUsing = (entry.devicesUsing instanceof List) ? entry.devicesUsing as List : []
+  if (devicesUsing.remove(deviceDNI)) {
+    entry.devicesUsing = devicesUsing
+    autoDrivers[key] = entry
+    atomicState.autoDrivers = autoDrivers
+    logDebug("Disassociated device ${deviceDNI} from driver ${key}")
   }
 }
 
