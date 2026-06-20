@@ -129,8 +129,8 @@ private void reconcileChildDevices() {
     return
   }
 
-  Set<String> pmComponents = pmStr ? pmStr.split(',').toSet() : [] as Set
-  List<String> components = componentStr.split(',').toList()
+  Set<String> pmComponents = pmStr ? pmStr.split(',').collect { it.trim() }.findAll { it }.toSet() : [] as Set
+  List<String> components = componentStr.split(',').collect { it.trim() }.findAll { it }
 
   // Build set of DNIs that SHOULD exist
   // EM (3-phase) expands to 3 children per component (one per phase a/b/c)

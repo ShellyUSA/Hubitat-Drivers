@@ -142,6 +142,12 @@
     'shelly1pmg4anz': 'Shelly Autoconf Single Switch PM 1PM Gen4',
     'shellypowerstrip4g4': 'Shelly Autoconf Power Strip 4 Gen4 Parent',
     's3dm-0a1ww':      'Shelly Autoconf DALI Dimmer',
+    's3dm-0a10nww':    'Shelly Autoconf Single Dimmer',    // Shelly Dimmer 0/1-10V Gen3 (non-PM)
+    's3dm-0010ww':     'Shelly Autoconf Single Dimmer PM', // Shelly Dimmer 0/1-10V PM Gen3
+    's3dm-0a101ww':    'Shelly Autoconf Single Dimmer PM', // Defensive alias seen in older metadata/comments
+    's3dm-0a101wwl':   'Shelly Autoconf Single Dimmer PM', // Shelly Dimmer Gen3
+    'shelly0110dimg3': 'Shelly Autoconf Single Dimmer PM', // Device id/SSID prefix for 0/1-10V PM Gen3
+    'shellydimmerg3':  'Shelly Autoconf Single Dimmer PM', // Device id/SSID prefix for Dimmer Gen3
     'sawd-5a1xx10eu0': 'Shelly Autoconf Wall Display X2i Parent',
     'sawd-3a1xe10eu2': 'Shelly Autoconf Wall Display XL Parent',
 ]
@@ -8055,6 +8061,12 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
                 state.discoveredShellys[ipKey].needsParentChild = true
             }
             logDebug("Forcing parent-child architecture for dedicated parent driver '${driverName}'")
+        } else if (needsParentChild && driverName && !driverName.endsWith(' Parent') && PREBUILT_DRIVERS.containsKey(driverName)) {
+            needsParentChild = false
+            if (ipKey && state.discoveredShellys[ipKey]) {
+                state.discoveredShellys[ipKey].needsParentChild = false
+            }
+            logDebug("Using dedicated standalone driver '${driverName}' despite multi-component shape")
         }
 
         String version = getAppVersion()

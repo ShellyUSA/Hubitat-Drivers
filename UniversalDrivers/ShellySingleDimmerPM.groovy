@@ -3,8 +3,8 @@
  *
  * Pre-built standalone driver for single-dimmer Shelly Gen 2/3 devices with
  * power monitoring.
- * Examples: Shelly Dimmer Gen3 (S3DM-0010WW), Shelly Plus Wall Dimmer,
- *           Shelly Dimmer 0/1-10V PM Gen3 (S3DM-0A101WW)
+ * Examples: Shelly Dimmer Gen3 (S3DM-0A101WWL), Shelly Plus Wall Dimmer,
+ *           Shelly Dimmer 0/1-10V PM Gen3 (S3DM-0010WW)
  *
  * This driver is installed directly by ShellyDeviceManager, bypassing the modular
  * assembly pipeline. Commands delegate to the parent app via componentLightOn/Off,
