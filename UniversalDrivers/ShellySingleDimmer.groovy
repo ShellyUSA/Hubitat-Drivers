@@ -21,6 +21,10 @@ metadata {
     //Attributes: switch - ENUM ["on", "off"]
     //Commands: on(), off()
 
+    capability 'Switch'
+    //Attributes: switch - ENUM ["on", "off"]
+    //Commands: on(), off()
+
     capability 'SwitchLevel'
     //Attributes: level - NUMBER, unit:%
     //Commands: setLevel(level, duration)

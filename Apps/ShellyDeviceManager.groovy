@@ -164,6 +164,8 @@
     'Shelly Autoconf Wall Display XL Parent': 'Shelly Autoconf Wall Display Parent',
     'Shelly Autoconf Single CCT Parent': 'Shelly Autoconf Single CCT PM Parent',
     'Shelly Autoconf Single Cover Parent': 'Shelly Autoconf Single Cover PM Parent',
+    'Shelly Autoconf Single Dimmer Parent': 'Shelly Autoconf Parent',
+    'Shelly Autoconf Single Dimmer PM Parent': 'Shelly Autoconf Parent',
 ]
 
 // Pre-built driver files committed to the repo. Maps generateDriverName() output to GitHub path.
@@ -176,6 +178,8 @@
     'Shelly Autoconf Single Switch PM 1PM Gen4': 'UniversalDrivers/ShellySingleSwitchPM.groovy',
     'Shelly Autoconf Single Dimmer': 'UniversalDrivers/ShellySingleDimmer.groovy',
     'Shelly Autoconf Single Dimmer PM': 'UniversalDrivers/ShellySingleDimmerPM.groovy',
+    'Shelly Autoconf Single Dimmer Parent': 'UniversalDrivers/ShellyAutoconfParent.groovy',
+    'Shelly Autoconf Single Dimmer PM Parent': 'UniversalDrivers/ShellyAutoconfParent.groovy',
     'Shelly Autoconf DALI Dimmer': 'UniversalDrivers/ShellyDaliDimmer.groovy',
     'Shelly Autoconf TH Sensor': 'UniversalDrivers/ShellyTHSensor.groovy',
     'Shelly Autoconf THL Sensor': 'UniversalDrivers/ShellyTHLSensor.groovy',
@@ -7936,6 +7940,7 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // Parent-child is needed when:
     //   - 2+ instances of any single actuator type (e.g., switch:0 + switch:1)
     //   - Multiple different actuator types (e.g., em:0 + switch:100)
+    //   - An actuator has multiple inputs that should be exposed as children
     //   - EM components present (each EM expands to 3 phase children)
     Set<String> actuatorComponentTypes = ['switch', 'cover', 'light', 'white', 'rgb', 'rgbw', 'cct', 'em', 'em1'] as Set
     Map<String, Integer> actuatorCounts = [:]
@@ -7948,8 +7953,14 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     // BLU Gateway always needs parent-child (TRVs are driver-level children)
     Boolean hasBluGw = components.any { it.toString().startsWith('blugw') }
     Boolean hasPresenceZone = components.any { it.toString().startsWith('presencezone:') }
+    Integer inputCount = components.count { String comp ->
+        String baseType = comp.contains(':') ? comp.split(':')[0] : comp
+        baseType == 'input'
+    }
+    Boolean actuatorWithMultipleInputs = actuatorCounts.size() > 0 && inputCount > 1
     Boolean needsParentChild = hasBluGw ||
         hasPresenceZone ||
+        actuatorWithMultipleInputs ||
         actuatorCounts.any { String k, Integer v -> v > 1 } ||
         actuatorCounts.size() > 1 ||
         actuatorCounts.containsKey('em') || actuatorCounts.containsKey('em1') ||
