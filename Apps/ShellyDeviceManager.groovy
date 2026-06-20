@@ -10779,11 +10779,25 @@ LinkedHashMap lightGetStatusCommand(Integer id = 0, src = 'lightGetStatus') {
 }
 
 @CompileStatic
+private BigDecimal shellyTransitionSeconds(BigDecimal seconds) {
+  if (seconds == null || seconds <= 0) { return null }
+  if (seconds < 0.5G) { return 0.5G }
+  if (seconds > 10800G) { return 10800G }
+  return seconds
+}
+
+@CompileStatic
+private BigDecimal shellyTransitionSecondsFromMs(Integer transitionMs) {
+  if (transitionMs == null || transitionMs <= 0) { return null }
+  return shellyTransitionSeconds((transitionMs as BigDecimal) / 1000G)
+}
+
+@CompileStatic
 LinkedHashMap lightSetCommand(
   Integer id = 0,
   Boolean on = null,
   Integer brightness = null,
-  Integer transitionDuration = null,
+  BigDecimal transitionDuration = null,
   Integer toggleAfter = null,
   Integer offset = null,
   src = 'lightSet'
@@ -10801,7 +10815,10 @@ LinkedHashMap lightSetCommand(
   }
   if(on != null) {command.params["on"] = on}
   if(brightness != null) {command.params["brightness"] = brightness}
-  if(transitionDuration != null) {command.params["transition_duration"] = transitionDuration}
+  if(transitionDuration != null) {
+    BigDecimal transitionSeconds = shellyTransitionSeconds(transitionDuration)
+    if (transitionSeconds != null) { command.params["transition_duration"] = transitionSeconds }
+  }
   if(toggleAfter != null) {command.params["toggle_after"] = toggleAfter}
   if(offset != null && brightness == null) {command.params["offset"] = offset}
   return command
@@ -10824,7 +10841,10 @@ LinkedHashMap lightSetCommand(LinkedHashMap args) {
   }
   if(args?.on != null) {command.params["on"] = args?.on}
   if(args?.brightness != null) {command.params["brightness"] = args?.brightness}
-  if(args?.transitionDuration != null) {command.params["transition_duration"] = args?.transitionDuration}
+  if(args?.transitionDuration != null) {
+    BigDecimal transitionSeconds = shellyTransitionSeconds(args?.transitionDuration as BigDecimal)
+    if (transitionSeconds != null) { command.params["transition_duration"] = transitionSeconds }
+  }
   if(args?.toggleAfter != null) {command.params["toggle_after"] = args?.toggleAfter}
   if(args?.offset != null && args?.brightness == null) {command.params["offset"] = args?.offset}
   return command
@@ -16442,7 +16462,8 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
     String rpcUri = "http://${ipAddress}/rpc"
     Integer lightId = extractComponentId(childDevice, 'lightId')
     Boolean turnOn = level > 0
-    LinkedHashMap command = lightSetCommand(lightId, turnOn, level, transitionMs)
+    BigDecimal transitionSeconds = shellyTransitionSecondsFromMs(transitionMs)
+    LinkedHashMap command = lightSetCommand(lightId, turnOn, level, transitionSeconds)
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentSetLevel: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
@@ -19739,6 +19760,7 @@ void parentSendCommand(def parentDevice, String method, Map params) {
     }
 
     params = normalizePowerstripUiSetConfigParams(method, params)
+    params = normalizeLightSetTransitionParams(method, params)
     logDebug("parentSendCommand from ${parentDevice.displayName}: ${method} with params ${params}")
 
     // Gen 1: route standard RPC method names to Gen 1 REST endpoints
@@ -19802,6 +19824,42 @@ void parentSendCommand(def parentDevice, String method, Map params) {
     } else {
         logDebug("parentSendCommand success: ${method} → ${response}")
     }
+}
+
+/**
+ * Normalizes Light.Set transition duration to Shelly RPC's accepted range.
+ * Hubitat commonly sends setLevel(level, 0) for instant changes; Shelly expects
+ * that field to be omitted rather than sent as 0.
+ *
+ * @param method The Shelly RPC method name
+ * @param params The original RPC params map
+ * @return Params with invalid transition_duration omitted or clamped
+ */
+private Map normalizeLightSetTransitionParams(String method, Map params) {
+    if (method != 'Light.Set' || params == null || !params.containsKey('transition_duration')) { return params }
+
+    Object rawTransition = params.transition_duration
+    if (rawTransition == null) {
+        params.remove('transition_duration')
+        return params
+    }
+
+    BigDecimal transitionSeconds = null
+    try {
+        transitionSeconds = rawTransition as BigDecimal
+    } catch (Exception e) {
+        logWarn("normalizeLightSetTransitionParams: removing non-numeric transition_duration '${rawTransition}'")
+        params.remove('transition_duration')
+        return params
+    }
+
+    transitionSeconds = shellyTransitionSeconds(transitionSeconds)
+    if (transitionSeconds == null) {
+        params.remove('transition_duration')
+    } else {
+        params.transition_duration = transitionSeconds
+    }
+    return params
 }
 
 /**
