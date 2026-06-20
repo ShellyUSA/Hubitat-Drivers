@@ -3514,8 +3514,11 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
     // Step 1: Remove all Hubitat-managed webhooks
     try {
         List<Map> installedHooks = listDeviceWebhooks(ipAddress)
-        if (installedHooks) {
+        if (installedHooks == null) {
+            logWarn("Could not list webhooks on ${deviceName} — device may be unreachable")
+        } else if (installedHooks) {
             Integer webhooksRemoved = 0
+            Integer webhooksFailed = 0
             installedHooks.each { Map hook ->
                 String hookName = hook.name as String
                 Integer hookId = hook.id as Integer
@@ -3523,11 +3526,17 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
                     try {
                         LinkedHashMap deleteCmd = webhookDeleteCommand(hookId)
                         if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
-                        postCommandSync(deleteCmd, uri)
-                        webhooksRemoved++
-                        logDebug("Removed webhook '${hookName}' (id: ${hookId})")
+                        LinkedHashMap result = postCommandSync(deleteCmd, uri)
+                        if (result?.error) {
+                            logWarn("RPC error removing webhook '${hookName}' (id: ${hookId}): ${result.error}")
+                            webhooksFailed++
+                        } else {
+                            webhooksRemoved++
+                            logInfo("Removed webhook '${hookName}' (id: ${hookId}) from ${deviceName}")
+                        }
                     } catch (Exception ex) {
-                        logDebug("Could not remove webhook '${hookName}': ${ex.message}")
+                        logWarn("Could not remove webhook '${hookName}' (id: ${hookId}): ${ex.message}")
+                        webhooksFailed++
                     }
                 }
             }
@@ -3535,16 +3544,22 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
                 logInfo("Removed ${webhooksRemoved} webhook(s) from ${deviceName}")
                 totalRemoved += webhooksRemoved
             }
+            if (webhooksFailed > 0) {
+                logWarn("Failed to remove ${webhooksFailed} webhook(s) from ${deviceName}")
+            }
         }
     } catch (Exception ex) {
-        logDebug("Could not list webhooks for cleanup: ${ex.message}")
+        logWarn("Could not list webhooks for cleanup on ${deviceName}: ${ex.message}")
     }
 
     // Step 2: Remove all managed scripts
     try {
         List<Map> installedScripts = listDeviceScripts(ipAddress)
-        if (installedScripts) {
+        if (installedScripts == null) {
+            logWarn("Could not list scripts on ${deviceName} — device may be unreachable")
+        } else if (installedScripts) {
             Integer scriptsRemoved = 0
+            Integer scriptsFailed = 0
             installedScripts.each { Map script ->
                 String scriptName = script.name as String
                 Integer scriptId = script.id as Integer
@@ -3552,11 +3567,17 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
                     try {
                         LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
                         if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
-                        postCommandSync(deleteCmd, uri)
-                        scriptsRemoved++
-                        logDebug("Removed script '${scriptName}' (id: ${scriptId})")
+                        LinkedHashMap result = postCommandSync(deleteCmd, uri)
+                        if (result?.error) {
+                            logWarn("RPC error removing script '${scriptName}' (id: ${scriptId}): ${result.error}")
+                            scriptsFailed++
+                        } else {
+                            scriptsRemoved++
+                            logInfo("Removed script '${scriptName}' (id: ${scriptId}) from ${deviceName}")
+                        }
                     } catch (Exception ex) {
-                        logDebug("Could not remove script '${scriptName}': ${ex.message}")
+                        logWarn("Could not remove script '${scriptName}' (id: ${scriptId}): ${ex.message}")
+                        scriptsFailed++
                     }
                 }
             }
@@ -3564,33 +3585,45 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
                 logInfo("Removed ${scriptsRemoved} script(s) from ${deviceName}")
                 totalRemoved += scriptsRemoved
             }
+            if (scriptsFailed > 0) {
+                logWarn("Failed to remove ${scriptsFailed} script(s) from ${deviceName}")
+            }
         }
     } catch (Exception ex) {
-        logDebug("Could not list scripts for cleanup: ${ex.message}")
+        logWarn("Could not list scripts for cleanup on ${deviceName}: ${ex.message}")
     }
 
     // Step 3: Remove all Hubitat KVS entries
     try {
         List<String> hubitatKvsKeys = ['hubitat_sdm_ip', 'hubitat_sdm_pm_ri']
         Integer kvsRemoved = 0
+        Integer kvsFailed = 0
         hubitatKvsKeys.each { String key ->
             try {
                 LinkedHashMap deleteCmd = kvsDeleteCommand(key)
                 if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
                 LinkedHashMap response = postCommandSync(deleteCmd, uri)
-                // KVS.Delete succeeds even if key doesn't exist, so we count it
-                kvsRemoved++
-                logDebug("Removed KVS entry '${key}'")
+                if (response?.error) {
+                    logWarn("RPC error removing KVS entry '${key}': ${response.error}")
+                    kvsFailed++
+                } else {
+                    kvsRemoved++
+                    logInfo("Removed KVS entry '${key}' from ${deviceName}")
+                }
             } catch (Exception ex) {
-                logDebug("Could not remove KVS entry '${key}': ${ex.message}")
+                logWarn("Could not remove KVS entry '${key}': ${ex.message}")
+                kvsFailed++
             }
         }
         if (kvsRemoved > 0) {
             logInfo("Removed ${kvsRemoved} KVS entry(ies) from ${deviceName}")
             totalRemoved += kvsRemoved
         }
+        if (kvsFailed > 0) {
+            logWarn("Failed to remove ${kvsFailed} KVS entry(ies) from ${deviceName}")
+        }
     } catch (Exception ex) {
-        logDebug("Could not remove KVS entries: ${ex.message}")
+        logWarn("Could not remove KVS entries on ${deviceName}: ${ex.message}")
     }
 
     if (totalRemoved > 0) {
@@ -3624,11 +3657,19 @@ private void removeDeviceByIp(String ip) {
     Set<String> deletedDriverNames = [] as Set
 
     // Step 1: Clean up all Hubitat resources on the Shelly device before removing from Hubitat
-    // Gen 1 devices don't support RPC — skip webhook/script/KVS cleanup
     if (config?.gen?.toString() != '1') {
+        // Gen 2/3: remove webhooks, scripts, and KVS entries via RPC
         cleanupShellyDevice(ip, name)
     } else {
-        logInfo("No Hubitat resources to clean up on Gen 1 device ${name}")
+        // Gen 1: clear action URLs set via REST settings endpoints
+        logInfo("Clearing Gen 1 action URLs on ${name} before removal")
+        appendLog('info', "Clearing Gen 1 action URLs on ${name}")
+        try {
+            clearGen1ActionUrls(ip)
+        } catch (Exception ex) {
+            logWarn("Could not clear Gen 1 action URLs on ${name}: ${ex.message}")
+            appendLog('warn', "Could not clear Gen 1 action URLs on ${name}")
+        }
     }
 
     // Step 2: Remove child devices (if parent-child architecture)
