@@ -1,5 +1,5 @@
 /**
- * Version: 2.17.3
+ * Version: 2.17.4
  */
 #include ShellyUSA.ShellyUSA_Driver_Library
 
