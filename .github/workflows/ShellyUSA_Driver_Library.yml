@@ -52,9 +52,14 @@ jobs:
           fi
 
       - name: Commit and push bundle
-        uses: EndBug/add-and-commit@v9
-        with:
-          add: |
-            ShellyUSA_Driver_Library*.zip
-          message: "Update Shelly Driver Library bundle v${{ steps.lib_version.outputs.library_version }}"
-          default_author: github_actions
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ShellyUSA_Driver_Library*.zip
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update Shelly Driver Library bundle v${{ steps.lib_version.outputs.library_version }}"
+            git pull --rebase origin master
+            git push origin master
+          fi
