@@ -10,6 +10,7 @@ import groovy.transform.Field
 metadata {
   definition (name: 'Shelly Autoconf Voltmeter', namespace: 'ShellyDeviceManager', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'VoltageMeasurement' // voltage - NUMBER, unit:V
+    capability 'Sensor'             // sensorValue - NUMBER (xvoltage)
     capability 'Refresh'
 
     attribute 'lastUpdated', 'string'

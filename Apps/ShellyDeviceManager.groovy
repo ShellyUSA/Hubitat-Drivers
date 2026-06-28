@@ -18014,6 +18014,7 @@ private String dstToComponentType(String dst) {
     if (dst.startsWith('rgbw_')) { return 'rgbw' }
     if (dst.startsWith('cct_')) { return 'cct' }
     if (dst.startsWith('blutrv_')) { return 'blutrv' }
+    if (dst.startsWith('voltmeter_')) { return 'voltmeter' }
     switch (dst) {
         case 'switchmon': return 'switch'  // legacy
         case 'covermon': return 'cover'    // legacy
@@ -18033,6 +18034,7 @@ private String mapDstToComponentType(String dst, String baseType) {
     if (dst.startsWith('rgbw_')) { return 'rgbw' }
     if (dst.startsWith('cct_')) { return 'cct' }
     if (dst.startsWith('blutrv_')) { return 'blutrv' }
+    if (dst.startsWith('voltmeter_')) { return 'voltmeter' }
 
     // Legacy and passthrough dst types
     switch (dst) {
@@ -18173,17 +18175,28 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
 
         case 'rgbmon':
         case 'rgbwmon':
-            if (data.output != null) {
-                String switchState = data.output ? 'on' : 'off'
-                events.add([name: 'switch', value: switchState,
-                    descriptionText: "Switch turned ${switchState}"])
-            }
-            if (data.brightness != null) {
-                events.add([name: 'level', value: data.brightness as Integer,
-                    unit: '%', descriptionText: "Level is ${data.brightness}%"])
-            }
-            break
-    }
+          if (data.output != null) {
+            String switchState = data.output ? 'on' : 'off'
+            events.add([name: 'switch', value: switchState,
+              descriptionText: "Switch turned ${switchState}"])
+          }
+          if (data.brightness != null) {
+            events.add([name: 'level', value: data.brightness as Integer,
+              unit: '%', descriptionText: "Level is ${data.brightness}%"])
+          }
+          break
+
+        case 'voltmetermon':
+          if (data.voltage != null) {
+            events.add([name: 'voltage', value: data.voltage as BigDecimal,
+              unit: 'V', descriptionText: "Voltage is ${data.voltage}V"])
+          }
+          if (data.xvoltage != null) {
+            events.add([name: 'sensorValue', value: data.xvoltage as BigDecimal,
+              descriptionText: "Sensor value is ${data.xvoltage}"])
+          }
+          break
+      }
 
     return events
 }
@@ -20379,7 +20392,7 @@ void reinitializeDevice(def parentDevice) {
  * @param deviceStatus The full device status map from Shelly.GetStatus
  */
 private void distributeStatusToChildren(String parentDni, Map deviceStatus) {
-    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input'] as Set
+    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'voltmeter'] as Set
 
     deviceStatus.each { k, v ->
         String key = k.toString()

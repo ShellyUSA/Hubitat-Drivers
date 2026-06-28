@@ -546,6 +546,7 @@ private String dstToComponentType(String dst) {
   if (dst.startsWith('light_')) { return 'light' }
   if (dst.startsWith('rgb_')) { return 'rgb' }
   if (dst.startsWith('rgbw_')) { return 'rgbw' }
+  if (dst.startsWith('voltmeter_')) { return 'voltmeter' }
   switch (dst) {
     case 'switchmon': return 'switch'
     case 'covermon': return 'cover'
@@ -577,7 +578,7 @@ void distributeStatus(Map status) {
 
       if (child) {
         // Determine appropriate dst based on component type
-        Map<String, String> dstMap = ['switch': 'switchmon', 'cover': 'covermon', 'light': 'lightmon', 'rgb': 'lightmon', 'rgbw': 'lightmon']
+        Map<String, String> dstMap = ['switch': 'switchmon', 'cover': 'covermon', 'light': 'lightmon', 'rgb': 'lightmon', 'rgbw': 'lightmon', 'voltmeter': 'voltmetermon']
         String dst = dstMap[baseType]
         if (dst) {
           List<Map> events = buildComponentEvents(dst, baseType, value as Map)
@@ -690,6 +691,17 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
       if (data.brightness != null) {
         events.add([name: 'level', value: data.brightness as Integer, unit: '%',
           descriptionText: "Level is ${data.brightness}%"])
+      }
+      break
+
+    case 'voltmetermon':
+      if (data.voltage != null) {
+        events.add([name: 'voltage', value: data.voltage as BigDecimal, unit: 'V',
+          descriptionText: "Voltage is ${data.voltage}V"])
+      }
+      if (data.xvoltage != null) {
+        events.add([name: 'sensorValue', value: data.xvoltage as BigDecimal,
+          descriptionText: "Sensor value is ${data.xvoltage}"])
       }
       break
   }
@@ -920,6 +932,19 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
       if (params.freq != null) {
         events.add([name: 'frequency', value: params.freq as BigDecimal, unit: 'Hz',
           descriptionText: "Frequency is ${params.freq}Hz"])
+      }
+      break
+
+    // Voltmeter webhook events (voltmeter.change / voltmeter.measurement)
+    case 'voltmeter_change':
+    case 'voltmeter_measurement':
+      if (params.voltage != null) {
+        events.add([name: 'voltage', value: params.voltage as BigDecimal, unit: 'V',
+          descriptionText: "Voltage is ${params.voltage}V"])
+      }
+      if (params.xvoltage != null) {
+        events.add([name: 'sensorValue', value: params.xvoltage as BigDecimal,
+          descriptionText: "Sensor value is ${params.xvoltage}"])
       }
       break
   }

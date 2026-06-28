@@ -6,6 +6,7 @@
 metadata {
   definition (name: 'Shelly Polling Voltage Sensor Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V
+    capability 'Sensor'             //sensorValue - NUMBER (xvoltage)
     capability 'Refresh'
 
     attribute 'lastUpdated', 'string'

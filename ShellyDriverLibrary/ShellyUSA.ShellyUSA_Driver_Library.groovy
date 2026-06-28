@@ -1054,6 +1054,14 @@ BigDecimal getVoltage(Integer id = 0) {
   if(c != null) { return getSwitchChildById(id).currentValue('voltage', true) as BigDecimal }
   else { return thisDevice().currentValue('voltage', true) as BigDecimal }
 }
+@CompileStatic
+void setXVoltage(BigDecimal value, Integer id = 0) {
+  if(getIntegerDeviceDataValue('voltageId') == id) {sendDeviceEvent([name: 'sensorValue', value: value])}
+  else {
+    ChildDeviceWrapper c = getVoltageChildById(id)
+    if(c != null) { sendChildDeviceEvent([name: 'sensorValue', value: value], c) }
+  }
+}
 
 @CompileStatic
 void setEnergyAttribute(BigDecimal value, Integer id = 0) {
@@ -3846,6 +3854,10 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
         BigDecimal voltage = update?.voltage as BigDecimal
         if(voltage != null) { setVoltage(voltage, id) }
       }
+      if(update?.xvoltage != null && update?.xvoltage != '') {
+        BigDecimal xvoltage = update?.xvoltage as BigDecimal
+        if(xvoltage != null) { setXVoltage(xvoltage, id) }
+      }
     }
 
     else if(k.startsWith('devicepower')) {
@@ -4324,6 +4336,9 @@ void parseGen2Message(String raw) {
   else if(query[0] == 'flood.cable_unplugged') {logWarn('Flood sensor reports sensing cable unplugged')}
   else if(query[0].startsWith('voltmeter.') && query[1] == 'voltage' && query.size() == 4) {
     setVoltage(new BigDecimal(query[2]), id)
+  }
+  else if(query[0].startsWith('voltmeter.') && query[1] == 'xvoltage' && query.size() == 4) {
+    setXVoltage(new BigDecimal(query[2]), id)
   }
   else if(query[0].startsWith('light.o')) {
     String command = query[0]
