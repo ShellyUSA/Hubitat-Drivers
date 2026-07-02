@@ -13,6 +13,7 @@ metadata {
     capability 'Sensor'             // sensorValue - NUMBER (xvoltage)
     capability 'Refresh'
 
+    attribute 'xvoltage', 'number'
     attribute 'lastUpdated', 'string'
   }
 

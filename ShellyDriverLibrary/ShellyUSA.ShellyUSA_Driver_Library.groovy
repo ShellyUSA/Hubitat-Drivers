@@ -1056,10 +1056,10 @@ BigDecimal getVoltage(Integer id = 0) {
 }
 @CompileStatic
 void setXVoltage(BigDecimal value, Integer id = 0) {
-  if(getIntegerDeviceDataValue('voltageId') == id) {sendDeviceEvent([name: 'sensorValue', value: value])}
+  if(getIntegerDeviceDataValue('voltageId') == id) {sendDeviceEvent([name: 'xvoltage', value: value])}
   else {
     ChildDeviceWrapper c = getVoltageChildById(id)
-    if(c != null) { sendChildDeviceEvent([name: 'sensorValue', value: value], c) }
+    if(c != null) { sendChildDeviceEvent([name: 'xvoltage', value: value], c) }
   }
 }
 

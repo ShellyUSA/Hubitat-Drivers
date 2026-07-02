@@ -700,8 +700,8 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
           descriptionText: "Voltage is ${data.voltage}V"])
       }
       if (data.xvoltage != null) {
-        events.add([name: 'sensorValue', value: data.xvoltage as BigDecimal,
-          descriptionText: "Sensor value is ${data.xvoltage}"])
+        events.add([name: 'xvoltage', value: data.xvoltage as BigDecimal,
+          descriptionText: "External voltage is ${data.xvoltage}V"])
       }
       break
   }
@@ -943,8 +943,8 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
           descriptionText: "Voltage is ${params.voltage}V"])
       }
       if (params.xvoltage != null) {
-        events.add([name: 'sensorValue', value: params.xvoltage as BigDecimal,
-          descriptionText: "Sensor value is ${params.xvoltage}"])
+        events.add([name: 'xvoltage', value: params.xvoltage as BigDecimal,
+          descriptionText: "External voltage is ${params.xvoltage}V"])
       }
       break
   }

@@ -18192,8 +18192,8 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
               unit: 'V', descriptionText: "Voltage is ${data.voltage}V"])
           }
           if (data.xvoltage != null) {
-            events.add([name: 'sensorValue', value: data.xvoltage as BigDecimal,
-              descriptionText: "Sensor value is ${data.xvoltage}"])
+            events.add([name: 'xvoltage', value: data.xvoltage as BigDecimal,
+              descriptionText: "External voltage is ${data.xvoltage}V"])
           }
           break
       }
