@@ -179,7 +179,7 @@ void reconcileChildDevices() {
     String childDni = "${device.deviceNetworkId}-white-${compId}"
     if (getChildDevice(childDni)) { return }
 
-    String driverName = 'Shelly Gen1 White Channel'
+    String driverName = parent?.componentGetVersionedDriverName(device, 'Shelly Gen1 White Channel') ?: 'Shelly Gen1 White Channel'
     String label = "${device.displayName} White ${compId}"
     try {
       def child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
