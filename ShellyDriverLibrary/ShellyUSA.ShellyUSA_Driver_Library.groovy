@@ -1,5 +1,5 @@
 /**
- * Version: 2.17.4
+ * Version: 2.17.5
  */
 library(
   name: 'ShellyUSA_Driver_Library',
@@ -2037,9 +2037,15 @@ void setLevel(BigDecimal level) {setLevel(level, null)}
 void setLevel(BigDecimal level, BigDecimal duration) {
   Integer l = boundedLevel(level as Integer)
   if(isGen1Device() == true) {
-    if(duration == null) {duration = 500}
-    Integer d = boundedLevel(duration as Integer, 0, 5000)
-    parentSendGen1CommandAsync("light/${getDeviceDataValue('switchLevelId')}/?turn=on&brightness=${l}&transition=${d}", null, 'gen1LightCallback')
+    Integer transitionMs = duration == null ? 500 : boundedLevel((duration * 1000G).intValue(), 0, 5000)
+    String endpoint = "light/${getDeviceDataValue('switchLevelId')}/"
+    if(l > 0) {
+      String transition = transitionMs > 0 ? "&transition=${transitionMs}" : ''
+      parentSendGen1CommandAsync("${endpoint}?turn=on&brightness=${l}${transition}", null, 'gen1LightCallback')
+    } else {
+      // Gen1 Dimmer 2 rejects brightness=0; turning the light off is sufficient.
+      parentSendGen1CommandAsync("${endpoint}?turn=off", null, 'gen1LightCallback')
+    }
   } else {
     if(deviceIsRGB(thisDevice()) == true) {
       if(duration == null) {
@@ -5324,15 +5330,19 @@ ChildDeviceWrapper createChildVoltage(Integer id) {
  */
 @CompileStatic
 ChildDeviceWrapper createChildVoltmeter(Integer id) {
-  String driverName = "Shelly Polling Voltage Sensor Component"
-  String dni = "${getThisDeviceDNI()}-voltmeter${id}"
+  // Gen2+ voltmeters are event-driven components.  The old polling driver
+  // caused Plus Uni analog peripherals to be created with the wrong
+  // capabilities and also used a DNI that did not match the parent-child
+  // reconciliation path.
+  String driverName = "Shelly Autoconf Voltmeter"
+  String dni = "${getThisDeviceDNI()}-voltmeter-${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {
     String label = "${thisDevice().getLabel()} - Voltmeter ${id}"
     logDebug("Child device does not exist, creating child device with DNI, Name, Label: ${dni}, ${driverName}, ${label}")
     try {
       child = addShellyDevice(driverName, dni, [name: "${driverName}", label: "${label}"])
-      child.updateDataValue('adcId',"${id}")
+      child.updateDataValue('voltmeterId',"${id}")
       return child
     }
     catch (UnknownDeviceTypeException e) {logException("${driverName} driver not found")}
@@ -5348,7 +5358,13 @@ ChildDeviceWrapper getShellyDevice(String dni) {return getChildDevice(dni)}
 @CompileStatic
 ChildDeviceWrapper getVoltageChildById(Integer id) {
   ArrayList<ChildDeviceWrapper> allChildren = getThisDeviceChildren()
-  return allChildren.find{getChildDeviceIntegerDataValue(it,'adcId') == id}
+  // Gen1 ADC children use adcId; Gen2+ voltmeter peripherals use
+  // voltmeterId. Supporting both keeps the shared voltage event path
+  // compatible with both child architectures.
+  return allChildren.find{
+    getChildDeviceIntegerDataValue(it,'adcId') == id ||
+    getChildDeviceIntegerDataValue(it,'voltmeterId') == id
+  }
 }
 
 @CompileStatic

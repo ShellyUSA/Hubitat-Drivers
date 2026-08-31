@@ -1170,7 +1170,10 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     // installed() -> reconcileChildDevices() has them on the first call
     List<String> components = []
     List<String> pmComponents = []
-    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc', 'temperature', 'humidity', 'illuminance', 'blutrv', 'presencezone', 'voltmeter'] as Set
+    // EM Gen3 devices expose their meters as em1:N components.  Keep these
+    // in the parent cache so the EM parent can create channel children and
+    // receive the script/websocket status for each clamp.
+    Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'em1', 'adc', 'temperature', 'humidity', 'illuminance', 'blutrv', 'presencezone', 'voltmeter'] as Set
     deviceStatus.each { k, v ->
         String key = k.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
@@ -2511,7 +2514,7 @@ private void switchDeviceDriver(def childDevice, String ipAddress, String newDri
         // Build component and PM component lists
         List<String> components = []
         List<String> pmComponents = []
-        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'adc',
+        Set<String> childComponentTypes = ['switch', 'cover', 'light', 'white', 'input', 'em', 'em1', 'adc',
             'temperature', 'humidity', 'illuminance', 'blutrv', 'presencezone', 'voltmeter'] as Set
         deviceStatus.each { k, v ->
             String key = k.toString()
@@ -9798,6 +9801,7 @@ private String getComponentDriverFileName(String componentType, Boolean hasPower
         'cct': [default: 'ShellyCCTComponent.groovy'],
         'input': [default: 'ShellyInputButtonComponent.groovy'],
         'em': [default: 'ShellyEMComponent.groovy'],
+        'em1': [default: 'ShellyEMComponent.groovy'],
         'adc': [default: 'ShellyPollingVoltageSensorComponent.groovy'],
         'temperature': [default: 'ShellyTemperaturePeripheralComponent.groovy'],
         'humidity': [default: 'ShellyHumidityPeripheralComponent.groovy'],
@@ -9833,6 +9837,7 @@ private String getComponentDriverName(String componentType, Boolean hasPowerMoni
         'cct': [default: 'Shelly Autoconf CCT'],
         'input': [default: 'Shelly Autoconf Input Button'],
         'em': [default: 'Shelly Autoconf EM'],
+        'em1': [default: 'Shelly Autoconf EM'],
         'adc': [default: 'Shelly Autoconf Polling Voltage Sensor'],
         'temperature': [default: 'Shelly Autoconf Temperature Peripheral'],
         'humidity': [default: 'Shelly Autoconf Humidity Peripheral'],
@@ -17571,12 +17576,13 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
     // Gen 1: GET /light/{id}?turn=on&brightness={level}
     if (isGen1Device(childDevice)) {
       Integer lightId = extractComponentId(childDevice, 'lightId')
-      String turnAction = level > 0 ? 'on' : 'off'
-      Map params = [turn: turnAction, brightness: level.toString()]
-      if (transitionMs != null) {
-        params.transition = (transitionMs / 1000).intValue().toString()
+      Map params = level > 0 ? [turn: 'on', brightness: level.toString()] : [turn: 'off']
+      // Gen1 dimmers accept transition in milliseconds. Zero/negative transitions
+      // represent an immediate change and must be omitted from the request.
+      if (transitionMs != null && transitionMs > 0 && level > 0) {
+        params.transition = Math.min(transitionMs.intValue(), 5000).toString()
       }
-      logDebug("componentSetLevel: Gen 1 light/${lightId}?turn=${turnAction}&brightness=${level}")
+      logDebug("componentSetLevel: Gen 1 light/${lightId} with params ${params}")
       sendGen1Get(ipAddress, "light/${lightId}", params)
       return
     }
@@ -20911,7 +20917,10 @@ void parentSendCommand(def parentDevice, String method, Map params) {
             case 'Light.Set':
                 String turnAction = params?.on ? 'on' : 'off'
                 Map lightParams = [turn: turnAction]
-                if (params?.brightness != null) { lightParams.brightness = params.brightness.toString() }
+                // Gen1 dimmers reject brightness=0; turning the light off is sufficient.
+                if (turnAction == 'on' && params?.brightness != null) {
+                    lightParams.brightness = params.brightness.toString()
+                }
                 sendGen1Get(ipAddress, "light/${componentId}", lightParams)
                 break
             case 'White.Set':

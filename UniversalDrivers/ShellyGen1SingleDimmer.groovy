@@ -303,7 +303,10 @@ void off() {
  */
 void setLevel(BigDecimal level, BigDecimal duration = 0) {
   logDebug("setLevel(${level}, ${duration}) called")
-  parent?.componentSetLevel(device, level as Integer, duration as Integer)
+  // Hubitat exposes duration in seconds; the Device Manager Gen1 REST path
+  // expects milliseconds. Preserve fractional seconds until conversion.
+  Integer transitionMs = duration != null ? (duration * 1000G).intValue() : null
+  parent?.componentSetLevel(device, level as Integer, transitionMs)
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
