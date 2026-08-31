@@ -7,6 +7,13 @@ on:
       - ShellyDriverLibrary/ShellyUSA.ShellyUSA_Driver_Library.groovy
   workflow_dispatch:
 
+# All workflows that write generated files to master share this lock. Without
+# it, two successful jobs can both rebase against the same commit and race
+# while updating the master ref.
+concurrency:
+  group: repository-master-writer
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build and Bundle Shelly Driver Library
@@ -60,6 +67,16 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "Update Shelly Driver Library bundle v${{ steps.lib_version.outputs.library_version }}"
-            git pull --rebase origin master
-            git push origin master
+            for attempt in 1 2 3; do
+              git fetch origin master
+              git rebase origin/master
+              if git push origin HEAD:master; then
+                echo "Bundle pushed successfully on attempt ${attempt}"
+                exit 0
+              fi
+              echo "Push raced with another master update; retrying (${attempt}/3)"
+              sleep $((attempt * 2))
+            done
+            echo "ERROR: Unable to push bundle after 3 attempts"
+            exit 1
           fi

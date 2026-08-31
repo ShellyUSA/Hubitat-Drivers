@@ -8,6 +8,7 @@ on:
         required: false
         default: ""
         type: string
+
       version_increment:
         description: "Version increment type (ignored when explicit version is set)"
         required: true
@@ -30,6 +31,10 @@ on:
           - WebhookWebsocket
           - Bluetooth
           - ComponentDrivers
+
+concurrency:
+  group: repository-master-writer
+  cancel-in-progress: false
 
 jobs:
   release:

@@ -12,6 +12,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: repository-master-writer
+  cancel-in-progress: false
+
 jobs:
   update-manifests:
     name: Update HPM Package Manifests

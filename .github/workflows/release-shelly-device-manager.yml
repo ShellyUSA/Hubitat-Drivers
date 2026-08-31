@@ -26,6 +26,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: repository-master-writer
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Release Shelly Device Manager
