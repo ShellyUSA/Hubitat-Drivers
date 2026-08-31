@@ -1216,6 +1216,15 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     if (hasPlugsUi) { dataMap.hasPlugsUi = 'true' }
     if (hasPowerstripUi) { dataMap.hasPowerstripUi = 'true' }
 
+    // The Gen1 RGBW2 white parent creates driver-level children.  Child
+    // drivers installed by the manager are versioned, so pass the exact
+    // installed name through the parent data map instead of making the
+    // parent guess or requesting a nonexistent unsuffixed driver.
+    String parentBaseName = parentDriverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+    if (parentBaseName == 'Shelly Gen1 RGBW2 White Parent') {
+        dataMap.whiteChannelDriverName = "Shelly Gen1 White Channel v${getAppVersion()}"
+    }
+
     // For EM parent drivers: set switchId for relay/contactor control
     // Gen 1 EM has relay:0, Gen 2+ Pro 3EM has contactor switch:100
     if (parentDriverName.contains('EM Parent')) {

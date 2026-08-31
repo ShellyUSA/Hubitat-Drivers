@@ -13,7 +13,7 @@
  *   - Parent aggregates switch state (anyOn/allOn), level (max/avg), and power (sum)
  *   - Commands: child -> parent componentWhiteOn() -> app Gen 1 REST /white/{id}
  *
- * Version: 1.0.0
+ * Version: 1.0.1
  */
 
 metadata {
@@ -179,7 +179,16 @@ void reconcileChildDevices() {
     String childDni = "${device.deviceNetworkId}-white-${compId}"
     if (getChildDevice(childDni)) { return }
 
-    String driverName = 'Shelly Gen1 White Channel'
+    String driverName = device.getDataValue('whiteChannelDriverName')
+    if (!driverName) {
+      // Existing parents created before the versioned-child metadata was
+      // added can derive the matching child driver from their own name.
+      String parentTypeName = device.typeName ?: ''
+      def versionMatcher = parentTypeName =~ /\s+v(\d+(?:\.\d+)*)\s*$/
+      driverName = versionMatcher.find() ?
+        "Shelly Gen1 White Channel v${versionMatcher.group(1)}" :
+        'Shelly Gen1 White Channel'
+    }
     String label = "${device.displayName} White ${compId}"
     try {
       def child = addChildDevice('ShellyDeviceManager', driverName, childDni, [name: label, label: label])
