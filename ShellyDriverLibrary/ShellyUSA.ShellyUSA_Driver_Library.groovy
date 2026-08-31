@@ -6192,7 +6192,17 @@ LinkedHashMap getAuth() {
   if(authMap == null || authMap.size() == 0) {return [:]}
   String realm = authMap['realm']
   String ha1 = "admin:${realm}:${getPassword()}".toString()
-  Long nonce = Long.valueOf(authMap['nonce'].toString())
+  // Shelly sends the digest nonce as a hexadecimal string.  Parsing it as
+  // base-10 fails whenever the nonce contains a-f, which prevents all
+  // authenticated requests from completing on affected devices.
+  String nonceStr = authMap['nonce'].toString()
+  Long nonce
+  try {
+    nonce = Long.parseLong(nonceStr, 16)
+  } catch (NumberFormatException ignored) {
+    // Retain compatibility with devices that provide a decimal nonce.
+    nonce = Long.valueOf(nonceStr)
+  }
   String nc = (authMap['nc']).toString()
   Long cnonce = now()
   String ha2 = '6370ec69915103833b5222b368555393393f098bfbfbb59f47e0590af135f062'
