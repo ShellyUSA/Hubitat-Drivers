@@ -110,7 +110,7 @@ BTH[0x4F] = ["_water32", DT_U32, 0.001];
 BTH[0x50] = ["_timestamp", DT_U32, 0];
 BTH[0x51] = ["_acceleration", DT_U16, 0.001];
 BTH[0x52] = ["_gyroscope", DT_U16, 0.001];
-// 0x53 (text) and 0x54 (raw) are variable-length — cannot be decoded here
+// 0x53 (text) and 0x54 (raw) are variable-length - cannot be decoded here
 BTH[0x55] = ["_volumeStorage", DT_U32, 0.001];
 BTH[0x56] = ["_conductivity", DT_U16, 0];
 BTH[0x60] = ["channel", DT_U8, 0];
@@ -132,7 +132,7 @@ let pendingBatch = [];       // Overflow reports accumulated while at capacity
 let drainTimerHandle = null;
 let DRAIN_INTERVAL = 5000;   // Safety drain interval (ms)
 
-// HTTP response handler — decrements inflight and flushes pending batch
+// HTTP response handler - decrements inflight and flushes pending batch
 function onHTTPResponse(result, error_code, error_message) {
   inflight--;
   if (inflight < 0) inflight = 0;
@@ -300,7 +300,7 @@ function decodeBTHome(buffer) {
 // === Shelly Manufacturer Data Parser ===
 let SHELLY_MFID = 0x0BA9;
 
-// Block type → payload size (bytes)
+// Block type -> payload size (bytes)
 let SHELLY_TLV_SIZES = {};
 SHELLY_TLV_SIZES[0x01] = 2;   // flags
 SHELLY_TLV_SIZES[0x0A] = 6;   // MAC address
@@ -428,7 +428,7 @@ function BLEScanCallback(event, result) {
   let mac = result.addr;
   if (typeof mac === "string") {
     mac = mac.toUpperCase();
-    // Remove colons if present (e.g., "AA:BB:CC:DD:EE:FF" → "AABBCCDDEEFF")
+    // Remove colons if present (e.g., "AA:BB:CC:DD:EE:FF" -> "AABBCCDDEEFF")
     mac = mac.split(":").join("");
   } else {
     return;
@@ -466,7 +466,7 @@ function BLEScanCallback(event, result) {
     modelStr = result.local_name;
   }
 
-  // Layer 4: Cache — reuse identification from a previous advertisement for this MAC
+  // Layer 4: Cache - reuse identification from a previous advertisement for this MAC
   // Some devices (e.g., RC Button 4) only include identification in some advertisements
   if (modelId < 0 && !modelStr && typeof knownModels[mac] !== "undefined") {
     let cached = knownModels[mac];

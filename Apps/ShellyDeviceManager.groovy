@@ -860,9 +860,10 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName.startsWith('reinitDev|')) {
         String targetIp = buttonName.minus('reinitDev|')
-        reinitializeDevice(targetIp)
-        buildDeviceStatusCacheEntry(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
+        setProvisioningStatus(targetIp, 'Reinitializing device…')
+        // Reinit can download drivers and perform several RPC calls. Schedule
+        // it after this request so the config-table SSR first shows progress.
+        runInMillis(100, 'runDeviceReinitialize', [data: [ip: targetIp]])
     }
 
     if (buttonName.startsWith('editLabel|')) {
@@ -920,13 +921,10 @@ void appButtonHandler(String buttonName) {
         logInfo("Toggling BLE gateway for ${targetIp}")
         List bleGatewaysBefore = (state.bleGateways ?: []) as List
         Boolean wasEnabled = bleGatewaysBefore.contains(targetIp)
-        toggleBleGateway(targetIp)
-        if (wasEnabled) {
-            // Disable is synchronous — safe to refresh cache immediately
-            buildDeviceStatusCacheEntry(targetIp)
-            runInMillis(500, 'fireConfigTableSSR')
-        }
-        // Enable is async (chunked upload) — cache refresh deferred to enableBleGatewayComplete/Error
+        setBleGatewayProgress(targetIp, wasEnabled ? 'Disabling BLE gateway…' : 'Enabling BLE gateway…')
+        // Return from the button handler before RPC work begins so Hubitat can
+        // render the spinner even for the otherwise-synchronous disable path.
+        runInMillis(100, 'runBleGatewayToggle', [data: [ip: targetIp, wasEnabled: wasEnabled]])
     }
 }
 
@@ -2146,6 +2144,26 @@ private Set<String> getHubDeviceDnis() {
  *
  * @param ipAddress The IP address of the Shelly device to reinitialize
  */
+/** Runs a user-requested reinit after the UI has rendered its spinner. */
+void runDeviceReinitialize(Map data) {
+    String ipAddress = data?.ip as String
+    if (!ipAddress) { return }
+    if (!findChildDeviceByIp(ipAddress)) {
+        logError("Reinit failed: no device found for ${ipAddress}")
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: device unavailable')
+        return
+    }
+    try {
+        reinitializeDevice(ipAddress)
+    } catch (Exception ex) {
+        logError("Reinit failed for ${ipAddress}: ${ex.message}")
+        appendLog('error', "Reinit failed for ${ipAddress}: ${ex.message}")
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: reinitialization failed')
+        buildDeviceStatusCacheEntry(ipAddress)
+        runInMillis(500, 'fireConfigTableSSR')
+    }
+}
+
 void reinitializeDevice(String ipAddress) {
     // Guard against recursive reinit triggered by a driver switch below.
     // addChildDevice fires updated() which may call back into this method.
@@ -10785,6 +10803,16 @@ void uploadScriptChunk(Map data) {
         logError("uploadScriptChunk: script code not found in state key '${codeStateKey}'")
         return
     }
+    // Shelly Gen4 firmware 2.0.0 rejects Script.PutCode requests containing
+    // non-ASCII source characters (even when those characters occur only in a
+    // comment). Normalize once before calculating offsets so character offsets
+    // also remain byte-safe for the device's RPC implementation.
+    String asciiCode = code.replaceAll('[^\\x00-\\x7F]', '')
+    if (asciiCode != code) {
+        logWarn("Normalizing non-ASCII characters before uploading script id=${scriptId}")
+        atomicState[codeStateKey] = asciiCode
+        code = asciiCode
+    }
     String uri = data.uri as String
     Boolean hasAuth = data.hasAuth as Boolean
     Integer offset = (data.offset ?: 0) as Integer
@@ -13158,10 +13186,47 @@ private void toggleBleGateway(String ip) {
         bleGateways.remove(ip)
         state.bleGateways = bleGateways
         bleLogInfo("BLE gateway disabled on ${ip}")
+        // Build the post-disable row before clearing progress; otherwise the
+        // UI can briefly show the old enabled icon after the spinner vanishes.
+        buildDeviceStatusCacheEntry(ip)
+        clearBleGatewayProgress(ip)
+        runInMillis(500, 'fireConfigTableSSR')
     } else {
         // enableBleGateway is async — gateway list update happens in enableBleGatewayComplete
         enableBleGateway(ip)
     }
+}
+
+/** Executes the BLE toggle after the UI has had a chance to render progress. */
+void runBleGatewayToggle(Map data) {
+    String ip = data?.ip as String
+    if (!ip) { return }
+    try {
+        toggleBleGateway(ip)
+    } catch (Exception ex) {
+        bleLogError("BLE gateway toggle failed on ${ip}: ${ex.message}")
+        appendLog('error', "BLE gateway toggle failed on ${ip}: ${ex.message}")
+        clearBleGatewayProgress(ip)
+        buildDeviceStatusCacheEntry(ip)
+        runInMillis(500, 'fireConfigTableSSR')
+    }
+}
+
+/** Stores BLE gateway progress separately from full device provisioning. */
+private void setBleGatewayProgress(String ip, String status) {
+    if (!ip) { return }
+    Map progress = new LinkedHashMap((atomicState.bleGatewayProgress ?: [:]) as Map)
+    progress[ip] = status
+    atomicState.bleGatewayProgress = progress
+    sendEvent(name: 'configTable', value: 'bleGatewayProgress')
+}
+
+private void clearBleGatewayProgress(String ip) {
+    if (!ip) { return }
+    Map progress = new LinkedHashMap((atomicState.bleGatewayProgress ?: [:]) as Map)
+    progress.remove(ip)
+    atomicState.bleGatewayProgress = progress
+    sendEvent(name: 'configTable', value: 'bleGatewayProgressComplete')
 }
 
 /**
@@ -13184,6 +13249,7 @@ private void enableBleGateway(String ip) {
     if (bleResult?.error) {
         bleLogError("BLE.SetConfig failed on ${ip}: ${bleResult.error}")
         appendLog('error', "Failed to enable Bluetooth on ${ip}: ${bleResult.error}")
+        clearBleGatewayProgress(ip)
         return
     }
 
@@ -13194,6 +13260,7 @@ private void enableBleGateway(String ip) {
     if (!scriptCode) {
         bleLogError("enableBleGateway: failed to download HubitatBLEHelper.js from GitHub")
         appendLog('error', "Failed to download BLE script for ${ip}")
+        clearBleGatewayProgress(ip)
         return
     }
 
@@ -13218,6 +13285,7 @@ private void enableBleGateway(String ip) {
         if (scriptId == null) {
             bleLogError("enableBleGateway: failed to create script on ${ip}")
             appendLog('error', "Failed to create BLE script on ${ip}")
+            clearBleGatewayProgress(ip)
             return
         }
     }
@@ -13259,6 +13327,7 @@ void enableBleGatewayComplete(Map data) {
     if (enableResult?.error) {
         bleLogWarn("Script.Enable failed for HubitatBLEHelper on ${ip}: ${enableResult.error}")
         appendLog('warn', "Failed to enable BLE script on ${ip}: ${enableResult.error?.message ?: enableResult.error}")
+        clearBleGatewayProgress(ip)
         return
     }
 
@@ -13268,6 +13337,7 @@ void enableBleGatewayComplete(Map data) {
     if (startResult?.error) {
         bleLogWarn("Script.Start failed for HubitatBLEHelper on ${ip}: ${startResult.error}")
         appendLog('warn', "Failed to start BLE script on ${ip}: ${startResult.error?.message ?: startResult.error}")
+        clearBleGatewayProgress(ip)
         return
     }
 
@@ -13284,8 +13354,11 @@ void enableBleGatewayComplete(Map data) {
     bleLogInfo("BLE gateway enabled on ${ip}")
     appendLog('info', "BLE gateway enabled on ${ip}")
 
-    // Refresh config table now that async upload is complete
+    // Refresh the cache before clearing progress. clearBleGatewayProgress()
+    // emits an SSR event, so clearing it first can render the prior disabled
+    // icon while buildDeviceStatusCacheEntry() is still doing its RPC reads.
     buildDeviceStatusCacheEntry(ip)
+    clearBleGatewayProgress(ip)
     runInMillis(500, 'fireConfigTableSSR')
 }
 
@@ -13299,6 +13372,7 @@ void enableBleGatewayError(Map data) {
     String error = data.error as String
     bleLogError("enableBleGateway: script upload failed on ${ip} — ${error}")
     appendLog('error', "Failed to upload BLE script to ${ip}: ${error}")
+    clearBleGatewayProgress(ip)
 
     // Refresh config table to reflect failed state
     buildDeviceStatusCacheEntry(ip)
@@ -13558,6 +13632,12 @@ private String renderBleTableMarkup() {
 private String renderBleGatewayCell(String ip, String gen, Boolean isBattery) {
     if (gen == '1' || gen == 'ble' || isBattery) {
         return "<span class='status-na'>n/a</span>"
+    }
+
+    String progressStatus = (atomicState.bleGatewayProgress ?: [:])[ip]?.toString()
+    if (progressStatus) {
+        String progressIcon = "<iconify-icon icon='material-symbols:progress-activity' style='font-size:20px;animation:shellyProvisioningSpin 1s linear infinite'></iconify-icon>"
+        return "<span title='${escapeHtml(progressStatus)}'>${progressIcon}</span>"
     }
 
     Boolean enabled = isBleGatewayEnabled(ip)
