@@ -11,7 +11,7 @@
  *   - Parent aggregates switch state (anyOn/allOn) and power values (sum)
  *   - Commands: child → parent componentOn() → app parentSendCommand() → Shelly RPC
  *
- * Version: 1.0.0
+ * Version: 1.0.1
  */
 
 metadata {
@@ -260,6 +260,18 @@ private void handlePostWebhook(Map msg) {
     String dst = json?.dst?.toString()
     if (!dst) { logTrace('POST webhook: no dst in body'); return }
 
+    // Older status scripts send component data under result (for example,
+    // {"dst":"switchmon","result":{"switch:0":{"output":true}}}).
+    // Preserve support for devices that have not yet had their scripts reconciled.
+    if (json.result instanceof Map) {
+      Map result = json.result as Map
+      logDebug("POST script notification dst=${dst}")
+      logTrace("POST script result keys: ${result.keySet()}")
+      routeScriptNotification(dst, result)
+      processAggregation(dst, json)
+      return
+    }
+
     Map params = [:]
     json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
 
@@ -407,6 +419,7 @@ private String dstToComponentType(String dst) {
 /**
  * Parses webhook GET request path to extract dst and cid from URL segments.
  * GET Action Webhooks encode state in the path (e.g., /switch_on/0).
+ * Reporter scripts may use the legacy /webhook/<dst>/<cid> prefix.
  * Falls back to raw header string if parsed headers Map lacks the request line.
  *
  * @param msg The parsed LAN message map from parseLanMessage()
@@ -451,12 +464,13 @@ private Map parseWebhookPath(Map msg) {
   if (qMarkIdx >= 0) { webhookPath = webhookPath.substring(0, qMarkIdx) }
 
   String[] segments = webhookPath.split('/')
-  if (segments.length < 2) { return null }
+  int segmentOffset = (segments.length > 0 && segments[0] == 'webhook') ? 1 : 0
+  if (segments.length - segmentOffset < 2) { return null }
 
-  Map result = [dst: segments[0], cid: segments[1]]
+  Map result = [dst: segments[segmentOffset], cid: segments[segmentOffset + 1]]
 
   // Parse key/value pairs from remaining path segments
-  for (int i = 2; i + 1 < segments.length; i += 2) {
+  for (int i = segmentOffset + 2; i + 1 < segments.length; i += 2) {
     result[segments[i]] = segments[i + 1]
   }
 
