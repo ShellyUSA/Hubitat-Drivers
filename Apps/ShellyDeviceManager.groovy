@@ -82,7 +82,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.69"
+@Field static final String APP_VERSION = "1.0.70"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -242,7 +242,6 @@
     'Shelly Gen1 Duo': 'UniversalDrivers/ShellyGen1Duo.groovy',
     'Shelly Gen1 RGBW2 Color': 'UniversalDrivers/ShellyGen1RGBW2Color.groovy',
     'Shelly Gen1 RGBW2 White Parent': 'UniversalDrivers/ShellyGen1RGBW2WhiteParent.groovy',
-    'Shelly Gen1 White Channel': 'UniversalDrivers/ShellyGen1WhiteChannel.groovy',
     'Shelly Gen1 TH Sensor': 'UniversalDrivers/ShellyGen1THSensor.groovy',
     'Shelly Gen1 Flood Sensor': 'UniversalDrivers/ShellyGen1FloodSensor.groovy',
     'Shelly Gen1 Smoke Sensor': 'UniversalDrivers/ShellyGen1SmokeSensor.groovy',
@@ -1215,15 +1214,6 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     if (pmComponentStr) { dataMap.pmComponents = pmComponentStr }
     if (hasPlugsUi) { dataMap.hasPlugsUi = 'true' }
     if (hasPowerstripUi) { dataMap.hasPowerstripUi = 'true' }
-
-    // The Gen1 RGBW2 white parent creates driver-level children.  Child
-    // drivers installed by the manager are versioned, so pass the exact
-    // installed name through the parent data map instead of making the
-    // parent guess or requesting a nonexistent unsuffixed driver.
-    String parentBaseName = parentDriverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
-    if (parentBaseName == 'Shelly Gen1 RGBW2 White Parent') {
-        dataMap.whiteChannelDriverName = "Shelly Gen1 White Channel v${getAppVersion()}"
-    }
 
     // For EM parent drivers: set switchId for relay/contactor control
     // Gen 1 EM has relay:0, Gen 2+ Pro 3EM has contactor switch:100
@@ -8980,9 +8970,10 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
             // Prebuilt driver exists — install it (idempotent, skips if already installed)
             installPrebuiltDriver(driverName, components, componentPowerMonitoring, version)
 
-            // White parent needs its child driver installed too
+            // White parent needs its stable component driver installed too
             if (driverName == 'Shelly Gen1 RGBW2 White Parent') {
-                installPrebuiltDriver('Shelly Gen1 White Channel', components, componentPowerMonitoring, version)
+                fetchAndInstallComponentDriver('ShellyGen1WhiteChannel.groovy',
+                    'Shelly Gen1 White Channel', 'UniversalDrivers')
             }
 
             // Plus Uni needs all input variant and voltmeter component drivers installed upfront
@@ -9901,8 +9892,9 @@ private Boolean isComponentDriverInstalled(String driverName) {
  * @param fileName The component driver file name (e.g., "ShellySwitchComponentPM.groovy")
  * @param driverName The expected driver name for tracking
  */
-private void fetchAndInstallComponentDriver(String fileName, String driverName) {
-    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/UniversalDrivers/UniversalComponentDrivers"
+private void fetchAndInstallComponentDriver(String fileName, String driverName,
+                                             String sourceDirectory = 'UniversalDrivers/UniversalComponentDrivers') {
+    String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${sourceDirectory}"
     String fileUrl = "${baseUrl}/${fileName}?v=${now()}"
 
     logInfo("Fetching component driver from GitHub: ${fileName}")

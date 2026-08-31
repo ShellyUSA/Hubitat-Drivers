@@ -177,17 +177,18 @@ void reconcileChildDevices() {
     if (baseType != 'white') { return }
 
     String childDni = "${device.deviceNetworkId}-white-${compId}"
-    if (getChildDevice(childDni)) { return }
-
-    String driverName = device.getDataValue('whiteChannelDriverName')
-    if (!driverName) {
-      // Existing parents created before the versioned-child metadata was
-      // added can derive the matching child driver from their own name.
-      String parentTypeName = device.typeName ?: ''
-      def versionMatcher = parentTypeName =~ /\s+v(\d+(?:\.\d+)*)\s*$/
-      driverName = versionMatcher.find() ?
-        "Shelly Gen1 White Channel v${versionMatcher.group(1)}" :
-        'Shelly Gen1 White Channel'
+    String driverName = 'Shelly Gen1 White Channel'
+    def existingChild = getChildDevice(childDni)
+    if (existingChild) {
+      // Migrate children created by older Device Manager releases that used
+      // version-suffixed driver names. Reusing the same DNI preserves the
+      // parent/component relationship while standardizing the driver name.
+      if ((existingChild.typeName ?: '') != driverName) {
+        logInfo("Migrating white channel ${compId} from '${existingChild.typeName}' to '${driverName}'")
+        deleteChildDevice(childDni)
+      } else {
+        return
+      }
     }
     String label = "${device.displayName} White ${compId}"
     try {
