@@ -2801,15 +2801,98 @@ void finalizeScriptInstallation(Map data) {
         atomicState.deviceStatusCache = cache
     }
 
+    // The final upload callback tells us what commands succeeded, but the
+    // device may still be settling its script state. Verify the persisted
+    // Script.List state and retry at 5s, 15s, and 30s when necessary.
+    // Always verify once after the device has had time to commit the final
+    // Script.Enable/Script.Start calls; the callback counters alone cannot
+    // prove that the device's persisted state is 100% active.
+    scheduleScriptInstallationVerification(ipAddress, scriptQueue)
+
     if (reconcileActionsAfterInstall) {
         setProvisioningStatus(ipAddress, 'Installing webhooks…')
         installRequiredActionsForIp(ipAddress)
     } else {
-        setProvisioningStatus(ipAddress, null)
+        if (atomicState.scriptVerificationPending?.get(ipAddress) == true) {
+            setProvisioningStatus(ipAddress, 'Verifying scripts…')
+        } else {
+            setProvisioningStatus(ipAddress, null)
+        }
     }
 
     // Fire SSR update event directly — this IS the completion event, no timer needed
     sendEvent(name: 'configTable', value: 'update')
+}
+
+/** Schedules the post-install script verification sequence. */
+private void scheduleScriptInstallationVerification(String ipAddress, List<String> scriptQueue) {
+    if (!ipAddress || !scriptQueue) { return }
+    Map pending = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
+    pending[ipAddress] = true
+    atomicState.scriptVerificationPending = pending
+    setProvisioningStatus(ipAddress, 'Verifying scripts…')
+    sendEvent(name: 'configTable', value: 'scriptVerification')
+    runIn(5, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, attempt: 1], overwrite: false])
+}
+
+/**
+ * Rechecks the device's actual script state after an asynchronous install.
+ * Retries are scheduled at absolute offsets of 5, 15, and 30 seconds.
+ */
+void verifyScriptInstallation(Map data) {
+    String ipAddress = data?.ipAddress as String
+    List<String> scriptQueue = data?.scriptQueue as List<String>
+    Integer attempt = (data?.attempt ?: 1) as Integer
+    if (!ipAddress || !scriptQueue) { return }
+
+    // Let the browser render the in-progress state before the RPC begins.
+    sendEvent(name: 'configTable', value: 'scriptVerificationBefore')
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    Set<String> requiredNames = scriptQueue.collect { stripJsExtension(it) } as Set<String>
+    Integer installed = 0
+    Integer active = 0
+    if (installedScripts != null) {
+        requiredNames.each { String requiredName ->
+            Map script = installedScripts.find { Map item -> (item.name ?: '') == requiredName }
+            if (script) {
+                installed++
+                if (script.enable as Boolean && script.running as Boolean) { active++ }
+            }
+        }
+    }
+
+    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+    Map entry = cache[ipAddress] as Map
+    if (entry) {
+        entry.requiredScriptCount = requiredNames.size()
+        entry.installedScriptCount = installed
+        entry.activeScriptCount = active
+        cache[ipAddress] = entry
+        atomicState.deviceStatusCache = cache
+    }
+    sendEvent(name: 'configTable', value: 'scriptVerificationAfter')
+
+    Boolean complete = installed >= requiredNames.size() && active >= requiredNames.size()
+    if (complete || attempt >= 3) {
+        Map pending = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
+        pending.remove(ipAddress)
+        atomicState.scriptVerificationPending = pending
+        if (!complete) {
+            logWarn("Script verification ended at ${installed}/${requiredNames.size()} installed and ${active}/${requiredNames.size()} active on ${ipAddress}")
+            appendLog('warn', "Script verification incomplete on ${ipAddress}: ${installed}/${requiredNames.size()} installed, ${active}/${requiredNames.size()} active")
+        }
+        if (atomicState.provisioningStatus?.toString() != 'Installing webhooks…') {
+            setProvisioningStatus(ipAddress, null)
+        }
+        sendEvent(name: 'configTable', value: 'scriptVerificationComplete')
+        return
+    }
+
+    Integer[] retryDelays = [10, 15]
+    Integer delay = retryDelays[attempt - 1]
+    logDebug("Script verification ${installed}/${requiredNames.size()} installed, ${active}/${requiredNames.size()} active on ${ipAddress}; retrying in ${delay}s")
+    setProvisioningStatus(ipAddress, 'Verifying scripts…')
+    runIn(delay, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, attempt: attempt + 1], overwrite: false])
 }
 
 /**
@@ -2902,7 +2985,11 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
 
     logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
     appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
-    setProvisioningStatus(ipAddress, null)
+    if (atomicState.scriptVerificationPending?.get(ipAddress) == true) {
+        setProvisioningStatus(ipAddress, 'Verifying scripts…')
+    } else {
+        setProvisioningStatus(ipAddress, null)
+    }
 
 }
 
@@ -3028,13 +3115,18 @@ private void installRequiredActionsForIp(String ipAddress) {
     // Clean up obsolete scripts that are now replaced by webhooks
     removeObsoleteScripts(ipAddress, device)
 
-    setProvisioningStatus(ipAddress, null)
-
     // Re-read the device after provisioning so the configuration table reflects
     // the webhook state that was just committed. Without this refresh, the table
     // can retain the pre-install 0/N cache entry even though Webhook.Create and
     // the subsequent Webhook.List both confirm successful provisioning.
     buildDeviceStatusCacheEntry(ipAddress)
+    // Clear progress only after the cache contains the post-provisioning result.
+    // Keep it visible while the independent script verification sequence is pending.
+    if (atomicState.scriptVerificationPending?.get(ipAddress) == true) {
+        setProvisioningStatus(ipAddress, 'Verifying scripts…')
+    } else {
+        setProvisioningStatus(ipAddress, null)
+    }
     runInMillis(500, 'fireConfigTableSSR')
 }
 
