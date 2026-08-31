@@ -1,5 +1,5 @@
 /**
- * Version: 2.17.4
+ * Version: 2.17.5
  */
 #include ShellyUSA.ShellyUSA_Driver_Library
 
@@ -8,6 +8,7 @@ metadata {
     capability 'Initialize'
     capability 'Configuration'
     capability 'Refresh'
+    capability 'Switch' // aggregate on/off state for the RGBW channels
     capability 'CurrentMeter' //amperage - NUMBER, unit:A
     capability 'PowerMeter' //power - NUMBER, unit:W
     capability 'VoltageMeasurement' //voltage - NUMBER, unit:V //frequency - NUMBER, unit:Hz

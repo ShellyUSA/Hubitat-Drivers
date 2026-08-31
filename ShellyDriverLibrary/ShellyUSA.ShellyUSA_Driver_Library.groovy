@@ -3777,14 +3777,21 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
     // Lights
     else if(k.startsWith('light')) {
       LinkedHashMap update = (LinkedHashMap)v
-      id = update?.id as Integer
+      Integer lightId = update?.id as Integer
+      // Some Gen2+/Gen4 websocket notifications omit id and identify the
+      // component only in the destination key (for example, light:2).
+      if(lightId == null) {
+        List<String> keyParts = k.toString().tokenize(':')
+        if(keyParts.size() > 1) { lightId = keyParts[1] as Integer }
+      }
+      if(lightId == null) { lightId = 0 }
       if(update?.brightness != null) {
         Integer brightness = update?.brightness as Integer
-        setSwitchLevelAttribute(brightness, id)
+        setSwitchLevelAttribute(brightness, lightId)
       }
       if(update?.output != null) {
         Boolean switchState = update?.output as Boolean
-        if(switchState != null) { setSwitchState(switchState, id) }
+        if(switchState != null) { setSwitchState(switchState, lightId) }
       }
     }
 
