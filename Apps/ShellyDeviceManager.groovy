@@ -816,13 +816,16 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName == 'btnConfirmDelete') {
         String targetIp = state.pendingDeleteIp as String
+        // Clear this before any synchronous cleanup or delayed SSR. Device
+        // removal can take long enough for Hubitat to render a second page
+        // from the still-present confirmation state.
+        state.remove('pendingDeleteIp')
         if (targetIp) {
             logInfo("Removing device for ${targetIp} via config table")
             removeDeviceByIp(targetIp)
             buildDeviceStatusCacheEntry(targetIp)
             runInMillis(500, 'fireConfigTableSSR')
         }
-        state.remove('pendingDeleteIp')
     }
 
     if (buttonName == 'btnCancelDelete') {
@@ -832,28 +835,19 @@ void appButtonHandler(String buttonName) {
     if (buttonName.startsWith('installScripts|')) {
         String targetIp = buttonName.minus('installScripts|')
         logInfo("Installing scripts for ${targetIp} via config table")
-        setProvisioningStatus(targetIp, 'Installing scripts…')
         installRequiredScriptsForIp(targetIp)
-        buildDeviceStatusCacheEntry(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('enableScripts|')) {
         String targetIp = buttonName.minus('enableScripts|')
         logInfo("Enabling scripts for ${targetIp} via config table")
-        setProvisioningStatus(targetIp, 'Starting scripts…')
         enableAndStartRequiredScriptsForIp(targetIp)
-        buildDeviceStatusCacheEntry(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('installWebhooks|')) {
         String targetIp = buttonName.minus('installWebhooks|')
         logInfo("Installing webhooks for ${targetIp} via config table")
-        setProvisioningStatus(targetIp, 'Installing webhooks…')
         installRequiredActionsForIp(targetIp)
-        buildDeviceStatusCacheEntry(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('installActionUrls|')) {
@@ -1570,6 +1564,41 @@ private void setProvisioningStatus(String ip, String status) {
     cache[ip] = entry
     atomicState.deviceStatusCache = cache
     sendEvent(name: 'configTable', value: 'provisioning')
+}
+
+/**
+ * Starts a distinct provisioning operation for an IP. Scheduled callbacks carry
+ * this token so an older install can never alter the current row's spinner.
+ */
+private String beginProvisioningOperation(String ip, String status) {
+    Integer sequence = ((atomicState.provisioningOperationSequence ?: 0) as Integer) + 1
+    atomicState.provisioningOperationSequence = sequence
+    String operationId = "${now()}-${sequence}"
+    Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
+    operations[ip] = operationId
+    atomicState.provisioningOperations = operations
+    setProvisioningStatus(ip, status)
+    return operationId
+}
+
+private Boolean isCurrentProvisioningOperation(String ip, String operationId) {
+    return ip && operationId && (atomicState.provisioningOperations ?: [:])[ip]?.toString() == operationId
+}
+
+/** Clears progress only when the active operation has verified completion. */
+private void finishProvisioningOperation(String ip, String operationId) {
+    if (!isCurrentProvisioningOperation(ip, operationId)) { return }
+    Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
+    operations.remove(ip)
+    atomicState.provisioningOperations = operations
+    Map pendingScripts = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
+    pendingScripts.remove(ip)
+    atomicState.scriptVerificationPending = pendingScripts
+    Map pendingCompletion = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
+    pendingCompletion.remove(ip)
+    atomicState.provisioningCompletionPending = pendingCompletion
+    setProvisioningStatus(ip, null)
+    sendEvent(name: 'configTable', value: 'provisioningComplete')
 }
 
 /**
@@ -2415,8 +2444,8 @@ private void switchDeviceDriver(def childDevice, String ipAddress, String newDri
  *
  * @param ipAddress The IP address of the Shelly device
  */
-private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActionsAfterInstall = false) {
-    setProvisioningStatus(ipAddress, 'Installing scripts…')
+private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActionsAfterInstall = false, String operationId = null) {
+    operationId = operationId ?: beginProvisioningOperation(ipAddress, 'Installing scripts…')
     Object device = findChildDeviceByIp(ipAddress)
     if (!device) {
         logError("installRequiredScriptsForIp: no child device found for ${ipAddress}")
@@ -2427,14 +2456,14 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
     if (requiredScripts.size() == 0) {
         logInfo("No required scripts for device at ${ipAddress}")
         appendLog('info', "No required scripts for ${device.displayName}")
-        setProvisioningStatus(ipAddress, null)
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: no scripts queued')
         return
     }
 
     if (!writeHubitatIpToKVS(ipAddress)) {
         logError("Cannot install required scripts on ${ipAddress}: failed to write hubitat_sdm_ip to KVS")
         appendLog('error', "Failed to prepare script configuration on ${device.displayName}")
-        setProvisioningStatus(ipAddress, null)
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: script preparation failed')
         return
     }
 
@@ -2442,7 +2471,7 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
     if (installedScripts == null) {
         logError("Cannot read scripts from device at ${ipAddress}")
         appendLog('error', "Cannot read scripts from ${device.displayName}")
-        setProvisioningStatus(ipAddress, null)
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: unable to read scripts')
         return
     }
 
@@ -2465,7 +2494,8 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
         queueIndex: 0,
         installed: 0,
         updated: 0,
-        reconcileActionsAfterInstall: reconcileActionsAfterInstall
+        reconcileActionsAfterInstall: reconcileActionsAfterInstall,
+        provisioningOperationId: operationId
     ]
 
     installNextScript(context)
@@ -2553,7 +2583,8 @@ void installNextScript(Map data) {
             scriptQueue: data.scriptQueue,
             installed: data.installed,
             updated: data.updated,
-            reconcileActionsAfterInstall: data.reconcileActionsAfterInstall
+            reconcileActionsAfterInstall: data.reconcileActionsAfterInstall,
+            provisioningOperationId: data.provisioningOperationId
         ]
 
         // Start async chunk upload with completion callback
@@ -2742,7 +2773,8 @@ void retryScriptUpload(Map data) {
         scriptQueue: scriptQueue,
         installed: data.installed,
         updated: data.updated,
-        reconcileActionsAfterInstall: data.reconcileActionsAfterInstall
+        reconcileActionsAfterInstall: data.reconcileActionsAfterInstall,
+        provisioningOperationId: data.provisioningOperationId
     ]
 
     uploadScriptChunk([
@@ -2773,6 +2805,11 @@ void retryScriptUpload(Map data) {
  */
 void finalizeScriptInstallation(Map data) {
     String ipAddress = data.ipAddress as String
+    String operationId = data.provisioningOperationId as String
+    if (!isCurrentProvisioningOperation(ipAddress, operationId)) {
+        logDebug("Ignoring stale script-install completion for ${ipAddress}")
+        return
+    }
     String deviceDisplayName = data.deviceDisplayName as String
     Integer installed = (data.installed ?: 0) as Integer
     Integer updated = (data.updated ?: 0) as Integer
@@ -2807,17 +2844,14 @@ void finalizeScriptInstallation(Map data) {
     // Always verify once after the device has had time to commit the final
     // Script.Enable/Script.Start calls; the callback counters alone cannot
     // prove that the device's persisted state is 100% active.
-    scheduleScriptInstallationVerification(ipAddress, scriptQueue)
+    scheduleScriptInstallationVerification(ipAddress, scriptQueue, operationId)
 
     if (reconcileActionsAfterInstall) {
         setProvisioningStatus(ipAddress, 'Installing webhooks…')
-        installRequiredActionsForIp(ipAddress)
+        installRequiredActionsForIp(ipAddress, operationId)
     } else {
-        if (atomicState.scriptVerificationPending?.get(ipAddress) == true) {
-            setProvisioningStatus(ipAddress, 'Verifying scripts…')
-        } else {
-            setProvisioningStatus(ipAddress, null)
-        }
+        setProvisioningStatus(ipAddress, 'Verifying scripts…')
+        scheduleProvisioningCompletionCheck(ipAddress, operationId)
     }
 
     // Fire SSR update event directly — this IS the completion event, no timer needed
@@ -2825,14 +2859,14 @@ void finalizeScriptInstallation(Map data) {
 }
 
 /** Schedules the post-install script verification sequence. */
-private void scheduleScriptInstallationVerification(String ipAddress, List<String> scriptQueue) {
+private void scheduleScriptInstallationVerification(String ipAddress, List<String> scriptQueue, String operationId) {
     if (!ipAddress || !scriptQueue) { return }
     Map pending = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
-    pending[ipAddress] = true
+    pending[ipAddress] = operationId
     atomicState.scriptVerificationPending = pending
     setProvisioningStatus(ipAddress, 'Verifying scripts…')
     sendEvent(name: 'configTable', value: 'scriptVerification')
-    runIn(5, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, attempt: 1], overwrite: false])
+    runIn(5, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, operationId: operationId, attempt: 1], overwrite: false])
 }
 
 /**
@@ -2842,8 +2876,9 @@ private void scheduleScriptInstallationVerification(String ipAddress, List<Strin
 void verifyScriptInstallation(Map data) {
     String ipAddress = data?.ipAddress as String
     List<String> scriptQueue = data?.scriptQueue as List<String>
+    String operationId = data?.operationId as String
     Integer attempt = (data?.attempt ?: 1) as Integer
-    if (!ipAddress || !scriptQueue) { return }
+    if (!ipAddress || !scriptQueue || !isCurrentProvisioningOperation(ipAddress, operationId)) { return }
 
     // Let the browser render the in-progress state before the RPC begins.
     sendEvent(name: 'configTable', value: 'scriptVerificationBefore')
@@ -2875,15 +2910,16 @@ void verifyScriptInstallation(Map data) {
     Boolean complete = installed >= requiredNames.size() && active >= requiredNames.size()
     if (complete || attempt >= 3) {
         Map pending = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
-        pending.remove(ipAddress)
+        if (pending[ipAddress]?.toString() == operationId) { pending.remove(ipAddress) }
         atomicState.scriptVerificationPending = pending
         if (!complete) {
             logWarn("Script verification ended at ${installed}/${requiredNames.size()} installed and ${active}/${requiredNames.size()} active on ${ipAddress}")
             appendLog('warn', "Script verification incomplete on ${ipAddress}: ${installed}/${requiredNames.size()} installed, ${active}/${requiredNames.size()} active")
         }
-        if (atomicState.provisioningStatus?.toString() != 'Installing webhooks…' &&
-            atomicState.provisioningCompletionPending?.get(ipAddress) != true) {
-            setProvisioningStatus(ipAddress, null)
+        if (!complete) {
+            setProvisioningStatus(ipAddress, 'Provisioning incomplete: verifying scripts')
+        } else if (atomicState.provisioningCompletionPending?.get(ipAddress)?.toString() != operationId) {
+            scheduleProvisioningCompletionCheck(ipAddress, operationId)
         }
         sendEvent(name: 'configTable', value: 'scriptVerificationComplete')
         return
@@ -2893,18 +2929,19 @@ void verifyScriptInstallation(Map data) {
     Integer delay = retryDelays[attempt - 1]
     logDebug("Script verification ${installed}/${requiredNames.size()} installed, ${active}/${requiredNames.size()} active on ${ipAddress}; retrying in ${delay}s")
     setProvisioningStatus(ipAddress, 'Verifying scripts…')
-    runIn(delay, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, attempt: attempt + 1], overwrite: false])
+    runIn(delay, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, operationId: operationId, attempt: attempt + 1], overwrite: false])
 }
 
 /** Schedules the final completion gate after scripts and webhooks have run. */
-private void scheduleProvisioningCompletionCheck(String ipAddress) {
+private void scheduleProvisioningCompletionCheck(String ipAddress, String operationId) {
     if (!ipAddress) { return }
+    if (!isCurrentProvisioningOperation(ipAddress, operationId)) { return }
     Map pending = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
-    pending[ipAddress] = true
+    pending[ipAddress] = operationId
     atomicState.provisioningCompletionPending = pending
     setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
     sendEvent(name: 'configTable', value: 'provisioningBeforeFinalCheck')
-    runInMillis(500, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, attempt: 1], overwrite: false])
+    runInMillis(500, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: 1], overwrite: false])
 }
 
 /**
@@ -2914,8 +2951,9 @@ private void scheduleProvisioningCompletionCheck(String ipAddress) {
  */
 void verifyProvisioningCompletion(Map data) {
     String ipAddress = data?.ipAddress as String
+    String operationId = data?.operationId as String
     Integer attempt = (data?.attempt ?: 1) as Integer
-    if (!ipAddress) { return }
+    if (!ipAddress || !isCurrentProvisioningOperation(ipAddress, operationId)) { return }
 
     sendEvent(name: 'configTable', value: 'provisioningFinalCheckBefore')
     Map entry = buildDeviceStatusCacheEntry(ipAddress)
@@ -2931,17 +2969,17 @@ void verifyProvisioningCompletion(Map data) {
         (installedScripts != null && activeScripts != null && installedScripts >= requiredScripts && activeScripts >= requiredScripts)
     Boolean webhooksComplete = requiredWebhooks == null ||
         (createdWebhooks != null && enabledWebhooks != null && createdWebhooks >= requiredWebhooks && enabledWebhooks >= requiredWebhooks)
-    Boolean scriptCheckPending = atomicState.scriptVerificationPending?.get(ipAddress) == true
+    // This fresh Script.List/Webhook.List read is authoritative; do not make a
+    // completed row wait for the delayed script-verification timer as well.
+    if (scriptsComplete && webhooksComplete) {
+        finishProvisioningOperation(ipAddress, operationId)
+        return
+    }
 
-    if ((scriptsComplete && webhooksComplete && !scriptCheckPending) || attempt >= 4) {
-        Map pending = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
-        pending.remove(ipAddress)
-        atomicState.provisioningCompletionPending = pending
-        if (!(scriptsComplete && webhooksComplete)) {
-            logWarn("Provisioning final check ended with scripts ${installedScripts}/${requiredScripts} installed, ${activeScripts}/${requiredScripts} active and webhooks ${createdWebhooks}/${requiredWebhooks} created, ${enabledWebhooks}/${requiredWebhooks} enabled on ${ipAddress}")
-        }
-        setProvisioningStatus(ipAddress, null)
-        sendEvent(name: 'configTable', value: 'provisioningComplete')
+    if (attempt >= 4) {
+        logWarn("Provisioning final check remains incomplete: scripts ${installedScripts}/${requiredScripts} installed, ${activeScripts}/${requiredScripts} active and webhooks ${createdWebhooks}/${requiredWebhooks} created, ${enabledWebhooks}/${requiredWebhooks} enabled on ${ipAddress}")
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: awaiting device confirmation')
+        sendEvent(name: 'configTable', value: 'provisioningIncomplete')
         return
     }
 
@@ -2950,7 +2988,7 @@ void verifyProvisioningCompletion(Map data) {
     Integer[] delays = [5, 10, 15]
     Integer delay = delays[Math.min(attempt - 1, delays.length - 1)]
     setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
-    runIn(delay, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, attempt: attempt + 1], overwrite: false])
+    runIn(delay, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: attempt + 1], overwrite: false])
 }
 
 /**
@@ -2960,9 +2998,11 @@ void verifyProvisioningCompletion(Map data) {
  * @param ipAddress The IP address of the Shelly device
  */
 private void enableAndStartRequiredScriptsForIp(String ipAddress) {
+    String operationId = beginProvisioningOperation(ipAddress, 'Starting scripts…')
     def device = findChildDeviceByIp(ipAddress)
     if (!device) {
         logError("enableAndStartRequiredScriptsForIp: no child device found for ${ipAddress}")
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: device unavailable')
         return
     }
 
@@ -2971,12 +3011,14 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
     if (requiredNames.isEmpty()) {
         logInfo("No required scripts to enable/start on ${ipAddress}")
         appendLog('info', "No scripts to enable on ${device.displayName}")
+        scheduleProvisioningCompletionCheck(ipAddress, operationId)
         return
     }
 
     if (!writeHubitatIpToKVS(ipAddress)) {
         logError("Cannot enable/start required scripts on ${ipAddress}: failed to write hubitat_sdm_ip to KVS")
         appendLog('error', "Failed to prepare script configuration on ${device.displayName}")
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: script preparation failed')
         return
     }
 
@@ -3043,11 +3085,7 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
 
     logInfo("Enable/start complete: ${fixed} script(s) fixed on ${ipAddress}")
     appendLog('info', "Enable/start complete: ${fixed} fixed on ${device.displayName}")
-    if (atomicState.scriptVerificationPending?.get(ipAddress) == true) {
-        setProvisioningStatus(ipAddress, 'Verifying scripts…')
-    } else {
-        setProvisioningStatus(ipAddress, null)
-    }
+    scheduleProvisioningCompletionCheck(ipAddress, operationId)
 
 }
 
@@ -3057,25 +3095,26 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
  *
  * @param ipAddress The IP address of the Shelly device
  */
-private void installRequiredActionsForIp(String ipAddress) {
-    setProvisioningStatus(ipAddress, 'Installing webhooks…')
+private void installRequiredActionsForIp(String ipAddress, String operationId = null) {
+    operationId = operationId ?: beginProvisioningOperation(ipAddress, 'Installing webhooks…')
+    if (!isCurrentProvisioningOperation(ipAddress, operationId)) { return }
     // Gen 1 devices use action URLs — delegate to Gen 1-specific function
     if (isGen1DeviceByIp(ipAddress)) {
         installGen1ActionUrls(ipAddress)
-        setProvisioningStatus(ipAddress, null)
+        finishProvisioningOperation(ipAddress, operationId)
         return
     }
     def device = findChildDeviceByIp(ipAddress)
     if (!device) {
         logError("installRequiredActionsForIp: no child device found for ${ipAddress}")
-        setProvisioningStatus(ipAddress, null)
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: device unavailable')
         return
     }
 
     if (deviceRequiresPresenceStatusScript(device) && !isScriptInstalledAndRunning(ipAddress, 'presencestatus')) {
         logError("installRequiredActionsForIp: presencestatus is not active on ${ipAddress}; preserving existing webhook configuration")
         appendLog('error', "Skipped webhook changes for ${device.displayName}: presencestatus is not active")
-        setProvisioningStatus(ipAddress, null)
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: required script is inactive')
         return
     }
 
@@ -3083,21 +3122,21 @@ private void installRequiredActionsForIp(String ipAddress) {
     if (webhookSupportQueryFailed(ipAddress)) {
         logError("Cannot determine supported webhook events on ${ipAddress}; preserving existing webhook configuration")
         appendLog('error', "Skipped webhook changes for ${device.displayName}: supported-event query failed")
-        setProvisioningStatus(ipAddress, null)
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: webhook support unavailable')
         return
     }
     if (!requiredActions) {
         logInfo("No actions required for this device")
         removeObsoleteWebhooks(ipAddress, device, [])
         removeObsoleteScripts(ipAddress, device)
-        setProvisioningStatus(ipAddress, null)
+        scheduleProvisioningCompletionCheck(ipAddress, operationId)
         return
     }
 
     List<Map> existingHooks = listDeviceWebhooks(ipAddress)
     if (existingHooks == null) {
         logError("Could not retrieve existing webhooks from ${ipAddress}")
-        setProvisioningStatus(ipAddress, null)
+        setProvisioningStatus(ipAddress, 'Provisioning incomplete: unable to list webhooks')
         return
     }
 
@@ -3175,7 +3214,7 @@ private void installRequiredActionsForIp(String ipAddress) {
 
     // Do not clear progress from this callback. A final fresh read must confirm
     // both scripts and webhooks before the normal Action controls return.
-    scheduleProvisioningCompletionCheck(ipAddress)
+    scheduleProvisioningCompletionCheck(ipAddress, operationId)
 }
 
 /**
