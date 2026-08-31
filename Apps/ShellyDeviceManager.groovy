@@ -3916,8 +3916,15 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
                 if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
                 LinkedHashMap response = postCommandSync(deleteCmd, uri)
                 if (response?.error) {
-                    logWarn("RPC error removing KVS entry '${key}': ${response.error}")
-                    kvsFailed++
+                    Integer errorCode = response.error.code as Integer
+                    if (errorCode == -105) {
+                        // KVS.Delete is idempotent for cleanup purposes: the
+                        // key is already absent, which is the desired state.
+                        logDebug("KVS entry '${key}' was already absent on ${deviceName}")
+                    } else {
+                        logWarn("RPC error removing KVS entry '${key}': ${response.error}")
+                        kvsFailed++
+                    }
                 } else {
                     kvsRemoved++
                     logInfo("Removed KVS entry '${key}' from ${deviceName}")
@@ -10463,7 +10470,11 @@ void uploadScriptChunk(Map data) {
     Boolean hasAuth = data.hasAuth as Boolean
     Integer offset = (data.offset ?: 0) as Integer
     Integer chunkNum = (data.chunkNum ?: 0) as Integer
-    Integer chunkSize = 768
+    // Some Gen4 2.0.0 builds reject the first Script.PutCode request when the
+    // code payload is near the normal 1 KB chunk size. Keep the source payload
+    // below the observed ~300-byte firmware limit; JSON/RPC framing adds to the
+    // device's request-size accounting.
+    Integer chunkSize = 256
     String completionCallback = data.completionCallback as String
     String errorCallback = data.errorCallback as String
     Map completionData = (data.completionData ?: [:]) as Map
@@ -10778,7 +10789,7 @@ void componentWriteKvsToDevice(def parentDevice, String key, Object value) {
 
 /**
  * Removes a KVS entry from the Shelly device.
- * Ignores "not found" errors (code -113) since the key may not exist.
+ * Ignores "not found" errors (code -105) since the key may not exist.
  *
  * @param ipAddress The IP address of the Shelly device
  * @param key The KVS key to remove
@@ -10795,7 +10806,7 @@ private void removeKvsEntry(String ipAddress, String key) {
     LinkedHashMap response = postCommandSync(command, uri)
     if (response?.error) {
         // Ignore "not found" errors — key might not exist
-        if (response.error.code != -113) {
+        if (response.error.code != -105) {
             logDebug("Could not remove '${key}' from KVS on ${ipAddress}: ${response.error}")
         }
     } else {
