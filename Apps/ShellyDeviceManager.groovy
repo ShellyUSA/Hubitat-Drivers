@@ -1063,7 +1063,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
 
     try {
         def childDevice = addChildDevice('ShellyDeviceManager', driverName, dni, deviceProps)
-        state.remove('hubDnisCachedAt') // Invalidate DNI cache after device creation
+        invalidateHubDeviceDniCache()
 
         logInfo("Created device: ${deviceLabel} using driver ${driverName}")
         appendLog('info', "Created: ${deviceLabel} (${driverName})")
@@ -1199,7 +1199,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
 
     try {
         def parentDevice = addChildDevice('ShellyDeviceManager', parentDriverName, parentDni, parentProps)
-        state.remove('hubDnisCachedAt') // Invalidate DNI cache after device creation
+        invalidateHubDeviceDniCache()
         logInfo("Created parent device: ${baseLabel} using driver ${parentDriverName}")
         appendLog('info', "Created parent: ${baseLabel} (${parentDriverName})")
 
@@ -1413,13 +1413,18 @@ private List<Map> buildDeviceList() {
         if (ip) { childByIp[ip] = dev }
     }
 
-    // Build hub-wide DNI set for conflict detection (cached with 60s TTL)
-    Long dniCacheAge = state.hubDnisCachedAt ? (now() - (state.hubDnisCachedAt as Long)) : Long.MAX_VALUE
-    if (dniCacheAge > 60_000L || !state.hubDnisCached) {
-        state.hubDnisCached = getHubDeviceDnis() as List<String>
-        state.hubDnisCachedAt = now()
+    // Never block config-table rendering on Hubitat's full device-list endpoint.
+    // That endpoint can be slow on busy hubs; a background refresh maintains a
+    // cached DNI set for conflict detection instead.
+    Map dniCache = (atomicState.hubDniCache ?: [:]) as Map
+    Long refreshedAt = dniCache.refreshedAt as Long
+    Long retryAfter = dniCache.retryAfter as Long
+    Boolean cacheStale = refreshedAt == null || (now() - refreshedAt) > 60_000L
+    if (cacheStale && (retryAfter == null || now() >= retryAfter) && atomicState.hubDniRefreshInProgress != true) {
+        atomicState.hubDniRefreshInProgress = true
+        runInMillis(1, 'refreshHubDeviceDnis')
     }
-    Set<String> hubDnis = (state.hubDnisCached ?: []).toSet()
+    Set<String> hubDnis = ((dniCache.dnis ?: []) as List).toSet()
     Set<String> ownChildDnis = childDevices.collect { it.deviceNetworkId.toString() }.toSet()
 
     // Build set of IPs already processed
@@ -1993,8 +1998,7 @@ private Map buildDeviceStatusCacheEntry(String ip) {
         entry.installedScriptCount = -1
         entry.activeScriptCount = -1
     } else if (childDevice && !isBattery && reachable) {
-        Set<String> requiredScripts = getRequiredScriptsForDevice(childDevice)
-        Set<String> requiredNames = requiredScripts.collect { stripJsExtension(it as String) } as Set<String>
+        Set<String> requiredNames = getExpectedScriptNamesForStatus(childDevice, ip)
         List<Map> installedScripts = listDeviceScripts(ip)
 
         entry.requiredScriptCount = requiredNames.size()
@@ -2108,20 +2112,21 @@ private String describeDeviceForUri(String uri) {
  * Uses the internal /hub2/devicesList endpoint with cookie authentication,
  * following the same pattern as {@link #getAppCodeId}.
  *
- * @return Set of all device network IDs currently on the hub, or empty set on failure
+ * @return Set of all device network IDs currently on the hub, or null on failure
  */
 private Set<String> getHubDeviceDnis() {
     Set<String> dnis = [] as Set
     try {
         String cookie = login()
-        if (!cookie) { return dnis }
+        if (!cookie) { return null }
         httpGet([
             uri: 'http://127.0.0.1:8080',
             path: '/hub2/devicesList',
             headers: ['Cookie': cookie],
-            timeout: 10
+            timeout: 30
         ]) { resp ->
-            if (resp?.status == 200 && resp.data) {
+            if (resp?.status != 200) { dnis = null; return }
+            if (resp.data) {
                 resp.data.each { devId, devData ->
                     if (devData instanceof Map && devData.deviceNetworkId) {
                         dnis.add(devData.deviceNetworkId.toString())
@@ -2130,9 +2135,46 @@ private Set<String> getHubDeviceDnis() {
             }
         }
     } catch (Exception e) {
-        logWarn("getHubDeviceDnis failed — conflict detection unavailable: ${e.message}")
+        return null
     }
     return dnis
+}
+
+/**
+ * Refreshes the hub-wide DNI cache outside the config-table render request.
+ * Preserves the prior successful value on failure and backs off retries so a
+ * busy hub is not repeatedly hit with another complete device-list request.
+ */
+void refreshHubDeviceDnis() {
+    try {
+        Set<String> dnis = getHubDeviceDnis()
+        Map previous = new LinkedHashMap((atomicState.hubDniCache ?: [:]) as Map)
+        if (dnis != null) {
+            atomicState.hubDniCache = [dnis: dnis.toList(), refreshedAt: now(), failures: 0]
+            sendEvent(name: 'configTable', value: 'hubDniCacheRefreshed')
+            return
+        }
+
+        Integer failures = ((previous.failures ?: 0) as Integer) + 1
+        Long retryDelay = Math.min(300_000L, 30_000L * failures)
+        previous.failures = failures
+        previous.retryAfter = now() + retryDelay
+        atomicState.hubDniCache = previous
+        runInMillis(retryDelay as Integer, 'refreshHubDeviceDnis')
+        if (failures >= 3) {
+            logWarn("Hub DNI conflict check is delayed after ${failures} local endpoint timeouts; using the last successful cache")
+        } else {
+            logDebug("Hub DNI conflict check timed out; retrying in ${retryDelay / 1000}s without blocking the config table")
+        }
+    } finally {
+        atomicState.hubDniRefreshInProgress = false
+    }
+}
+
+/** Invalidates the background DNI cache after Hubitat device changes. */
+private void invalidateHubDeviceDniCache() {
+    atomicState.remove('hubDniCache')
+    atomicState.hubDniRefreshInProgress = false
 }
 
 /**
@@ -2431,7 +2473,7 @@ private void switchDeviceDriver(def childDevice, String ipAddress, String newDri
     atomicState.driverSwitchInProgress = true
     try {
         def updatedDevice = addChildDevice('ShellyDeviceManager', newDriverVersioned, dni, deviceProps)
-        state.remove('hubDnisCachedAt')
+        invalidateHubDeviceDniCache()
 
         logInfo("Device driver switched: ${currentLabel} → '${newBaseName}'")
         appendLog('info', "Driver switched to: ${newBaseName}")
@@ -4287,7 +4329,7 @@ private void removeDeviceByIp(String ip) {
         atomicState.commandQueues = persistedQueues
     }
     deleteChildDevice(dni)
-    state.remove('hubDnisCachedAt') // Invalidate DNI cache after device removal
+    invalidateHubDeviceDniCache()
     logInfo("Removed device: ${name} (${dni})")
     appendLog('info', "Removed: ${name}")
 
@@ -5455,7 +5497,10 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
         List<String> skippedEvents = (webhookDefs.skippedEvents ?: []) as List<String>
         supportedEvents.each { String event ->
             if (!knownEvents.contains(event) && !skippedEvents.contains(event)) {
-                logInfo("Unknown webhook event '${event}' available on ${device.displayName} — not configured in webhookDefinitions")
+                // Informational capability discovery only: the app deliberately
+                // ignores unsupported event types, so keep this out of normal
+                // end-user logs.
+                logTrace("Unknown webhook event '${event}' available on ${device.displayName} — not configured in webhookDefinitions")
             }
         }
     }
@@ -5506,6 +5551,20 @@ private List<Map> buildActionsFromCapabilities(Map deviceStatus, List<String> su
     }
 
     return requiredActions
+}
+
+/**
+ * Returns the script names expected in the config-table status columns.
+ * HubitatBLEHelper is managed separately from normal device provisioning, but
+ * it is still an app-managed script and must be included while BLE gateway
+ * mode is enabled so the displayed total matches the device.
+ */
+private Set<String> getExpectedScriptNamesForStatus(def device, String ipAddress) {
+    Set<String> names = getRequiredScriptsForDevice(device).collect { stripJsExtension(it as String) } as Set<String>
+    if (ipAddress && isBleGatewayEnabled(ipAddress)) {
+        names << 'HubitatBLEHelper'
+    }
+    return names
 }
 
 /**
@@ -13186,6 +13245,14 @@ private void toggleBleGateway(String ip) {
         bleGateways.remove(ip)
         state.bleGateways = bleGateways
         bleLogInfo("BLE gateway disabled on ${ip}")
+        // HubitatBLEHelper and managed scripts can coexist. If a managed
+        // script was previously stopped (for example after an out-of-memory
+        // condition while the helper was active), recover it once the helper
+        // has been removed instead of leaving the device at 0/N active.
+        def childDevice = findChildDeviceByIp(ip)
+        if (childDevice && !isGen1Device(childDevice)) {
+            enableAndStartRequiredScriptsForIp(ip)
+        }
         // Build the post-disable row before clearing progress; otherwise the
         // UI can briefly show the old enabled icon after the spinner vanishes.
         buildDeviceStatusCacheEntry(ip)
