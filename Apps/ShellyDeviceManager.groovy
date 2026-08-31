@@ -1716,6 +1716,14 @@ private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
     Integer created = entry.createdWebhookCount as Integer
     Integer enabled = entry.enabledWebhookCount as Integer
 
+    if (entry.webhookSupportQueryFailed == true) {
+        String installBtn = buttonLink("installWebhooks|${ip}",
+            "<iconify-icon icon='material-symbols:refresh' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
+        str.append("<td class='status-error'>query failed ${installBtn}</td>")
+        str.append("<td class='status-error'>query failed</td>")
+        return str.toString()
+    }
+
     // Gen 1 devices: show action URL status from pre-computed created/enabled counts
     if (isGen1) {
         if (required == null || required == 0) {
@@ -1962,10 +1970,12 @@ private Map buildDeviceStatusCacheEntry(String ip) {
     } else if (childDevice && reachable) {
         // Gen 2/3: use RPC webhook list
         List<Map> requiredActions = getRequiredActionsForDevice(childDevice, reachable)
-        entry.requiredWebhookCount = requiredActions.size()
+        Boolean supportQueryFailed = webhookSupportQueryFailed(ip)
+        entry.webhookSupportQueryFailed = supportQueryFailed
+        entry.requiredWebhookCount = supportQueryFailed ? null : requiredActions.size()
 
         List<Map> installedHooks = listDeviceWebhooks(ip)
-        if (installedHooks != null) {
+        if (installedHooks != null && !supportQueryFailed) {
             String hubIp = getLocationHelper()?.hub?.localIP ?: ''
             Integer createdCount = 0
             Integer enabledCount = 0
@@ -2536,79 +2546,79 @@ void installNextScript(Map data) {
  *
  * @param data Map containing queue state plus currentScriptId, currentScriptName, isUpdate
  */
-	void scriptInstallStepComplete(Map data) {
-	    Integer scriptId = data.currentScriptId as Integer
-	    String scriptName = data.currentScriptName as String
-	    Boolean isUpdate = data.isUpdate as Boolean
-	    String uri = data.uri as String
-	    Boolean hasAuth = data.hasAuth as Boolean
-	    String deviceDisplayName = data.deviceDisplayName as String
-	    Integer queueIndex = data.queueIndex as Integer
-	    Integer retryCount = (data.retryCount ?: 0) as Integer
+    void scriptInstallStepComplete(Map data) {
+        Integer scriptId = data.currentScriptId as Integer
+        String scriptName = data.currentScriptName as String
+        Boolean isUpdate = data.isUpdate as Boolean
+        String uri = data.uri as String
+        Boolean hasAuth = data.hasAuth as Boolean
+        String deviceDisplayName = data.deviceDisplayName as String
+        Integer queueIndex = data.queueIndex as Integer
+        Integer retryCount = (data.retryCount ?: 0) as Integer
 
-	    // Verify uploaded code length matches expected (catch truncation early)
-	    Integer expectedLen = data.expectedCodeLength as Integer
-	    if (expectedLen != null && expectedLen > 0) {
-	        LinkedHashMap getCodeCmd = scriptGetCodeCommand(scriptId, 0, 1)
-	        if (hasAuth) { getCodeCmd.auth = getAuth() }
-	        LinkedHashMap codeResult = postCommandSync(getCodeCmd, uri)
-	        Integer uploadedLen = codeResult?.result?.len as Integer
-	        if (uploadedLen != null && uploadedLen != expectedLen) {
-	            logWarn("Script '${scriptName}' appears truncated: uploaded ${uploadedLen}B, expected ${expectedLen}B")
-	            if (retryCount < 1) {
-	                logInfo("Retrying upload of '${scriptName}' (attempt ${retryCount + 1})...")
-	                appendLog('warn', "Retrying truncated upload of ${scriptName}")
-	                retryScriptUpload(data)
-	                return
-	            }
-	            logError("Script '${scriptName}' remains truncated after retry — upload may be too large for device")
-	            appendLog('error', "Failed to fully upload ${scriptName} (${uploadedLen}/${expectedLen}B)")
-	            installNextScript(data + [queueIndex: queueIndex + 1])
-	            return
-	        }
-	    }
+        // Verify uploaded code length matches expected (catch truncation early)
+        Integer expectedLen = data.expectedCodeLength as Integer
+        if (expectedLen != null && expectedLen > 0) {
+            LinkedHashMap getCodeCmd = scriptGetCodeCommand(scriptId, 0, 1)
+            if (hasAuth) { getCodeCmd.auth = getAuth() }
+            LinkedHashMap codeResult = postCommandSync(getCodeCmd, uri)
+            Integer uploadedLen = codeResult?.result?.len as Integer
+            if (uploadedLen != null && uploadedLen != expectedLen) {
+                logWarn("Script '${scriptName}' appears truncated: uploaded ${uploadedLen}B, expected ${expectedLen}B")
+                if (retryCount < 1) {
+                    logInfo("Retrying upload of '${scriptName}' (attempt ${retryCount + 1})...")
+                    appendLog('warn', "Retrying truncated upload of ${scriptName}")
+                    retryScriptUpload(data)
+                    return
+                }
+                logError("Script '${scriptName}' remains truncated after retry — upload may be too large for device")
+                appendLog('error', "Failed to fully upload ${scriptName} (${uploadedLen}/${expectedLen}B)")
+                installNextScript(data + [queueIndex: queueIndex + 1])
+                return
+            }
+        }
 
-	    Integer installed = data.installed as Integer
-	    Integer updated = data.updated as Integer
+        Integer installed = data.installed as Integer
+        Integer updated = data.updated as Integer
 
-	    try {
-	        LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-	        if (hasAuth) { enableCmd.auth = getAuth() }
-	        LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
-	        if (enableResult?.error) {
-	            logWarn("Script.Enable failed for '${scriptName}': ${enableResult.error}")
-	            appendLog('warn', "Failed to enable ${scriptName}: ${enableResult.error?.message ?: enableResult.error}")
-	        } else {
-	            LinkedHashMap startCmd = scriptStartCommand(scriptId)
-	            if (hasAuth) { startCmd.auth = getAuth() }
-	            LinkedHashMap startResult = postCommandSync(startCmd, uri)
-	            if (startResult?.error) {
-	                String errMsg = startResult.error?.message ?: startResult.error?.toString() ?: 'unknown error'
-	                Boolean isSyntax = errMsg.contains('syntax_error') || errMsg.contains('SyntaxError')
-	                if (isSyntax && retryCount < 1) {
-	                    logWarn("Script '${scriptName}' has syntax error (truncated upload) — retrying")
-	                    appendLog('warn', "Retrying upload of ${scriptName} (syntax error)")
-	                    retryScriptUpload(data)
-	                    return
-	                }
-	                logError("Script.Start failed for '${scriptName}': ${errMsg}")
-	                appendLog('error', "Failed to start ${scriptName}: ${errMsg}")
-	            } else {
-	                installed++
-	                if (isUpdate) { updated++ }
-	                String action = isUpdate ? 'Updated' : 'Installed'
-	                logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
-	                appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
-	            }
-	        }
-	    } catch (Exception ex) {
-	        logWarn("Failed to enable/start script '${scriptName}' after upload: ${ex.message} — continuing with next script")
-	        appendLog('warn', "Failed to enable/start ${scriptName}: ${ex.message}")
-	    }
+        try {
+            LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
+            if (hasAuth) { enableCmd.auth = getAuth() }
+            LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
+            if (enableResult?.error) {
+                logWarn("Script.Enable failed for '${scriptName}': ${enableResult.error}")
+                appendLog('warn', "Failed to enable ${scriptName}: ${enableResult.error?.message ?: enableResult.error}")
+            } else {
+                LinkedHashMap startCmd = scriptStartCommand(scriptId)
+                if (hasAuth) { startCmd.auth = getAuth() }
+                LinkedHashMap startResult = postCommandSync(startCmd, uri)
+                if (startResult?.error) {
+                    String errMsg = startResult.error?.message ?: startResult.error?.toString() ?: 'unknown error'
+                    Boolean isSyntax = errMsg.contains('syntax_error') || errMsg.contains('SyntaxError')
+                    if (isSyntax && retryCount < 1) {
+                        logWarn("Script '${scriptName}' has syntax error (truncated upload) — retrying")
+                        appendLog('warn', "Retrying upload of ${scriptName} (syntax error)")
+                        retryScriptUpload(data)
+                        return
+                    }
+                    logError("Script.Start failed for '${scriptName}': ${errMsg}")
+                    appendLog('error', "Failed to start ${scriptName}: ${errMsg}")
+                } else {
+                    installed++
+                    if (isUpdate) { updated++ }
+                    String action = isUpdate ? 'Updated' : 'Installed'
+                    logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
+                    appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
+                }
+            }
+        } catch (Exception ex) {
+            logWarn("Failed to enable/start script '${scriptName}' after upload: ${ex.message} — continuing with next script")
+            appendLog('warn', "Failed to enable/start ${scriptName}: ${ex.message}")
+        }
 
-	    // Continue with next script in queue
-	    installNextScript(data + [queueIndex: queueIndex + 1, installed: installed, updated: updated])
-	}
+        // Continue with next script in queue
+        installNextScript(data + [queueIndex: queueIndex + 1, installed: installed, updated: updated])
+    }
 
 /**
  * Error callback when a script's chunk upload fails.
@@ -2874,6 +2884,11 @@ private void installRequiredActionsForIp(String ipAddress) {
     }
 
     List<Map> requiredActions = getRequiredActionsForDevice(device)
+    if (webhookSupportQueryFailed(ipAddress)) {
+        logError("Cannot determine supported webhook events on ${ipAddress}; preserving existing webhook configuration")
+        appendLog('error', "Skipped webhook changes for ${device.displayName}: supported-event query failed")
+        return
+    }
     if (!requiredActions) {
         logInfo("No actions required for this device")
         removeObsoleteWebhooks(ipAddress, device, [])
@@ -4792,17 +4807,64 @@ List<Map> listDeviceWebhooks(String ipAddress) {
  * @return List of supported event type strings, or null on failure
  */
 List<String> listSupportedWebhookEvents(String ipAddress) {
+    List<String> events = querySupportedWebhookEvents(ipAddress)
+    Map failures = state.webhookSupportQueryFailedByIp ?: [:]
+    if (events == null) {
+        failures[ipAddress] = true
+        state.webhookSupportQueryFailedByIp = failures
+    } else {
+        failures.remove(ipAddress)
+        state.webhookSupportQueryFailedByIp = failures
+    }
+    return events
+}
+
+/**
+ * Queries supported webhook events, using the paginated API introduced by
+ * newer Gen4 firmware and falling back to the legacy API.
+ *
+ * @return event names, an empty list for a successful empty response, or null
+ *         when the device could not answer either supported-events request
+ */
+private List<String> querySupportedWebhookEvents(String ipAddress) {
+    String uri = "http://${ipAddress}/rpc"
+
     try {
-        String uri = "http://${ipAddress}/rpc"
-        LinkedHashMap command = webhookListSupportedCommand()
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        LinkedHashMap json = postCommandSync(command, uri)
-        if (json?.result?.types) {
-            List<String> events = (json.result.types as Map).keySet().collect { it.toString() }
-            logDebug("Supported webhook events for ${ipAddress}: ${events}")
-            return events
+        List<String> pagedEvents = []
+        Integer offset = 0
+        Integer total = null
+        Boolean gotPagedResponse = false
+
+        while (true) {
+            LinkedHashMap command = webhookListAllSupportedCommand(offset)
+            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+            LinkedHashMap json = postCommandSync(command, uri)
+            if (json?.error) { break }
+
+            gotPagedResponse = true
+            Object types = json?.result?.types
+            List<String> page = webhookEventNames(types)
+            pagedEvents.addAll(page)
+            total = json?.result?.total as Integer
+
+            if (total == null || pagedEvents.size() >= total || page.isEmpty()) { break }
+            offset += page.size()
         }
-        return []
+
+        if (gotPagedResponse) {
+            return pagedEvents.unique()
+        }
+
+        // Older firmware has no ListAllSupported method (or returns an error).
+        LinkedHashMap legacyCommand = webhookListSupportedCommand()
+        if (authIsEnabled() == true && getAuth().size() > 0) { legacyCommand.auth = getAuth() }
+        LinkedHashMap legacyJson = postCommandSync(legacyCommand, uri)
+        if (legacyJson?.error) {
+            logError("Supported webhook event query failed for ${ipAddress}: ${legacyJson.error}")
+            return null
+        }
+        if (legacyJson?.result == null) { return null }
+        return webhookEventNames(legacyJson.result.types ?: legacyJson.result.hook_types).unique()
     } catch (Exception ex) {
         if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
             logDebug("Device at ${ipAddress} is unreachable (may be asleep): ${ex.message}")
@@ -4811,6 +4873,31 @@ List<String> listSupportedWebhookEvents(String ipAddress) {
         }
         return null
     }
+}
+
+/** Extracts names from legacy maps, string lists, or ListAllSupported objects. */
+private List<String> webhookEventNames(Object types) {
+    if (types instanceof Map) {
+        return (types as Map).keySet().collect { it.toString() }
+    }
+    if (types instanceof List) {
+        return (types as List).collect { item ->
+            if (item instanceof Map) {
+                // ListAllSupported returns one event-name key per object:
+                // [{"switch.on": {...}}, {"switch.off": {...}}].
+                // Accept the documented shape first, while retaining support
+                // for less common object variants seen in firmware builds.
+                if (item.size() == 1) { return item.keySet().first()?.toString() }
+                return (item.type ?: item.event ?: item.name)?.toString()
+            }
+            return item?.toString()
+        }.findAll { it }
+    }
+    return []
+}
+
+private Boolean webhookSupportQueryFailed(String ipAddress) {
+    return (state.webhookSupportQueryFailedByIp ?: [:])[ipAddress] == true
 }
 
 /**
@@ -5225,11 +5312,9 @@ private Map queryDeviceStatus(String ipAddress) {
         // Shelly.GetComponents returns BLE link status (rssi, paired, battery) but NOT
         // thermostat data (current_C, target_C, pos). BluTrv.GetStatus returns the full data.
         if (status?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }) {
-            LinkedHashMap getComponentsCmd = [id: 0, src: 'deviceConfig', method: 'Shelly.GetComponents', params: [dynamic_only: true, include: ['status']]]
-            if (authIsEnabled() == true && getAuth().size() > 0) { getComponentsCmd.auth = getAuth() }
-            LinkedHashMap componentsResp = postCommandSync(getComponentsCmd, uri)
-            if (componentsResp?.result?.components) {
-                (componentsResp.result.components as List<Map>).each { Map comp ->
+            List<Map> dynamicComponents = queryDeviceComponents(ipAddress, [dynamic_only: true, include: ['status']], 'deviceConfig')
+            if (dynamicComponents) {
+                dynamicComponents.each { Map comp ->
                     String compKey = comp.key?.toString()
                     if (compKey?.startsWith('blutrv:')) {
                         Integer trvId = compKey.split(':')[1] as Integer
@@ -5260,6 +5345,48 @@ private Map queryDeviceStatus(String ipAddress) {
         } else {
             logError("Failed to query device status for ${ipAddress}: ${ex.message}")
         }
+        return null
+    }
+}
+
+/**
+ * Retrieves all Shelly components, following the documented offset/total
+ * pagination used by Shelly.GetComponents. Keeping this in one helper avoids
+ * silently losing dynamic or virtual components when a device has more than
+ * one response page.
+ *
+ * @param ipAddress The IP address of the Shelly device
+ * @param requestParams Component filters and include options
+ * @param src RPC source identifier for logging/device notifications
+ * @return All component objects, or null when the RPC request fails
+ */
+private List<Map> queryDeviceComponents(String ipAddress, Map requestParams = [:], String src = 'getComponents') {
+    try {
+        String uri = "http://${ipAddress}/rpc"
+        List<Map> components = []
+        Integer offset = 0
+        Integer total = null
+
+        while (true) {
+            Map params = new LinkedHashMap(requestParams ?: [:])
+            params.offset = offset
+            LinkedHashMap command = [id: 0, src: src, method: 'Shelly.GetComponents', params: params]
+            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+            LinkedHashMap response = postCommandSync(command, uri)
+            if (response?.error || response?.result == null) {
+                logError("Shelly.GetComponents failed for ${ipAddress}: ${response?.error ?: 'no result'}")
+                return null
+            }
+
+            List<Map> page = (response.result.components ?: []) as List<Map>
+            components.addAll(page)
+            total = response.result.total as Integer
+            if (total == null || components.size() >= total || page.isEmpty()) { break }
+            offset += page.size()
+        }
+        return components
+    } catch (Exception ex) {
+        logError("Failed to query Shelly.GetComponents for ${ipAddress}: ${ex.message}")
         return null
     }
 }
@@ -7518,11 +7645,8 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         // BLE link status (rssi, paired), BluTrv.GetStatus returns thermostat data.
         Boolean hasBlugw = deviceStatus?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }
         if (hasBlugw) {
-            LinkedHashMap getComponentsCmd = [id: 0, src: 'discovery', method: 'Shelly.GetComponents', params: [dynamic_only: true, include: ['status']]]
-            if (authIsEnabled() == true && getAuth().size() > 0) { getComponentsCmd.auth = getAuth() }
-            LinkedHashMap componentsResp = postCommandSync(getComponentsCmd, rpcUri)
-            if (componentsResp?.result?.components) {
-                List<Map> dynamicComponents = componentsResp.result.components as List<Map>
+            List<Map> dynamicComponents = queryDeviceComponents(ip, [dynamic_only: true, include: ['status']], 'discovery')
+            if (dynamicComponents) {
                 dynamicComponents.each { Map comp ->
                     String compKey = comp.key?.toString()
                     if (compKey?.startsWith('blutrv:')) {
@@ -7548,18 +7672,8 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         }
 
         // Query supported webhook events for filtering required actions
-        LinkedHashMap webhookSupportedCmd = webhookListSupportedCommand('discovery')
-        LinkedHashMap webhookSupportedResp = postCommandSync(webhookSupportedCmd, rpcUri)
-        List<String> supportedWebhookEvents = []
-        // Firmware variations: 'types' is a Map on current builds, a List on some older
-        // builds, and very old firmware used 'hook_types'. A blind Map cast would throw
-        // and abort the whole fetch, misrouting the device into the Gen 1 fallback.
-        Object supportedTypes = webhookSupportedResp?.result?.types ?: webhookSupportedResp?.result?.hook_types
-        if (supportedTypes instanceof Map) {
-            supportedWebhookEvents = (supportedTypes as Map).keySet().collect { it.toString() }
-        } else if (supportedTypes instanceof List) {
-            supportedWebhookEvents = (supportedTypes as List).collect { it.toString() }
-        }
+        List<String> supportedWebhookEvents = querySupportedWebhookEvents(ip)
+        if (supportedWebhookEvents == null) { supportedWebhookEvents = [] }
         if (supportedWebhookEvents) {
             logDebug("fetchAndStoreDeviceInfo: supported webhook events: ${supportedWebhookEvents}")
         }
@@ -10130,6 +10244,17 @@ LinkedHashMap webhookListSupportedCommand(String src = 'webhookListSupported') {
     "src" : src,
     "method" : "Webhook.ListSupported",
     "params" : []
+  ]
+  return command
+}
+
+@CompileStatic
+LinkedHashMap webhookListAllSupportedCommand(Integer offset = 0, String src = 'webhookListAllSupported') {
+  LinkedHashMap command = [
+    "id" : 0,
+    "src" : src,
+    "method" : "Webhook.ListAllSupported",
+    "params" : ["offset" : offset]
   ]
   return command
 }
@@ -13968,7 +14093,7 @@ Integer convertHexToInt(String hex) { Integer.parseInt(hex,16) }
 
 @CompileStatic
 String convertHexToIP(String hex) {
-	[convertHexToInt(hex[0..1]),convertHexToInt(hex[2..3]),convertHexToInt(hex[4..5]),convertHexToInt(hex[6..7])].join(".")
+    [convertHexToInt(hex[0..1]),convertHexToInt(hex[2..3]),convertHexToInt(hex[4..5]),convertHexToInt(hex[6..7])].join(".")
 }
 
 @CompileStatic
@@ -18921,13 +19046,7 @@ Map componentLinkedgoGetComponents(def childDevice) {
             logError("componentLinkedgoGetComponents: no IP for ${childDevice.displayName}")
             return result
         }
-        String uri = "http://${ip}/rpc"
-        LinkedHashMap command = [id: 0, src: 'linkedgoGetComponents', method: 'Shelly.GetComponents', params: [include: ['config']]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        logTrace("componentLinkedgoGetComponents: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
-        LinkedHashMap json = postCommandSync(command, uri)
-        logTrace("componentLinkedgoGetComponents: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
-        List<Map> components = json?.result?.components as List<Map>
+        List<Map> components = queryDeviceComponents(ip, [include: ['config']], 'linkedgoGetComponents')
         if (!components) {
             logWarn("componentLinkedgoGetComponents: empty components list for ${childDevice.displayName}")
             return result
@@ -18958,8 +19077,8 @@ Map componentLinkedgoGetComponents(def childDevice) {
  * components are absent. Shelly.GetComponents with include:['status'] returns
  * them. Same pattern as the BLU Gateway enrichment at line ~4575.
  *
- * Pagination: the LinkedGo thermostats expose ~6-8 virtual components, well
- * under one page. Offset iteration is not required today.
+ * Pagination is handled by queryDeviceComponents because the number of
+ * virtual components can grow as devices are paired or configured.
  *
  * @param childDevice The Linkedgo child device
  * @return Map of "type:id" (String) -> status submap (Map). Empty on failure;
@@ -18973,15 +19092,7 @@ Map componentLinkedgoFetchStatus(def childDevice) {
             logError("componentLinkedgoFetchStatus: no IP for ${childDevice.displayName}")
             return result
         }
-        String uri = "http://${ip}/rpc"
-        LinkedHashMap command = [id: 0, src: 'linkedgoFetchStatus', method: 'Shelly.GetComponents',
-                                 params: [include: ['status']]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        logTrace("componentLinkedgoFetchStatus: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
-        LinkedHashMap json = postCommandSync(command, uri)
-        logTrace("componentLinkedgoFetchStatus: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
-
-        List<Map> components = json?.result?.components as List<Map>
+        List<Map> components = queryDeviceComponents(ip, [include: ['status']], 'linkedgoFetchStatus')
         if (!components) {
             logWarn("componentLinkedgoFetchStatus: empty/null components list for ${childDevice.displayName}")
             return result
