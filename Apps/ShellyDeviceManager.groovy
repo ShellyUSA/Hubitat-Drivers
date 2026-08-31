@@ -2881,7 +2881,8 @@ void verifyScriptInstallation(Map data) {
             logWarn("Script verification ended at ${installed}/${requiredNames.size()} installed and ${active}/${requiredNames.size()} active on ${ipAddress}")
             appendLog('warn', "Script verification incomplete on ${ipAddress}: ${installed}/${requiredNames.size()} installed, ${active}/${requiredNames.size()} active")
         }
-        if (atomicState.provisioningStatus?.toString() != 'Installing webhooks…') {
+        if (atomicState.provisioningStatus?.toString() != 'Installing webhooks…' &&
+            atomicState.provisioningCompletionPending?.get(ipAddress) != true) {
             setProvisioningStatus(ipAddress, null)
         }
         sendEvent(name: 'configTable', value: 'scriptVerificationComplete')
@@ -2893,6 +2894,63 @@ void verifyScriptInstallation(Map data) {
     logDebug("Script verification ${installed}/${requiredNames.size()} installed, ${active}/${requiredNames.size()} active on ${ipAddress}; retrying in ${delay}s")
     setProvisioningStatus(ipAddress, 'Verifying scripts…')
     runIn(delay, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, attempt: attempt + 1], overwrite: false])
+}
+
+/** Schedules the final completion gate after scripts and webhooks have run. */
+private void scheduleProvisioningCompletionCheck(String ipAddress) {
+    if (!ipAddress) { return }
+    Map pending = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
+    pending[ipAddress] = true
+    atomicState.provisioningCompletionPending = pending
+    setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
+    sendEvent(name: 'configTable', value: 'provisioningBeforeFinalCheck')
+    runInMillis(500, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, attempt: 1], overwrite: false])
+}
+
+/**
+ * Performs a fresh status read before clearing the provisioning indicator.
+ * The spinner is retained whenever either scripts or webhooks are incomplete,
+ * preventing a stale 0/N cache entry from being presented as finished.
+ */
+void verifyProvisioningCompletion(Map data) {
+    String ipAddress = data?.ipAddress as String
+    Integer attempt = (data?.attempt ?: 1) as Integer
+    if (!ipAddress) { return }
+
+    sendEvent(name: 'configTable', value: 'provisioningFinalCheckBefore')
+    Map entry = buildDeviceStatusCacheEntry(ipAddress)
+    sendEvent(name: 'configTable', value: 'provisioningFinalCheckAfter')
+
+    Integer requiredScripts = entry?.requiredScriptCount as Integer
+    Integer installedScripts = entry?.installedScriptCount as Integer
+    Integer activeScripts = entry?.activeScriptCount as Integer
+    Integer requiredWebhooks = entry?.requiredWebhookCount as Integer
+    Integer createdWebhooks = entry?.createdWebhookCount as Integer
+    Integer enabledWebhooks = entry?.enabledWebhookCount as Integer
+    Boolean scriptsComplete = requiredScripts == null ||
+        (installedScripts != null && activeScripts != null && installedScripts >= requiredScripts && activeScripts >= requiredScripts)
+    Boolean webhooksComplete = requiredWebhooks == null ||
+        (createdWebhooks != null && enabledWebhooks != null && createdWebhooks >= requiredWebhooks && enabledWebhooks >= requiredWebhooks)
+    Boolean scriptCheckPending = atomicState.scriptVerificationPending?.get(ipAddress) == true
+
+    if ((scriptsComplete && webhooksComplete && !scriptCheckPending) || attempt >= 4) {
+        Map pending = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
+        pending.remove(ipAddress)
+        atomicState.provisioningCompletionPending = pending
+        if (!(scriptsComplete && webhooksComplete)) {
+            logWarn("Provisioning final check ended with scripts ${installedScripts}/${requiredScripts} installed, ${activeScripts}/${requiredScripts} active and webhooks ${createdWebhooks}/${requiredWebhooks} created, ${enabledWebhooks}/${requiredWebhooks} enabled on ${ipAddress}")
+        }
+        setProvisioningStatus(ipAddress, null)
+        sendEvent(name: 'configTable', value: 'provisioningComplete')
+        return
+    }
+
+    // Keep the spinner visible while the device/cache catches up. The checks
+    // occur at approximately 0.5s, 5s, 15s, and 30s after this gate starts.
+    Integer[] delays = [5, 10, 15]
+    Integer delay = delays[Math.min(attempt - 1, delays.length - 1)]
+    setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
+    runIn(delay, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, attempt: attempt + 1], overwrite: false])
 }
 
 /**
@@ -3115,19 +3173,9 @@ private void installRequiredActionsForIp(String ipAddress) {
     // Clean up obsolete scripts that are now replaced by webhooks
     removeObsoleteScripts(ipAddress, device)
 
-    // Re-read the device after provisioning so the configuration table reflects
-    // the webhook state that was just committed. Without this refresh, the table
-    // can retain the pre-install 0/N cache entry even though Webhook.Create and
-    // the subsequent Webhook.List both confirm successful provisioning.
-    buildDeviceStatusCacheEntry(ipAddress)
-    // Clear progress only after the cache contains the post-provisioning result.
-    // Keep it visible while the independent script verification sequence is pending.
-    if (atomicState.scriptVerificationPending?.get(ipAddress) == true) {
-        setProvisioningStatus(ipAddress, 'Verifying scripts…')
-    } else {
-        setProvisioningStatus(ipAddress, null)
-    }
-    runInMillis(500, 'fireConfigTableSSR')
+    // Do not clear progress from this callback. A final fresh read must confirm
+    // both scripts and webhooks before the normal Action controls return.
+    scheduleProvisioningCompletionCheck(ipAddress)
 }
 
 /**
