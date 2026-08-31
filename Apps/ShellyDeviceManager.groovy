@@ -461,6 +461,20 @@ preferences {
  * @return Map containing the dynamic page definition
  */
 Map mainPage() {
+    // A fresh navigation must not inherit a lock left by an interrupted
+    // request. Preserve it for the immediate response to an action button so
+    // the spinner/disabled controls render during that operation.
+    Long actionSubmittedAt = atomicState.actionRequestSubmittedAt as Long
+    if (atomicState.actionRequestSubmitted == true && actionSubmittedAt != null &&
+        (now() - actionSubmittedAt) < 60_000L) {
+        atomicState.actionRequestSubmitted = false
+        atomicState.remove('actionRequestSubmittedAt')
+    } else {
+        atomicState.actionRequestSubmitted = false
+        atomicState.remove('actionRequestSubmittedAt')
+        atomicState.userActionLock = [:]
+        state.remove('pendingDeleteIp')
+    }
     if (!atomicState.discoveredShellys) { atomicState.discoveredShellys = [:] }
     if (!atomicState.recentLogs) { atomicState.recentLogs = [] }
 
@@ -794,6 +808,8 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName.startsWith('createDev|')) {
         String targetIp = buttonName.minus('createDev|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'create')) { return }
         logInfo("Creating device for ${targetIp} via config table")
         createShellyDevice(targetIp)
         // Refresh cache entry after creation; defer SSR so state persists first
@@ -811,6 +827,8 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName.startsWith('removeDev|')) {
         String targetIp = buttonName.minus('removeDev|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'remove')) { return }
         state.pendingDeleteIp = targetIp
     }
 
@@ -824,42 +842,55 @@ void appButtonHandler(String buttonName) {
             logInfo("Removing device for ${targetIp} via config table")
             removeDeviceByIp(targetIp)
             buildDeviceStatusCacheEntry(targetIp)
+            releaseUserAction(targetIp)
             runInMillis(500, 'fireConfigTableSSR')
         }
     }
 
     if (buttonName == 'btnCancelDelete') {
         state.remove('pendingDeleteIp')
+        releaseUserAction(null)
     }
 
     if (buttonName.startsWith('installScripts|')) {
         String targetIp = buttonName.minus('installScripts|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'installScripts')) { return }
         logInfo("Installing scripts for ${targetIp} via config table")
         installRequiredScriptsForIp(targetIp)
     }
 
     if (buttonName.startsWith('enableScripts|')) {
         String targetIp = buttonName.minus('enableScripts|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'enableScripts')) { return }
         logInfo("Enabling scripts for ${targetIp} via config table")
         enableAndStartRequiredScriptsForIp(targetIp)
     }
 
     if (buttonName.startsWith('installWebhooks|')) {
         String targetIp = buttonName.minus('installWebhooks|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'installWebhooks')) { return }
         logInfo("Installing webhooks for ${targetIp} via config table")
         installRequiredActionsForIp(targetIp)
     }
 
     if (buttonName.startsWith('installActionUrls|')) {
         String targetIp = buttonName.minus('installActionUrls|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'installActionUrls')) { return }
         logInfo("Installing Gen 1 action URLs for ${targetIp} via config table")
         installGen1ActionUrls(targetIp)
         buildDeviceStatusCacheEntry(targetIp)
+        releaseUserAction(targetIp)
         runInMillis(500, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('reinitDev|')) {
         String targetIp = buttonName.minus('reinitDev|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'reinit')) { return }
         setProvisioningStatus(targetIp, 'Reinitializing device…')
         // Reinit can download drivers and perform several RPC calls. Schedule
         // it after this request so the config-table SSR first shows progress.
@@ -918,6 +949,8 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName.startsWith('toggleBleGw|')) {
         String targetIp = buttonName.minus('toggleBleGw|')
+        if (isAnyDeviceActionActive()) { return }
+        if (!claimUserAction(targetIp, 'bleGateway')) { return }
         logInfo("Toggling BLE gateway for ${targetIp}")
         List bleGatewaysBefore = (state.bleGateways ?: []) as List
         Boolean wasEnabled = bleGatewaysBefore.contains(targetIp)
@@ -1569,13 +1602,27 @@ private void setProvisioningStatus(String ip, String status) {
     sendEvent(name: 'configTable', value: 'provisioning')
 }
 
-/** Returns true when any device action is currently visible/in progress. */
+/** Returns true when the current app session has an active user action. */
 private Boolean isAnyDeviceActionActive() {
-    Boolean provisioningActive = ((atomicState.deviceStatusCache ?: [:]) as Map).values().any { Map entry ->
-        entry?.provisioningStatus?.toString()
-    }
-    Boolean bleActive = ((atomicState.bleGatewayProgress ?: [:]) as Map).values().any { Object value -> value }
-    return provisioningActive || bleActive || state.pendingDeleteIp != null
+    return ((atomicState.userActionLock ?: [:]) as Map).values().any { Object value -> value }
+}
+
+/** Claims the single UI action slot and preserves it across the button response. */
+private Boolean claimUserAction(String ip, String action) {
+    if (isAnyDeviceActionActive()) { return false }
+    atomicState.userActionLock = [ip: ip, action: action, startedAt: now()]
+    atomicState.actionRequestSubmitted = true
+    atomicState.actionRequestSubmittedAt = now()
+    sendEvent(name: 'configTable', value: 'actionStarted')
+    return true
+}
+
+/** Releases the UI lock after the underlying action has completed or failed. */
+private void releaseUserAction(String ip) {
+    Map lock = (atomicState.userActionLock ?: [:]) as Map
+    if (ip && lock.ip?.toString() != ip) { return }
+    atomicState.userActionLock = [:]
+    sendEvent(name: 'configTable', value: 'actionComplete')
 }
 
 private String disabledActionIcon(String icon, String title = 'Another device action is in progress') {
@@ -1614,6 +1661,7 @@ private void finishProvisioningOperation(String ip, String operationId) {
     pendingCompletion.remove(ip)
     atomicState.provisioningCompletionPending = pendingCompletion
     setProvisioningStatus(ip, null)
+    releaseUserAction(ip)
     sendEvent(name: 'configTable', value: 'provisioningComplete')
 }
 
@@ -1638,6 +1686,9 @@ private String buildDeviceRow(Map entry) {
     if (provisioningStatus) {
         String progressIcon = "<iconify-icon icon='material-symbols:progress-activity' style='font-size:20px;animation:shellyProvisioningSpin 1s linear infinite'></iconify-icon>"
         str.append("<td title='${escapeHtml(provisioningStatus)}'>${progressIcon}</td>")
+    } else if (isAnyDeviceActionActive()) {
+        String actionIcon = isCreated ? 'material-symbols:delete-outline' : 'material-symbols:add-circle-outline-rounded'
+        str.append("<td>${disabledActionIcon(actionIcon)}</td>")
     } else if (isCreated && entry.shellyHelperOnline == false) {
         // Device is created but offline — show disabled delete icon (can't clean up webhooks/scripts)
         String disabledDeleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px;opacity:0.3'></iconify-icon>"
@@ -1729,7 +1780,11 @@ private String buildDeviceRow(Map entry) {
     // Column 10: Reinit button
     if (isCreated) {
         String reinitIcon = "<iconify-icon icon='material-symbols:refresh' style='font-size:18px'></iconify-icon>"
-        str.append("<td>${buttonLink("reinitDev|${ip}", reinitIcon, '#1A77C9', '18px')}</td>")
+        if (isAnyDeviceActionActive()) {
+            str.append("<td>${disabledActionIcon('material-symbols:refresh')}</td>")
+        } else {
+            str.append("<td>${buttonLink("reinitDev|${ip}", reinitIcon, '#1A77C9', '18px')}</td>")
+        }
     } else {
         str.append("<td class='status-na'>&ndash;</td>")
     }
@@ -1766,7 +1821,7 @@ private String buildScriptCells(Map entry, Boolean isStale, String ip) {
     if (installed >= required) {
         str.append("<td class='status-ok'>${installed}/${required}</td>")
     } else {
-        String installBtn = buttonLink("installScripts|${ip}",
+        String installBtn = isAnyDeviceActionActive() ? disabledActionIcon('material-symbols:download') : buttonLink("installScripts|${ip}",
             "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
         str.append("<td class='status-error'>${installed}/${required} ${installBtn}</td>")
     }
@@ -1776,7 +1831,7 @@ private String buildScriptCells(Map entry, Boolean isStale, String ip) {
     if (active >= required) {
         str.append("<td class='status-ok'>${active}/${required}</td>")
     } else {
-        String enableBtn = buttonLink("enableScripts|${ip}",
+        String enableBtn = isAnyDeviceActionActive() ? disabledActionIcon('material-symbols:play-arrow') : buttonLink("enableScripts|${ip}",
             "<iconify-icon icon='material-symbols:play-arrow' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
         str.append("<td class='status-error'>${active}/${required} ${enableBtn}</td>")
     }
@@ -1801,7 +1856,7 @@ private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
     Integer enabled = entry.enabledWebhookCount as Integer
 
     if (entry.webhookSupportQueryFailed == true) {
-        String installBtn = buttonLink("installWebhooks|${ip}",
+        String installBtn = isAnyDeviceActionActive() ? disabledActionIcon('material-symbols:refresh') : buttonLink("installWebhooks|${ip}",
             "<iconify-icon icon='material-symbols:refresh' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
         str.append("<td class='status-error'>query failed ${installBtn}</td>")
         str.append("<td class='status-error'>query failed</td>")
@@ -1820,7 +1875,7 @@ private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
                 str.append("<td class='status-ok'>${created}/${required}</td>")
                 str.append("<td class='status-ok'>${enabled}/${required}</td>")
             } else {
-                String installBtn = buttonLink("installActionUrls|${ip}",
+                String installBtn = isAnyDeviceActionActive() ? disabledActionIcon('material-symbols:download') : buttonLink("installActionUrls|${ip}",
                     "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
                 str.append("<td class='status-error'>${created}/${required} ${installBtn}</td>")
                 str.append("<td class='status-error'>${enabled}/${required}</td>")
@@ -1841,7 +1896,7 @@ private String buildWebhookCells(Map entry, Boolean isStale, String ip) {
     if (created >= required) {
         str.append("<td class='status-ok'>${created}/${required}</td>")
     } else {
-        String installBtn = buttonLink("installWebhooks|${ip}",
+        String installBtn = isAnyDeviceActionActive() ? disabledActionIcon('material-symbols:download') : buttonLink("installWebhooks|${ip}",
             "<iconify-icon icon='material-symbols:download' style='font-size:16px'></iconify-icon>", "#1A77C9", "16px")
         str.append("<td class='status-error'>${created}/${required} ${installBtn}</td>")
     }
@@ -2205,6 +2260,7 @@ void runDeviceReinitialize(Map data) {
     if (!ipAddress) { return }
     if (!findChildDeviceByIp(ipAddress)) {
         logError("Reinit failed: no device found for ${ipAddress}")
+        releaseUserAction(ipAddress)
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: device unavailable')
         return
     }
@@ -2213,6 +2269,7 @@ void runDeviceReinitialize(Map data) {
     } catch (Exception ex) {
         logError("Reinit failed for ${ipAddress}: ${ex.message}")
         appendLog('error', "Reinit failed for ${ipAddress}: ${ex.message}")
+        releaseUserAction(ipAddress)
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: reinitialization failed')
         buildDeviceStatusCacheEntry(ipAddress)
         runInMillis(500, 'fireConfigTableSSR')
@@ -2271,6 +2328,7 @@ void reinitializeDevice(String ipAddress) {
         // Gen 1: no scripts, configure action URLs instead of webhooks
         logInfo("Gen 1 device — skipping scripts, configuring action URLs")
         installGen1ActionUrls(ipAddress)
+        releaseUserAction(ipAddress)
     } else {
         // Gen 2/3: install required scripts first. Script upload/start is async, so
         // webhook reconciliation that depends on script health is deferred until
@@ -13346,6 +13404,7 @@ private void clearBleGatewayProgress(String ip) {
     Map progress = new LinkedHashMap((atomicState.bleGatewayProgress ?: [:]) as Map)
     progress.remove(ip)
     atomicState.bleGatewayProgress = progress
+    releaseUserAction(ip)
     sendEvent(name: 'configTable', value: 'bleGatewayProgressComplete')
 }
 
@@ -13758,6 +13817,9 @@ private String renderBleGatewayCell(String ip, String gen, Boolean isBattery) {
     if (progressStatus) {
         String progressIcon = "<iconify-icon icon='material-symbols:progress-activity' style='font-size:20px;animation:shellyProvisioningSpin 1s linear infinite'></iconify-icon>"
         return "<span title='${escapeHtml(progressStatus)}'>${progressIcon}</span>"
+    }
+    if (isAnyDeviceActionActive()) {
+        return disabledActionIcon('material-symbols:bluetooth-disabled')
     }
 
     Boolean enabled = isBleGatewayEnabled(ip)
