@@ -7,9 +7,9 @@
 // report aggregated data to a Hubitat hub.
 //
 // Supported components:
-//   PM1/switch/cover  — single-phase, inline energy (aenergy.total)
-//   EM1               — single-phase, separate energy (em1data)
-//   EM                — 3-phase, separate energy (emdata)
+//   PM1/switch/cover  - single-phase, inline energy (aenergy.total)
+//   EM1               - single-phase, separate energy (em1data)
+//   EM                - 3-phase, separate energy (emdata)
 // ==========================================
 
 // === USER CONFIGURATION ===
@@ -130,7 +130,7 @@ function scheduleNextReport() {
   Timer.set(REPORT_INTERVAL * 1000, false, sendReport);
 }
 
-// Compute average of a numeric array (raw — per-field rounding applied in sendPostReport)
+// Compute average of a numeric array (raw - per-field rounding applied in sendPostReport)
 function average(arr) {
   if (arr.length === 0) return null;
   let sum = 0;
@@ -298,7 +298,7 @@ function sendPostReport(compId, compType, phase, data) {
 }
 
 // Push fresh status readings into accumulator arrays for averaging.
-// Unlike seedFromStatus(), does NOT set lastV/lastC/etc. — those are
+// Unlike seedFromStatus(), does NOT set lastV/lastC/etc. -- those are
 // updated by sendPostReport() after computing the cycle average.
 function pushStatusReadings(res) {
   let prefixes = ["switch", "pm1", "cover", "em", "em1"];
@@ -401,7 +401,7 @@ function sendReport() {
     if (err === 0 && res) {
       pushStatusReadings(res);
     }
-    // Send reports even if GetStatus failed — deltas may exist
+    // Send reports even if GetStatus failed -- deltas may exist
     sendAllReports();
     // Re-read interval from KVS (picks up user changes), then schedule next cycle
     fetchReportIntervalFromKVS(scheduleNextReport);
