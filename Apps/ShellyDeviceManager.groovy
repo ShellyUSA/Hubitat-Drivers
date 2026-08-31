@@ -7798,18 +7798,28 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
     // Skip only when a fetch is actively queued or running. Entries with status
     // 'completed'/'failed' are deliberately re-queued — sleepy battery devices that were
     // unreachable on a previous attempt must be retryable on later discovery passes.
-    String existingStatus = (atomicState.asyncFetchQueue[ipKey] as Map)?.status?.toString()
+    Map existingEntry = (atomicState.asyncFetchQueue[ipKey] as Map)
+    String existingStatus = existingEntry?.status?.toString()
     if (existingStatus in ['queued', 'in_progress']) {
-        logDebug("Async fetch already queued for ${ipKey}")
-        return
+        Long queuedOrStartedAt = (existingEntry?.startedAt ?: existingEntry?.queuedAt) as Long
+        // A normal fetch completes well inside this window. If an app execution
+        // was interrupted while an HTTP call was in flight, do not leave the
+        // IP permanently suppressed on every subsequent discovery pass.
+        if (queuedOrStartedAt != null && (now() - queuedOrStartedAt) < 45_000L) {
+            logTrace("Async fetch already queued for ${ipKey}")
+            return
+        }
+        logDebug("Recovering stale async fetch queue entry for ${ipKey} (status=${existingStatus})")
     }
 
     // Mark as queued
+    String requestId = "${now()}-${ipKey}"
     Map queue = new LinkedHashMap((atomicState.asyncFetchQueue ?: [:]) as Map)
     queue[ipKey] = [
         status: 'queued',
         queuedAt: now(),
-        attempts: 0
+        attempts: 0,
+        requestId: requestId
     ]
     atomicState.asyncFetchQueue = queue
 
@@ -7822,7 +7832,7 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
     logDebug("Scheduling async device info fetch for ${ipKey} in ${delayMs}ms")
     // overwrite:false is required — the default overwrite:true would cancel the pending
     // fetch for every previously scheduled device when a discovery batch queues several
-    runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey], overwrite: false])
+    runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId], overwrite: false])
 }
 
 /**
@@ -7836,6 +7846,7 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
 void processAsyncDeviceInfoFetch(Map data) {
     String ipKey = data?.ipKey
     if (!ipKey) { return }
+    String requestId = data?.requestId as String
     Integer attempt = (data.attempt ?: 1) as Integer
     Integer maxAttempts = 3
 
@@ -7843,6 +7854,10 @@ void processAsyncDeviceInfoFetch(Map data) {
 
     // Update queue status
     Map queueEntry = (atomicState.asyncFetchQueue as Map)?.get(ipKey) as Map
+    if (requestId && queueEntry?.requestId?.toString() != requestId) {
+        logTrace("Ignoring stale async fetch callback for ${ipKey}")
+        return
+    }
     if (queueEntry) {
         queueEntry.status = 'in_progress'
         queueEntry.startedAt = now()
@@ -7860,6 +7875,14 @@ void processAsyncDeviceInfoFetch(Map data) {
         fetchSucceeded = fetchAndStoreDeviceInfo(ipKey)
     } catch (Exception e) {
         failureMessage = e.message ?: e.toString()
+    }
+
+    // A discovery pass may have recovered this IP as a newer request while
+    // this network call was in flight. Do not let the old callback overwrite
+    // that request's queue state or schedule its retries.
+    if (requestId && ((atomicState.asyncFetchQueue as Map)?.get(ipKey) as Map)?.requestId?.toString() != requestId) {
+        logTrace("Ignoring stale async fetch result for ${ipKey}")
+        return
     }
 
     if (fetchSucceeded) {
@@ -7881,7 +7904,7 @@ void processAsyncDeviceInfoFetch(Map data) {
             queue[ipKey] = queueEntry
             atomicState.asyncFetchQueue = queue
         }
-        runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, attempt: attempt + 1], overwrite: false])
+        runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId, attempt: attempt + 1], overwrite: false])
         return  // Skip cleanup — retry is pending
     } else {
         // Final attempt failed
