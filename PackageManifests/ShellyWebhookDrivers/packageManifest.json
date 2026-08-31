@@ -20,7 +20,7 @@
   "apps": [
     {
       "id": "dc756e29-619a-41a3-ba3f-0d77a93fea00",
-      "name": "Shelly Bluetooth Helper App",
+      "name": "Shelly Bluetooth Helper",
       "namespace": "ShellyUSA",
       "location": "https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v2.17.5/ShellyBluetoothHelper-v2.17.5.groovy",
       "required": true,
