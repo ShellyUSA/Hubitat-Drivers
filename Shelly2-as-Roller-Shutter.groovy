@@ -401,7 +401,7 @@ def poll() {
 
 def sendCommand(action) {
     if (txtEnable) log.info "Calling $action"
-    def params = [uri: "http://${username}:${password}@${ip}/${action}"]
+    def params = [uri: "http://${username}:${password}@${ip}${action}"]
 try {
     httpPost(params) {
         resp -> resp.headers.each {

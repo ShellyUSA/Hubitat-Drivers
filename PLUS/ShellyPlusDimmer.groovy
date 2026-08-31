@@ -426,7 +426,7 @@ def poll() {
 
 def sendSwitchCommand(action) {
     if (txtEnable) log.info "Calling ${action}"
-    def params = [uri: "http://${username}:${password}@${ip}/${action}"]
+    def params = [uri: "http://${username}:${password}@${ip}${action}"]
 try {
     httpGet(params) {
         resp -> resp.headers.each {
