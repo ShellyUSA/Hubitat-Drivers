@@ -5976,10 +5976,18 @@ void initializeWebsocketConnection() {
 }
 
 void initializeWebsocketConnectionIfNeeded() {
-  // Reset reconnection state when explicitly initializing
+  // A backoff retry also calls this method. Preserve its counter so the next
+  // failure advances through the backoff sequence instead of restarting at 3s.
+  Boolean isScheduledReconnect = atomicState.reconnectScheduled == true
+  atomicState.remove('reconnectScheduled')
+
+  // Reset reconnection state when explicitly initializing, but not for a
+  // retry that was scheduled by setWebsocketStatus().
   atomicState.remove('reconnectTimer')
-  atomicState.remove('reconnectAttempt')
-  atomicState.remove('consecutiveFailures')
+  if(isScheduledReconnect == false) {
+    atomicState.remove('reconnectAttempt')
+    atomicState.remove('consecutiveFailures')
+  }
   atomicState.remove('connectionInProgress')
 
   if(wsShouldBeConnected() == true) {
@@ -6000,6 +6008,8 @@ void checkWebsocketConnection() {
 }
 
 void connectWebsocketAfterDelay(Integer delay = 15) {
+  // This is an explicit configure/startup request, not a backoff retry.
+  atomicState.remove('reconnectScheduled')
   runIn(delay, 'initializeWebsocketConnectionIfNeeded', [overwrite: true])
 }
 
@@ -6102,6 +6112,10 @@ void scheduleReconnect(Integer delaySeconds) {
   // Cancel any existing reconnection attempts to avoid duplicates
   unschedule('initializeWebsocketConnectionIfNeeded')
   unschedule('initializeWebsocketConnection')
+
+  // Mark the callback so initializeWebsocketConnectionIfNeeded() does not
+  // mistake a scheduled retry for an explicit user initialization.
+  atomicState.reconnectScheduled = true
 
   // Schedule the reconnection attempt
   runIn(delaySeconds, 'initializeWebsocketConnectionIfNeeded', [overwrite: true])
