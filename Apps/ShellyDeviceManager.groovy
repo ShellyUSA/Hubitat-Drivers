@@ -1569,6 +1569,19 @@ private void setProvisioningStatus(String ip, String status) {
     sendEvent(name: 'configTable', value: 'provisioning')
 }
 
+/** Returns true when any device action is currently visible/in progress. */
+private Boolean isAnyDeviceActionActive() {
+    Boolean provisioningActive = ((atomicState.deviceStatusCache ?: [:]) as Map).values().any { Map entry ->
+        entry?.provisioningStatus?.toString()
+    }
+    Boolean bleActive = ((atomicState.bleGatewayProgress ?: [:]) as Map).values().any { Object value -> value }
+    return provisioningActive || bleActive || state.pendingDeleteIp != null
+}
+
+private String disabledActionIcon(String icon, String title = 'Another device action is in progress') {
+    return "<span title='${escapeHtml(title)}' style='display:inline-block;color:#9E9E9E;opacity:0.55'><iconify-icon icon='${icon}' style='font-size:20px'></iconify-icon></span>"
+}
+
 /**
  * Starts a distinct provisioning operation for an IP. Scheduled callbacks carry
  * this token so an older install can never alter the current row's spinner.
@@ -9473,11 +9486,11 @@ private Boolean installDriver(String sourceCode) {
 
             // Post-installation verification: confirm the driver actually exists on the hub
             if (shouldVerify) {
-                if (fetchHubitatDriverIdByName(driverName) != null) {
+                if (waitForHubDriverRegistration(driverName)) {
                     logInfo("✓ Driver verified on hub after installation: ${driverName}")
                     success = true
                 } else {
-                    logError("✗ Driver '${driverName}' not found on hub after installation — likely compilation error in driver source")
+                    logError("✗ Driver '${driverName}' was not registered after the verification window; it may have a compilation error")
                 }
             }
         }
@@ -9487,6 +9500,23 @@ private Boolean installDriver(String sourceCode) {
         return false
     }
     return success
+}
+
+/**
+ * Waits briefly for Hubitat to register a newly saved driver. /driver/save can
+ * redirect before the driver is visible from /device/drivers, especially when
+ * several discovery callbacks are installing drivers at the same time.
+ */
+private Boolean waitForHubDriverRegistration(String driverName) {
+    Integer maxChecks = 4
+    for (Integer attempt = 1; attempt <= maxChecks; attempt++) {
+        if (fetchHubitatDriverIdByName(driverName) != null) { return true }
+        if (attempt < maxChecks) {
+            logDebug("Waiting for Hubitat to register '${driverName}' (check ${attempt}/${maxChecks})")
+            pauseExecution(1000)
+        }
+    }
+    return false
 }
 
 /**
