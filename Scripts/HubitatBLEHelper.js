@@ -129,8 +129,10 @@ let knownModels = {};
 let MAX_INFLIGHT = 3;        // Max concurrent HTTP.POST calls (leave 2 slots for KVS, etc.)
 let inflight = 0;            // Currently in-flight HTTP.POST count
 let pendingBatch = [];       // Overflow reports accumulated while at capacity
+let MAX_PENDING = 32;        // Bound memory if Hubitat is unavailable
 let drainTimerHandle = null;
 let DRAIN_INTERVAL = 5000;   // Safety drain interval (ms)
+let droppedReports = 0;
 
 // HTTP response handler - decrements inflight and flushes pending batch
 function onHTTPResponse(result, error_code, error_message) {
@@ -402,6 +404,11 @@ function sendBleReport(data) {
   if (inflight < MAX_INFLIGHT) {
     doHttpPost([data]);
   } else {
+    if (pendingBatch.length >= MAX_PENDING) {
+      pendingBatch.shift();
+      droppedReports++;
+      print("BLE queue full; dropping oldest report (dropped=" + droppedReports + ")");
+    }
     pendingBatch.push(data);
     print(
       "BLE queued (pending=" + pendingBatch.length + " inflight=" + inflight + ")",
@@ -411,8 +418,15 @@ function sendBleReport(data) {
 
 // === BLE Scanner Callback ===
 function BLEScanCallback(event, result) {
-  if (event !== BLE.Scanner.SCAN_RESULT) return;
-
+  if (event === BLE.Scanner.SCAN_START) {
+    print("BLE scanner started");
+    return;
+  }
+  if (event === BLE.Scanner.SCAN_STOP) {
+    print("BLE scanner stopped");
+    return;
+  }
+  if (event !== BLE.Scanner.SCAN_RESULT || !result) return;
   // Must have BTHome v2 service data
   if (
     typeof result.service_data === "undefined" ||
@@ -423,7 +437,6 @@ function BLEScanCallback(event, result) {
 
   let decoded = decodeBTHome(result.service_data[BTHOME_SVC_ID]);
   if (decoded === null || typeof decoded === "undefined") return;
-
   // Get MAC address (uppercase, no colons)
   let mac = result.addr;
   if (typeof mac === "string") {
@@ -507,29 +520,42 @@ function BLEScanCallback(event, result) {
 // === Initialization ===
 function init() {
   let BLEConfig = Shelly.getComponentConfig("ble");
-  if (!BLEConfig.enable) {
-    print(
-      "Error: Bluetooth is not enabled. Enable it from device settings.",
-    );
-    return;
-  }
+  // Since firmware 2.0, BLEConfig.enable no longer exists. Bluetooth scanning
+  // is activated automatically when a script submits a scan request; only
+  // BLEConfig.rpc.enable controls Bluetooth RPC/device control.
+  let rpcEnabled = BLEConfig && BLEConfig.rpc && BLEConfig.rpc.enable === true;
+  print("BLE config: rpc.enable=" + rpcEnabled +
+    " scannerRunning=" + BLE.Scanner.isRunning());
 
-  if (BLE.Scanner.isRunning()) {
-    print(
-      "Info: BLE scanner already running, subscribing to scan results",
-    );
-  } else {
-    let started = BLE.Scanner.Start({
+  // Every script must submit its own request to the enhanced scan manager.
+  // Do not skip start() merely because another client is already scanning.
+  let started = null;
+  if (typeof BLE.Scanner.start === "function") {
+    started = BLE.Scanner.start({
       duration_ms: BLE.Scanner.INFINITE_SCAN,
       active: true,
     });
-    if (!started) {
-      print("Error: Cannot start BLE scanner");
-      return;
-    }
+  } else if (typeof BLE.Scanner.Start === "function") {
+    // Compatibility fallback for older Gen2 firmware.
+    started = BLE.Scanner.Start({
+      duration_ms: BLE.Scanner.INFINITE_SCAN,
+      active: true,
+    });
+  }
+  if (!started && !BLE.Scanner.isRunning()) {
+    print("Error: Cannot start BLE scanner");
+    return;
   }
 
-  BLE.Scanner.Subscribe(BLEScanCallback);
+  if (typeof BLE.Scanner.subscribe === "function") {
+    BLE.Scanner.subscribe(BLEScanCallback);
+  } else if (typeof BLE.Scanner.Subscribe === "function") {
+    // Compatibility fallback for older Gen2 firmware.
+    BLE.Scanner.Subscribe(BLEScanCallback);
+  } else {
+    print("Error: BLE scanner subscription API unavailable");
+    return;
+  }
   startDrainTimer();
 }
 

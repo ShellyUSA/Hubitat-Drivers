@@ -130,12 +130,20 @@ function scheduleNextReport() {
   Timer.set(REPORT_INTERVAL * 1000, false, sendReport);
 }
 
-// Compute average of a numeric array (raw - per-field rounding applied in sendPostReport)
-function average(arr) {
-  if (arr.length === 0) return null;
-  let sum = 0;
-  for (let i = 0; i < arr.length; i++) sum += arr[i];
-  return sum / arr.length;
+// Use bounded sum/count accumulators instead of retaining every sample.
+// This is important on multi-channel devices where status events can arrive
+// frequently and the Shelly JavaScript heap is shared by all scripts.
+function newSample() { return { sum: 0, count: 0 }; }
+function addSample(sample, value) {
+  sample.sum += value;
+  sample.count++;
+}
+function average(sample) {
+  return sample.count === 0 ? null : sample.sum / sample.count;
+}
+function resetSample(sample) {
+  sample.sum = 0;
+  sample.count = 0;
 }
 
 // Field-specific rounding: voltage=1dp, current=2dp, power=0dp, energy=0dp, freq=1dp
@@ -153,12 +161,12 @@ function getOrCreateComp(key, type, id) {
     c = {
       type: "em",
       id: id,
-      a: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
-      b: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
-      c: { vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
+      a: { vs: newSample(), cs: newSample(), ps: newSample(), fs: newSample(), e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
+      b: { vs: newSample(), cs: newSample(), ps: newSample(), fs: newSample(), e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
+      c: { vs: newSample(), cs: newSample(), ps: newSample(), fs: newSample(), e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 },
     };
   } else {
-    c = { type: type, id: id, vs: [], cs: [], ps: [], fs: [], e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 };
+    c = { type: type, id: id, vs: newSample(), cs: newSample(), ps: newSample(), fs: newSample(), e: null, lastV: null, lastC: null, lastP: null, lastF: null, sentV: null, sentC: null, sentP: null, sentF: null, sentE: null, sentAge: 0 };
   }
   comps[key] = c;
   compKeys.push(key);
@@ -202,10 +210,10 @@ function onStatus(ev) {
     for (let i = 0; i < phases.length; i++) {
       let p = phases[i];
       let ph = entry[p];
-      if (typeof d[p + "_voltage"] === "number") ph.vs.push(d[p + "_voltage"]);
-      if (typeof d[p + "_current"] === "number") ph.cs.push(d[p + "_current"]);
-      if (typeof d[p + "_act_power"] === "number") ph.ps.push(d[p + "_act_power"]);
-      if (typeof d[p + "_freq"] === "number") ph.fs.push(d[p + "_freq"]);
+      if (typeof d[p + "_voltage"] === "number") addSample(ph.vs, d[p + "_voltage"]);
+      if (typeof d[p + "_current"] === "number") addSample(ph.cs, d[p + "_current"]);
+      if (typeof d[p + "_act_power"] === "number") addSample(ph.ps, d[p + "_act_power"]);
+      if (typeof d[p + "_freq"] === "number") addSample(ph.fs, d[p + "_freq"]);
     }
     return;
   }
@@ -213,10 +221,10 @@ function onStatus(ev) {
   // em1: single-phase energy meter (voltage, current, act_power, freq)
   if (type === "em1") {
     let entry = getOrCreateComp(comp, "em1", id);
-    if (typeof d.voltage === "number") entry.vs.push(d.voltage);
-    if (typeof d.current === "number") entry.cs.push(d.current);
-    if (typeof d.act_power === "number") entry.ps.push(d.act_power);
-    if (typeof d.freq === "number") entry.fs.push(d.freq);
+    if (typeof d.voltage === "number") addSample(entry.vs, d.voltage);
+    if (typeof d.current === "number") addSample(entry.cs, d.current);
+    if (typeof d.act_power === "number") addSample(entry.ps, d.act_power);
+    if (typeof d.freq === "number") addSample(entry.fs, d.freq);
     return;
   }
 
@@ -224,10 +232,10 @@ function onStatus(ev) {
   if (type !== "switch" && type !== "pm1" && type !== "cover") return;
 
   let entry = getOrCreateComp(comp, type, id);
-  if (typeof d.voltage === "number") entry.vs.push(d.voltage);
-  if (typeof d.current === "number") entry.cs.push(d.current);
-  if (typeof d.apower === "number") entry.ps.push(d.apower);
-  if (typeof d.freq === "number") entry.fs.push(d.freq);
+  if (typeof d.voltage === "number") addSample(entry.vs, d.voltage);
+  if (typeof d.current === "number") addSample(entry.cs, d.current);
+  if (typeof d.apower === "number") addSample(entry.ps, d.apower);
+  if (typeof d.freq === "number") addSample(entry.fs, d.freq);
   if (d.aenergy !== undefined && d.aenergy !== null) {
     if (typeof d.aenergy.total === "number") {
       entry.e = d.aenergy.total;
@@ -297,7 +305,7 @@ function sendPostReport(compId, compType, phase, data) {
   print("Reported:", url, JSON.stringify(body));
 }
 
-// Push fresh status readings into accumulator arrays for averaging.
+// Push fresh status readings into bounded accumulators for averaging.
 // Unlike seedFromStatus(), does NOT set lastV/lastC/etc. -- those are
 // updated by sendPostReport() after computing the cycle average.
 function pushStatusReadings(res) {
@@ -317,23 +325,23 @@ function pushStatusReadings(res) {
           let cKey = phases[j] + "_current";
           let pKey = phases[j] + "_act_power";
           let fKey = phases[j] + "_freq";
-          if (typeof s[vKey] === "number") ph.vs.push(s[vKey]);
-          if (typeof s[cKey] === "number") ph.cs.push(s[cKey]);
-          if (typeof s[pKey] === "number") ph.ps.push(s[pKey]);
-          if (typeof s[fKey] === "number") ph.fs.push(s[fKey]);
+          if (typeof s[vKey] === "number") addSample(ph.vs, s[vKey]);
+          if (typeof s[cKey] === "number") addSample(ph.cs, s[cKey]);
+          if (typeof s[pKey] === "number") addSample(ph.ps, s[pKey]);
+          if (typeof s[fKey] === "number") addSample(ph.fs, s[fKey]);
         }
       } else if (prefixes[p] === "em1") {
         let entry = getOrCreateComp(key, "em1", id);
-        if (typeof s.voltage === "number") entry.vs.push(s.voltage);
-        if (typeof s.current === "number") entry.cs.push(s.current);
-        if (typeof s.act_power === "number") entry.ps.push(s.act_power);
-        if (typeof s.freq === "number") entry.fs.push(s.freq);
+        if (typeof s.voltage === "number") addSample(entry.vs, s.voltage);
+        if (typeof s.current === "number") addSample(entry.cs, s.current);
+        if (typeof s.act_power === "number") addSample(entry.ps, s.act_power);
+        if (typeof s.freq === "number") addSample(entry.fs, s.freq);
       } else {
         let entry = getOrCreateComp(key, prefixes[p], id);
-        if (typeof s.voltage === "number") entry.vs.push(s.voltage);
-        if (typeof s.current === "number") entry.cs.push(s.current);
-        if (typeof s.apower === "number") entry.ps.push(s.apower);
-        if (typeof s.freq === "number") entry.fs.push(s.freq);
+        if (typeof s.voltage === "number") addSample(entry.vs, s.voltage);
+        if (typeof s.current === "number") addSample(entry.cs, s.current);
+        if (typeof s.apower === "number") addSample(entry.ps, s.apower);
+        if (typeof s.freq === "number") addSample(entry.fs, s.freq);
         if (s.aenergy && typeof s.aenergy.total === "number") {
           entry.e = s.aenergy.total;
         }
@@ -362,7 +370,7 @@ function pushStatusReadings(res) {
   }
 }
 
-// Send all accumulated reports for every tracked component, then reset arrays
+// Send all accumulated reports for every tracked component, then reset samples
 function sendAllReports() {
   for (let i = 0; i < compKeys.length; i++) {
     let entry = comps[compKeys[i]];
@@ -372,17 +380,17 @@ function sendAllReports() {
       for (let j = 0; j < phases.length; j++) {
         let ph = entry[phases[j]];
         sendPostReport(entry.id, "em", phases[j], ph);
-        ph.vs = [];
-        ph.cs = [];
-        ph.ps = [];
-        ph.fs = [];
+        resetSample(ph.vs);
+        resetSample(ph.cs);
+        resetSample(ph.ps);
+        resetSample(ph.fs);
       }
     } else {
       sendPostReport(entry.id, entry.type, null, entry);
-      entry.vs = [];
-      entry.cs = [];
-      entry.ps = [];
-      entry.fs = [];
+      resetSample(entry.vs);
+      resetSample(entry.cs);
+      resetSample(entry.ps);
+      resetSample(entry.fs);
     }
   }
 }
@@ -435,24 +443,24 @@ function seedFromStatus() {
             let cKey = phases[j] + "_current";
             let pKey = phases[j] + "_act_power";
             let fKey = phases[j] + "_freq";
-            if (typeof s[vKey] === "number") { ph.vs.push(s[vKey]); ph.lastV = s[vKey]; }
-            if (typeof s[cKey] === "number") { ph.cs.push(s[cKey]); ph.lastC = s[cKey]; }
-            if (typeof s[pKey] === "number") { ph.ps.push(s[pKey]); ph.lastP = s[pKey]; }
-            if (typeof s[fKey] === "number") { ph.fs.push(s[fKey]); ph.lastF = s[fKey]; }
+            if (typeof s[vKey] === "number") { addSample(ph.vs, s[vKey]); ph.lastV = s[vKey]; }
+            if (typeof s[cKey] === "number") { addSample(ph.cs, s[cKey]); ph.lastC = s[cKey]; }
+            if (typeof s[pKey] === "number") { addSample(ph.ps, s[pKey]); ph.lastP = s[pKey]; }
+            if (typeof s[fKey] === "number") { addSample(ph.fs, s[fKey]); ph.lastF = s[fKey]; }
           }
         } else if (prefixes[p] === "em1") {
           let entry = getOrCreateComp(key, "em1", id);
-          if (typeof s.voltage === "number") { entry.vs.push(s.voltage); entry.lastV = s.voltage; }
-          if (typeof s.current === "number") { entry.cs.push(s.current); entry.lastC = s.current; }
-          if (typeof s.act_power === "number") { entry.ps.push(s.act_power); entry.lastP = s.act_power; }
-          if (typeof s.freq === "number") { entry.fs.push(s.freq); entry.lastF = s.freq; }
+          if (typeof s.voltage === "number") { addSample(entry.vs, s.voltage); entry.lastV = s.voltage; }
+          if (typeof s.current === "number") { addSample(entry.cs, s.current); entry.lastC = s.current; }
+          if (typeof s.act_power === "number") { addSample(entry.ps, s.act_power); entry.lastP = s.act_power; }
+          if (typeof s.freq === "number") { addSample(entry.fs, s.freq); entry.lastF = s.freq; }
         } else {
           // switch, pm1, cover: use voltage, current, apower, freq
           let entry = getOrCreateComp(key, prefixes[p], id);
-          if (typeof s.voltage === "number") { entry.vs.push(s.voltage); entry.lastV = s.voltage; }
-          if (typeof s.current === "number") { entry.cs.push(s.current); entry.lastC = s.current; }
-          if (typeof s.apower === "number") { entry.ps.push(s.apower); entry.lastP = s.apower; }
-          if (typeof s.freq === "number") { entry.fs.push(s.freq); entry.lastF = s.freq; }
+          if (typeof s.voltage === "number") { addSample(entry.vs, s.voltage); entry.lastV = s.voltage; }
+          if (typeof s.current === "number") { addSample(entry.cs, s.current); entry.lastC = s.current; }
+          if (typeof s.apower === "number") { addSample(entry.ps, s.apower); entry.lastP = s.apower; }
+          if (typeof s.freq === "number") { addSample(entry.fs, s.freq); entry.lastF = s.freq; }
           if (s.aenergy && typeof s.aenergy.total === "number") {
             entry.e = s.aenergy.total;
           }
