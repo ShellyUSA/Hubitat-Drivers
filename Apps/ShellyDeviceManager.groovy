@@ -2475,7 +2475,24 @@ void runDeviceReinitialize(Map data) {
         return
     }
     try {
-        reinitializeDevice(ipAddress)
+        // Establish the operation before driver updates and capability reads.
+        // Those steps can trigger callbacks of their own; the script queue
+        // must retain one stable token for the entire reinit transaction.
+        String operationId = beginProvisioningOperation(ipAddress, 'Reinitializing device…')
+        reinitializeDevice(ipAddress, true, operationId)
+
+        // Script uploads and webhook reconciliation are deliberately
+        // asynchronous.  reinitializeDevice() starts that pipeline and the
+        // completion callbacks own the operation token, UI lock, status, and
+        // final cache refresh.  Clearing them here allows another update or
+        // callback to invalidate the upload before Script.PutCode runs.
+        if (hasProvisioningOperation(ipAddress)) {
+            logDebug("Reinit queued asynchronous provisioning for ${ipAddress}; deferring completion cleanup")
+            appendLog('info', "Reinit queued asynchronous provisioning for ${ipAddress}")
+            runInMillis(500, 'fireConfigTableSSR')
+            return
+        }
+
         setProvisioningStatus(ipAddress, null)
         releaseUserAction(ipAddress)
         buildDeviceStatusCacheEntry(ipAddress)
@@ -2490,7 +2507,7 @@ void runDeviceReinitialize(Map data) {
     }
 }
 
-void reinitializeDevice(String ipAddress, Boolean refreshCapabilities = true) {
+void reinitializeDevice(String ipAddress, Boolean refreshCapabilities = true, String provisioningOperationId = null) {
     // Guard against recursive reinit triggered by a driver switch below.
     // addChildDevice fires updated() which may call back into this method.
     if (atomicState.driverSwitchInProgress == true) {
@@ -2562,10 +2579,10 @@ void reinitializeDevice(String ipAddress, Boolean refreshCapabilities = true) {
         // finalizeScriptInstallation() runs after the queue completes.
         Set<String> requiredScripts = getRequiredScriptsForDevice(childDevice)
         if (requiredScripts) {
-            installRequiredScriptsForIp(ipAddress, true)
+            installRequiredScriptsForIp(ipAddress, true, provisioningOperationId)
         } else {
             // Devices without managed scripts can reconcile webhooks immediately.
-            installRequiredActionsForIp(ipAddress)
+            installRequiredActionsForIp(ipAddress, provisioningOperationId)
         }
     }
 
@@ -2591,8 +2608,13 @@ void reinitializeDevice(String ipAddress, Boolean refreshCapabilities = true) {
         }
     }
 
-    logInfo("Reinitialization complete for ${ipAddress}")
-    appendLog('info', "Reinitialization complete for ${ipAddress}")
+    if (hasProvisioningOperation(ipAddress)) {
+        logInfo("Reinitialization queued asynchronous provisioning for ${ipAddress}")
+        appendLog('info', "Reinitialization queued asynchronous provisioning for ${ipAddress}")
+    } else {
+        logInfo("Reinitialization complete for ${ipAddress}")
+        appendLog('info', "Reinitialization complete for ${ipAddress}")
+    }
 }
 
 /**
@@ -5959,6 +5981,14 @@ Set<String> getRequiredScriptsForDevice(def device) {
                 }
             }
         }
+    }
+
+    // BLE gateway is app-managed too. Include it in the normal provisioning
+    // queue so Reinit refreshes the installed helper from GitHub along with
+    // the device's other managed scripts. The BLE toggle still owns creating
+    // and removing this script; this only keeps an enabled helper up to date.
+    if (isBleGatewayEnabled(ip)) {
+        requiredScripts << 'HubitatBLEHelper.js'
     }
 
     logDebug("Required scripts for ${device.displayName}: ${requiredScripts}")
