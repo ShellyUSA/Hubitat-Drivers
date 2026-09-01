@@ -23,15 +23,20 @@ let HUBITAT_DEFAULT_IP = "192.168.1.4"; // fallback if KVS lookup fails
 let HUBITAT_PORT = 39501;
 let HUBITAT_PROTO = "http://";
 
-// Change-detection thresholds: report only when change >= threshold from last sent value.
-// Set above the rounding step to filter real noise (e.g. THRESH_P=5 vs 1W rounding step).
-let THRESH_V = 1;      // voltage: report if change >= 1V
-let THRESH_C = 0.05;   // current: report if change >= 0.05A
-let THRESH_P = 5;      // power: report if change >= 5W
-let THRESH_E = 5;      // energy: report if change >= 5Wh
-let THRESH_F = 0.5;    // frequency: report if change >= 0.5Hz
-// Force a report every ~hour even if unchanged; timing is approximate if pm_ri changes at runtime
-let CHECKIN_SECS = 3600;
+// Report only when a value changes by at least its threshold. Set a threshold
+// to 0 to report every interval when that value is available.
+let THRESH_V = 1;      // voltage (V)
+let THRESH_C = 0.05;   // current (A)
+let THRESH_P = 5;      // power (W)
+let THRESH_E = 5;      // energy (Wh)
+let THRESH_F = 0.5;    // frequency (Hz)
+let REPORT_THRESHOLD_KVS_KEYS = {
+  voltage: "hubitat_sdm_pm_th_v",
+  current: "hubitat_sdm_pm_th_c",
+  power: "hubitat_sdm_pm_th_p",
+  energy: "hubitat_sdm_pm_th_e",
+  frequency: "hubitat_sdm_pm_th_f",
+};
 
 // REMOTE_URL is built from KVS value (or fallback)
 let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
@@ -123,6 +128,61 @@ function fetchReportIntervalFromKVS(cb) {
     print("KVS report interval fetch failed: " + e);
     if (typeof cb === "function") cb();
   }
+}
+
+// Read a non-negative numeric KVS value. Missing or malformed values leave the
+// corresponding in-memory default unchanged.
+function fetchNumberFromKVS(key, cb) {
+  try {
+    Shelly.call("KVS.Get", { key: key }, function (res, err, msg) {
+      let value = null;
+      if (err === 0 && res) {
+        let raw = null;
+        if (typeof res.value === "string" || typeof res.value === "number") raw = res.value;
+        else if (res.result && res.result.value !== undefined) raw = res.result.value;
+        if (raw !== null) {
+          let parsed = parseFloat(raw);
+          if (!isNaN(parsed) && parsed >= 0) value = parsed;
+        }
+      }
+      if (typeof cb === "function") cb(value);
+    });
+  } catch (e) {
+    print("KVS numeric setting fetch failed for " + key + ": " + e);
+    if (typeof cb === "function") cb(null);
+  }
+}
+
+// Refresh all reporting settings before scheduling the next cycle so changes
+// saved in Hubitat take effect without restarting the script.
+function fetchReportSettingsFromKVS(cb) {
+  fetchReportIntervalFromKVS(function () {
+    let remaining = 5;
+    function complete() {
+      remaining--;
+      if (remaining === 0 && typeof cb === "function") cb();
+    }
+    fetchNumberFromKVS(REPORT_THRESHOLD_KVS_KEYS.voltage, function (value) {
+      if (value !== null) THRESH_V = value;
+      complete();
+    });
+    fetchNumberFromKVS(REPORT_THRESHOLD_KVS_KEYS.current, function (value) {
+      if (value !== null) THRESH_C = value;
+      complete();
+    });
+    fetchNumberFromKVS(REPORT_THRESHOLD_KVS_KEYS.power, function (value) {
+      if (value !== null) THRESH_P = value;
+      complete();
+    });
+    fetchNumberFromKVS(REPORT_THRESHOLD_KVS_KEYS.energy, function (value) {
+      if (value !== null) THRESH_E = value;
+      complete();
+    });
+    fetchNumberFromKVS(REPORT_THRESHOLD_KVS_KEYS.frequency, function (value) {
+      if (value !== null) THRESH_F = value;
+      complete();
+    });
+  });
 }
 
 // Schedule the next one-shot report timer using the current REPORT_INTERVAL
@@ -244,8 +304,8 @@ function onStatus(ev) {
 }
 
 // Build and send a POST request with normalized power monitoring params as JSON body.
-// Applies per-field rounding and suppresses reports when no significant change occurred,
-// unless the hourly check-in interval has elapsed.
+// Applies per-field rounding and suppresses reports until a configured
+// threshold is crossed. A threshold of 0 sends a report every interval.
 function sendPostReport(compId, compType, phase, data) {
   let v = roundV(average(data.vs));
   let cur = roundC(average(data.cs));
@@ -263,21 +323,15 @@ function sendPostReport(compId, compType, phase, data) {
     return;
   }
 
-  // Track cycles since last sent report
-  data.sentAge = (data.sentAge || 0) + 1;
-
-  // Check for significant change vs last-reported values
+  // Check for significant change vs last-reported values. A zero threshold
+  // intentionally makes an available value match on every reporting cycle.
   let changed = false;
   if (v !== null && (data.sentV === null || Math.abs(v - data.sentV) >= THRESH_V)) changed = true;
   if (cur !== null && (data.sentC === null || Math.abs(cur - data.sentC) >= THRESH_C)) changed = true;
   if (p !== null && (data.sentP === null || Math.abs(p - data.sentP) >= THRESH_P)) changed = true;
   if (e !== null && (data.sentE === null || Math.abs(e - data.sentE) >= THRESH_E)) changed = true;
   if (f !== null && (data.sentF === null || Math.abs(f - data.sentF) >= THRESH_F)) changed = true;
-
-  // Skip if no significant change and hourly check-in not yet due
-  if (!changed && (data.sentAge * REPORT_INTERVAL) < CHECKIN_SECS) {
-    return;
-  }
+  if (!changed) return;
 
   let body = { dst: "powermon", cid: compId, comp: compType };
   if (phase) body.phase = phase;
@@ -399,7 +453,7 @@ function sendAllReports() {
 function sendReport() {
   if (compKeys.length === 0) {
     print("No power events received yet");
-    fetchReportIntervalFromKVS(scheduleNextReport);
+    fetchReportSettingsFromKVS(scheduleNextReport);
     return;
   }
 
@@ -411,8 +465,8 @@ function sendReport() {
     }
     // Send reports even if GetStatus failed -- deltas may exist
     sendAllReports();
-    // Re-read interval from KVS (picks up user changes), then schedule next cycle
-    fetchReportIntervalFromKVS(scheduleNextReport);
+    // Re-read interval and thresholds from KVS, then schedule the next cycle.
+    fetchReportSettingsFromKVS(scheduleNextReport);
   });
 }
 
@@ -495,8 +549,8 @@ function seedFromStatus() {
 fetchRemoteUrlFromKVS();
 seedFromStatus();
 Shelly.addStatusHandler(onStatus);
-// Read interval from KVS, then schedule the first one-shot report timer
-fetchReportIntervalFromKVS(scheduleNextReport);
+// Read report settings from KVS, then schedule the first one-shot report timer.
+fetchReportSettingsFromKVS(scheduleNextReport);
 
 print(
   "Power monitor started: default_interval=" +

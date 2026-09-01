@@ -594,7 +594,7 @@ Map mainPage() {
             String extendBtn = buttonLink('btnExtendScan', 'Extend Scan (10 min)', '#1A77C9', '14px')
             if (atomicState.discoveryRunning) {
                 paragraph "<div style='display:flex;align-items:center;gap:12px'>" +
-                    "<b><span class='app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>" +
+                    "<b><span class='ssr-app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>" +
                     "<span>${extendBtn}</span>" +
                     "</div>"
             } else {
@@ -952,9 +952,15 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName.startsWith('createBle|')) {
         String mac = buttonName.minus('createBle|')
+        Map operations = new LinkedHashMap((state.bleProvisioningOperations ?: [:]) as Map)
+        if (operations[mac] != null) { return }
+        operations[mac] = now()
+        state.bleProvisioningOperations = operations
         logInfo("Creating BLE device for MAC ${mac} via BLE table")
-        createBleDevice(mac)
-        runInMillis(500, 'fireBleTableSSR')
+        // Render the spinner before driver installation/device creation, which
+        // can take long enough to otherwise leave the Add icon unchanged.
+        fireBleTableSSR()
+        runInMillis(100, 'runBleDeviceCreate', [data: [mac: mac]])
     }
 
     if (buttonName.startsWith('removeBle|')) {
@@ -1023,9 +1029,42 @@ private void createShellyDevice(String ipKey) {
         deviceInfo = atomicState.discoveredShellys[ipKey]
         deviceStatus = deviceInfo?.deviceStatus
         if (!deviceStatus) {
-            logError("Could not retrieve device status for ${ipKey}. Device may be offline.")
-            appendLog('error', "Failed to create device for ${ipKey}: device may be offline")
-            return
+            Map snapshot = (atomicState.installationCapabilitySnapshots ?: [:])[ipKey] as Map
+            if (snapshot?.deviceStatus) {
+                logWarn("Restoring successful capability snapshot for ${ipKey} after concurrent state refresh")
+                deviceInfo = new LinkedHashMap(snapshot)
+                deviceStatus = deviceInfo.deviceStatus
+                Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+                discovered[ipKey] = deviceInfo
+                atomicState.discoveredShellys = discovered
+            }
+        }
+        if (!deviceStatus) {
+            // A sleepy Gen2 device can answer the discovery RPCs while the
+            // capability result is being merged by the background discovery
+            // callback. Give the device/state merge one immediate retry before
+            // treating setup as a real offline failure.
+            logWarn("Device status was not available after the first installation fetch for ${ipKey}; retrying once")
+            appendLog('warn', "Retrying device status fetch for ${ipKey}...")
+            fetchAndStoreDeviceInfo(ipKey)
+            deviceInfo = atomicState.discoveredShellys[ipKey]
+            deviceStatus = deviceInfo?.deviceStatus
+            if (!deviceStatus) {
+                Map snapshot = (atomicState.installationCapabilitySnapshots ?: [:])[ipKey] as Map
+                if (snapshot?.deviceStatus) {
+                    logWarn("Restoring successful capability snapshot for ${ipKey} after retry state refresh")
+                    deviceInfo = new LinkedHashMap(snapshot)
+                    deviceStatus = deviceInfo.deviceStatus
+                    Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+                    discovered[ipKey] = deviceInfo
+                    atomicState.discoveredShellys = discovered
+                }
+            }
+            if (!deviceStatus) {
+                logError("Could not retrieve device status for ${ipKey}. Device may be offline.")
+                appendLog('error', "Failed to create device for ${ipKey}: device may be offline")
+                return
+            }
         }
     }
 
@@ -1052,20 +1091,38 @@ private void createShellyDevice(String ipKey) {
 void runDeviceCreate(Map data) {
     String ipAddress = data?.ip as String
     String operationId = data?.operationId as String
+    Integer attempt = (data?.attempt ?: 1) as Integer
     if (!ipAddress) { return }
     if (!isCurrentProvisioningOperation(ipAddress, operationId)) {
         logDebug("Ignoring stale/cancelled device creation callback for ${ipAddress}")
         return
     }
+    Boolean retryScheduled = false
     try {
         createShellyDevice(ipAddress)
+
+        // Sleepy Gen2 devices can miss the first status read while waking.
+        // Keep the provisioning operation alive and retry the complete create
+        // path while the device is still expected to be reachable.
+        if (!findChildDeviceByIp(ipAddress) && attempt < 3 &&
+                isCurrentProvisioningOperation(ipAddress, operationId)) {
+            Integer delayMs = attempt * 1500
+            logWarn("Device creation did not produce a Hubitat child for ${ipAddress}; retrying in ${delayMs}ms (attempt ${attempt + 1}/3)")
+            appendLog('warn', "Device creation incomplete for ${ipAddress}; retrying...")
+            retryScheduled = true
+            runInMillis(delayMs, 'runDeviceCreate', [data: [
+                ip: ipAddress,
+                operationId: operationId,
+                attempt: attempt + 1
+            ], overwrite: false])
+        }
     } catch (Exception ex) {
         logError("Device creation failed for ${ipAddress}: ${ex.message}")
         appendLog('error', "Device creation failed for ${ipAddress}: ${ex.message}")
     } finally {
         // Successful creation normally hands ownership to a script/webhook
         // operation. If it did not, clear this create operation now.
-        if (isCurrentProvisioningOperation(ipAddress, operationId)) {
+        if (!retryScheduled && isCurrentProvisioningOperation(ipAddress, operationId)) {
             finishProvisioningOperation(ipAddress, operationId)
         }
         buildDeviceStatusCacheEntry(ipAddress)
@@ -1556,6 +1613,7 @@ private void clearCompletedProvisioningStateForRender() {
 private List<Map> buildDeviceList() {
     List<Map> result = []
     Map discoveredShellys = atomicState.discoveredShellys ?: [:]
+    Map mdnsLastHeardByIp = atomicState.mdnsLastHeardByIp ?: [:]
     Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
     def childDevices = getChildDevices() ?: []
 
@@ -1589,6 +1647,23 @@ private List<Map> buildDeviceList() {
         processedIps.add(ip)
         Map cached = cache[ip] as Map
         Map entry = cached ?: buildMinimalCacheEntry(ip, info as Map)
+
+        // Retain mDNS observation time for discovery diagnostics even when the
+        // ShellyHelper merge refreshed the same device entry afterward. Action
+        // eligibility is based on lastReachableAt below, not this cached record.
+        Long mdnsLastHeardAt = mdnsLastHeardByIp[ip] as Long
+        if (mdnsLastHeardAt == null) {
+            mdnsLastHeardAt = info?.mdnsLastHeardAt as Long
+        }
+        if (mdnsLastHeardAt != null &&
+                (entry.mdnsLastHeardAt == null || mdnsLastHeardAt > (entry.mdnsLastHeardAt as Long))) {
+            entry.mdnsLastHeardAt = mdnsLastHeardAt
+        }
+        Long lastReachableAt = info?.lastReachableAt as Long
+        if (lastReachableAt != null &&
+                (entry.lastReachableAt == null || lastReachableAt > (entry.lastReachableAt as Long))) {
+            entry.lastReachableAt = lastReachableAt
+        }
 
         // Check if a child device exists for this IP
         def dev = childByIp[ip]
@@ -1680,6 +1755,8 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
         hubDeviceId: null,
         isBatteryDevice: (info?.isBatteryDevice ?: false) as Boolean,
         batteryDetermined: (info?.batteryDetermined == true) as Boolean,
+        mdnsLastHeardAt: info?.mdnsLastHeardAt as Long,
+        lastReachableAt: info?.lastReachableAt as Long,
         shellyHelperOnline: info?.shellyHelperOnline,
         fwUpdateAvailable: info?.fwUpdateAvailable,
         isReachable: null,
@@ -1866,6 +1943,9 @@ private void finishProvisioningOperation(String ip, String operationId) {
     Map pendingCompletion = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
     pendingCompletion.remove(ip)
     atomicState.provisioningCompletionPending = pendingCompletion
+    Map installationSnapshots = new LinkedHashMap((atomicState.installationCapabilitySnapshots ?: [:]) as Map)
+    installationSnapshots.remove(ip)
+    atomicState.installationCapabilitySnapshots = installationSnapshots
     setProvisioningStatus(ip, null)
     releaseUserAction(ip)
     sendEvent(name: 'configTable', value: 'provisioningComplete')
@@ -1897,20 +1977,23 @@ private String buildDeviceRow(Map entry) {
     } else if (isAnyDeviceActionActive()) {
         String actionIcon = isCreated ? 'material-symbols:delete-outline' : 'material-symbols:add-circle-outline-rounded'
         str.append("<td>${disabledActionIcon(actionIcon)}</td>")
-    } else if (isCreated && entry.shellyHelperOnline == false) {
-        // Device is created but offline — show disabled delete icon (can't clean up webhooks/scripts)
+    } else if (isCreated && !isDeviceActionableNow(entry)) {
+        // Gen2+ lifecycle actions require a currently-responsive device so
+        // scripts and webhooks can be cleaned up. mDNS and ShellyHelper data
+        // can be retained after a sleepy device has gone offline.
         String disabledDeleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px;opacity:0.3'></iconify-icon>"
-        str.append("<td title='Device is offline — cannot remove until online (webhooks/scripts need cleanup)'>${disabledDeleteIcon}</td>")
+        str.append("<td title='Device is not currently responding — cannot remove until awake'>${disabledDeleteIcon}</td>")
     } else if (isCreated) {
         String deleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px'></iconify-icon>"
         str.append("<td>${buttonLink("removeDev|${ip}", deleteIcon, '#F44336', '20px')}</td>")
     } else if (entry.hasDniConflict == true) {
         String conflictIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:20px'></iconify-icon>"
         str.append("<td title='DNI conflict — another device already uses this MAC'>${buttonLink("dniConflict|${ip}", conflictIcon, '#F44336', '20px')}</td>")
-    } else if (entry.shellyHelperOnline == false) {
-        // Device is known offline — show disabled add icon with tooltip
+    } else if (!isUncreatedDeviceAddableNow(entry)) {
+        // Gen1 devices have no reliable wake signal and remain addable.
+        // Gen2+ devices are addable only while they are responding.
         String disabledIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:20px;opacity:0.3'></iconify-icon>"
-        str.append("<td title='Device is offline — cannot create until online'>${disabledIcon}</td>")
+        str.append("<td title='Device is not currently responding'>${disabledIcon}</td>")
     } else {
         String addIcon = "<iconify-icon icon='material-symbols:add-circle-outline-rounded' style='font-size:20px'></iconify-icon>"
         str.append("<td>${buttonLink("createDev|${ip}", addIcon, '#4CAF50', '20px')}</td>")
@@ -1999,6 +2082,32 @@ private String buildDeviceRow(Map entry) {
 
     str.append("</tr>")
     return str.toString()
+}
+
+/**
+ * Returns whether an uncreated device should currently expose its Add action.
+ * Gen1 devices do not provide a dependable wake signal, so they remain
+ * addable. Gen2+ devices are addable for 30 seconds after their last valid
+ * direct RPC response.
+ */
+private Boolean isUncreatedDeviceAddableNow(Map entry) {
+    if (entry?.isCreated == true) { return true }
+    return isDeviceActionableNow(entry)
+}
+
+/**
+ * Returns whether the device is currently safe to contact for a UI action.
+ * Gen1 has no dependable mDNS wake signal, so its actions remain available.
+ * Gen2+ requires a successful short RPC response from the previous 30 seconds.
+ */
+private Boolean isDeviceActionableNow(Map entry) {
+    Boolean isGen1 = entry?.isGen1 == true || entry?.deviceGen?.toString() == '1' || entry?.gen?.toString() == '1'
+    if (isGen1) { return true }
+    // mDNS is discovery data, not a live-presence signal: Hubitat retains
+    // records after devices go offline. Require a successful short RPC
+    // response before exposing a lifecycle action for any Gen2+ device.
+    Long lastReachableAt = entry?.lastReachableAt as Long
+    return lastReachableAt != null && (now() - lastReachableAt) <= 30_000L
 }
 
 /**
@@ -4562,7 +4671,11 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
 
     // Step 3: Remove all Hubitat KVS entries
     try {
-        List<String> hubitatKvsKeys = ['hubitat_sdm_ip', 'hubitat_sdm_pm_ri']
+        List<String> hubitatKvsKeys = [
+            'hubitat_sdm_ip', 'hubitat_sdm_pm_ri',
+            'hubitat_sdm_pm_th_v', 'hubitat_sdm_pm_th_c', 'hubitat_sdm_pm_th_p',
+            'hubitat_sdm_pm_th_e', 'hubitat_sdm_pm_th_f'
+        ]
         Integer kvsRemoved = 0
         Integer kvsFailed = 0
         hubitatKvsKeys.each { String key ->
@@ -5410,6 +5523,11 @@ String processServerSideRender(Map event) {
 
     if (eventName == 'driverRebuildStatus') {
         return renderDriverManagementHtml()
+    }
+
+    if (eventName == 'discoveryTimer') {
+        Integer remainingSecs = getRemainingDiscoverySeconds()
+        return "Discovery time remaining: ${remainingSecs} seconds"
     }
 
     if (eventName == 'bleTable') {
@@ -6399,11 +6517,13 @@ void startDiscovery(Boolean resetFound = false) {
     unschedule('updateDiscoveryTimer')
     unschedule('updateRecentLogs')
     unschedule('processMdnsDiscovery')
+    unschedule('processInstalledDeviceReachability')
     unschedule('scanNextIpAddress')
     atomicState.ipScanRunning = false
     runIn(getDiscoveryDurationSeconds(), 'stopDiscovery')
     runIn(1, 'updateDiscoveryTimer')
     runIn(1, 'updateRecentLogs')
+    runIn(1, 'processInstalledDeviceReachability')
     // Give the hub 10 seconds after listener registration to collect mDNS responses
     runIn(10, 'processMdnsDiscovery')
 
@@ -6419,24 +6539,32 @@ void startDiscovery(Boolean resetFound = false) {
  * @param seconds Number of seconds to extend the discovery period
  */
 void extendDiscovery(Integer seconds) {
-    if (!atomicState.discoveryRunning) {
-        // Sonos-style: if stopped, start again without clearing discovered list.
-        atomicState.discoveryRunning = true
-        runIn(1, 'updateDiscoveryTimer')
-        runIn(2, 'processMdnsDiscovery')
-    }
-
-    // Supplement with ShellyHelper data (instant, no network I/O)
-    processShellyHelperDiscovery()
-
+    Integer extensionSeconds = Math.max(1, seconds ?: 0)
     Long currentEnd = atomicState.discoveryEndTime ? (atomicState.discoveryEndTime as Long) : now()
-    Long newEnd = Math.max(currentEnd, now()) + (seconds * 1000L)
+    Long newEnd = Math.max(currentEnd, now()) + (extensionSeconds * 1000L)
+    atomicState.discoveryRunning = true
     atomicState.discoveryEndTime = newEnd
     Integer totalRemaining = (Integer)(((newEnd) - now()) / 1000L)
 
+    // Always re-register and re-arm discovery. Previously an active scan only
+    // moved its stop deadline; if its mDNS callback had already stopped or
+    // been unscheduled, the extra time did not actually collect new devices.
+    startMdnsDiscovery()
+    unschedule('processMdnsDiscovery')
+    unschedule('processInstalledDeviceReachability')
+    unschedule('updateDiscoveryTimer')
     unschedule('stopDiscovery')
+    runIn(1, 'processMdnsDiscovery')
+    runIn(1, 'processInstalledDeviceReachability')
+    runIn(1, 'updateDiscoveryTimer')
     runIn(totalRemaining, 'stopDiscovery')
-    appendLog('info', "Discovery extended by ${seconds} seconds")
+
+    // ShellyHelper is a separate, local discovery source; refresh it now and
+    // then on every mDNS polling pass while the new deadline remains active.
+    processShellyHelperDiscovery()
+    appendLog('info', "Discovery extended by ${extensionSeconds} seconds; ${totalRemaining} seconds remain")
+    logDebug("extendDiscovery: discovery active until ${newEnd} (${totalRemaining}s remaining)")
+    sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${totalRemaining} seconds")
 
     // Restart IP subnet scan if not already running (startIpSubnetScan checks the setting)
     if (atomicState.ipScanRunning != true) {
@@ -6504,6 +6632,7 @@ void stopDiscovery() {
     atomicState.discoveryEndTime = null
 
     unschedule('processMdnsDiscovery')
+    unschedule('processInstalledDeviceReachability')
     unschedule('updateDiscoveryTimer')
     unschedule('updateRecentLogs')
     unschedule('stopDiscovery')
@@ -6527,8 +6656,9 @@ void updateDiscoveryTimer() {
     }
     Integer remainingSecs = getRemainingDiscoverySeconds()
 
-    // Send event for real-time browser update
-    app.sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds")
+    // Use server-side rendering, as the app page does not reliably apply a
+    // plain app-state event to arbitrary paragraph HTML.
+    sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds")
 
     // Continue scheduling if time remaining
     if (remainingSecs > 0) {
@@ -6578,11 +6708,15 @@ void processMdnsDiscovery() {
         if (shellyEntries) { allEntries.addAll(shellyEntries) }
         if (httpEntries) { allEntries.addAll(httpEntries) }
 
+        Integer beforeCount = atomicState.discoveredShellys.size()
+        Boolean addabilityChanged = false
+        Map mdnsLastHeardByIp = new LinkedHashMap((atomicState.mdnsLastHeardByIp ?: [:]) as Map)
+        Map mdnsActionableByIp = new LinkedHashMap((atomicState.mdnsActionableByIp ?: [:]) as Map)
+
         if (!allEntries) {
             logTrace('processMdnsDiscovery: no mDNS entries found')
         } else {
             logTrace("processMdnsDiscovery: processing ${allEntries.size()} total mDNS entries")
-            Integer beforeCount = atomicState.discoveredShellys.size()
             allEntries.each { entry ->
                 // Actual mDNS entry fields: server, port, ip4Addresses, ip6Addresses, gen, app, ver
                 String server = (entry?.server ?: '') as String
@@ -6616,12 +6750,15 @@ void processMdnsDiscovery() {
                 String deviceName = stripMdnsDomainSuffix(server)
 
                 String key = ip4
+                if (hasProvisioningOperation(key)) {
+                    logTrace("Skipping mDNS state merge for ${key}: provisioning is active")
+                    return
+                }
                 Boolean isNewToState = !atomicState.discoveredShellys.containsKey(key)
                 Boolean alreadyLogged = foundDevices.containsKey(key)
 
                 // Capture existing entry BEFORE overwrite so we can check identification status
                 Map existingEntry = isNewToState ? null : (atomicState.discoveredShellys[key] as Map)
-
                 // Only log if this is a newly discovered device AND we haven't logged it yet this run
                 if (isNewToState && !alreadyLogged) {
                     logDebug("Found NEW Shelly: ${deviceName} at ${ip4}:${port} (gen=${gen}, app=${deviceApp}, ver=${ver})")
@@ -6635,7 +6772,8 @@ void processMdnsDiscovery() {
                     gen: gen,
                     deviceApp: deviceApp,
                     ver: ver,
-                    ts: now()
+                    ts: now(),
+                    mdnsLastHeardAt: now()
                 ]
 
                 // Gen1 devices advertise under _http._tcp with no gen/app TXT records.
@@ -6663,7 +6801,8 @@ void processMdnsDiscovery() {
                                          'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
                                          'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents',
                                          'capabilityCacheVersion', 'capabilityFetchedAt', 'capabilityFingerprint',
-                                         'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter']) {
+                                         'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter',
+                                         'lastReachableAt']) {
                         if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
                             deviceEntry[field] = existingEntry[field]
                         }
@@ -6680,7 +6819,11 @@ void processMdnsDiscovery() {
                     deviceEntry.isBatteryDevice = true
                     deviceEntry.batteryDetermined = true
                 }
+                Long mdnsHeardAt = now()
+                deviceEntry.mdnsLastHeardAt = mdnsHeardAt
+                mdnsLastHeardByIp[key] = mdnsHeardAt
                 atomicState.discoveredShellys[key] = deviceEntry
+                if (deviceEntry.gen?.toString() != '1') { scheduleDiscoveryReachabilityProbe(key) }
 
                 // Mark this IP as a known Shelly in ipScanResults so the IP subnet
                 // scanner uses the 5-minute cooldown instead of re-probing at 2 minutes
@@ -6693,11 +6836,33 @@ void processMdnsDiscovery() {
                 // webhook enumeration, driver selection, and driver installation are
                 // deferred until the user selects Create.
             }
-            Integer afterCount = atomicState.discoveredShellys.size()
-            if (afterCount > beforeCount) {
-                logDebug("Found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
-                sendFoundShellyEvents()
+        }
+
+        atomicState.mdnsLastHeardByIp = mdnsLastHeardByIp
+
+        // Refresh the table whenever a device transitions between actionable
+        // and stale. Do not use a narrow time range here: one scan pass can
+        // take 7+ seconds on a busy LAN, so a 30–35 second window can be
+        // skipped entirely and leave an action button enabled indefinitely.
+        (atomicState.discoveredShellys ?: [:]).each { Object knownIp, Object knownValue ->
+            Map known = knownValue as Map
+            Map cacheEntry = (atomicState.deviceStatusCache ?: [:])[knownIp.toString()] as Map
+            Map actionEntry = new LinkedHashMap(known ?: [:])
+            if (cacheEntry?.isBatteryDevice == true) { actionEntry.isBatteryDevice = true }
+            Boolean actionableNow = isDeviceActionableNow(actionEntry)
+            String knownIpKey = knownIp.toString()
+            if (mdnsActionableByIp[knownIpKey] != actionableNow) {
+                addabilityChanged = true
+                logTrace("Discovery action availability changed for ${knownIpKey}: ${actionableNow ? 'available' : 'stale'}")
             }
+            mdnsActionableByIp[knownIpKey] = actionableNow
+        }
+        atomicState.mdnsActionableByIp = mdnsActionableByIp
+
+        Integer afterCount = atomicState.discoveredShellys.size()
+        if (afterCount > beforeCount || addabilityChanged) {
+            logDebug("Found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
+            sendFoundShellyEvents()
         }
     } catch (Exception e) {
         logWarn("Error processing mDNS entries: ${e.message}")
@@ -6710,6 +6875,178 @@ void processMdnsDiscovery() {
     if (atomicState.discoveryRunning && getRemainingDiscoverySeconds() > 0) {
         runIn(getMdnsPollSeconds(), 'processMdnsDiscovery')
     }
+}
+
+/**
+ * Runs a short, asynchronous reachability check for each installed device.
+ * Hubitat's mDNS results are retained cache data, so only
+ * an HTTP success proves a device is currently available for a lifecycle action.
+ */
+void processInstalledDeviceReachability() {
+    if (!atomicState.discoveryRunning || getRemainingDiscoverySeconds() <= 0) { return }
+
+    // Created devices may not be advertised by mDNS or surfaced by
+    // ShellyHelper. Probe every installed child while this app page's
+    // discovery window is active so Delete reflects actual reachability.
+    // This deliberately tolerates stale or incorrect stored generation
+    // metadata; Gen1 actions remain always available in the rendered UI.
+    Set<String> installedIps = [] as Set
+    (getChildDevices() ?: []).each { childDevice ->
+        String ip = childDevice.getDataValue('ipAddress')
+        if (ip) { installedIps.add(ip) }
+    }
+    // Preserve coverage for created rows whose child metadata was not returned
+    // by the current app context.
+    (atomicState.deviceStatusCache ?: [:]).each { Object ipKey, Object value ->
+        if ((value as Map)?.isCreated == true) { installedIps.add(ipKey.toString()) }
+    }
+
+    Long lastLoggedAt = atomicState.installedReachabilitySweepLoggedAt as Long
+    if (lastLoggedAt == null || (now() - lastLoggedAt) >= 30_000L) {
+        logTrace("Installed reachability sweep: ${installedIps.sort().join(', ')}")
+        atomicState.installedReachabilitySweepLoggedAt = now()
+    }
+    installedIps.each { String ip -> scheduleDiscoveryReachabilityProbe(ip) }
+
+    if (atomicState.discoveryRunning && getRemainingDiscoverySeconds() > 0) {
+        runIn(5, 'processInstalledDeviceReachability')
+    }
+}
+
+private void scheduleDiscoveryReachabilityProbe(String ip) {
+    if (!ip) { return }
+    Map dispatched = new LinkedHashMap((atomicState.discoveryReachabilityProbeAt ?: [:]) as Map)
+    Long lastDispatched = dispatched[ip] as Long
+    if (lastDispatched != null && (now() - lastDispatched) < 5_000L) { return }
+
+    dispatched[ip] = now()
+    atomicState.discoveryReachabilityProbeAt = dispatched
+    try {
+        logTrace("Dispatching RPC reachability probe to ${ip}")
+        Map requestBody = [id: 0, src: 'discoveryReachability', method: 'Shelly.GetDeviceInfo']
+        if (authIsEnabled() == true && getAuth().size() > 0) { requestBody.auth = getAuth() }
+        Map params = [
+            uri: "http://${ip}/rpc",
+            contentType: 'application/json',
+            requestContentType: 'application/json',
+            body: requestBody,
+            timeout: 2
+        ]
+        asynchttpPost('discoveryReachabilityCallback', params, [ip: ip])
+    } catch (Exception e) {
+        logTrace("Could not dispatch reachability check for ${ip}: ${e.message}")
+    }
+}
+
+/**
+ * Records a verified wake from the preferred RPC probe, or the /shelly
+ * fallback used by devices that expose /shelly but do not accept this RPC probe.
+ */
+void discoveryReachabilityCallback(response, Map data) {
+    String ip = data?.ip?.toString()
+    if (!ip) { return }
+
+    Boolean succeeded = response != null && !response.hasError() && response.getStatus() == 200
+    if (succeeded) {
+        logTrace("RPC reachability probe succeeded for ${ip}")
+        recordDiscoveryReachability(ip)
+        return
+    }
+
+    // A successful GET /shelly still proves the device is online. Use it as a
+    // reachability fallback for devices that reject this RPC probe rather than
+    // leaving their Delete action disabled.
+    Map failureLog = new LinkedHashMap((atomicState.discoveryReachabilityFailureAt ?: [:]) as Map)
+    Long lastLoggedAt = failureLog[ip] as Long
+    if (lastLoggedAt == null || (now() - lastLoggedAt) >= 30_000L) {
+        Integer status = response?.getStatus() as Integer
+        logTrace("RPC reachability check failed for ${ip} (status=${status}); trying /shelly")
+        failureLog[ip] = now()
+        atomicState.discoveryReachabilityFailureAt = failureLog
+    }
+    try {
+        logTrace("Dispatching /shelly reachability fallback to ${ip}")
+        Map params = [uri: "http://${ip}/shelly", contentType: 'application/json', timeout: 2]
+        asynchttpGet('discoveryShellyReachabilityCallback', params, [ip: ip])
+    } catch (Exception e) {
+        logTrace("Could not dispatch /shelly reachability check for ${ip}: ${e.message}")
+    }
+}
+
+/** Marks the device reachable when the fallback GET /shelly succeeds. */
+void discoveryShellyReachabilityCallback(response, Map data) {
+    String ip = data?.ip?.toString()
+    if (!ip) { return }
+    Boolean succeeded = response != null && !response.hasError() && response.getStatus() == 200
+    if (succeeded) {
+        logTrace("/shelly reachability fallback succeeded for ${ip}")
+        recordDiscoveryReachability(ip)
+    } else {
+        logTrace("/shelly reachability fallback failed for ${ip} (status=${response?.getStatus()})")
+    }
+}
+
+private void recordDiscoveryReachability(String ip) {
+    if (!ip) { return }
+
+    Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+    Map device = discovered[ip] as Map
+    Map cached = (atomicState.deviceStatusCache ?: [:])[ip] as Map
+    logTrace("Recording reachability for ${ip}: discoveryEntry=${device != null}, cacheEntry=${cached != null}")
+    Boolean wasActionable = isDeviceActionableNow(device ?: cached)
+    Long checkedAt = now()
+
+    if (device) {
+        Map updated = new LinkedHashMap(device)
+        updated.lastReachableAt = checkedAt
+        discovered[ip] = updated
+        atomicState.discoveredShellys = discovered
+    }
+
+    // Installed devices can exist solely as Hubitat children without a current
+    // discovery record. Persist the probe result in the table cache even when
+    // there is no discovery entry.
+    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+    Map cacheEntry = cached ? new LinkedHashMap(cached) : null
+    if (!cacheEntry) {
+        def childDevice = findChildDeviceByIp(ip)
+        Map seed = device ?: [
+            name: childDevice?.displayName ?: "Shelly ${ip}",
+            gen: childDevice ? getDeviceGen(childDevice) : '2',
+            mac: childDevice?.getDataValue('shellyMac') ?: '',
+            isBatteryDevice: childDevice ? isBatteryPoweredDevice(childDevice) : false
+        ]
+        cacheEntry = buildMinimalCacheEntry(ip, seed)
+    }
+    cacheEntry.lastReachableAt = checkedAt
+    cache[ip] = cacheEntry
+    atomicState.deviceStatusCache = cache
+
+    Boolean isActionable = isDeviceActionableNow(device ? (discovered[ip] as Map) : cacheEntry)
+
+    Map failureLog = new LinkedHashMap((atomicState.discoveryReachabilityFailureAt ?: [:]) as Map)
+    if (failureLog.remove(ip) != null) {
+        atomicState.discoveryReachabilityFailureAt = failureLog
+    }
+
+    if (!wasActionable) {
+        logTrace("Verified device reachable at ${ip}")
+    }
+    // Persist every successful heartbeat, but re-render only when it changes
+    // an enabled/disabled action. Rendering the whole table for every
+    // five-second heartbeat produces a visible flicker in the app UI.
+    if (wasActionable != isActionable) {
+        sendFoundShellyEvents()
+    }
+    // The active scan may end before the device goes back to sleep. Schedule
+    // a table refresh after the 30-second action window so stale actions gray
+    // out even when no further discovery poll is running.
+    runIn(31, 'refreshDiscoveryActionAvailability')
+}
+
+/** Re-renders action availability after a previously verified device expires. */
+void refreshDiscoveryActionAvailability() {
+    sendFoundShellyEvents()
 }
 
 /**
@@ -6746,6 +7083,12 @@ void sendFoundShellyEvents() {
             }
             if (infoMap.fwUpdateAvailable != null) {
                 existing.fwUpdateAvailable = infoMap.fwUpdateAvailable
+            }
+            if (infoMap.mdnsLastHeardAt != null) {
+                existing.mdnsLastHeardAt = infoMap.mdnsLastHeardAt as Long
+            }
+            if (infoMap.lastReachableAt != null) {
+                existing.lastReachableAt = infoMap.lastReachableAt as Long
             }
             cache[ip] = existing
         }
@@ -6790,6 +7133,10 @@ void processShellyHelperDiscovery() {
             String gen = entry.generation?.toString() ?: ''
 
             String key = ip4
+            if (hasProvisioningOperation(key)) {
+                logTrace("Skipping ShellyHelper state merge for ${key}: provisioning is active")
+                continue
+            }
             Boolean isNewToState = !atomicState.discoveredShellys.containsKey(key)
             Boolean alreadyLogged = foundDevices.containsKey(key)
             Map existingEntry = isNewToState ? null : (atomicState.discoveredShellys[key] as Map)
@@ -6850,7 +7197,7 @@ void processShellyHelperDiscovery() {
                                      'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents',
                                      'deviceApp', 'ver', 'capabilityCacheVersion', 'capabilityFetchedAt',
                                      'capabilityFingerprint', 'capabilityFetchState', 'capabilityFetchError',
-                                     'capabilityRetryAfter']) {
+                                     'capabilityRetryAfter', 'mdnsLastHeardAt', 'lastReachableAt']) {
                     if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
                         deviceEntry[field] = existingEntry[field]
                     }
@@ -6875,6 +7222,7 @@ void processShellyHelperDiscovery() {
                 deviceEntry.batteryDetermined = true
             }
             atomicState.discoveredShellys[key] = deviceEntry
+            if (deviceEntry.gen?.toString() != '1') { scheduleDiscoveryReachabilityProbe(key) }
 
             // Mark this IP as a known Shelly in ipScanResults (5-min cooldown for IP scanner)
             Map scanResults = new LinkedHashMap((atomicState.ipScanResults ?: [:]) as Map)
@@ -6958,7 +7306,7 @@ static Boolean isLikelyGen1Device(String gen, String deviceApp, String serverNam
 @CompileStatic
 static Boolean isLikelyBatteryDiscoveryDevice(String gen, String deviceApp, String serverName) {
     String identity = "${deviceApp ?: ''} ${serverName ?: ''}".toUpperCase()
-    return identity.contains('HTG3') || identity.contains('BLUHT') ||
+    return identity.contains('PLUSHT') || identity.contains('HTG3') || identity.contains('BLUHT') ||
            identity.contains('SHELLY H&T') || identity.contains('SHELLYHT')
 }
 
@@ -7358,7 +7706,10 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
         name: "Shelly ${ip}",
         ipAddress: ip,
         port: 80,
-        ts: now()
+        ts: now(),
+        // /shelly just returned successfully, which is a direct freshness
+        // signal even when this device does not advertise via mDNS.
+        lastReachableAt: now()
     ]
 
     if (shellyData.gen) {
@@ -7400,7 +7751,8 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
                              'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
                              'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents',
                              'capabilityCacheVersion', 'capabilityFetchedAt', 'capabilityFingerprint',
-                             'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter']) {
+                             'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter',
+                             'lastReachableAt']) {
             if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
                 deviceEntry[field] = existingEntry[field]
             }
@@ -7419,6 +7771,7 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
         deviceEntry.batteryDetermined = true
     }
     atomicState.discoveredShellys[ip] = deviceEntry
+    if (deviceEntry.gen?.toString() != '1') { scheduleDiscoveryReachabilityProbe(ip) }
 
     // Manual discovery is also identity-only. Full capability discovery is
     // deliberately deferred until the user selects Create in the table.
@@ -8322,6 +8675,19 @@ void processAsyncDeviceInfoFetch(Map data) {
 
     logDebug("Processing async device info fetch for ${ipKey} (attempt ${attempt}/${maxAttempts})")
 
+    // User-initiated creation owns this device's discovery state. Do not let
+    // a queued background fetch race the installation fetch and overwrite its
+    // freshly populated capability record.
+    if (hasProvisioningOperation(ipKey)) {
+        logTrace("Skipping async device info fetch for ${ipKey}: provisioning is active")
+        Map pendingQueue = new LinkedHashMap((atomicState.asyncFetchQueue ?: [:]) as Map)
+        if (!requestId || ((pendingQueue[ipKey] as Map)?.requestId?.toString() == requestId)) {
+            pendingQueue.remove(ipKey)
+            atomicState.asyncFetchQueue = pendingQueue
+        }
+        return
+    }
+
     // Update queue status
     Map queueEntry = (atomicState.asyncFetchQueue as Map)?.get(ipKey) as Map
     if (requestId && queueEntry?.requestId?.toString() != requestId) {
@@ -8593,7 +8959,24 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         device.ts = now()
         markCapabilityCacheComplete(ipKey, device)
 
-        atomicState.discoveredShellys[ipKey] = device
+        // Do not mutate a nested atomicState map in place. During provisioning,
+        // mDNS/ShellyHelper callbacks and UI refreshes can replace the outer map;
+        // an in-place write can therefore appear to succeed in this execution but
+        // be absent when createShellyDevice re-reads it a moment later.
+        Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+        Map storedDevice = new LinkedHashMap(device)
+        discovered[ipKey] = storedDevice
+        atomicState.discoveredShellys = discovered
+
+        // Preserve the complete, known-good capability response before any UI
+        // event or driver-install work. Those operations can yield execution and
+        // cause a discovery refresh to replace the transient cache entry.
+        if (hasProvisioningOperation(ipKey)) {
+            Map snapshots = new LinkedHashMap((atomicState.installationCapabilitySnapshots ?: [:]) as Map)
+            snapshots[ipKey] = new LinkedHashMap(storedDevice)
+            atomicState.installationCapabilitySnapshots = snapshots
+            logTrace("Stored installation capability snapshot for ${ipKey}")
+        }
 
         // Build a human-readable summary
         List<String> parts = []
@@ -8614,6 +8997,23 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
 
         sendFoundShellyEvents()
         determineDeviceDriver(deviceStatus, ipKey)
+        if (hasProvisioningOperation(ipKey)) {
+            // Keep the original status/config response even if a concurrent
+            // discovery update replaced the classified entry, while retaining
+            // the generated driver and architecture fields set above.
+            Map snapshots = new LinkedHashMap((atomicState.installationCapabilitySnapshots ?: [:]) as Map)
+            Map snapshot = new LinkedHashMap(storedDevice)
+            Map classifiedDevice = atomicState.discoveredShellys[ipKey] as Map
+            if (classifiedDevice) {
+                ['generatedDriverName', 'installedDriverName', 'needsParentChild',
+                 'actuatorCounts', 'components', 'componentPowerMonitoring'].each { String field ->
+                    if (classifiedDevice[field] != null) { snapshot[field] = classifiedDevice[field] }
+                }
+            }
+            snapshots[ipKey] = snapshot
+            atomicState.installationCapabilitySnapshots = snapshots
+            logTrace("Updated installation capability snapshot for ${ipKey}")
+        }
         return true
     } catch (Exception e) {
         String errorMsg = e.message ?: e.toString() ?: e.class.simpleName
@@ -11417,6 +11817,7 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
  * @param data Map containing upload state (see above)
  */
 void uploadScriptChunk(Map data) {
+    logTrace("uploadScriptChunk: id=${data?.scriptId}, offset=${data?.offset ?: 0}, chunk=${data?.chunkNum ?: 0}, callback=${data?.completionCallback}")
     Integer scriptId = data.scriptId as Integer
     String codeStateKey = data.codeStateKey as String
     Map completionData = (data.completionData ?: [:]) as Map
@@ -11484,7 +11885,7 @@ void uploadScriptChunk(Map data) {
             Integer[] retryDelays = [1000, 3000, 5000, 10000, 15000]
             Integer delay = retryDelays[chunkRetryCount]
             logWarn("Script upload chunk ${chunkNum} (offset ${offset}) timed out - retrying in ${delay}ms (attempt ${chunkRetryCount + 1}/5)")
-            runInMillis(delay, 'uploadScriptChunk', [data: data + [chunkRetryCount: chunkRetryCount + 1]])
+            runInMillis(delay, 'uploadScriptChunk', [data: data + [chunkRetryCount: chunkRetryCount + 1], overwrite: false])
             return
         }
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${e.message ?: e.toString()}"
@@ -11516,7 +11917,7 @@ void uploadScriptChunk(Map data) {
     if (nextOffset < total) {
         // Schedule next chunk with 150ms delay for device write flush
         // Only pass lightweight scheduling data — code stays in state
-        runInMillis(150, 'uploadScriptChunk', [data: [
+        runInMillis(250, 'uploadScriptChunk', [data: [
             scriptId: scriptId,
             codeStateKey: codeStateKey,
             uri: uri,
@@ -11526,7 +11927,7 @@ void uploadScriptChunk(Map data) {
             completionCallback: completionCallback,
             errorCallback: errorCallback,
             completionData: completionData
-        ]])
+        ], overwrite: false])
     } else {
         logDebug("Uploaded script id=${scriptId} in ${nextChunkNum} chunks (${total} bytes)")
         atomicState.remove(codeStateKey)
@@ -13284,6 +13685,23 @@ private void updateBleDiscoveryState(String mac, String model, Integer modelId, 
 // BLE Device Creation & Removal
 // ─────────────────────────────────────────────────────────────
 
+/** Completes a BLE child creation after the Add spinner has rendered. */
+void runBleDeviceCreate(Map data) {
+    String mac = data?.mac?.toString()
+    if (!mac) { return }
+    try {
+        createBleDevice(mac)
+    } catch (Exception e) {
+        bleLogError("runBleDeviceCreate: failed for ${mac} — ${e.message}")
+        appendLog('error', "Failed to create BLE device ${mac}: ${e.message}")
+    } finally {
+        Map operations = new LinkedHashMap((state.bleProvisioningOperations ?: [:]) as Map)
+        operations.remove(mac)
+        state.bleProvisioningOperations = operations
+        fireBleTableSSR()
+    }
+}
+
 /**
  * Creates a Hubitat child device for a discovered BLE device.
  * Installs the appropriate prebuilt driver and creates the child with DNI = MAC.
@@ -13321,6 +13739,15 @@ private void createBleDevice(String mac) {
     if (existing) {
         bleLogWarn("BLE device already exists: ${existing.displayName} (${mac})")
         appendLog('warn', "BLE device already exists: ${existing.displayName}")
+        // The child may have been created before a page reload or a prior
+        // callback may have completed after its table update was lost. Reconcile
+        // discovery state so the row immediately switches from Add to Delete.
+        bleInfo.isCreated = true
+        bleInfo.hubDeviceId = existing.id
+        bleInfo.hubDeviceName = existing.displayName
+        bleInfo.hubDeviceLabel = existing.label ?: existing.displayName
+        discoveredBle[macKey] = bleInfo
+        state.discoveredBleDevices = discoveredBle
         return
     }
 
@@ -14140,6 +14567,7 @@ void fireBleTableSSR() {
  */
 private String renderBleTableMarkup() {
     Map discoveredBle = state.discoveredBleDevices ?: [:]
+    Map bleProvisioningOperations = state.bleProvisioningOperations ?: [:]
     if (discoveredBle.size() == 0) {
         return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
     }
@@ -14217,6 +14645,7 @@ private String renderBleTableMarkup() {
         Long lastSeen = entry.lastSeen as Long ?: 0L
         String gateway = entry.lastGateway ?: '—'
         Boolean isCreated = entry.isCreated ?: false
+        Boolean isProvisioning = bleProvisioningOperations[mac] != null
 
         // Device name column — names/models derive from BLE advertisements (network-controlled), escape them
         String deviceCell
@@ -14261,7 +14690,10 @@ private String renderBleTableMarkup() {
 
         // Action button
         String actionCell
-        if (isCreated) {
+        if (isProvisioning) {
+            String spinner = "<iconify-icon icon='material-symbols:progress-activity' style='font-size:20px;animation:shellyProvisioningSpin 1s linear infinite'></iconify-icon>"
+            actionCell = "<td title='Creating BLE device…'>${spinner}</td>"
+        } else if (isCreated) {
             String deleteIcon = "<iconify-icon icon='material-symbols:delete-outline' style='font-size:20px'></iconify-icon>"
             actionCell = "<td>${buttonLink("removeBle|${mac}".toString(), deleteIcon, '#F44336', '20px')}</td>"
         } else if (entry.driverName) {

@@ -64,6 +64,16 @@ preferences {
     defaultValue: 'debug', required: true
   input name: 'pmReportingInterval', type: 'number', title: 'Power Monitoring Reporting Interval (seconds)',
     required: false, defaultValue: 60, range: '5..3600'
+  input name: 'pmVoltageThreshold', type: 'decimal', title: 'Power Monitoring Voltage Change Threshold (V)', description: '0 = always send; otherwise report when voltage changes by this amount',
+    required: false, defaultValue: 1, range: '0..1000'
+  input name: 'pmCurrentThreshold', type: 'decimal', title: 'Power Monitoring Current Change Threshold (A)', description: '0 = always send; otherwise report when current changes by this amount',
+    required: false, defaultValue: 0.05, range: '0..1000'
+  input name: 'pmPowerThreshold', type: 'decimal', title: 'Power Monitoring Power Change Threshold (W)', description: '0 = always send; otherwise report when power changes by this amount',
+    required: false, defaultValue: 5, range: '0..1000000'
+  input name: 'pmEnergyThreshold', type: 'decimal', title: 'Power Monitoring Energy Change Threshold (Wh)', description: '0 = always send; otherwise report when energy changes by this amount',
+    required: false, defaultValue: 5, range: '0..1000000'
+  input name: 'pmFrequencyThreshold', type: 'decimal', title: 'Power Monitoring Frequency Change Threshold (Hz)', description: '0 = always send; otherwise report when frequency changes by this amount',
+    required: false, defaultValue: 0.5, range: '0..1000'
   input name: 'minColorTemp', type: 'number', title: 'Minimum Color Temperature (K)',
     defaultValue: 2700, range: '1500..10000', required: false
   input name: 'maxColorTemp', type: 'number', title: 'Maximum Color Temperature (K)',
@@ -102,11 +112,21 @@ void configure() {
 }
 
 /**
- * Sends the PM reporting interval setting to the device KVS via the parent app.
+ * Sends the PM reporting interval and change thresholds to the device KVS via the parent app.
  */
 private void sendPmReportingIntervalToKVS() {
   Integer interval = settings?.pmReportingInterval != null ? settings.pmReportingInterval as Integer : 60
   parent?.componentWriteKvsToDevice(device, 'hubitat_sdm_pm_ri', interval)
+  BigDecimal voltageThreshold = settings?.pmVoltageThreshold != null ? settings.pmVoltageThreshold as BigDecimal : 1
+  BigDecimal currentThreshold = settings?.pmCurrentThreshold != null ? settings.pmCurrentThreshold as BigDecimal : 0.05
+  BigDecimal powerThreshold = settings?.pmPowerThreshold != null ? settings.pmPowerThreshold as BigDecimal : 5
+  BigDecimal energyThreshold = settings?.pmEnergyThreshold != null ? settings.pmEnergyThreshold as BigDecimal : 5
+  BigDecimal frequencyThreshold = settings?.pmFrequencyThreshold != null ? settings.pmFrequencyThreshold as BigDecimal : 0.5
+  parent?.componentWriteKvsToDevice(device, 'hubitat_sdm_pm_th_v', voltageThreshold)
+  parent?.componentWriteKvsToDevice(device, 'hubitat_sdm_pm_th_c', currentThreshold)
+  parent?.componentWriteKvsToDevice(device, 'hubitat_sdm_pm_th_p', powerThreshold)
+  parent?.componentWriteKvsToDevice(device, 'hubitat_sdm_pm_th_e', energyThreshold)
+  parent?.componentWriteKvsToDevice(device, 'hubitat_sdm_pm_th_f', frequencyThreshold)
 }
 
 void refresh() {
