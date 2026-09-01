@@ -15,6 +15,7 @@
     new java.util.concurrent.ConcurrentHashMap<String, Integer>()
 
 @Field static final Integer MAX_COMMAND_RETRIES = 5
+@Field static final Integer MAX_DRIVER_UPDATE_ATTEMPTS = 3
 @Field static final Long OPPORTUNISTIC_DRAIN_WINDOW_MS = 10000L
 
 // ─── BLE Performance Caches ────────────────────────────────────────────────────
@@ -82,7 +83,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.78"
+@Field static final String APP_VERSION = "1.0.81"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -9708,32 +9709,44 @@ private Boolean installDriver(String sourceCode) {
             // Update existing driver
             logInfo("Driver already exists (ID: ${existingDriver.id}), updating...")
 
-            String body = "id=${existingDriver.id}&version=${existingDriver.version ?: 1}&source=${encodedSource}"
+            // /device/drivers can briefly return an old or missing optimistic
+            // concurrency revision while another discovery callback is saving
+            // the same driver. Hubitat reports the authoritative revision in
+            // the rejection, so retry with that revision before failing.
+            Integer updateRevision = (existingDriver.version ?: 1) as Integer
+            for (Integer updateAttempt = 1; updateAttempt <= 3 && !success; updateAttempt++) {
+                String body = "id=${existingDriver.id}&version=${updateRevision}&source=${encodedSource}"
+                Map params = [
+                    uri: "http://127.0.0.1:8080",
+                    path: '/driver/ajax/update',
+                    headers: ['Content-Type': 'application/x-www-form-urlencoded'],
+                    body: body,
+                    timeout: 30,
+                    requestContentType: 'application/x-www-form-urlencoded'
+                ]
 
-            Map params = [
-                uri: "http://127.0.0.1:8080",
-                path: '/driver/ajax/update',
-                headers: [
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                ],
-                body: body,
-                timeout: 30,
-                requestContentType: 'application/x-www-form-urlencoded'
-            ]
+                def updateResponse = null
+                httpPost(params) { resp -> updateResponse = resp }
 
-            httpPost(params) { resp ->
-                if (resp?.status == 200 && resp?.data) {
-                    def result = resp.data
+                if (updateResponse?.status == 200 && updateResponse?.data) {
+                    def result = updateResponse.data
                     if (result?.status == 'success') {
                         logInfo("✓ Driver updated successfully!")
                         logInfo("  Driver ID: ${existingDriver.id}")
                         logInfo("  New version: ${result.version}")
                         success = true
                     } else {
-                        logError("✗ Driver update failed: ${result?.errorMessage ?: 'Unknown error'}")
+                        String errorMessage = (result?.errorMessage ?: 'Unknown error').toString()
+                        def revisionMatch = (errorMessage =~ /current version is\s+(\d+)/)
+                        if (revisionMatch.find() && updateAttempt < 3) {
+                            updateRevision = revisionMatch.group(1) as Integer
+                            logWarn("Driver revision conflict for ${driverName}; retrying with Hubitat version ${updateRevision} (${updateAttempt + 1}/3)")
+                        } else {
+                            logError("✗ Driver update failed: ${errorMessage}")
+                        }
                     }
                 } else {
-                    logError("✗ HTTP error ${resp?.status}")
+                    logError("✗ HTTP error ${updateResponse?.status}")
                 }
             }
         } else {
@@ -16129,7 +16142,8 @@ private void enqueueAndStartDriverUpdate(List<String> trackingKeys, String start
         // processedKeys is a List<String> on disk (Sets don't survive JSON
         // round-trips). Used to prevent double-counting when a late-firing
         // callback from a previous queue lands inside this one's progress map.
-        processedKeys: new ArrayList<String>()
+        processedKeys: new ArrayList<String>(),
+        attempts: [:]
     ]
     appendLog('info', startMessage)
     logInfo("Driver update queue started: ${trackingKeys.size()} driver(s)")
@@ -16174,7 +16188,23 @@ void processNextDriverUpdate() {
     Map allDrivers = atomicState.autoDrivers ?: [:]
     Map.Entry matchEntry = allDrivers.find { k, v -> k.toString() == trackingKey }
     if (!matchEntry) {
-        handleDriverUpdateFailure(trackingKey, 'Tracking key disappeared during update')
+        // Discovery can register the new version while this queue is waiting
+        // between drivers. registerAutoDriver() then removes the old full-name
+        // key that was captured when the queue started. Reconcile by stable
+        // base name instead of treating that normal rename as a failure.
+        String queuedBaseName = trackingKey.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+        matchEntry = allDrivers.find { k, v ->
+            String currentName = ((v as Map)?.name ?: '').toString()
+            currentName.replaceAll(/\s+v\d+(\.\d+)*$/, '') == queuedBaseName
+        }
+        if (matchEntry) {
+            String currentKey = matchEntry.key.toString()
+            logInfo("Driver update queue reconciled '${trackingKey}' to '${currentKey}' after version registration")
+            trackingKey = currentKey
+        }
+    }
+    if (!matchEntry) {
+        handleDriverUpdateFailure(trackingKey, 'Tracking key disappeared during update', null)
         return
     }
 
@@ -16183,14 +16213,26 @@ void processNextDriverUpdate() {
     String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
     Boolean isComponent = info.isComponentDriver ?: false
 
+    // A discovery callback may have installed this driver while it was waiting
+    // in the bulk queue. Count it as complete rather than downloading and
+    // recompiling the same source a second time.
+    if (((info.version ?: '') as String) == getAppVersion()) {
+        completeQueuedDriverWithoutInstall(trackingKey, baseName)
+        return
+    }
+
     // Read prog into a fresh LinkedHashMap and write back via atomicState —
     // same cross-execution-boundary concern as the queue: the next callback
     // (downloadDriverCallback) needs to see currentName/current immediately,
     // and the SSR re-render fired by sendEvent below depends on it.
     Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
+    Map attempts = new LinkedHashMap((prog.attempts ?: [:]) as Map)
+    Integer attempt = ((attempts[trackingKey] ?: 0) as Integer) + 1
+    attempts[trackingKey] = attempt
     prog.current = trackingKey
     prog.currentName = baseName
     prog.lastActivityAt = now()
+    prog.attempts = attempts
     atomicState.driverUpdateProgress = prog
     Integer position = (((prog.completed ?: 0) as Integer) + ((prog.errors ?: 0) as Integer) + 1)
     Integer total = (prog.total ?: 0) as Integer
@@ -16201,7 +16243,7 @@ void processNextDriverUpdate() {
     if (!fileUrl) {
         handleDriverUpdateFailure(trackingKey,
             isComponent ? "Cannot resolve filename for component driver '${driverName}'"
-                        : "No prebuilt driver source for '${baseName}'")
+                        : "No prebuilt driver source for '${baseName}'", attempt)
         return
     }
 
@@ -16214,7 +16256,8 @@ void processNextDriverUpdate() {
         trackingKey: trackingKey,
         driverName: driverName,
         baseName: baseName,
-        isComponent: isComponent
+        isComponent: isComponent,
+        attempt: attempt
     ])
 }
 
@@ -16252,16 +16295,17 @@ private String resolveDriverSourceUrl(String driverName, String baseName, Boolea
  */
 void downloadDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) {
     String trackingKey = data?.trackingKey?.toString()
+    Integer attempt = data?.attempt as Integer
 
     if (response?.hasError() || response?.status != 200) {
         handleDriverUpdateFailure(trackingKey,
-            "Download HTTP ${response?.status ?: 'error'}: ${response?.errorMessage ?: ''}")
+            "Download HTTP ${response?.status ?: 'error'}: ${response?.errorMessage ?: ''}", attempt)
         return
     }
 
     String sourceCode = response.data?.toString() ?: ''
     if (!sourceCode) {
-        handleDriverUpdateFailure(trackingKey, 'Downloaded source is empty')
+        handleDriverUpdateFailure(trackingKey, 'Downloaded source is empty', attempt)
         return
     }
 
@@ -16278,14 +16322,14 @@ void downloadDriverCallback(hubitat.scheduling.AsyncResponse response, Map data)
         // Mirrors the safety check from installPrebuiltDriver lines 8030-8044.
         java.util.regex.Matcher m = (sourceCode =~ /definition\s*\(\s*name:\s*'([^']+)'/)
         if (!m.find()) {
-            handleDriverUpdateFailure(trackingKey, 'Cannot determine source driver name')
+            handleDriverUpdateFailure(trackingKey, 'Cannot determine source driver name', attempt)
             return
         }
         String sourceDriverName = m.group(1)
         String expectedSourceName = (PREBUILT_DRIVER_SOURCE_NAME_OVERRIDE[baseName] ?: baseName).toString()
         if (sourceDriverName != expectedSourceName) {
             handleDriverUpdateFailure(trackingKey,
-                "Expected source '${expectedSourceName}' but found '${sourceDriverName}'")
+                "Expected source '${expectedSourceName}' but found '${sourceDriverName}'", attempt)
             return
         }
         installedName = "${baseName} v${version}".toString()
@@ -16299,7 +16343,8 @@ void downloadDriverCallback(hubitat.scheduling.AsyncResponse response, Map data)
         baseName: baseName,
         isComponent: isComponent,
         installedName: installedName,
-        sourceCode: sourceCode
+        sourceCode: sourceCode,
+        attempt: attempt
     ]
 
     Map listParams = [
@@ -16319,9 +16364,10 @@ void downloadDriverCallback(hubitat.scheduling.AsyncResponse response, Map data)
  */
 void listExistingDriversCallback(hubitat.scheduling.AsyncResponse response, Map data) {
     String trackingKey = data?.trackingKey?.toString()
+    Integer attempt = data?.attempt as Integer
 
     if (response?.hasError() || response?.status != 200) {
-        handleDriverUpdateFailure(trackingKey, "Driver list HTTP ${response?.status ?: 'error'}")
+        handleDriverUpdateFailure(trackingKey, "Driver list HTTP ${response?.status ?: 'error'}", attempt)
         return
     }
 
@@ -16382,7 +16428,8 @@ void listExistingDriversCallback(hubitat.scheduling.AsyncResponse response, Map 
         isComponent: data.isComponent,
         installedName: installedName,
         isUpdate: isUpdate,
-        existingId: existingId
+        existingId: existingId,
+        attempt: data.attempt
     ]
 
     asynchttpPost('installDriverCallback', params, nextData)
@@ -16398,9 +16445,17 @@ void listExistingDriversCallback(hubitat.scheduling.AsyncResponse response, Map 
 void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) {
     String trackingKey = data?.trackingKey?.toString()
     String installedName = data?.installedName?.toString()
+    Integer attempt = data?.attempt as Integer
     Boolean isUpdate = data?.isUpdate as Boolean
     Boolean success = false
     String failureReason = null
+
+    Map currentProgress = atomicState.driverUpdateProgress as Map
+    Integer currentAttempt = ((currentProgress?.attempts as Map)?.get(trackingKey) ?: 0) as Integer
+    if (attempt != null && currentAttempt != attempt) {
+        logWarn("Ignoring stale driver update callback for ${trackingKey} (attempt ${attempt}, current ${currentAttempt})")
+        return
+    }
 
     if (isUpdate) {
         // /driver/ajax/update returns JSON {status: 'success', ...}
@@ -16483,6 +16538,9 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
         appendLog('info', "Updated: ${data.baseName ?: installedName}")
         logInfo("Driver updated successfully: ${data.baseName ?: installedName} (${prog.completed} of ${prog.total})")
     } else {
+        if (retryDriverUpdate(trackingKey, failureReason, attempt)) {
+            return
+        }
         if (!alreadyCounted) {
             prog.errors = ((prog.errors ?: 0) as Integer) + 1
         }
@@ -16510,7 +16568,10 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
  * @param trackingKey The tracking key of the failed driver (for log context)
  * @param reason      Human-readable failure reason
  */
-private void handleDriverUpdateFailure(String trackingKey, String reason) {
+private void handleDriverUpdateFailure(String trackingKey, String reason, Integer attempt = null) {
+    if (retryDriverUpdate(trackingKey, reason, attempt)) {
+        return
+    }
     appendLog('warn', "Driver update failed for ${trackingKey}: ${reason}")
     logWarn("Driver update failed for ${trackingKey}: ${reason}")
     Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
@@ -16537,6 +16598,60 @@ private void handleDriverUpdateFailure(String trackingKey, String reason) {
     atomicState.driverUpdateProgress = prog
     sendEvent(name: 'driverRebuildStatus', value: 'progress')
     runIn(10, 'processNextDriverUpdate')
+}
+
+/** Marks a queued driver complete when discovery updated it ahead of the queue. */
+private void completeQueuedDriverWithoutInstall(String trackingKey, String baseName) {
+    Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
+    Set<String> processedKeys = new HashSet<String>()
+    if (prog.processedKeys instanceof Collection) {
+        ((Collection) prog.processedKeys).each { processedKeys.add(it.toString()) }
+    }
+    if (!processedKeys.contains(trackingKey)) {
+        processedKeys.add(trackingKey)
+        prog.processedKeys = new ArrayList<String>(processedKeys)
+        prog.completed = ((prog.completed ?: 0) as Integer) + 1
+        appendLog('info', "Already updated during discovery: ${baseName}")
+        logInfo("Driver already current; removed duplicate queue work: ${baseName} (${prog.completed} of ${prog.total})")
+    }
+    prog.current = null
+    prog.currentName = null
+    prog.lastActivityAt = now()
+    atomicState.driverUpdateProgress = prog
+    sendEvent(name: 'driverRebuildStatus', value: 'progress')
+    runIn(10, 'processNextDriverUpdate')
+}
+
+/**
+ * Requeues a failed driver update while attempts remain. Hubitat can return
+ * transient HTTP/JSON failures when the hub is compiling another driver, and
+ * the update endpoint can briefly report a stale driver version. These should
+ * not make Update All finish with drivers left behind.
+ */
+private Boolean retryDriverUpdate(String trackingKey, String reason, Integer attempt) {
+    if (!trackingKey || attempt == null || attempt >= MAX_DRIVER_UPDATE_ATTEMPTS) {
+        return false
+    }
+
+    Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
+    Map attempts = new LinkedHashMap((prog.attempts ?: [:]) as Map)
+    Integer currentAttempt = ((attempts[trackingKey] ?: 0) as Integer)
+    if (currentAttempt != attempt) {
+        return true
+    }
+
+    List<String> queue = (atomicState.driverUpdateQueue ?: []) as List<String>
+    atomicState.driverUpdateQueue = [trackingKey] + new ArrayList<String>(queue)
+    prog.current = null
+    prog.currentName = null
+    prog.lastError = "Retry ${attempt + 1}/${MAX_DRIVER_UPDATE_ATTEMPTS}: ${reason}"
+    prog.lastActivityAt = now()
+    atomicState.driverUpdateProgress = prog
+    appendLog('warn', "Driver update transient failure for ${trackingKey}; retrying (${attempt + 1}/${MAX_DRIVER_UPDATE_ATTEMPTS}): ${reason}")
+    logWarn("Driver update retry queued for ${trackingKey} (${attempt + 1}/${MAX_DRIVER_UPDATE_ATTEMPTS})")
+    sendEvent(name: 'driverRebuildStatus', value: 'retry')
+    runIn(15, 'processNextDriverUpdate')
+    return true
 }
 
 /**
