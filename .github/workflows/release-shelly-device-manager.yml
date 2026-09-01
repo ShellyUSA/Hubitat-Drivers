@@ -167,7 +167,27 @@ jobs:
               git commit -m "chore: sync definition() version to ${VERSION} + refresh SHA-256 [skip ci]"
               echo "Committed definition() version sync and SHA-256 sidecar"
             fi
-            git push
+            # The workflow commits generated version/sidecar files back to
+            # master. Refresh and rebase before pushing so a concurrent
+            # master update does not fail the release permanently.
+            for attempt in 1 2 3 4 5; do
+              git fetch origin master
+              if ! git rebase origin/master; then
+                echo "ERROR: Could not rebase generated release commit onto origin/master"
+                git rebase --abort || true
+                exit 1
+              fi
+              if git push origin HEAD:master; then
+                echo "Generated version and SHA-256 sidecar pushed on attempt ${attempt}"
+                break
+              fi
+              if [ "$attempt" -eq 5 ]; then
+                echo "ERROR: Unable to push generated version and SHA-256 sidecar after 5 attempts"
+                exit 1
+              fi
+              echo "Push raced with another master update; retrying (${attempt}/5)"
+              sleep $((attempt * 2))
+            done
           fi
         env:
           VERSION: ${{ steps.version.outputs.version }}
