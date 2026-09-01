@@ -4,7 +4,7 @@
 #include ShellyUSA.ShellyUSA_Driver_Library
 
 metadata {
-  definition (name: 'Shelly Autoconf Voltmeter', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
+  definition (name: 'Shelly Voltmeter Component', namespace: 'ShellyUSA', author: 'Daniel Winks', singleThreaded: false, importUrl: '') {
     capability 'VoltageMeasurement'
     capability 'Sensor'
     capability 'Refresh'

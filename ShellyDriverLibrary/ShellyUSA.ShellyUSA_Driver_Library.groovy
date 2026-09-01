@@ -5353,7 +5353,7 @@ ChildDeviceWrapper createChildVoltmeter(Integer id) {
   // caused Plus Uni analog peripherals to be created with the wrong
   // capabilities and also used a DNI that did not match the parent-child
   // reconciliation path.
-  String driverName = "Shelly Autoconf Voltmeter"
+  String driverName = "Shelly Voltmeter Component"
   String dni = "${getThisDeviceDNI()}-voltmeter-${id}"
   ChildDeviceWrapper child = getShellyDevice(dni)
   if (child == null) {

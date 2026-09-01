@@ -30,7 +30,7 @@
   "drivers": [
     {
       "id": "a5f0c8de-0e68-4a32-9a7c-5ed2d7e2b6f1",
-      "name": "Shelly Autoconf Voltmeter",
+      "name": "Shelly Voltmeter Component",
       "namespace": "ShellyUSA",
       "location": "https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v2.17.6/ShellyVoltmeterComponent-v2.17.6.groovy",
       "required": true
