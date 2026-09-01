@@ -1054,6 +1054,16 @@ BigDecimal getVoltage(Integer id = 0) {
   if(c != null) { return getSwitchChildById(id).currentValue('voltage', true) as BigDecimal }
   else { return thisDevice().currentValue('voltage', true) as BigDecimal }
 }
+
+@CompileStatic
+private static BigDecimal parseVoltmeterDecimal(Object value) {
+  if(value == null) { return null }
+  String text = value.toString()
+  if(text == null || text == '' || text == 'null') { return null }
+  try { return new BigDecimal(text) }
+  catch(NumberFormatException ignored) { return null }
+}
+
 @CompileStatic
 void setXVoltage(BigDecimal value, Integer id = 0) {
   if(getIntegerDeviceDataValue('voltageId') == id) {sendDeviceEvent([name: 'xvoltage', value: value])}
@@ -3864,11 +3874,11 @@ void processGen2JsonMessageBody(LinkedHashMap<String, Object> json, Integer id =
       LinkedHashMap update = (LinkedHashMap)v
       id = update?.id as Integer
       if(update?.voltage != null && update?.voltage != '') {
-        BigDecimal voltage = update?.voltage as BigDecimal
+        BigDecimal voltage = parseVoltmeterDecimal(update?.voltage)
         if(voltage != null) { setVoltage(voltage, id) }
       }
       if(update?.xvoltage != null && update?.xvoltage != '') {
-        BigDecimal xvoltage = update?.xvoltage as BigDecimal
+        BigDecimal xvoltage = parseVoltmeterDecimal(update?.xvoltage)
         if(xvoltage != null) { setXVoltage(xvoltage, id) }
       }
     }
@@ -4348,10 +4358,12 @@ void parseGen2Message(String raw) {
   else if(query[0] == 'flood.alarm_off')       {setFloodOn(false)}
   else if(query[0] == 'flood.cable_unplugged') {logWarn('Flood sensor reports sensing cable unplugged')}
   else if(query[0].startsWith('voltmeter.') && query[1] == 'voltage' && query.size() == 4) {
-    setVoltage(new BigDecimal(query[2]), id)
+    BigDecimal voltage = parseVoltmeterDecimal(query[2])
+    if(voltage != null) { setVoltage(voltage, id) }
   }
   else if(query[0].startsWith('voltmeter.') && query[1] == 'xvoltage' && query.size() == 4) {
-    setXVoltage(new BigDecimal(query[2]), id)
+    BigDecimal xvoltage = parseVoltmeterDecimal(query[2])
+    if(xvoltage != null) { setXVoltage(xvoltage, id) }
   }
   else if(query[0].startsWith('light.o')) {
     String command = query[0]
