@@ -954,13 +954,15 @@ void appButtonHandler(String buttonName) {
         String mac = buttonName.minus('createBle|')
         Map operations = new LinkedHashMap((state.bleProvisioningOperations ?: [:]) as Map)
         if (operations[mac] != null) { return }
-        operations[mac] = now()
+        Long startedAt = now()
+        operations[mac] = startedAt
         state.bleProvisioningOperations = operations
         logInfo("Creating BLE device for MAC ${mac} via BLE table")
         // Render the spinner before driver installation/device creation, which
         // can take long enough to otherwise leave the Add icon unchanged.
         fireBleTableSSR()
         runInMillis(100, 'runBleDeviceCreate', [data: [mac: mac]])
+        runIn(45, 'expireBleProvisioningOperation', [data: [mac: mac, startedAt: startedAt], overwrite: false])
     }
 
     if (buttonName.startsWith('removeBle|')) {
@@ -13698,8 +13700,30 @@ void runBleDeviceCreate(Map data) {
         Map operations = new LinkedHashMap((state.bleProvisioningOperations ?: [:]) as Map)
         operations.remove(mac)
         state.bleProvisioningOperations = operations
+        logTrace("BLE creation operation cleared for ${mac}")
         fireBleTableSSR()
     }
+}
+
+/**
+ * Clears a BLE creation marker if its scheduled callback was interrupted.
+ * A successfully created child is always considered complete, even when the
+ * callback did not get a chance to run its finally block.
+ */
+void expireBleProvisioningOperation(Map data) {
+    String mac = data?.mac?.toString()
+    Long expectedStartedAt = data?.startedAt != null ? data.startedAt as Long : null
+    if (!mac || expectedStartedAt == null) { return }
+
+    Map operations = new LinkedHashMap((state.bleProvisioningOperations ?: [:]) as Map)
+    Long activeStartedAt = operations[mac] != null ? operations[mac] as Long : null
+    if (activeStartedAt == null || activeStartedAt != expectedStartedAt) { return }
+
+    Boolean childExists = getChildDevice(mac) != null
+    operations.remove(mac)
+    state.bleProvisioningOperations = operations
+    logWarn("BLE creation operation for ${mac} exceeded 45 seconds; clearing stale marker (childExists=${childExists})")
+    fireBleTableSSR()
 }
 
 /**
@@ -14567,7 +14591,7 @@ void fireBleTableSSR() {
  */
 private String renderBleTableMarkup() {
     Map discoveredBle = state.discoveredBleDevices ?: [:]
-    Map bleProvisioningOperations = state.bleProvisioningOperations ?: [:]
+    Map bleProvisioningOperations = new LinkedHashMap((state.bleProvisioningOperations ?: [:]) as Map)
     if (discoveredBle.size() == 0) {
         return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
     }
@@ -14645,7 +14669,10 @@ private String renderBleTableMarkup() {
         Long lastSeen = entry.lastSeen as Long ?: 0L
         String gateway = entry.lastGateway ?: '—'
         Boolean isCreated = entry.isCreated ?: false
-        Boolean isProvisioning = bleProvisioningOperations[mac] != null
+        if (isCreated && bleProvisioningOperations.remove(mac) != null) {
+            logTrace("BLE table cleared completed creation marker for ${mac}")
+        }
+        Boolean isProvisioning = !isCreated && bleProvisioningOperations[mac] != null
 
         // Device name column — names/models derive from BLE advertisements (network-controlled), escape them
         String deviceCell
@@ -14726,6 +14753,9 @@ private String renderBleTableMarkup() {
         str.append("</tr>")
     }
 
+    if (state.bleProvisioningOperations != bleProvisioningOperations) {
+        state.bleProvisioningOperations = bleProvisioningOperations
+    }
     str.append("</tbody></table></div>")
     return str.toString()
 }
