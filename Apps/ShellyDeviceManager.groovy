@@ -82,7 +82,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.70"
+@Field static final String APP_VERSION = "1.0.78"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -802,6 +802,20 @@ void appButtonHandler(String buttonName) {
         cancelBulkDriverUpdate()
     }
 
+    if (buttonName.startsWith('cancelProvisioning|')) {
+        String targetIp = buttonName.minus('cancelProvisioning|')
+        cancelProvisioningOperation(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
+        return
+    }
+
+    if (buttonName.startsWith('cancelBleGateway|')) {
+        String targetIp = buttonName.minus('cancelBleGateway|')
+        cancelBleGatewayOperation(targetIp)
+        runInMillis(500, 'fireConfigTableSSR')
+        return
+    }
+
     // === Device Configuration Table Buttons ===
 
 
@@ -810,10 +824,11 @@ void appButtonHandler(String buttonName) {
         if (isAnyDeviceActionActive()) { return }
         if (!claimUserAction(targetIp, 'create')) { return }
         logInfo("Creating device for ${targetIp} via config table")
-        createShellyDevice(targetIp)
-        // Refresh cache entry after creation; defer SSR so state persists first
-        buildDeviceStatusCacheEntry(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
+        // Driver installation and device creation can take several seconds.
+        // Set the status and return immediately so the spinner is rendered
+        // before the blocking work begins in the scheduled callback.
+        String operationId = beginProvisioningOperation(targetIp, 'Creating device…')
+        runInMillis(100, 'runDeviceCreate', [data: [ip: targetIp, operationId: operationId]])
     }
 
     if (buttonName.startsWith('dniConflict|')) {
@@ -951,7 +966,7 @@ void appButtonHandler(String buttonName) {
         if (isAnyDeviceActionActive()) { return }
         if (!claimUserAction(targetIp, 'bleGateway')) { return }
         logInfo("Toggling BLE gateway for ${targetIp}")
-        List bleGatewaysBefore = (state.bleGateways ?: []) as List
+        List bleGatewaysBefore = getBleGatewayState()
         Boolean wasEnabled = bleGatewaysBefore.contains(targetIp)
         setBleGatewayProgress(targetIp, wasEnabled ? 'Disabling BLE gateway…' : 'Enabling BLE gateway…')
         // Return from the button handler before RPC work begins so Hubitat can
@@ -1013,6 +1028,31 @@ private void createShellyDevice(String ipKey) {
 
     // Monolithic device creation (single-component path)
     createMonolithicDevice(ipKey, deviceInfo, driverName)
+}
+
+/** Runs device creation after the UI has had a chance to render progress. */
+void runDeviceCreate(Map data) {
+    String ipAddress = data?.ip as String
+    String operationId = data?.operationId as String
+    if (!ipAddress) { return }
+    if (!isCurrentProvisioningOperation(ipAddress, operationId)) {
+        logDebug("Ignoring stale/cancelled device creation callback for ${ipAddress}")
+        return
+    }
+    try {
+        createShellyDevice(ipAddress)
+    } catch (Exception ex) {
+        logError("Device creation failed for ${ipAddress}: ${ex.message}")
+        appendLog('error', "Device creation failed for ${ipAddress}: ${ex.message}")
+    } finally {
+        // Successful creation normally hands ownership to a script/webhook
+        // operation. If it did not, clear this create operation now.
+        if (isCurrentProvisioningOperation(ipAddress, operationId)) {
+            finishProvisioningOperation(ipAddress, operationId)
+        }
+        buildDeviceStatusCacheEntry(ipAddress)
+        runInMillis(500, 'fireConfigTableSSR')
+    }
 }
 
 /**
@@ -1092,6 +1132,10 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         appendLog('error', "Failed to create ${deviceLabel}: driver not installed")
         return
     }
+    // The discovery cache can contain a driver name from an older app version.
+    // ensureDriverInstalled installs the current version, so use that exact
+    // version for addChildDevice rather than the stale cached name.
+    driverName = versionedDriverNameForCurrentApp(driverName)
 
     try {
         def childDevice = addChildDevice('ShellyDeviceManager', driverName, dni, deviceProps)
@@ -1164,6 +1208,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         appendLog('error', "Failed to create ${baseLabel}: parent driver not installed")
         return
     }
+    parentDriverName = versionedDriverNameForCurrentApp(parentDriverName)
 
     // Step 3: Pre-compute component lists for the data map so the driver's
     // installed() -> reconcileChildDevices() has them on the first call
@@ -1394,6 +1439,7 @@ private String loadConfigTableScript() {
  * @return HTML table markup string
  */
 private String renderDeviceConfigTableMarkup() {
+    clearCompletedProvisioningStateForRender()
     List<Map> deviceList = buildDeviceList()
     if (deviceList.size() == 0) {
         return "<p>No devices discovered yet. Discovery is running...</p>"
@@ -1427,6 +1473,56 @@ private String renderDeviceConfigTableMarkup() {
 
     str.append("</tbody></table></div>")
     return str.toString()
+}
+
+/**
+ * Recovers UI state when the final provisioning callback was lost after the
+ * cache already showed every required script/webhook as complete. This is
+ * intentionally render-time and side-effect-light: it clears only the stale
+ * token/status/lock and never performs device RPCs.
+ */
+private void clearCompletedProvisioningStateForRender() {
+    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+    Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
+    Map pendingScripts = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
+    Map pendingCompletion = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
+    Map lock = new LinkedHashMap((atomicState.userActionLock ?: [:]) as Map)
+    Boolean changed = false
+
+    cache.each { Object ipKey, Object value ->
+        String ip = ipKey.toString()
+        Map entry = value as Map
+        if (!entry?.provisioningStatus || entry.isCreated != true) { return }
+
+        Integer requiredScripts = entry.requiredScriptCount as Integer
+        Integer installedScripts = entry.installedScriptCount as Integer
+        Integer activeScripts = entry.activeScriptCount as Integer
+        Integer requiredWebhooks = entry.requiredWebhookCount as Integer
+        Integer createdWebhooks = entry.createdWebhookCount as Integer
+        Integer enabledWebhooks = entry.enabledWebhookCount as Integer
+        Boolean scriptsComplete = requiredScripts == null ||
+            (installedScripts != null && activeScripts != null && installedScripts >= requiredScripts && activeScripts >= requiredScripts)
+        Boolean webhooksComplete = requiredWebhooks == null ||
+            (createdWebhooks != null && enabledWebhooks != null && createdWebhooks >= requiredWebhooks && enabledWebhooks >= requiredWebhooks)
+        if (!scriptsComplete || !webhooksComplete) { return }
+
+        entry = new LinkedHashMap(entry)
+        entry.remove('provisioningStatus')
+        entry.remove('provisioningStartedAt')
+        cache[ip] = entry
+        operations.remove(ip)
+        pendingScripts.remove(ip)
+        pendingCompletion.remove(ip)
+        if (lock.ip?.toString() == ip) { lock = [:] }
+        changed = true
+    }
+
+    if (!changed) { return }
+    atomicState.deviceStatusCache = cache
+    atomicState.provisioningOperations = operations
+    atomicState.scriptVerificationPending = pendingScripts
+    atomicState.provisioningCompletionPending = pendingCompletion
+    atomicState.userActionLock = lock
 }
 
 /**
@@ -1604,6 +1700,11 @@ private void setProvisioningStatus(String ip, String status) {
     sendEvent(name: 'configTable', value: 'provisioning')
 }
 
+/** Returns true when an asynchronous provisioning operation owns this IP. */
+private Boolean hasProvisioningOperation(String ip) {
+    return ip && (atomicState.provisioningOperations ?: [:])[ip] != null
+}
+
 /** Returns true when the current app session has an active user action. */
 private Boolean isAnyDeviceActionActive() {
     return ((atomicState.userActionLock ?: [:]) as Map).values().any { Object value -> value }
@@ -1650,6 +1751,87 @@ private Boolean isCurrentProvisioningOperation(String ip, String operationId) {
     return ip && operationId && (atomicState.provisioningOperations ?: [:])[ip]?.toString() == operationId
 }
 
+/**
+ * Cancels a provisioning operation and invalidates every delayed callback that
+ * carries its token. Hubitat cannot reliably remove one serialized callback,
+ * so callbacks also check the operation token before doing network work.
+ */
+private void cancelProvisioningOperation(String ip) {
+    if (!ip) { return }
+    String operationId = (atomicState.provisioningOperations ?: [:])[ip]?.toString()
+
+    Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
+    operations.remove(ip)
+    atomicState.provisioningOperations = operations
+
+    ['scriptVerificationPending', 'provisioningCompletionPending'].each { String key ->
+        Map pending = new LinkedHashMap((atomicState[key] ?: [:]) as Map)
+        if (!operationId || pending[ip]?.toString() == operationId) { pending.remove(ip) }
+        atomicState[key] = pending
+    }
+
+    // Remove any script source retained for a chunk callback that has not fired.
+    Map uploadKeys = new LinkedHashMap((atomicState.provisioningUploadKeys ?: [:]) as Map)
+    List keys = (uploadKeys.remove(ip) ?: []) as List
+    keys.each { Object key -> atomicState.remove(key.toString()) }
+    atomicState.provisioningUploadKeys = uploadKeys
+
+    if (operationId || ((atomicState.userActionLock ?: [:]) as Map).values().any { it?.toString() == ip }) {
+        logWarn("Provisioning cancelled for ${ip}")
+        appendLog('warn', "Provisioning cancelled for ${ip}")
+    } else {
+        logWarn("Cleared stale provisioning indicator for ${ip}")
+        appendLog('warn', "Cleared stale provisioning indicator for ${ip}")
+    }
+    setProvisioningStatus(ip, null)
+    releaseUserAction(ip)
+}
+
+/** True when a scheduled script callback still belongs to the active install. */
+private Boolean isCurrentScriptCallback(Map data) {
+    String ip = data?.ipAddress as String
+    String operationId = (data?.provisioningOperationId ?: data?.operationId) as String
+    return isCurrentProvisioningOperation(ip, operationId)
+}
+
+/** Removes a completed/failed script source from the cancellation cleanup index. */
+private void forgetProvisioningUploadKey(String ip, String key) {
+    if (!ip || !key) { return }
+    Map uploadKeys = new LinkedHashMap((atomicState.provisioningUploadKeys ?: [:]) as Map)
+    List<String> keys = ((uploadKeys[ip] ?: []) as List<String>).findAll { String item -> item != key }
+    if (keys) { uploadKeys[ip] = keys } else { uploadKeys.remove(ip) }
+    atomicState.provisioningUploadKeys = uploadKeys
+}
+
+/** Cancels a BLE gateway script upload and removes its retained source. */
+private void cancelBleGatewayOperation(String ip) {
+    if (!ip) { return }
+    Map uploads = new LinkedHashMap((atomicState.bleGatewayUploadKeys ?: [:]) as Map)
+    List<String> keys = (uploads.remove(ip) ?: []) as List<String>
+    keys.each { String key -> atomicState.remove(key) }
+    atomicState.bleGatewayUploadKeys = uploads
+    bleLogWarn("BLE gateway setup cancelled on ${ip}")
+    appendLog('warn', "BLE gateway setup cancelled on ${ip}")
+    clearBleGatewayProgress(ip)
+}
+
+private void rememberBleGatewayUploadKey(String ip, String key) {
+    if (!ip || !key) { return }
+    Map uploads = new LinkedHashMap((atomicState.bleGatewayUploadKeys ?: [:]) as Map)
+    List<String> keys = ((uploads[ip] ?: []) as List<String>)
+    if (!keys.contains(key)) { keys.add(key) }
+    uploads[ip] = keys
+    atomicState.bleGatewayUploadKeys = uploads
+}
+
+private void forgetBleGatewayUploadKey(String ip, String key) {
+    if (!ip || !key) { return }
+    Map uploads = new LinkedHashMap((atomicState.bleGatewayUploadKeys ?: [:]) as Map)
+    List<String> keys = ((uploads[ip] ?: []) as List<String>).findAll { String item -> item != key }
+    if (keys) { uploads[ip] = keys } else { uploads.remove(ip) }
+    atomicState.bleGatewayUploadKeys = uploads
+}
+
 /** Clears progress only when the active operation has verified completion. */
 private void finishProvisioningOperation(String ip, String operationId) {
     if (!isCurrentProvisioningOperation(ip, operationId)) { return }
@@ -1687,7 +1869,9 @@ private String buildDeviceRow(Map entry) {
     String provisioningStatus = entry.provisioningStatus?.toString()
     if (provisioningStatus) {
         String progressIcon = "<iconify-icon icon='material-symbols:progress-activity' style='font-size:20px;animation:shellyProvisioningSpin 1s linear infinite'></iconify-icon>"
-        str.append("<td title='${escapeHtml(provisioningStatus)}'>${progressIcon}</td>")
+        String cancelIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:16px'></iconify-icon>"
+        String cancelBtn = buttonLink("cancelProvisioning|${ip}", cancelIcon, '#F44336', '16px')
+        str.append("<td title='${escapeHtml(provisioningStatus)}'>${progressIcon} ${cancelBtn}</td>")
     } else if (isAnyDeviceActionActive()) {
         String actionIcon = isCreated ? 'material-symbols:delete-outline' : 'material-symbols:add-circle-outline-rounded'
         str.append("<td>${disabledActionIcon(actionIcon)}</td>")
@@ -2264,15 +2448,21 @@ void runDeviceReinitialize(Map data) {
         logError("Reinit failed: no device found for ${ipAddress}")
         releaseUserAction(ipAddress)
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: device unavailable')
+        buildDeviceStatusCacheEntry(ipAddress)
+        runInMillis(500, 'fireConfigTableSSR')
         return
     }
     try {
         reinitializeDevice(ipAddress)
+        setProvisioningStatus(ipAddress, null)
+        releaseUserAction(ipAddress)
+        buildDeviceStatusCacheEntry(ipAddress)
+        runInMillis(500, 'fireConfigTableSSR')
     } catch (Exception ex) {
         logError("Reinit failed for ${ipAddress}: ${ex.message}")
         appendLog('error', "Reinit failed for ${ipAddress}: ${ex.message}")
-        releaseUserAction(ipAddress)
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: reinitialization failed')
+        releaseUserAction(ipAddress)
         buildDeviceStatusCacheEntry(ipAddress)
         runInMillis(500, 'fireConfigTableSSR')
     }
@@ -2473,6 +2663,7 @@ private void switchDeviceDriver(def childDevice, String ipAddress, String newDri
         appendLog('error', "Driver switch failed: ${newBaseName} not installed")
         return
     }
+    newDriverVersioned = versionedDriverNameForCurrentApp(newDriverVersioned)
 
     // Install component drivers for parent-child devices BEFORE creating the device,
     // so the driver's installed() can create children immediately.
@@ -2660,8 +2851,17 @@ void installNextScript(Map data) {
     List<Map> installedScripts = data.installedScripts as List<Map>
     String deviceDisplayName = data.deviceDisplayName as String
 
+    if (!isCurrentScriptCallback(data)) {
+        logDebug("Ignoring stale/cancelled script-install callback for ${ipAddress}")
+        return
+    }
+
     // Download latest script code from GitHub
     String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
+    if (!isCurrentScriptCallback(data)) {
+        logDebug("Ignoring cancelled script install after download for ${ipAddress}")
+        return
+    }
     if (!scriptCode) {
         logError("Failed to download ${scriptFile} from GitHub")
         appendLog('error', "Failed to download ${scriptFile}")
@@ -2704,6 +2904,11 @@ void installNextScript(Map data) {
         // Persist script code in atomicState so scheduled chunks can retrieve it.
         String codeStateKey = "scriptUpload_${scriptId}_${now()}".toString()
         atomicState[codeStateKey] = scriptCode
+        Map uploadKeys = new LinkedHashMap((atomicState.provisioningUploadKeys ?: [:]) as Map)
+        List<String> ipKeys = ((uploadKeys[ipAddress] ?: []) as List<String>)
+        if (!ipKeys.contains(codeStateKey)) { ipKeys.add(codeStateKey) }
+        uploadKeys[ipAddress] = ipKeys
+        atomicState.provisioningUploadKeys = uploadKeys
 
         // Build lightweight completionData — script code remains in atomicState.
         Map lightContext = [
@@ -2754,6 +2959,10 @@ void installNextScript(Map data) {
  * @param data Map containing queue state plus currentScriptId, currentScriptName, isUpdate
  */
     void scriptInstallStepComplete(Map data) {
+        if (!isCurrentScriptCallback(data)) {
+            logDebug("Ignoring stale/cancelled script completion callback")
+            return
+        }
         Integer scriptId = data.currentScriptId as Integer
         String scriptName = data.currentScriptName as String
         Boolean isUpdate = data.isUpdate as Boolean
@@ -2834,6 +3043,10 @@ void installNextScript(Map data) {
  * @param data Map containing queue state plus error message
  */
 void scriptInstallStepError(Map data) {
+    if (!isCurrentScriptCallback(data)) {
+        logDebug("Ignoring stale/cancelled script error callback")
+        return
+    }
     String scriptName = data.currentScriptName as String
     Boolean isUpdate = data.isUpdate as Boolean
     String error = data.error as String
@@ -2855,6 +3068,10 @@ void scriptInstallStepError(Map data) {
  * @param data Map containing queue state from the failed upload attempt
  */
 void retryScriptUpload(Map data) {
+    if (!isCurrentScriptCallback(data)) {
+        logDebug("Ignoring stale/cancelled script retry callback")
+        return
+    }
     Integer scriptId = data.currentScriptId as Integer
     String scriptName = data.currentScriptName as String
     Integer queueIndex = data.queueIndex as Integer
@@ -2875,6 +3092,10 @@ void retryScriptUpload(Map data) {
 
     // Re-download script code from GitHub
     String scriptCode = downloadFile("${baseUrl}/${scriptFile}")
+    if (!isCurrentScriptCallback(data)) {
+        logDebug("Ignoring cancelled script retry after download for ${ipAddress}")
+        return
+    }
     if (!scriptCode) {
         logError("Retry failed: cannot re-download ${scriptFile}")
         appendLog('error', "Failed to retry ${scriptName}: download failed")
@@ -9780,6 +10001,13 @@ private Boolean ensureDriverInstalled(String driverName, Map deviceInfo) {
     return true
 }
 
+/** Returns a generated driver name using the app version currently being run. */
+private String versionedDriverNameForCurrentApp(String driverName) {
+    if (!driverName) { return driverName }
+    String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
+    return "${baseName} v${getAppVersion()}"
+}
+
 // ═══════════════════════════════════════════════════════════════
 // ║  Component Driver Installation (Parent-Child Architecture)  ║
 // ═══════════════════════════════════════════════════════════════
@@ -10974,6 +11202,19 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
 void uploadScriptChunk(Map data) {
     Integer scriptId = data.scriptId as Integer
     String codeStateKey = data.codeStateKey as String
+    Map completionData = (data.completionData ?: [:]) as Map
+    // BLE gateway setup uses this shared uploader but is not a device-provisioning
+    // operation, so it has no provisioning token to validate. Device installs still
+    // require the token and remain cancellable.
+    Boolean isBleGatewayUpload = data?.completionCallback?.toString() == 'enableBleGatewayComplete'
+    if (isBleGatewayUpload && !((atomicState.bleGatewayUploadKeys ?: [:])[completionData.ip as String] as List)?.contains(codeStateKey)) {
+        atomicState.remove(codeStateKey)
+        return
+    }
+    if (!isBleGatewayUpload && !isCurrentScriptCallback(completionData)) {
+        atomicState.remove(codeStateKey)
+        return
+    }
     String code = atomicState[codeStateKey] as String
     if (!code) {
         logError("uploadScriptChunk: script code not found in state key '${codeStateKey}'")
@@ -11000,7 +11241,6 @@ void uploadScriptChunk(Map data) {
     Integer chunkSize = 256
     String completionCallback = data.completionCallback as String
     String errorCallback = data.errorCallback as String
-    Map completionData = (data.completionData ?: [:]) as Map
 
     Integer total = code.length()
     Boolean first = (offset == 0)
@@ -11033,6 +11273,8 @@ void uploadScriptChunk(Map data) {
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${e.message ?: e.toString()}"
         logError(errMsg)
         atomicState.remove(codeStateKey)
+        forgetProvisioningUploadKey(completionData.ipAddress as String, codeStateKey)
+        forgetBleGatewayUploadKey(completionData.ip as String, codeStateKey)
         if (errorCallback) {
             "${errorCallback}"(completionData + [error: errMsg])
         }
@@ -11043,6 +11285,8 @@ void uploadScriptChunk(Map data) {
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${result.error}"
         logError(errMsg)
         atomicState.remove(codeStateKey)
+        forgetProvisioningUploadKey(completionData.ipAddress as String, codeStateKey)
+        forgetBleGatewayUploadKey(completionData.ip as String, codeStateKey)
         if (errorCallback) {
             "${errorCallback}"(completionData + [error: errMsg])
         }
@@ -11069,6 +11313,8 @@ void uploadScriptChunk(Map data) {
     } else {
         logDebug("Uploaded script id=${scriptId} in ${nextChunkNum} chunks (${total} bytes)")
         atomicState.remove(codeStateKey)
+        forgetProvisioningUploadKey(completionData.ipAddress as String, codeStateKey)
+        forgetBleGatewayUploadKey(completionData.ip as String, codeStateKey)
         if (completionCallback) {
             "${completionCallback}"(completionData)
         }
@@ -13356,11 +13602,10 @@ private void flushBleDiscoveryVolatile() {
  * @param ip The IP address of the WiFi gateway device
  */
 private void toggleBleGateway(String ip) {
-    List bleGateways = (state.bleGateways ?: []) as List
+    List bleGateways = getBleGatewayState()
     if (bleGateways.contains(ip)) {
         disableBleGateway(ip)
-        bleGateways.remove(ip)
-        state.bleGateways = bleGateways
+        saveBleGatewayState(ip, false)
         bleLogInfo("BLE gateway disabled on ${ip}")
         // HubitatBLEHelper and managed scripts can coexist. If a managed
         // script was previously stopped (for example after an out-of-memory
@@ -13426,9 +13671,11 @@ private void enableBleGateway(String ip) {
     String uri = "http://${ip}/rpc"
     Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
-    // Step 1: Enable Bluetooth with observer
+    // Step 1: Enable Bluetooth and BLE RPC, but leave Shelly's cloud observer off.
+    // The HubitatBLEHelper owns the scanner; enabling the observer at the same time
+    // can interfere with script scan results, particularly on newer firmware.
     bleLogInfo("Enabling Bluetooth on ${ip}...")
-    LinkedHashMap bleCmd = bleSetConfigCommand(true, true, true)
+    LinkedHashMap bleCmd = bleSetConfigCommand(true, true, false)
     if (hasAuth) { bleCmd.auth = getAuth() }
     LinkedHashMap bleResult = postCommandSync(bleCmd, uri)
     if (bleResult?.error) {
@@ -13479,6 +13726,7 @@ private void enableBleGateway(String ip) {
     // Persist code in atomicState so scheduled chunks can retrieve it.
     String codeStateKey = "scriptUpload_${scriptId}_${now()}".toString()
     atomicState[codeStateKey] = scriptCode
+    rememberBleGatewayUploadKey(ip, codeStateKey)
 
     uploadScriptChunk([
         scriptId: scriptId,
@@ -13530,10 +13778,9 @@ void enableBleGatewayComplete(Map data) {
     writeHubitatIpToKVS(ip)
 
     // Update gateway list (was previously done in toggleBleGateway)
-    List bleGateways = (state.bleGateways ?: []) as List
+    List bleGateways = getBleGatewayState()
     if (!bleGateways.contains(ip)) {
-        bleGateways.add(ip)
-        state.bleGateways = bleGateways
+        saveBleGatewayState(ip, true)
     }
 
     bleLogInfo("BLE gateway enabled on ${ip}")
@@ -13605,8 +13852,42 @@ private void disableBleGateway(String ip) {
  * @return true if BLE gateway is enabled
  */
 private Boolean isBleGatewayEnabled(String ip) {
-    List bleGateways = (state.bleGateways ?: []) as List
-    return bleGateways.contains(ip)
+    return getBleGatewayState().contains(ip)
+}
+
+/** Returns the persisted BLE gateway membership used by the UI and actions. */
+private List<String> getBleGatewayState() {
+    // Hubitat can persist state and atomicState on different schedules. Read
+    // both stores so an older empty atomicState value cannot hide a valid
+    // gateway entry that was already written to state (or vice versa).
+    List<String> gateways = []
+    [state.bleGateways, atomicState.bleGateways].each { persisted ->
+        ((persisted ?: []) as List).each { value ->
+            String gatewayIp = value?.toString()
+            if (gatewayIp && !gateways.contains(gatewayIp)) {
+                gateways << gatewayIp
+            }
+        }
+    }
+    return gateways
+}
+
+/**
+ * Persists BLE gateway membership using a new list instance. Hubitat state
+ * persistence can miss changes made by mutating the list returned from state
+ * in place, which leaves the configuration table showing a stale blue icon.
+ */
+private void saveBleGatewayState(String ip, Boolean enabled) {
+    if (!ip) { return }
+    List updated = getBleGatewayState()
+    if (enabled) {
+        if (!updated.contains(ip)) { updated << ip }
+    } else {
+        updated = updated.findAll { it != ip }
+    }
+    state.bleGateways = new ArrayList(updated)
+    atomicState.bleGateways = new ArrayList(updated)
+    bleLogDebug("BLE gateway state persisted for ${ip}: ${enabled ? 'enabled' : 'disabled'}")
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -13822,7 +14103,9 @@ private String renderBleGatewayCell(String ip, String gen, Boolean isBattery) {
     String progressStatus = (atomicState.bleGatewayProgress ?: [:])[ip]?.toString()
     if (progressStatus) {
         String progressIcon = "<iconify-icon icon='material-symbols:progress-activity' style='font-size:20px;animation:shellyProvisioningSpin 1s linear infinite'></iconify-icon>"
-        return "<span title='${escapeHtml(progressStatus)}'>${progressIcon}</span>"
+        String cancelIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:16px'></iconify-icon>"
+        String cancelBtn = buttonLink("cancelBleGateway|${ip}".toString(), cancelIcon, '#F44336', '16px')
+        return "<span title='${escapeHtml(progressStatus)}'>${progressIcon} ${cancelBtn}</span>"
     }
     if (isAnyDeviceActionActive()) {
         return disabledActionIcon('material-symbols:bluetooth-disabled')
