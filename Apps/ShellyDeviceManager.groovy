@@ -17,6 +17,20 @@
 @Field static final Integer MAX_COMMAND_RETRIES = 5
 @Field static final Integer MAX_DRIVER_UPDATE_ATTEMPTS = 3
 @Field static final Long OPPORTUNISTIC_DRAIN_WINDOW_MS = 10000L
+// Prevent duplicate callbacks from performing overlapping multi-RPC discovery
+// for the same IP. The persistent queue coordinates callbacks across app
+// executions; this lock closes the small read/modify/write race between them.
+@Field static ConcurrentHashMap<String, Boolean> capabilityFetchLocks =
+    new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+// Hubitat cannot safely compile/update the same device type concurrently when
+// multiple discovered devices share one generated driver.
+@Field static final Object DRIVER_INSTALL_LOCK = new Object()
+
+// Persistent discovery-cache controls. The cache metadata is kept alongside the
+// existing per-IP discovery record so raw RPC responses are not duplicated in a
+// second state map.
+@Field static final Long DEVICE_CAPABILITY_CACHE_TTL_MS = 1800000L // 30 minutes
+@Field static final Integer DEVICE_CAPABILITY_CACHE_VERSION = 1
 
 // ─── BLE Performance Caches ────────────────────────────────────────────────────
 // In-memory caches that eliminate per-advertisement state writes.
@@ -83,7 +97,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.81"
+@Field static final String APP_VERSION = "1.0.82"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -995,11 +1009,14 @@ private void createShellyDevice(String ipKey) {
         return
     }
 
-    // Get device status — auto-fetch if not already available
+    // Full capability discovery is an installation concern. A lightweight
+    // discovery record may contain identity data only, and an old capability
+    // record must be refreshed when its TTL has expired.
     Map deviceStatus = deviceInfo.deviceStatus
-    if (!deviceStatus || !deviceInfo.generatedDriverName) {
-        logInfo("Device info/driver not yet available for ${ipKey} — fetching now...")
+    if (!hasFreshCapabilityCache(deviceInfo)) {
+        logInfo("Capability data not fresh for ${ipKey} — fetching now...")
         appendLog('info', "Fetching device info for ${ipKey}...")
+        invalidateCapabilityCache(ipKey, 'device installation refresh')
         fetchAndStoreDeviceInfo(ipKey)
 
         // Re-read state after fetch
@@ -1152,7 +1169,9 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         storeDeviceConfig(dni, deviceInfo, driverName)
 
         // Install scripts and webhooks on the Shelly device
-        reinitializeDevice(ipKey)
+        // The create path already performed the full capability fetch above;
+        // reuse it while provisioning instead of querying the device again.
+        reinitializeDevice(ipKey, false)
 
         logInfo("════════════════════════════════════════════════════════════")
         logInfo("  ✓ DEVICE CREATION COMPLETE: ${deviceLabel}")
@@ -1291,7 +1310,9 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         storeDeviceConfig(parentDni, deviceInfo, parentDriverName, true, [])
 
         // Install scripts and webhooks on the Shelly device
-        reinitializeDevice(ipKey)
+        // The create path already performed the full capability fetch above;
+        // reuse it while provisioning instead of querying the device again.
+        reinitializeDevice(ipKey, false)
 
         logInfo("════════════════════════════════════════════════════════════")
         logInfo("  ✓ DEVICE CREATION COMPLETE: ${baseLabel}")
@@ -2469,7 +2490,7 @@ void runDeviceReinitialize(Map data) {
     }
 }
 
-void reinitializeDevice(String ipAddress) {
+void reinitializeDevice(String ipAddress, Boolean refreshCapabilities = true) {
     // Guard against recursive reinit triggered by a driver switch below.
     // addChildDevice fires updated() which may call back into this method.
     if (atomicState.driverSwitchInProgress == true) {
@@ -2487,11 +2508,24 @@ void reinitializeDevice(String ipAddress) {
     logInfo("Reinitializing device at ${ipAddress}")
     appendLog('info', "Reinitializing device at ${ipAddress}...")
 
+    // An explicit reinit must rediscover the physical device. Creation passes
+    // false because it has already completed the full capability fetch and can
+    // reuse that result for provisioning.
+    if (refreshCapabilities) {
+        invalidateCapabilityCache(ipAddress, 'user reinit')
+    }
+
     // Step 1: Update parent and component drivers from GitHub
     updateDriversForDevice(childDevice)
 
-    // Step 2: Re-query device info and status from physical device
-    fetchAndStoreDeviceInfo(ipAddress)
+    // Step 2: Fetch device info/status only when the caller requested a refresh
+    // or the install path does not already have a fresh capability cache.
+    Map cachedDevice = atomicState.discoveredShellys?.get(ipAddress) as Map
+    if (refreshCapabilities || !hasFreshCapabilityCache(cachedDevice)) {
+        fetchAndStoreDeviceInfo(ipAddress)
+    } else {
+        logDebug("reinitializeDevice: reusing fresh capability cache for ${ipAddress}")
+    }
 
     // Ensure UI component drivers are installed and data values set.
     // Check both deviceStatus (fresh network data) AND device data values (authoritative
@@ -5607,16 +5641,23 @@ List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = tr
         return requiredActions
     }
 
-    // Get supported webhook events — try live query first, fall back to stored config
-    List<String> supportedEvents = deviceIsReachable ? listSupportedWebhookEvents(ip) : null
+    Map discoveredShellys = atomicState.discoveredShellys ?: [:]
+    Map discoveryData = discoveredShellys[ip] as Map
+    Boolean hasCachedCapabilities = hasFreshCapabilityCache(discoveryData)
+
+    // A completed capability fetch already contains the event list and component
+    // status needed to build actions. Reuse it so status-table refreshes and
+    // provisioning do not repeat the same device RPCs. Live queries remain the
+    // fallback for legacy/incomplete records and explicit recovery cases.
+    List<String> supportedEvents = hasCachedCapabilities ?
+        (discoveryData.supportedWebhookEvents as List<String>) :
+        (deviceIsReachable ? listSupportedWebhookEvents(ip) : null)
     String dni = device.deviceNetworkId
     Map deviceConfigs = new LinkedHashMap((atomicState.deviceConfigs ?: [:]) as Map)
     Map config = deviceConfigs[dni] as Map
 
     // If stored config is missing, try to populate it from discovery data
     if (!config) {
-        Map discoveredShellys = atomicState.discoveredShellys ?: [:]
-        Map discoveryData = discoveredShellys[ip]
         if (discoveryData?.deviceStatus) {
             storeDeviceConfig(dni, discoveryData, device.typeName ?: '')
     deviceConfigs = atomicState.deviceConfigs ?: [:]
@@ -5630,7 +5671,8 @@ List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = tr
         logDebug("Using stored supported webhook events for ${device.displayName}: ${supportedEvents}")
     }
 
-    Map deviceStatus = deviceIsReachable ? queryDeviceStatus(ip) : null
+    Map deviceStatus = hasCachedCapabilities ? (discoveryData.deviceStatus as Map) :
+        (deviceIsReachable ? queryDeviceStatus(ip) : null)
     if (!deviceStatus) {
         // Fall back to stored component types for sleepy devices
         if (config?.componentTypes) {
@@ -5641,8 +5683,6 @@ List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = tr
             }
         } else {
             // Last resort: check discovery data directly
-            Map discoveredShellys = atomicState.discoveredShellys ?: [:]
-            Map discoveryData = discoveredShellys[ip]
             if (discoveryData?.deviceStatus) {
                 deviceStatus = discoveryData.deviceStatus as Map
                 logDebug("Using discovery data status for ${device.displayName}")
@@ -6148,6 +6188,12 @@ void initialize() {
     if (!atomicState.recentLogs) { atomicState.recentLogs = [] }
     if (atomicState.discoveryRunning == null) { atomicState.discoveryRunning = false }
 
+    // Capability discovery is no longer scheduled by ordinary discovery. Clear
+    // callbacks queued by older app versions so an update cannot unexpectedly
+    // resume a full multi-RPC fetch while the page is loading.
+    unschedule('processAsyncDeviceInfoFetch')
+    atomicState.remove('asyncFetchQueue')
+
     // IP subnet scan state reset
     atomicState.ipScanRunning = false
     atomicState.remove('ipScanCurrentOctet')
@@ -6585,7 +6631,9 @@ void processMdnsDiscovery() {
                 if (existingEntry) {
                     for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice', 'deviceInfo',
                                          'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
-                                         'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents']) {
+                                         'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents',
+                                         'capabilityCacheVersion', 'capabilityFetchedAt', 'capabilityFingerprint',
+                                         'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter']) {
                         if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
                             deviceEntry[field] = existingEntry[field]
                         }
@@ -6595,6 +6643,7 @@ void processMdnsDiscovery() {
                         deviceEntry.gen = existingEntry.gen
                     }
                 }
+                invalidateIfCapabilityIdentityChanged(existingEntry, deviceEntry)
 
                 Boolean likelyBattery = isLikelyBatteryDiscoveryDevice(gen, deviceApp, deviceName)
                 if (likelyBattery) {
@@ -6609,13 +6658,10 @@ void processMdnsDiscovery() {
                 scanResults[key] = [scannedAt: now(), result: 'shelly']
                 atomicState.ipScanResults = scanResults
 
-                // Schedule async device info fetch for new or still-unidentified devices.
-                // Re-queuing unidentified devices handles sleepy battery devices that were
-                // unreachable on a previous attempt but may now be awake.
-                Boolean needsIdentification = !isNewToState && (!existingEntry?.model || existingEntry?.model == 'Unknown')
-                if ((isNewToState || needsIdentification) && !likelyBattery) {
-                    scheduleAsyncDeviceInfoFetch(key)
-                }
+                // Discovery is intentionally lightweight. The table only needs the
+                // identity fields supplied by mDNS; full RPC capability discovery,
+                // webhook enumeration, driver selection, and driver installation are
+                // deferred until the user selects Create.
             }
             Integer afterCount = atomicState.discoveredShellys.size()
             if (afterCount > beforeCount) {
@@ -6772,7 +6818,9 @@ void processShellyHelperDiscovery() {
                 for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice', 'deviceInfo',
                                      'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
                                      'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents',
-                                     'deviceApp', 'ver']) {
+                                     'deviceApp', 'ver', 'capabilityCacheVersion', 'capabilityFetchedAt',
+                                     'capabilityFingerprint', 'capabilityFetchState', 'capabilityFetchError',
+                                     'capabilityRetryAfter']) {
                     if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
                         deviceEntry[field] = existingEntry[field]
                     }
@@ -6788,6 +6836,7 @@ void processShellyHelperDiscovery() {
                 if (deviceEntry.fwUpdateAvailable == null && existingEntry.fwUpdateAvailable != null) {
                     deviceEntry.fwUpdateAvailable = existingEntry.fwUpdateAvailable
                 }
+                invalidateIfCapabilityIdentityChanged(existingEntry, deviceEntry)
             }
 
             Boolean likelyBattery = isLikelyBatteryDiscoveryDevice(gen, '', deviceName)
@@ -6802,15 +6851,9 @@ void processShellyHelperDiscovery() {
             scanResults[key] = [scannedAt: now(), result: 'shelly']
             atomicState.ipScanResults = scanResults
 
-            // Schedule async device info fetch for new or unidentified devices,
-            // but skip known-offline devices to avoid wasting HTTP requests.
-            // Note: offline devices without a model won't get probed until they come back online
-            // and are re-discovered via mDNS or a subsequent ShellyHelper poll with online=true.
-            Boolean isOffline = (deviceEntry.shellyHelperOnline == false)
-            Boolean needsIdentification = !isNewToState && (!existingEntry?.model || existingEntry?.model == 'Unknown')
-            if ((isNewToState || needsIdentification) && !isOffline && !likelyBattery) {
-                scheduleAsyncDeviceInfoFetch(key)
-            }
+            // Do not schedule capability discovery here. ShellyHelper is used as
+            // a lightweight identity/status source; expensive RPC discovery starts
+            // only after the user selects Create for this device.
         }
 
         Integer afterCount = (atomicState.discoveredShellys as Map)?.size() ?: 0
@@ -7325,7 +7368,9 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
     if (existingEntry) {
         for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice', 'deviceInfo',
                              'deviceConfig', 'deviceStatus', 'gen1Settings', 'gen1Status',
-                             'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents']) {
+                             'auth_en', 'fw_id', 'profile', 'supportedWebhookEvents',
+                             'capabilityCacheVersion', 'capabilityFetchedAt', 'capabilityFingerprint',
+                             'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter']) {
             if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
                 deviceEntry[field] = existingEntry[field]
             }
@@ -7334,6 +7379,7 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
         if (!deviceEntry.gen && existingEntry.gen) {
             deviceEntry.gen = existingEntry.gen
         }
+        invalidateIfCapabilityIdentityChanged(existingEntry, deviceEntry)
     }
 
     Boolean likelyBattery = isLikelyBatteryDiscoveryDevice(deviceEntry.gen?.toString() ?: '',
@@ -7344,11 +7390,8 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
     }
     atomicState.discoveredShellys[ip] = deviceEntry
 
-    // Schedule async device info fetch for new or still-unidentified devices
-    Boolean needsIdentification = !isNew && (!existingEntry?.model || existingEntry?.model == 'Unknown')
-    if ((isNew || needsIdentification) && !likelyBattery) {
-        scheduleAsyncDeviceInfoFetch(ip)
-    }
+    // Manual discovery is also identity-only. Full capability discovery is
+    // deliberately deferred until the user selects Create in the table.
 
     // Update the UI
     sendFoundShellyEvents()
@@ -8082,8 +8125,19 @@ private String getDeviceGen(def childDevice) {
  *
  * @param ipKey The IP address key identifying the device in discoveredShellys map
  */
-private void scheduleAsyncDeviceInfoFetch(String ipKey) {
+private void scheduleAsyncDeviceInfoFetch(String ipKey, Boolean force = false) {
     if (!ipKey) { return }
+
+    Map cachedDevice = atomicState.discoveredShellys?.get(ipKey) as Map
+    if (!force && hasFreshCapabilityCache(cachedDevice)) {
+        logTrace("Capability fetch skipped for ${ipKey}: cache is fresh")
+        return
+    }
+    Long retryAfter = cachedDevice?.capabilityRetryAfter as Long
+    if (!force && retryAfter && now() < retryAfter) {
+        logTrace("Capability fetch skipped for ${ipKey}: retry cooldown active")
+        return
+    }
 
     // Initialize async fetch queue if needed
     if (!atomicState.asyncFetchQueue) {
@@ -8100,7 +8154,11 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
         // A normal fetch completes well inside this window. If an app execution
         // was interrupted while an HTTP call was in flight, do not leave the
         // IP permanently suppressed on every subsequent discovery pass.
-        if (queuedOrStartedAt != null && (now() - queuedOrStartedAt) < 45_000L) {
+        // A complete discovery may include several synchronous RPCs plus driver
+        // classification/installation and can legitimately exceed 45 seconds.
+        // Recover only after three minutes so a second callback cannot overlap
+        // the original device query and driver update.
+        if (queuedOrStartedAt != null && (now() - queuedOrStartedAt) < 180_000L) {
             logTrace("Async fetch already queued for ${ipKey}")
             return
         }
@@ -8124,10 +8182,97 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey) {
     } as Integer
     Integer delayMs = 100 + (queueSize * 100)
 
-    logDebug("Scheduling async device info fetch for ${ipKey} in ${delayMs}ms")
+    logDebug("Scheduling async device info fetch for ${ipKey} in ${delayMs}ms${force ? ' (forced)' : ''}")
     // overwrite:false is required — the default overwrite:true would cancel the pending
     // fetch for every previously scheduled device when a discovery batch queues several
     runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId], overwrite: false])
+}
+
+/**
+ * Returns true when the persisted discovery data is complete and recent enough
+ * to classify/provision the device without another device RPC sequence.
+ */
+private Boolean hasFreshCapabilityCache(Map device) {
+    if (!device) { return false }
+    Long fetchedAt = device.capabilityFetchedAt as Long
+    if (device.capabilityCacheVersion as Integer != DEVICE_CAPABILITY_CACHE_VERSION) { return false }
+    if (!fetchedAt || (now() - fetchedAt) >= DEVICE_CAPABILITY_CACHE_TTL_MS) { return false }
+    if (device.capabilityFetchState?.toString() != 'complete') { return false }
+    if (!device.model || !device.deviceStatus || !device.generatedDriverName) { return false }
+    String fingerprint = device.capabilityFingerprint?.toString()
+    return fingerprint != null && fingerprint != ''
+}
+
+/** Builds a compact stable identity string; never includes secrets or raw state. */
+private String buildCapabilityFingerprint(Map device) {
+    if (!device) { return null }
+    List<String> parts = [
+        device.gen?.toString() ?: '',
+        device.deviceApp?.toString() ?: '',
+        device.model?.toString() ?: '',
+        device.ver?.toString() ?: '',
+        device.fw_id?.toString() ?: ''
+    ]
+    return parts.join('|')
+}
+
+/**
+ * Invalidates only capability-derived data. Identity, IP, labels, and online
+ * discovery metadata remain available for the UI while a refresh is queued.
+ */
+private void invalidateCapabilityCache(String ipKey, String reason = 'requested') {
+    if (!ipKey) { return }
+    Map existing = atomicState.discoveredShellys?.get(ipKey) as Map
+    if (!existing) { return }
+    invalidateCapabilityCacheRecord(existing, reason)
+    Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+    discovered[ipKey] = existing
+    atomicState.discoveredShellys = discovered
+    logDebug("Capability cache invalidated for ${ipKey}: ${reason}")
+}
+
+private void invalidateCapabilityCacheRecord(Map device, String reason = 'changed') {
+    if (!device) { return }
+    ['deviceInfo', 'deviceConfig', 'deviceStatus', 'supportedWebhookEvents',
+     'generatedDriverName', 'needsParentChild', 'componentPowerMonitoring'].each { String field ->
+        device.remove(field)
+    }
+    device.remove('capabilityFetchedAt')
+    device.remove('capabilityFingerprint')
+    device.remove('capabilityRetryAfter')
+    device.capabilityCacheVersion = DEVICE_CAPABILITY_CACHE_VERSION
+    device.capabilityFetchState = 'invalidated'
+    device.capabilityFetchError = reason?.toString()?.take(120)
+}
+
+/** Invalidates cached capabilities when authoritative firmware/model metadata changes. */
+private void invalidateIfCapabilityIdentityChanged(Map existing, Map candidate) {
+    if (!existing || !candidate || !existing.capabilityFetchedAt) { return }
+
+    Boolean firmwareChanged = (candidate.fw_id && existing.fw_id && candidate.fw_id.toString() != existing.fw_id.toString()) ||
+        (candidate.ver && existing.ver && candidate.ver.toString() != existing.ver.toString())
+    Boolean modelChanged = candidate.model && existing.model && candidate.model.toString() != existing.model.toString()
+    if (firmwareChanged || modelChanged) {
+        invalidateCapabilityCacheRecord(candidate, firmwareChanged ? 'firmware changed' : 'model changed')
+        logDebug("Capability cache invalidated by identity change for ${candidate.ipAddress ?: 'device'}")
+    }
+}
+
+private void markCapabilityCacheComplete(String ipKey, Map device) {
+    if (!device) { return }
+    if (device.deviceInfo instanceof Map) {
+        // Shelly.GetDeviceInfo may include a device key. It is not needed for
+        // driver selection and should not be persisted in Hubitat app state.
+        Map compactInfo = new LinkedHashMap(device.deviceInfo as Map)
+        compactInfo.remove('key')
+        device.deviceInfo = compactInfo
+    }
+    device.capabilityCacheVersion = DEVICE_CAPABILITY_CACHE_VERSION
+    device.capabilityFetchedAt = now()
+    device.capabilityFingerprint = buildCapabilityFingerprint(device)
+    device.capabilityFetchState = 'complete'
+    device.capabilityFetchError = null
+    device.capabilityRetryAfter = null
 }
 
 /**
@@ -8161,6 +8306,11 @@ void processAsyncDeviceInfoFetch(Map data) {
         atomicState.asyncFetchQueue = queue
     }
 
+    if (capabilityFetchLocks.putIfAbsent(ipKey, true) != null) {
+        logTrace("Capability fetch already running for ${ipKey}; ignoring duplicate callback")
+        return
+    }
+
     // fetchAndStoreDeviceInfo handles its own exceptions and reports success via its
     // return value — retries must be driven off that, not off exceptions (which never
     // propagate). The try/catch remains as a safety net for unexpected errors.
@@ -8177,6 +8327,7 @@ void processAsyncDeviceInfoFetch(Map data) {
     // that request's queue state or schedule its retries.
     if (requestId && ((atomicState.asyncFetchQueue as Map)?.get(ipKey) as Map)?.requestId?.toString() != requestId) {
         logTrace("Ignoring stale async fetch result for ${ipKey}")
+        capabilityFetchLocks.remove(ipKey)
         return
     }
 
@@ -8200,6 +8351,7 @@ void processAsyncDeviceInfoFetch(Map data) {
             atomicState.asyncFetchQueue = queue
         }
         runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId, attempt: attempt + 1], overwrite: false])
+        capabilityFetchLocks.remove(ipKey)
         return  // Skip cleanup — retry is pending
     } else {
         // Final attempt failed
@@ -8212,10 +8364,23 @@ void processAsyncDeviceInfoFetch(Map data) {
             queue[ipKey] = queueEntry
             atomicState.asyncFetchQueue = queue
         }
+        Map failedDevice = atomicState.discoveredShellys?.get(ipKey) as Map
+        if (failedDevice) {
+            failedDevice.capabilityCacheVersion = DEVICE_CAPABILITY_CACHE_VERSION
+            failedDevice.capabilityFetchState = 'failed'
+            failedDevice.capabilityFetchError = (failureMessage ?: 'device query failed').toString().take(120)
+            // Prevent every mDNS/ShellyHelper poll from immediately starting
+            // another full RPC sequence for an unreachable device.
+            failedDevice.capabilityRetryAfter = now() + 300000L
+            Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+            discovered[ipKey] = failedDevice
+            atomicState.discoveredShellys = discovered
+        }
     }
 
     // Clean up old queue entries (keep last 50)
     cleanupAsyncFetchQueue()
+    capabilityFetchLocks.remove(ipKey)
 }
 
 /**
@@ -8309,6 +8474,8 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         logDebug("fetchAndStoreDeviceInfo: Gen 1 device at ${ip}, using REST API")
         appendLog('debug', "Getting Gen 1 device info from ${ip}")
         if (fetchGen1DeviceInfo(ipKey, device)) {
+            markCapabilityCacheComplete(ipKey, device)
+            atomicState.discoveredShellys[ipKey] = device
             sendFoundShellyEvents()
             return true
         }
@@ -8394,6 +8561,7 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         if (deviceConfig) { device.deviceConfig = deviceConfig }
         if (deviceStatus) { device.deviceStatus = deviceStatus }
         device.ts = now()
+        markCapabilityCacheComplete(ipKey, device)
 
         atomicState.discoveredShellys[ipKey] = device
 
@@ -9599,6 +9767,12 @@ private String generateDriverName(List<String> components, Map<String, Boolean> 
  * @return true if install succeeded, false otherwise
  */
 private Boolean installPrebuiltDriver(String driverName, List<String> components, Map<String, Boolean> componentPowerMonitoring, String version) {
+    synchronized (DRIVER_INSTALL_LOCK) {
+        return installPrebuiltDriverUnlocked(driverName, components, componentPowerMonitoring, version)
+    }
+}
+
+private Boolean installPrebuiltDriverUnlocked(String driverName, List<String> components, Map<String, Boolean> componentPowerMonitoring, String version) {
     String repoPath = PREBUILT_DRIVERS[driverName]
     if (!repoPath) {
         logDebug("installPrebuiltDriver: no pre-built driver found for '${driverName}'")
