@@ -13257,14 +13257,14 @@ LinkedHashMap parentPostCommandSync(LinkedHashMap command, String uri = null) {
   else { return postCommandSync(command, uri) }
 }
 
-void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '') {
-  if(hasParent() == true) { parent?.postCommandAsync(command, callbackMethod) }
-  else { postCommandAsync(command, callbackMethod) }
+void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null) {
+  if(hasParent() == true) { parent?.postCommandAsync(command, callbackMethod, uri) }
+  else { postCommandAsync(command, callbackMethod, uri) }
 }
 
-void postCommandAsync(LinkedHashMap command, String callbackMethod = '') {
+void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null) {
   LinkedHashMap json
-  Map params = [uri: "${getBaseUriRpc()}"]
+  Map params = [uri: (uri ?: "${getBaseUriRpc()}")]
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
@@ -13299,6 +13299,22 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
       logTrace("Follow On Callback: ${followOnCallback}")
       "${followOnCallback}"(response, data)
     }
+  }
+}
+
+/**
+ * Completes the non-blocking parent-command path after the RPC infrastructure
+ * has handled success and authentication retries.
+ */
+void parentCommandAsyncCallback(AsyncResponse response, Map data = null) {
+  String uri = data?.params?.uri?.toString() ?: ''
+  String ipAddress = uri.replaceFirst('^https?://', '').split('/')[0]
+  if (ipAddress) { invalidateDeviceStatusCache(ipAddress) }
+
+  if (response?.status == 200) {
+    logDebug("parent command completed asynchronously for ${ipAddress}")
+  } else {
+    logWarn("parent command failed asynchronously for ${ipAddress}: HTTP ${response?.status} — ${response?.getErrorMessage() ?: 'unknown error'}")
   }
 }
 
@@ -22159,14 +22175,11 @@ void parentSendCommand(def parentDevice, String method, Map params) {
         params: params
     ]
 
-    LinkedHashMap response = postCommandSync(command, rpcUri)
+    // Parent drivers do not consume the RPC response. Dispatch asynchronously so
+    // a slow device cannot block the app execution context or other child commands.
     invalidateDeviceStatusCache(ipAddress)
-
-    if (response?.error) {
-        logError("parentSendCommand RPC error: ${response.error}")
-    } else {
-        logDebug("parentSendCommand success: ${method} → ${response}")
-    }
+    postCommandAsync(command, 'parentCommandAsyncCallback', rpcUri)
+    logTrace("parentSendCommand dispatched asynchronously: ${method} → ${rpcUri}")
 }
 
 /**
