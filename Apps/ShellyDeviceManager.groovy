@@ -79,6 +79,23 @@
 @Field static ConcurrentHashMap<String, String> bleModelCache =
     new java.util.concurrent.ConcurrentHashMap<String, String>()
 
+/** Short-lived status results shared by parent/child refresh calls for the same IP. */
+@Field static ConcurrentHashMap<String, Map> deviceStatusCacheVolatile =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+
+/** Per-IP locks prevent overlapping synchronous refreshes from querying one device twice. */
+@Field static ConcurrentHashMap<String, Object> deviceStatusQueryLocks =
+    new java.util.concurrent.ConcurrentHashMap<String, Object>()
+
+/** Direct app-child lookup cache; component grandchildren remain resolved by getChildDevice(). */
+@Field static volatile List directChildDeviceCache = null
+@Field static volatile long directChildDeviceCacheTime = 0L
+@Field static final Object DIRECT_CHILD_CACHE_LOCK = new Object()
+@Field static final long DIRECT_CHILD_CACHE_TTL_MS = 2000L
+
+/** Status is shared only briefly so commands and explicit refreshes remain responsive. */
+@Field static final long DEVICE_STATUS_CACHE_TTL_MS = 5000L
+
 /** Cached hub temperature scale — avoids getLocation() call per advertisement */
 @Field static volatile String cachedTempScale = null
 
@@ -1216,6 +1233,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
 
     try {
         def childDevice = addChildDevice('ShellyDeviceManager', driverName, dni, deviceProps)
+        invalidateDirectChildDeviceCache()
         invalidateHubDeviceDniCache()
 
         logInfo("Created device: ${deviceLabel} using driver ${driverName}")
@@ -1358,6 +1376,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
 
     try {
         def parentDevice = addChildDevice('ShellyDeviceManager', parentDriverName, parentDni, parentProps)
+        invalidateDirectChildDeviceCache()
         invalidateHubDeviceDniCache()
         logInfo("Created parent device: ${baseLabel} using driver ${parentDriverName}")
         appendLog('info', "Created parent: ${baseLabel} (${parentDriverName})")
@@ -1617,7 +1636,7 @@ private List<Map> buildDeviceList() {
     Map discoveredShellys = atomicState.discoveredShellys ?: [:]
     Map mdnsLastHeardByIp = atomicState.mdnsLastHeardByIp ?: [:]
     Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-    def childDevices = getChildDevices() ?: []
+    def childDevices = getCachedDirectChildDevices()
 
     // Build lookup of child devices by IP
     Map<String, Object> childByIp = [:]
@@ -2278,7 +2297,7 @@ private void ensureDeviceStatusCache() {
     }
 
     // Add child devices not in discovery
-    def childDevices = getChildDevices() ?: []
+    def childDevices = getCachedDirectChildDevices()
     childDevices.each { dev ->
         String ip = dev.getDataValue('ipAddress')
         if (ip && !cache.containsKey(ip)) {
@@ -2470,8 +2489,40 @@ private Map buildDeviceStatusCacheEntry(String ip) {
  * @return The matching child device, or null if not found
  */
 private def findChildDeviceByIp(String ip) {
-    def childDevices = getChildDevices() ?: []
+    def childDevices = getCachedDirectChildDevices()
     return childDevices.find { it.getDataValue('ipAddress') == ip }
+}
+
+/**
+ * Returns direct app children from a very short-lived cache. Component devices
+ * created by parent drivers are grandchildren and must still be resolved with
+ * getChildDevice(), so this cache is intentionally limited to app children.
+ */
+private List getCachedDirectChildDevices() {
+    Long nowMs = now()
+    List cached = directChildDeviceCache
+    if (cached != null && (nowMs - directChildDeviceCacheTime) < DIRECT_CHILD_CACHE_TTL_MS) {
+        return cached
+    }
+
+    synchronized (DIRECT_CHILD_CACHE_LOCK) {
+        nowMs = now()
+        cached = directChildDeviceCache
+        if (cached != null && (nowMs - directChildDeviceCacheTime) < DIRECT_CHILD_CACHE_TTL_MS) {
+            return cached
+        }
+        directChildDeviceCache = (getChildDevices() ?: []) as List
+        directChildDeviceCacheTime = nowMs
+        return directChildDeviceCache
+    }
+}
+
+/** Forces the next direct-child lookup to read the current app children. */
+private void invalidateDirectChildDeviceCache() {
+    synchronized (DIRECT_CHILD_CACHE_LOCK) {
+        directChildDeviceCache = null
+        directChildDeviceCacheTime = 0L
+    }
 }
 
 /**
@@ -4731,6 +4782,7 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
  * @param ip The IP address of the device to remove
  */
 private void removeDeviceByIp(String ip) {
+    invalidateDeviceStatusCache(ip)
     def device = findChildDeviceByIp(ip)
     if (!device) {
         logWarn("removeDeviceByIp: no child device found for ${ip}")
@@ -4795,6 +4847,7 @@ private void removeDeviceByIp(String ip) {
         atomicState.commandQueues = persistedQueues
     }
     deleteChildDevice(dni)
+    invalidateDirectChildDeviceCache()
     invalidateHubDeviceDniCache()
     logInfo("Removed device: ${name} (${dni})")
     appendLog('info', "Removed: ${name}")
@@ -6122,52 +6175,81 @@ Set<String> getRequiredScriptsForDevice(def device) {
  * @return Map of status keys and values, or null on failure
  */
 private Map queryDeviceStatus(String ipAddress) {
-    try {
-        String uri = "http://${ipAddress}/rpc"
-        LinkedHashMap command = shellyGetStatusCommand('deviceConfig')
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        LinkedHashMap json = postCommandSync(command, uri)
-        Map status = json?.result as Map
+    if (!ipAddress) { return null }
 
-        // BLU Gateway: discover dynamic blutrv components and query their full status
-        // Shelly.GetComponents returns BLE link status (rssi, paired, battery) but NOT
-        // thermostat data (current_C, target_C, pos). BluTrv.GetStatus returns the full data.
-        if (status?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }) {
-            List<Map> dynamicComponents = queryDeviceComponents(ipAddress, [dynamic_only: true, include: ['status']], 'deviceConfig')
-            if (dynamicComponents) {
-                dynamicComponents.each { Map comp ->
-                    String compKey = comp.key?.toString()
-                    if (compKey?.startsWith('blutrv:')) {
-                        Integer trvId = compKey.split(':')[1] as Integer
-                        // Query full TRV thermostat status via BluTrv.GetStatus
-                        try {
-                            LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: trvId]]
-                            if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
-                            LinkedHashMap trvResp = postCommandSync(trvCmd, uri)
-                            if (trvResp?.result) {
-                                status[compKey] = trvResp.result
-                            } else if (comp.status) {
-                                // Fallback to component link status if BluTrv.GetStatus fails
-                                status[compKey] = comp.status
+    Long nowMs = now()
+    Map cached = deviceStatusCacheVolatile.get(ipAddress)
+    if (cached && (nowMs - (cached.cachedAt as Long)) < DEVICE_STATUS_CACHE_TTL_MS) {
+        logTrace("queryDeviceStatus: using ${DEVICE_STATUS_CACHE_TTL_MS}ms cached result for ${ipAddress}")
+        return cached.status as Map
+    }
+
+    Object queryLock = deviceStatusQueryLocks.computeIfAbsent(ipAddress, { String key -> new Object() })
+    synchronized (queryLock) {
+        // Another caller may have completed the request while this caller was
+        // waiting for the per-IP lock.
+        nowMs = now()
+        cached = deviceStatusCacheVolatile.get(ipAddress)
+        if (cached && (nowMs - (cached.cachedAt as Long)) < DEVICE_STATUS_CACHE_TTL_MS) {
+            logTrace("queryDeviceStatus: using result populated while waiting for ${ipAddress}")
+            return cached.status as Map
+        }
+
+        try {
+            String uri = "http://${ipAddress}/rpc"
+            LinkedHashMap command = shellyGetStatusCommand('deviceConfig')
+            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
+            LinkedHashMap json = postCommandSync(command, uri)
+            Map status = json?.result as Map
+
+            // BLU Gateway: discover dynamic blutrv components and query their full status
+            // Shelly.GetComponents returns BLE link status (rssi, paired, battery) but NOT
+            // thermostat data (current_C, target_C, pos). BluTrv.GetStatus returns the full data.
+            if (status?.keySet()?.any { Object k -> k.toString() == 'blugw' || k.toString().startsWith('blugw:') }) {
+                List<Map> dynamicComponents = queryDeviceComponents(ipAddress, [dynamic_only: true, include: ['status']], 'deviceConfig')
+                if (dynamicComponents) {
+                    dynamicComponents.each { Map comp ->
+                        String compKey = comp.key?.toString()
+                        if (compKey?.startsWith('blutrv:')) {
+                            Integer trvId = compKey.split(':')[1] as Integer
+                            // Query full TRV thermostat status via BluTrv.GetStatus
+                            try {
+                                LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: trvId]]
+                                if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
+                                LinkedHashMap trvResp = postCommandSync(trvCmd, uri)
+                                if (trvResp?.result) {
+                                    status[compKey] = trvResp.result
+                                } else if (comp.status) {
+                                    // Fallback to component link status if BluTrv.GetStatus fails
+                                    status[compKey] = comp.status
+                                }
+                            } catch (Exception trvEx) {
+                                logDebug("BluTrv.GetStatus failed for ${compKey}: ${trvEx.message}")
+                                if (comp.status) { status[compKey] = comp.status }
                             }
-                        } catch (Exception trvEx) {
-                            logDebug("BluTrv.GetStatus failed for ${compKey}: ${trvEx.message}")
-                            if (comp.status) { status[compKey] = comp.status }
                         }
                     }
                 }
             }
-        }
 
-        return status
-    } catch (Exception ex) {
-        if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
-            logDebug("Device at ${ipAddress} is unreachable: ${ex.message}")
-        } else {
-            logError("Failed to query device status for ${ipAddress}: ${ex.message}")
+            if (status != null) {
+                deviceStatusCacheVolatile.put(ipAddress, [status: status, cachedAt: now()])
+            }
+            return status
+        } catch (Exception ex) {
+            if (ex.message?.contains('unreachable') || ex.message?.contains('timed out') || ex.message?.contains('No route')) {
+                logDebug("Device at ${ipAddress} is unreachable: ${ex.message}")
+            } else {
+                logError("Failed to query device status for ${ipAddress}: ${ex.message}")
+            }
+            return null
         }
-        return null
     }
+}
+
+/** Invalidates the short-lived status result after a device-side mutation. */
+private void invalidateDeviceStatusCache(String ipAddress) {
+    if (ipAddress) { deviceStatusCacheVolatile.remove(ipAddress) }
 }
 
 /**
@@ -6334,6 +6416,10 @@ private String stripJsExtension(String filename) {
  * and registers mDNS listeners.
  */
 void initialize() {
+    // Do not carry transient lookup results across app initialization or updates.
+    deviceStatusCacheVolatile.clear()
+    invalidateDirectChildDeviceCache()
+
     if (!atomicState.discoveredShellys) { atomicState.discoveredShellys = [:] }
     if (!atomicState.recentLogs) { atomicState.recentLogs = [] }
     if (atomicState.discoveryRunning == null) { atomicState.discoveryRunning = false }
@@ -13795,6 +13881,7 @@ private void createBleDevice(String mac) {
 
     try {
         def childDevice = addChildDevice('ShellyDeviceManager', driverNameWithVersion, mac, deviceProps)
+        invalidateDirectChildDeviceCache()
         bleLogInfo("Created BLE device: ${deviceLabel} using driver ${driverNameWithVersion}")
         appendLog('info', "Created BLE device: ${deviceLabel}")
 
@@ -15685,7 +15772,8 @@ void deleteChildDevices() {
 
 
 void deleteChildByDNI(String dni) {
-  deleteChildDevice(dni)
+    deleteChildDevice(dni)
+    invalidateDirectChildDeviceCache()
 }
 
 BigDecimal cToF(BigDecimal val) { return celsiusToFahrenheit(val) }
@@ -19363,6 +19451,8 @@ void componentLogParsedMessage(DeviceWrapper device, Map msg) {
  */
 void componentNotifyIpChanged(DeviceWrapper childDevice, String oldIp, String newIp) {
     if (!oldIp || !newIp || oldIp == newIp) { return }
+    invalidateDeviceStatusCache(oldIp)
+    invalidateDeviceStatusCache(newIp)
     String deviceName = childDevice?.displayName ?: 'Unknown'
     logInfo("componentNotifyIpChanged: ${deviceName} IP changed: ${oldIp} -> ${newIp}")
     childDevice.updateSetting('ipAddress', newIp)
@@ -20388,7 +20478,7 @@ private void loadCommandQueuesFromState() {
  * @param dni The device network ID
  */
 private void updateSyncStatus(String dni) {
-    List<ChildDeviceWrapper> children = getChildDevices()
+    List<ChildDeviceWrapper> children = getCachedDirectChildDevices()
     ChildDeviceWrapper child = children?.find { it.deviceNetworkId == dni }
     if (!child) { return }
     if (!deviceHasAttributeHelper(child, 'syncStatus')) { return }
@@ -20450,7 +20540,7 @@ private void drainCommandQueue(String dni) {
     if (!deviceQueue || deviceQueue.isEmpty()) { return }
 
     // Look up child device and IP address
-    List<ChildDeviceWrapper> children = getChildDevices()
+    List<ChildDeviceWrapper> children = getCachedDirectChildDevices()
     ChildDeviceWrapper child = children?.find { it.deviceNetworkId == dni }
     if (!child) {
         logWarn("drainCommandQueue: no child device found for DNI ${dni}")
@@ -22070,6 +22160,7 @@ void parentSendCommand(def parentDevice, String method, Map params) {
     ]
 
     LinkedHashMap response = postCommandSync(command, rpcUri)
+    invalidateDeviceStatusCache(ipAddress)
 
     if (response?.error) {
         logError("parentSendCommand RPC error: ${response.error}")
