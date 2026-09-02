@@ -102,6 +102,9 @@
 /** Status is shared only briefly so commands and explicit refreshes remain responsive. */
 @Field static final long DEVICE_STATUS_CACHE_TTL_MS = 5000L
 
+/** The IP-change watchdog runs infrequently and shifts by seven minutes each cycle. */
+@Field static final int WATCHDOG_INTERVAL_SECONDS = 247 * 60
+
 /** Cached hub temperature scale — avoids getLocation() call per advertisement */
 @Field static volatile String cachedTempScale = null
 
@@ -1151,6 +1154,7 @@ void runDeviceCreate(Map data) {
             finishProvisioningOperation(ipAddress, operationId)
         }
         buildDeviceStatusCacheEntry(ipAddress)
+        reconcileWatchdogSchedule()
         runInMillis(500, 'fireConfigTableSSR')
     }
 }
@@ -1419,7 +1423,7 @@ void installed() {
     initialize(true)
     // If the hub is already running, register listeners immediately; after a reboot
     // systemStartHandler performs this lightweight registration instead.
-    startMdnsDiscovery()
+    startMdnsDiscovery(true)
 }
 
 /**
@@ -1445,7 +1449,7 @@ void updated() {
     unsubscribe()
     unschedule()
     initialize(true)
-    startMdnsDiscovery()
+    startMdnsDiscovery(true)
 }
 
 /**
@@ -4889,6 +4893,7 @@ private void removeDeviceByIp(String ip) {
     // Step 6: Delete any tracked drivers that are now unused after this device removal.
     if (deletedDriverNames) { deleteUnusedTrackedDrivers(deletedDriverNames) }
     scheduleDriverMaintenanceSweep('device deletion')
+    reconcileWatchdogSchedule()
 }
 
 /**
@@ -6544,10 +6549,8 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
         }
     }
 
-    // Schedule periodic watchdog to detect IP address changes via mDNS
-    if (settings?.enableWatchdog != false) {
-        schedule('0 */15 * ? * *', 'watchdogScan')
-    }
+    // Schedule the watchdog only when there are installed LAN devices to monitor.
+    reconcileWatchdogSchedule()
 
     // Schedule daily driver auto-update at configured time (default 3AM)
     if (settings?.rebuildOnUpdate != false) {
@@ -6605,7 +6608,7 @@ void startDiscovery(Boolean resetFound = false) {
     logDebug("startDiscovery: starting discovery for ${getDiscoveryDurationSeconds()} seconds")
 
     // Re-register listeners to trigger fresh mDNS queries on the network
-    startMdnsDiscovery()
+    startMdnsDiscovery(true)
 
     // Instant seed from ShellyHelper (local API, no network I/O) — populates table
     // immediately before the 10-second mDNS delay
@@ -6647,7 +6650,7 @@ void extendDiscovery(Integer seconds) {
     // Always re-register and re-arm discovery. Previously an active scan only
     // moved its stop deadline; if its mDNS callback had already stopped or
     // been unscheduled, the extra time did not actually collect new devices.
-    startMdnsDiscovery()
+    startMdnsDiscovery(true)
     unschedule('processMdnsDiscovery')
     unschedule('processInstalledDeviceReachability')
     unschedule('updateDiscoveryTimer')
@@ -6675,19 +6678,28 @@ void extendDiscovery(Integer seconds) {
  * Registers listeners for both {@code _shelly._tcp} (Shelly-specific, Gen 2+ with rich TXT records)
  * and {@code _http._tcp} (catches Gen 1 devices that only advertise here) on the local network.
  */
-void startMdnsDiscovery() {
+void startMdnsDiscovery(Boolean forceRegistration = false) {
+    if (!forceRegistration && atomicState.mdnsListenersRegistered == true) {
+        logTrace('Skipping mDNS listener registration: listeners are already active')
+        return
+    }
+
+    Boolean registered = false
     try {
         registerMDNSListener('_shelly._tcp')
         logTrace('Registered mDNS listener: _shelly._tcp')
+        registered = true
     } catch (Exception e) {
         logWarn("mDNS listener registration failed for _shelly._tcp: ${e.message}")
     }
     try {
         registerMDNSListener('_http._tcp')
         logTrace('Registered mDNS listener: _http._tcp')
+        registered = true
     } catch (Exception e) {
         logWarn("mDNS listener registration failed for _http._tcp: ${e.message}")
     }
+    if (registered) { atomicState.mdnsListenersRegistered = true }
 }
 
 /**
@@ -6719,7 +6731,8 @@ void systemStartHandler(evt) {
     // Reboot recovery must restore the runtime state used by every installed
     // child type, but must not perform driver maintenance or remote checks.
     initialize(false, false)
-    startMdnsDiscovery()
+    atomicState.mdnsListenersRegistered = false
+    startMdnsDiscovery(true)
 }
 
 /**
@@ -7438,25 +7451,58 @@ static String extractGen1TypeFromHostname(String hostname) {
 /**
  * Performs an mDNS-based watchdog scan to detect IP address changes for child devices.
  * Respects a 5-minute cooldown between scans to avoid excessive network traffic.
- * Re-registers mDNS listeners and schedules result processing after a 10-second delay.
+ * Routine scans reuse the mDNS listeners registered at startup or by an active
+ * discovery session and schedule result processing after a 10-second delay.
  * <p>
- * Called periodically (every 15 minutes) and on command failure in
+ * Called periodically (every 247 minutes) and on command failure in
  * {@link #sendSwitchCommand(Object, Boolean)}.
  */
 void watchdogScan() {
+    if (!hasInstalledLanDevices()) {
+        logTrace('watchdogScan: no installed LAN devices, stopping watchdog')
+        unschedule('watchdogScan')
+        return
+    }
+
     Long lastScan = state.lastWatchdogScan ?: 0L
     if (now() - lastScan < 300000) {
         logTrace("watchdogScan: skipping, last scan was ${(now() - lastScan) / 1000} seconds ago (cooldown 300s)")
         return
     }
     state.lastWatchdogScan = now()
+    scheduleNextWatchdogScan()
     logTrace('watchdogScan: starting mDNS scan for IP changes')
 
-    // Re-register listeners to trigger fresh mDNS queries on the network
-    startMdnsDiscovery()
+    // Listeners remain active after discovery and are re-registered only at
+    // startup or for an explicit user-triggered discovery session.
+    startMdnsDiscovery(false)
 
     // Wait 10 seconds for mDNS responses to accumulate before processing
     runIn(10, 'watchdogProcessResults')
+}
+
+/** Returns true when at least one installed parent represents a LAN device. */
+private Boolean hasInstalledLanDevices() {
+    return (getCachedDirectChildDevices() ?: []).any { child ->
+        String ip = child?.getDataValue('ipAddress')?.toString()
+        return ip != null && ip.trim()
+    }
+}
+
+/** Reconciles the single long-lived watchdog timer with current app children. */
+private void reconcileWatchdogSchedule() {
+    unschedule('watchdogScan')
+    if (settings?.enableWatchdog == false || !hasInstalledLanDevices()) {
+        logTrace('Watchdog not scheduled: disabled or no installed LAN devices')
+        return
+    }
+    scheduleNextWatchdogScan()
+}
+
+/** Arms the next watchdog run using a fixed interval rather than an hourly cron slot. */
+private void scheduleNextWatchdogScan() {
+    runIn(WATCHDOG_INTERVAL_SECONDS, 'watchdogScan', [overwrite: true])
+    logTrace("Watchdog next scan scheduled in ${WATCHDOG_INTERVAL_SECONDS / 60} minutes")
 }
 
 /**
