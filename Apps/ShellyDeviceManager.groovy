@@ -538,7 +538,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: false,
-    version: "1.0.84"
+    version: "1.0.86"
 )
 
 preferences {
