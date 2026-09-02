@@ -1062,9 +1062,30 @@ private void createShellyDevice(String ipKey) {
     // Get device info from state
     Map deviceInfo = atomicState.discoveredShellys[ipKey]
     if (!deviceInfo) {
-        logError("No device info found for ${ipKey}")
-        appendLog('error', "Failed to create device: no info for ${ipKey}")
-        return
+        // A reachability callback can make a cache-only row visible while an
+        // mDNS refresh is being skipped for an active provisioning operation.
+        // Hydrate the discovery record from that row so the normal capability
+        // fetch can still obtain authoritative device information.
+        Map cached = (atomicState.deviceStatusCache ?: [:])[ipKey] as Map
+        if (cached) {
+            deviceInfo = [
+                name: cached.shellyName ?: "Shelly ${ipKey}",
+                ipAddress: ipKey,
+                port: 80,
+                mac: cached.mac ?: null,
+                model: cached.model ?: null,
+                gen: cached.deviceGen ?: '2',
+                isBatteryDevice: cached.isBatteryDevice == true
+            ]
+            Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+            discovered[ipKey] = deviceInfo
+            atomicState.discoveredShellys = discovered
+            logTrace("Hydrated missing discovery entry for ${ipKey} from deviceStatusCache")
+        } else {
+            logError("No device info found for ${ipKey}")
+            appendLog('error', "Failed to create device: no info for ${ipKey}")
+            return
+        }
     }
 
     // Full capability discovery is an installation concern. A lightweight
@@ -1708,6 +1729,17 @@ private List<Map> buildDeviceList() {
         Map cached = cache[ip] as Map
         Map entry = cached ?: buildMinimalCacheEntry(ip, info as Map)
 
+        // A cache entry may have been seeded before mDNS supplied the real
+        // hostname (for example, by a reachability callback). Refresh the
+        // display identity from the current discovery record so devices do
+        // not remain labeled only with their fallback IP address.
+        if (info?.name) { entry.shellyName = info.name.toString() }
+        entry.ip = ip
+        if (info?.gen) {
+            entry.isGen1 = info.gen.toString() == '1'
+            entry.deviceGen = info.gen.toString()
+        }
+
         // Retain mDNS observation time for discovery diagnostics even when the
         // ShellyHelper merge refreshed the same device entry afterward. Action
         // eligibility is based on lastReachableAt below, not this cached record.
@@ -1788,6 +1820,21 @@ private List<Map> buildDeviceList() {
                 ])
             }
         }
+    }
+
+    // Reachability callbacks can arrive while a discovery refresh is replacing
+    // discoveredShellys. In that case recordDiscoveryReachability() preserves
+    // the row in deviceStatusCache, but there is no discovered entry for the
+    // first pass above to render. Keep cache-only rows visible so an mDNS device
+    // cannot disappear merely because its async callback crossed a state merge.
+    cache.each { Object ipKey, Object value ->
+        String ip = ipKey.toString()
+        if (processedIps.contains(ip) || !(value instanceof Map)) { return }
+        Map cached = new LinkedHashMap(value as Map)
+        cached.ip = cached.ip ?: ip
+        cached.shellyName = cached.shellyName ?: "Shelly ${ip}"
+        result.add(cached)
+        processedIps.add(ip)
     }
 
     return result
@@ -6897,8 +6944,10 @@ void processMdnsDiscovery() {
 
         Integer beforeCount = atomicState.discoveredShellys.size()
         Boolean addabilityChanged = false
+        Boolean identityChanged = false
         Map mdnsLastHeardByIp = new LinkedHashMap((atomicState.mdnsLastHeardByIp ?: [:]) as Map)
         Map mdnsActionableByIp = new LinkedHashMap((atomicState.mdnsActionableByIp ?: [:]) as Map)
+        Map discoveryCache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
 
         if (!allEntries) {
             logTrace('processMdnsDiscovery: no mDNS entries found')
@@ -7009,7 +7058,30 @@ void processMdnsDiscovery() {
                 Long mdnsHeardAt = now()
                 deviceEntry.mdnsLastHeardAt = mdnsHeardAt
                 mdnsLastHeardByIp[key] = mdnsHeardAt
-                atomicState.discoveredShellys[key] = deviceEntry
+                // Replace the outer map when persisting nested atomicState data.
+                // Direct nested mutation can be lost when another discovery
+                // callback writes the same state concurrently.
+                Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+                discovered[key] = deviceEntry
+                atomicState.discoveredShellys = discovered
+
+                // Keep the table cache authoritative for display identity too.
+                // A reachability callback or provisioning refresh may leave a
+                // cache-only row even when the discovery entry is replaced.
+                Map cachedEntry = discoveryCache[key] as Map
+                if (!cachedEntry) {
+                    cachedEntry = buildMinimalCacheEntry(key, deviceEntry)
+                } else {
+                    cachedEntry = new LinkedHashMap(cachedEntry)
+                }
+                if (cachedEntry.shellyName?.toString() != deviceEntry.name?.toString()) {
+                    identityChanged = true
+                }
+                cachedEntry.shellyName = deviceEntry.name ?: "Shelly ${key}"
+                cachedEntry.ip = key
+                cachedEntry.deviceGen = deviceEntry.gen?.toString() ?: cachedEntry.deviceGen ?: '2'
+                cachedEntry.isGen1 = cachedEntry.deviceGen == '1'
+                discoveryCache[key] = cachedEntry
                 if (deviceEntry.gen?.toString() != '1') { scheduleDiscoveryReachabilityProbe(key) }
 
                 // Mark this IP as a known Shelly in ipScanResults so the IP subnet
@@ -7026,6 +7098,7 @@ void processMdnsDiscovery() {
         }
 
         atomicState.mdnsLastHeardByIp = mdnsLastHeardByIp
+        atomicState.deviceStatusCache = discoveryCache
 
         // Refresh the table whenever a device transitions between actionable
         // and stale. Do not use a narrow time range here: one scan pass can
@@ -7047,7 +7120,7 @@ void processMdnsDiscovery() {
         atomicState.mdnsActionableByIp = mdnsActionableByIp
 
         Integer afterCount = atomicState.discoveredShellys.size()
-        if (afterCount > beforeCount || addabilityChanged) {
+        if (afterCount > beforeCount || addabilityChanged || identityChanged) {
             logDebug("Found ${afterCount - beforeCount} new device(s), total: ${afterCount}")
             sendFoundShellyEvents()
         }
@@ -7408,7 +7481,11 @@ void processShellyHelperDiscovery() {
                 deviceEntry.isBatteryDevice = true
                 deviceEntry.batteryDetermined = true
             }
-            atomicState.discoveredShellys[key] = deviceEntry
+            // Persist the outer map so a concurrent mDNS callback cannot drop
+            // this ShellyHelper identity update.
+            Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+            discovered[key] = deviceEntry
+            atomicState.discoveredShellys = discovered
             if (deviceEntry.gen?.toString() != '1') { scheduleDiscoveryReachabilityProbe(key) }
 
             // Mark this IP as a known Shelly in ipScanResults (5-min cooldown for IP scanner)
