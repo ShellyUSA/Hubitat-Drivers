@@ -6,6 +6,12 @@
 // Outer key: device DNI. Inner key: dedupKey. Inner value: queue entry map.
 @Field static ConcurrentHashMap<String, ConcurrentHashMap<String, Map>> commandQueues =
     new java.util.concurrent.ConcurrentHashMap<String, ConcurrentHashMap<String, Map>>()
+// Ensures only one queued command is sent at a time for each sleepy device.
+@Field static ConcurrentHashMap<String, String> commandQueueDrainInFlight =
+    new java.util.concurrent.ConcurrentHashMap<String, String>()
+// Prevents repeated wake-up events from immediately retrying a failed command.
+@Field static ConcurrentHashMap<String, Long> commandQueueRetryNotBefore =
+    new java.util.concurrent.ConcurrentHashMap<String, Long>()
 // Tracks the most recent wake-up timestamp (epoch millis) per device DNI.
 @Field static ConcurrentHashMap<String, Long> lastWakeUpTimestamps =
     new java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -20400,6 +20406,8 @@ private void dequeueCommand(String dni, String dedupKey) {
  */
 private void clearCommandQueue(String dni) {
     commandQueues.remove(dni)
+    commandQueueDrainInFlight.remove(dni)
+    commandQueueRetryNotBefore.remove(dni)
     persistCommandQueue(dni)
     updateSyncStatus(dni)
     logInfo("Cleared command queue for ${dni}")
@@ -20545,9 +20553,9 @@ void componentDeviceAwoke(com.hubitat.app.DeviceWrapper childDevice) {
 }
 
 /**
- * Dispatches all queued commands for a device via async HTTP.
+ * Dispatches the oldest queued command for a device via async HTTP.
  * Gen1 commands use {@code asynchttpGet}, Gen2+ RPC commands use {@code asynchttpPost}.
- * All requests are fire-and-forget; callbacks handle success/failure per entry.
+ * Only one request is in flight per device; the callback advances the queue.
  *
  * @param dni The device network ID
  */
@@ -20555,15 +20563,29 @@ private void drainCommandQueue(String dni) {
     ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
     if (!deviceQueue || deviceQueue.isEmpty()) { return }
 
+    if (commandQueueDrainInFlight.putIfAbsent(dni, java.util.UUID.randomUUID().toString()) != null) {
+        logTrace("drainCommandQueue: ${dni} already has a command in flight")
+        return
+    }
+
+    Long retryNotBefore = commandQueueRetryNotBefore.get(dni)
+    if (retryNotBefore != null && now() < retryNotBefore) {
+        commandQueueDrainInFlight.remove(dni)
+        logTrace("drainCommandQueue: retry backoff active for ${dni} until ${retryNotBefore}")
+        return
+    }
+
     // Look up child device and IP address
     List<ChildDeviceWrapper> children = getCachedDirectChildDevices()
     ChildDeviceWrapper child = children?.find { it.deviceNetworkId == dni }
     if (!child) {
+        commandQueueDrainInFlight.remove(dni)
         logWarn("drainCommandQueue: no child device found for DNI ${dni}")
         return
     }
     String ipAddress = child.getDataValue('ipAddress')
     if (!ipAddress) {
+        commandQueueDrainInFlight.remove(dni)
         logWarn("drainCommandQueue: no IP address for ${child.displayName}")
         return
     }
@@ -20573,54 +20595,58 @@ private void drainCommandQueue(String dni) {
         (a.queuedAt as Long ?: 0L) <=> (b.queuedAt as Long ?: 0L)
     }
 
-    logDebug("Draining ${entries.size()} commands for ${child.displayName} at ${ipAddress}")
+    Map entry = entries.find { Map candidate -> candidate.permanentError != true }
+    if (!entry) {
+        commandQueueDrainInFlight.remove(dni)
+        return
+    }
 
-    entries.each { Map entry ->
-        // Skip entries that permanently failed — user must cancel or re-queue
-        if (entry.permanentError == true) { return }
+    String dispatchToken = commandQueueDrainInFlight.get(dni)
+    entry.dispatchToken = dispatchToken
+    logDebug("Draining one of ${entries.size()} queued commands for ${child.displayName} at ${ipAddress}: ${entry.dedupKey}")
 
-        String commandType = entry.commandType?.toString() ?: ''
-        String endpoint = entry.endpoint?.toString() ?: ''
-        String dedupKey = entry.dedupKey?.toString() ?: ''
-        Map params = entry.params as Map ?: [:]
+    String commandType = entry.commandType?.toString() ?: ''
+    String endpoint = entry.endpoint?.toString() ?: ''
+    String dedupKey = entry.dedupKey?.toString() ?: ''
+    Map params = entry.params as Map ?: [:]
 
-        Map callbackData = [dni: dni, dedupKey: dedupKey, deviceName: child.displayName.toString()]
+    Map callbackData = [dni: dni, dedupKey: dedupKey, dispatchToken: dispatchToken, deviceName: child.displayName.toString()]
 
-        switch (commandType) {
-            case 'gen1_setting':
-            case 'gen1_action_url':
-                // Gen1: async GET with query params (also handles future action URL queuing)
-                String queryString = params.collect { k, v ->
-                    "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}".toString()
-                }.join('&')
-                String uri = "http://${ipAddress}/${endpoint}".toString()
-                if (queryString) { uri += "?${queryString}" }
+    switch (commandType) {
+        case 'gen1_setting':
+        case 'gen1_action_url':
+            // Gen1: async GET with query params (also handles future action URL queuing)
+            String queryString = params.collect { k, v ->
+                "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}".toString()
+            }.join('&')
+            String uri = "http://${ipAddress}/${endpoint}".toString()
+            if (queryString) { uri += "?${queryString}" }
 
-                Map httpParams = [uri: uri, timeout: 10, contentType: 'application/json']
-                if (authIsEnabledGen1()) {
-                    String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
-                    String encoded = credentials.bytes.encodeBase64().toString()
-                    httpParams.headers = ['Authorization': "Basic ${encoded}".toString()]
-                }
-                asynchttpGet('commandQueueDrainCallback', httpParams, callbackData)
-                break
+            Map httpParams = [uri: uri, timeout: 10, contentType: 'application/json']
+            if (authIsEnabledGen1()) {
+                String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
+                String encoded = credentials.bytes.encodeBase64().toString()
+                httpParams.headers = ['Authorization': "Basic ${encoded}".toString()]
+            }
+            asynchttpGet('commandQueueDrainCallback', httpParams, callbackData)
+            break
 
-            case 'gen2_rpc':
-                // Gen2+: async POST with JSON-RPC body
-                Map rpcBody = [id: 1, method: endpoint, params: params]
-                Map httpParams2 = [
-                    uri: "http://${ipAddress}/rpc".toString(),
-                    timeout: 10,
-                    contentType: 'application/json',
-                    requestContentType: 'application/json',
-                    body: groovy.json.JsonOutput.toJson(rpcBody)
-                ]
-                asynchttpPost('commandQueueDrainCallback', httpParams2, callbackData)
-                break
+        case 'gen2_rpc':
+            // Gen2+: async POST with JSON-RPC body
+            Map rpcBody = [id: 1, method: endpoint, params: params]
+            Map httpParams2 = [
+                uri: "http://${ipAddress}/rpc".toString(),
+                timeout: 10,
+                contentType: 'application/json',
+                requestContentType: 'application/json',
+                body: groovy.json.JsonOutput.toJson(rpcBody)
+            ]
+            asynchttpPost('commandQueueDrainCallback', httpParams2, callbackData)
+            break
 
-            default:
-                logWarn("drainCommandQueue: unknown command type '${commandType}' for ${dedupKey}")
-        }
+        default:
+            commandQueueDrainInFlight.remove(dni)
+            logWarn("drainCommandQueue: unknown command type '${commandType}' for ${dedupKey}")
     }
 }
 
@@ -20637,11 +20663,24 @@ private void drainCommandQueue(String dni) {
 void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map data) {
     String dni = data?.dni?.toString() ?: ''
     String dedupKey = data?.dedupKey?.toString() ?: ''
+    String dispatchToken = data?.dispatchToken?.toString() ?: ''
     String deviceName = data?.deviceName?.toString() ?: dni
+
+    if (commandQueueDrainInFlight.get(dni) != dispatchToken) {
+        logTrace("Ignoring stale command queue callback for ${deviceName}: ${dedupKey}")
+        return
+    }
+
+    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    Map dispatchedEntry = deviceQueue?.get(dedupKey)
+    Boolean entryStillMatches = dispatchedEntry?.dispatchToken == dispatchToken
 
     if (response?.status == 200) {
         logInfo("Command delivered to ${deviceName}: ${dedupKey}")
-        dequeueCommand(dni, dedupKey)
+        if (entryStillMatches) { dequeueCommand(dni, dedupKey) }
+        commandQueueDrainInFlight.remove(dni, dispatchToken)
+        commandQueueRetryNotBefore.remove(dni)
+        if (commandQueues.get(dni)) { drainCommandQueue(dni) }
         return
     }
 
@@ -20650,8 +20689,7 @@ void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map da
     logWarn("Command delivery failed for ${deviceName} (${dedupKey}): HTTP ${statusCode} — ${errorMsg}")
 
     // Increment retry count
-    ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
-    if (deviceQueue) {
+    if (deviceQueue && entryStillMatches) {
         Map entry = deviceQueue.get(dedupKey)
         if (entry) {
             Integer retries = (entry.retryCount as Integer ?: 0) + 1
@@ -20662,8 +20700,14 @@ void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map da
             }
             persistCommandQueue(dni)
             logDebug("Command ${dedupKey} for ${deviceName} retry count: ${retries}/${MAX_COMMAND_RETRIES}")
+            if (retries < MAX_COMMAND_RETRIES) {
+                Long backoffSeconds = Math.min(60L, 5L * (1L << Math.min(retries - 1, 3)))
+                commandQueueRetryNotBefore.put(dni, now() + (backoffSeconds * 1000L))
+                logTrace("Command ${dedupKey} retry backoff for ${deviceName}: ${backoffSeconds}s")
+            }
         }
     }
+    commandQueueDrainInFlight.remove(dni, dispatchToken)
     updateSyncStatus(dni)
 }
 
