@@ -13,7 +13,7 @@
 // ==========================================
 
 // === USER CONFIGURATION ===
-let POWERMONITOR_SCRIPT_VERSION = "2.1.0";
+let POWERMONITOR_SCRIPT_VERSION = "2.1.1";
 let DEFAULT_REPORT_INTERVAL = 60; // Fallback if KVS lookup fails
 let REPORT_INTERVAL = DEFAULT_REPORT_INTERVAL;
 let REPORT_INTERVAL_KVS_KEY = "hubitat_sdm_pm_ri"; // KVS key for dynamic report interval (seconds)
@@ -100,6 +100,18 @@ function printDiagnostics(reason) {
 function noteStatusData() {
   statusEventsObserved++;
   statusEventsSinceReport = true;
+}
+
+// mJS does not provide the Array shift method. Remove and return the oldest queued
+// report using only indexed access and the length property.
+function dequeueReport() {
+  if (reportQueue.length === 0) return null;
+  let report = reportQueue[0];
+  for (let i = 1; i < reportQueue.length; i++) {
+    reportQueue[i - 1] = reportQueue[i];
+  }
+  reportQueue.length = reportQueue.length - 1;
+  return report;
 }
 
 // Build a full URL from a KVS-stored IP (handles already-present protocol/port gracefully)
@@ -460,7 +472,7 @@ function sendPostReport(compId, compType, phase, data) {
   }
 
   if (reportQueue.length >= MAX_PENDING_REPORTS) {
-    let dropped = reportQueue.shift();
+    let dropped = dequeueReport();
     if (dropped && dropped.data) {
       dropped.data.sentV = null;
       dropped.data.sentC = null;
@@ -524,7 +536,7 @@ function drainReportQueue() {
     return;
   }
 
-  let report = reportQueue.shift();
+  let report = dequeueReport();
   reportInFlight = true;
   let token = reportInFlightToken + 1;
   reportInFlightToken = token;
