@@ -97,6 +97,15 @@
 @Field static ConcurrentHashMap<String, Object> deviceConfigurationSyncLocks =
     new java.util.concurrent.ConcurrentHashMap<String, Object>()
 
+/** In-memory parent-command queues, keyed by IP/method/component. */
+@Field static ConcurrentHashMap<String, List<Map>> parentCommandQueues =
+    new java.util.concurrent.ConcurrentHashMap<String, List<Map>>()
+@Field static ConcurrentHashMap<String, Map> parentCommandInFlight =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, Object> parentCommandLocks =
+    new java.util.concurrent.ConcurrentHashMap<String, Object>()
+@Field static final Integer MAX_PARENT_COMMAND_QUEUE = 50
+
 /** Direct app-child lookup cache; component grandchildren remain resolved by getChildDevice(). */
 @Field static volatile List directChildDeviceCache = null
 @Field static volatile long directChildDeviceCacheTime = 0L
@@ -13377,14 +13386,16 @@ void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '', S
   else { postCommandAsync(command, callbackMethod, uri) }
 }
 
-void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null) {
+void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null, Map callbackData = null) {
   LinkedHashMap json
   Map params = [uri: (uri ?: "${getBaseUriRpc()}")]
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
   params.body = command
   if(shouldLogOverall('trace')) { logTrace("postCommandAsync sending: ${prettyJson(params)}") }
-  asynchttpPost('postCommandAsyncCallback', params, [params:params, command:command, attempt:1, callbackMethod:callbackMethod])
+  Map asyncData = [params:params, command:command, attempt:1, callbackMethod:callbackMethod]
+  if (callbackData) { asyncData.putAll(callbackData) }
+  asynchttpPost('postCommandAsyncCallback', params, asyncData)
   // NOTE: deliberately no setAuthIsEnabled(false) here — this is the dispatch path and the
   // request outcome is not yet known; clearing the flag here broke auth for the follow-up 401
 }
@@ -13404,11 +13415,19 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
       params.body = command
     }
     if(data?.attempt == 1) {
-      asynchttpPost('postCommandAsyncCallback', params, [params:params, command:command, attempt:2, callbackMethod:data?.callbackMethod])
+      Map retryData = new LinkedHashMap(data ?: [:])
+      retryData.params = params
+      retryData.command = command
+      retryData.attempt = 2
+      asynchttpPost('postCommandAsyncCallback', params, retryData)
     } else {
       logError('Auth failed a second time. Double check password correctness.')
+      String followOnCallback = data?.callbackMethod
+      if (followOnCallback != null && followOnCallback != '') {
+        "${followOnCallback}"(response, data)
+      }
     }
-  } else if(response?.status == 200) {
+  } else {
     String followOnCallback = data?.callbackMethod
     if(followOnCallback != null && followOnCallback != '') {
       logTrace("Follow On Callback: ${followOnCallback}")
@@ -13422,15 +13441,17 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
  * has handled success and authentication retries.
  */
 void parentCommandAsyncCallback(AsyncResponse response, Map data = null) {
-  String uri = data?.params?.uri?.toString() ?: ''
-  String ipAddress = uri.replaceFirst('^https?://', '').split('/')[0]
-  if (ipAddress) { invalidateDeviceStatusCache(ipAddress) }
+    String uri = data?.params?.uri?.toString() ?: ''
+    String ipAddress = uri.replaceFirst('^https?://', '').split('/')[0]
+    if (ipAddress) { invalidateDeviceStatusCache(ipAddress) }
 
   if (response?.status == 200) {
     logDebug("parent command completed asynchronously for ${ipAddress}")
-  } else {
-    logWarn("parent command failed asynchronously for ${ipAddress}: HTTP ${response?.status} — ${response?.getErrorMessage() ?: 'unknown error'}")
-  }
+    } else {
+        logWarn("parent command failed asynchronously for ${ipAddress}: HTTP ${response?.status} — ${response?.getErrorMessage() ?: 'unknown error'}")
+    }
+
+    completeParentCommand(data?.parentCommandKey?.toString(), data?.parentCommandFingerprint?.toString())
 }
 
 LinkedHashMap postSync(LinkedHashMap command) {
@@ -20553,6 +20574,109 @@ private void syncConfigurationForParentIfNeeded(def parentDevice, String parentD
     }
 }
 
+/** Returns true only for commands whose newest value safely replaces older values. */
+private Boolean isReplaceableParentCommand(String method, Map params) {
+    if (method == 'Cover.GoToPosition') { return true }
+    if (method == 'White.SetLevel') { return true }
+    return method == 'Light.Set' && params?.brightness != null
+}
+
+/** Builds a stable queue key for one Shelly component. */
+private String parentCommandQueueKey(String ipAddress, String method, Map params) {
+    Object componentId = params?.id
+    if (componentId != null) {
+        return "${ipAddress}|component|${componentId}"
+    }
+    return "${ipAddress}|method|${method}"
+}
+
+/** Builds a stable command fingerprint for duplicate suppression. */
+private String parentCommandFingerprint(String method, Map params) {
+    return groovy.json.JsonOutput.toJson([method: method, params: params ?: [:]])
+}
+
+/**
+ * Enqueues a parent command and starts it if that device/component is idle.
+ * Queues are deliberately volatile: commands are user/automation actions and
+ * must not be replayed after a hub restart.
+ */
+private void enqueueParentCommand(String ipAddress, String method, Map params, String rpcUri) {
+    String queueKey = parentCommandQueueKey(ipAddress, method, params)
+    String fingerprint = parentCommandFingerprint(method, params)
+    Boolean replaceable = isReplaceableParentCommand(method, params)
+    Object lock = parentCommandLocks.computeIfAbsent(queueKey) { new Object() }
+    Map dispatchEntry = null
+
+    synchronized (lock) {
+        Map inFlight = parentCommandInFlight[queueKey]
+        List<Map> queue = new ArrayList((parentCommandQueues[queueKey] ?: []) as List<Map>)
+        if (inFlight?.fingerprint == fingerprint || queue.any { Map entry -> entry.fingerprint == fingerprint }) {
+            logTrace("Ignoring duplicate parent command for ${queueKey}")
+            return
+        }
+
+        if (replaceable) {
+            queue = queue.findAll { Map entry -> entry.replaceable != true }
+        }
+        if (!replaceable && queue.size() >= MAX_PARENT_COMMAND_QUEUE) {
+            logWarn("Parent command queue full for ${queueKey}; dropping ${method}")
+            return
+        }
+        queue.add([method: method, params: params ?: [:], rpcUri: rpcUri,
+                   fingerprint: fingerprint, replaceable: replaceable])
+
+        if (inFlight == null) {
+            dispatchEntry = queue.remove(0) as Map
+            parentCommandInFlight[queueKey] = dispatchEntry
+        }
+        if (queue) { parentCommandQueues[queueKey] = queue }
+        else { parentCommandQueues.remove(queueKey) }
+    }
+
+    if (dispatchEntry) { dispatchParentCommandEntry(queueKey, dispatchEntry) }
+}
+
+/** Dispatches one already-coordinated parent command. */
+private void dispatchParentCommandEntry(String queueKey, Map entry) {
+    LinkedHashMap command = [id: 0, src: 'hubitat', method: entry.method, params: entry.params]
+    try {
+        postCommandAsync(command, 'parentCommandAsyncCallback', entry.rpcUri, [
+            parentCommandKey: queueKey,
+            parentCommandFingerprint: entry.fingerprint
+        ])
+        logTrace("parent command dispatched by coordinator: ${entry.method} → ${entry.rpcUri}")
+    } catch (Exception e) {
+        logWarn("parent command dispatch failed for ${entry.rpcUri}: ${e.message}")
+        completeParentCommand(queueKey, entry.fingerprint)
+    }
+}
+
+/** Completes one command and dispatches the next queued command, if any. */
+private void completeParentCommand(String queueKey, String fingerprint) {
+    if (!queueKey || !fingerprint) { return }
+    Object lock = parentCommandLocks[queueKey]
+    if (!lock) { return }
+    Map nextEntry = null
+
+    synchronized (lock) {
+        Map inFlight = parentCommandInFlight[queueKey]
+        if (!inFlight || inFlight.fingerprint?.toString() != fingerprint) { return }
+
+        parentCommandInFlight.remove(queueKey)
+        List<Map> queue = new ArrayList((parentCommandQueues[queueKey] ?: []) as List<Map>)
+        if (queue) {
+            nextEntry = queue.remove(0) as Map
+            parentCommandInFlight[queueKey] = nextEntry
+            if (queue) { parentCommandQueues[queueKey] = queue }
+            else { parentCommandQueues.remove(queueKey) }
+        } else {
+            parentCommandQueues.remove(queueKey)
+        }
+    }
+
+    if (nextEntry) { dispatchParentCommandEntry(queueKey, nextEntry) }
+}
+
 /** Forces configuration synchronization from an explicit parent configure request. */
 private void forceConfigurationSync(def parentDevice) {
     String ipAddress = parentDevice?.getDataValue('ipAddress')
@@ -22520,18 +22644,10 @@ void parentSendCommand(def parentDevice, String method, Map params) {
 
     // Gen 2/3: standard JSON-RPC
     String rpcUri = "http://${ipAddress}/rpc"
-    LinkedHashMap command = [
-        id: 0,
-        src: 'hubitat',
-        method: method,
-        params: params
-    ]
-
     // Parent drivers do not consume the RPC response. Dispatch asynchronously so
     // a slow device cannot block the app execution context or other child commands.
     invalidateDeviceStatusCache(ipAddress)
-    postCommandAsync(command, 'parentCommandAsyncCallback', rpcUri)
-    logTrace("parentSendCommand dispatched asynchronously: ${method} → ${rpcUri}")
+    enqueueParentCommand(ipAddress, method, params, rpcUri)
 }
 
 /**
