@@ -93,6 +93,10 @@
 @Field static ConcurrentHashMap<String, Object> deviceStatusQueryLocks =
     new java.util.concurrent.ConcurrentHashMap<String, Object>()
 
+/** Per-IP locks prevent sibling refreshes from repeating configuration synchronization. */
+@Field static ConcurrentHashMap<String, Object> deviceConfigurationSyncLocks =
+    new java.util.concurrent.ConcurrentHashMap<String, Object>()
+
 /** Direct app-child lookup cache; component grandchildren remain resolved by getChildDevice(). */
 @Field static volatile List directChildDeviceCache = null
 @Field static volatile long directChildDeviceCacheTime = 0L
@@ -4849,6 +4853,7 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
  */
 private void removeDeviceByIp(String ip) {
     invalidateDeviceStatusCache(ip)
+    invalidateConfigurationSync(ip)
     def device = findChildDeviceByIp(ip)
     if (!device) {
         logWarn("removeDeviceByIp: no child device found for ${ip}")
@@ -19663,6 +19668,8 @@ void componentNotifyIpChanged(DeviceWrapper childDevice, String oldIp, String ne
     if (!oldIp || !newIp || oldIp == newIp) { return }
     invalidateDeviceStatusCache(oldIp)
     invalidateDeviceStatusCache(newIp)
+    invalidateConfigurationSync(oldIp)
+    invalidateConfigurationSync(newIp)
     String deviceName = childDevice?.displayName ?: 'Unknown'
     logInfo("componentNotifyIpChanged: ${deviceName} IP changed: ${oldIp} -> ${newIp}")
     childDevice.updateSetting('ipAddress', newIp)
@@ -20417,9 +20424,7 @@ void componentRefresh(def childDevice) {
         if (isParent) {
             // Parent refresh: distribute status to all children
             distributeStatusToChildren(parentDni, deviceStatus)
-            syncSwitchConfigForParentChildren(parentDni, ipAddress)
-            syncCoverConfigToDriver(childDevice, ipAddress)
-            syncCoverConfigForParentChildren(parentDni, ipAddress)
+            syncConfigurationForParentIfNeeded(childDevice, parentDni, ipAddress, deviceStatus)
         } else {
             String refreshTypeName = childDevice.typeName ?: ''
             // DALI Dimmer consumes the full deviceStatus map directly because it maps
@@ -20440,17 +20445,126 @@ void componentRefresh(def childDevice) {
                     updateChildFromStatus(childDevice, componentType, componentData)
                 }
             }
-            syncSwitchConfigToDriver(childDevice, ipAddress)
-            syncCoverConfigToDriver(childDevice, ipAddress)
-            // Sync light config for dimmer devices (dimmers have light:N components, not switch:N)
-            if (refreshTypeName.contains('Dimmer')) {
-                syncLightConfigToDriver(childDevice, ipAddress)
-                syncWdUiConfigToDriver(childDevice, ipAddress)
-            }
+            syncConfigurationForChildIfNeeded(childDevice, ipAddress, deviceStatus)
         }
     } catch (Exception e) {
         logError("componentRefresh exception for ${childDevice.displayName}: ${e.message}")
     }
+}
+
+/**
+ * Returns the Shelly configuration revision carried by a status response.
+ * Devices without cfg_rev are treated as a single stable revision and can still
+ * be refreshed explicitly through configure/resync.
+ */
+private String getDeviceConfigurationRevision(Map deviceStatus) {
+    Object revision = (deviceStatus?.sys as Map)?.cfg_rev
+    return revision != null ? revision.toString() : 'unknown'
+}
+
+/** Returns the physical identity used to prevent stale per-IP sync records. */
+private String getDeviceConfigurationIdentity(Map deviceStatus, String ipAddress) {
+    Object mac = (deviceStatus?.sys as Map)?.mac
+    return mac != null ? mac.toString().toUpperCase() : ipAddress
+}
+
+/** Removes persisted and volatile configuration-sync state for an IP. */
+private void invalidateConfigurationSync(String ipAddress) {
+    if (!ipAddress) { return }
+    deviceConfigurationSyncLocks.remove(ipAddress)
+    Map records = new LinkedHashMap((state.configurationSyncByIp ?: [:]) as Map)
+    if (records.remove(ipAddress) != null) {
+        state.configurationSyncByIp = records
+    }
+}
+
+/**
+ * Runs configuration synchronization once for a child and Shelly cfg_rev.
+ * A child refresh only marks that child complete; it never suppresses setup for
+ * sibling components that have not yet been refreshed.
+ */
+private void syncConfigurationForChildIfNeeded(def childDevice, String ipAddress, Map deviceStatus,
+                                               Boolean force = false) {
+    if (!childDevice || !ipAddress || !deviceStatus) { return }
+
+    Object lock = deviceConfigurationSyncLocks.computeIfAbsent(ipAddress) { new Object() }
+    synchronized (lock) {
+        String revision = getDeviceConfigurationRevision(deviceStatus)
+        String identity = getDeviceConfigurationIdentity(deviceStatus, ipAddress)
+        Map records = (state.configurationSyncByIp ?: [:]) as Map
+        Map record = (records[ipAddress] ?: [:]) as Map
+        Boolean alreadySynced = !force && record.identity?.toString() == identity &&
+            record.cfgRev?.toString() == revision &&
+            (record.parentSynced == true || ((record.childDnis ?: []) as List).contains(childDevice.deviceNetworkId?.toString()))
+        if (alreadySynced) {
+            logTrace("Skipping configuration sync for ${ipAddress}/${childDevice.deviceNetworkId}: cfg_rev=${revision} already synchronized")
+            return
+        }
+
+        String refreshTypeName = childDevice.typeName ?: ''
+        syncSwitchConfigToDriver(childDevice, ipAddress)
+        syncCoverConfigToDriver(childDevice, ipAddress)
+        // Sync light config for dimmer devices (dimmers have light:N components, not switch:N)
+        if (refreshTypeName.contains('Dimmer')) {
+            syncLightConfigToDriver(childDevice, ipAddress)
+            syncWdUiConfigToDriver(childDevice, ipAddress)
+        }
+
+        List childDnis = new ArrayList((record.childDnis ?: []) as List)
+        String childDni = childDevice.deviceNetworkId?.toString()
+        if (childDni && !childDnis.contains(childDni)) { childDnis.add(childDni) }
+        Map updatedRecord = [identity: identity, cfgRev: revision, childDnis: childDnis, syncedAt: now()]
+        Map updatedRecords = new LinkedHashMap(records)
+        updatedRecords[ipAddress] = updatedRecord
+        state.configurationSyncByIp = updatedRecords
+        logTrace("Recorded configuration sync for ${ipAddress}/${childDni}: cfg_rev=${revision}")
+    }
+}
+
+/**
+ * Runs the complete parent configuration synchronization once per Shelly cfg_rev.
+ * The parent-wide flag allows one parent refresh to cover all sibling components.
+ */
+private void syncConfigurationForParentIfNeeded(def parentDevice, String parentDni, String ipAddress,
+                                                Map deviceStatus, Boolean force = false) {
+    if (!parentDevice || !parentDni || !ipAddress || !deviceStatus) { return }
+
+    Object lock = deviceConfigurationSyncLocks.computeIfAbsent(ipAddress) { new Object() }
+    synchronized (lock) {
+        String revision = getDeviceConfigurationRevision(deviceStatus)
+        String identity = getDeviceConfigurationIdentity(deviceStatus, ipAddress)
+        Map records = (state.configurationSyncByIp ?: [:]) as Map
+        Map record = (records[ipAddress] ?: [:]) as Map
+        if (!force && record.identity?.toString() == identity && record.cfgRev?.toString() == revision && record.parentSynced == true) {
+            logTrace("Skipping parent configuration sync for ${ipAddress}: cfg_rev=${revision} already synchronized")
+            return
+        }
+
+        syncSwitchConfigForParentChildren(parentDni, ipAddress)
+        syncCoverConfigToDriver(parentDevice, ipAddress)
+        syncCoverConfigForParentChildren(parentDni, ipAddress)
+        syncPowerstripUiConfigToDriver(parentDevice, ipAddress)
+
+        Map updatedRecord = [identity: identity, cfgRev: revision, parentSynced: true, childDnis: [], syncedAt: now()]
+        Map updatedRecords = new LinkedHashMap(records)
+        updatedRecords[ipAddress] = updatedRecord
+        state.configurationSyncByIp = updatedRecords
+        logTrace("Recorded parent configuration sync for ${ipAddress}: cfg_rev=${revision}")
+    }
+}
+
+/** Forces configuration synchronization from an explicit parent configure request. */
+private void forceConfigurationSync(def parentDevice) {
+    String ipAddress = parentDevice?.getDataValue('ipAddress')
+    String parentDni = parentDevice?.deviceNetworkId
+    if (!ipAddress || !parentDni || isGen1Device(parentDevice)) { return }
+
+    Map deviceStatus = queryDeviceStatus(ipAddress)
+    if (!deviceStatus) {
+        logWarn("forceConfigurationSync: no status returned for ${ipAddress}")
+        return
+    }
+    syncConfigurationForParentIfNeeded(parentDevice, parentDni, ipAddress, deviceStatus, true)
 }
 
 /**
@@ -20473,7 +20587,10 @@ void componentInitialize(def parentDevice) {
  */
 void componentConfigure(def parentDevice) {
     logDebug("componentConfigure() called from parent: ${parentDevice.displayName}")
-    // Configuration is handled during device creation.
+    // Configuration is handled during device creation and explicit configure.
+    // A configure request is the driver's force/resync path; normal refreshes
+    // only synchronize when the Shelly configuration revision changes.
+    forceConfigurationSync(parentDevice)
     // Gen 1 Motion settings sync is triggered via componentRefresh
     // when the gen1SettingsSynced flag is absent (cleared by driver configure()).
 }
@@ -22526,9 +22643,7 @@ void parentRefresh(def parentDevice) {
     // Send status to parent driver via distributeStatus() callback
     try {
         parentDevice.distributeStatus(deviceStatus)
-        syncCoverConfigToDriver(parentDevice, ipAddress)
-        syncCoverConfigForParentChildren(parentDevice.deviceNetworkId, ipAddress)
-        syncPowerstripUiConfigToDriver(parentDevice, ipAddress)
+        syncConfigurationForParentIfNeeded(parentDevice, parentDevice.deviceNetworkId, ipAddress, deviceStatus)
         logDebug("Sent status to ${parentDevice.displayName}")
     } catch (Exception e) {
         logError("Failed to distribute status to ${parentDevice.displayName}: ${e.message}")
