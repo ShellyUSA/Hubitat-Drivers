@@ -175,7 +175,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.85"
+@Field static final String APP_VERSION = "1.0.86"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -3256,8 +3256,9 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
 
 /**
  * Processes the next script in the installation queue.
- * Downloads script code from GitHub, creates or stops the existing script slot,
- * then starts an async chunk upload. When the queue is exhausted, calls
+ * Downloads script code from GitHub, deletes/recreates any existing managed
+ * script with the same name, then starts an async chunk upload. When the queue
+ * is exhausted, calls
  * {@link #finalizeScriptInstallation}.
  *
  * @param data Map containing queue state (scriptQueue, queueIndex, uri, etc.)
@@ -3299,36 +3300,58 @@ void installNextScript(Map data) {
         return
     }
 
-    // Check if script already exists on device
+    // Check if script already exists on device. Reinit intentionally deletes
+    // and recreates an existing managed script instead of reusing its slot.
+    // This guarantees that stale script metadata/code is removed before the
+    // newly downloaded source is uploaded.
     Map existingScript = installedScripts.find { (it.name ?: '') == scriptName }
     Boolean isUpdate = (existingScript != null)
 
     try {
         Integer scriptId
         if (isUpdate) {
-            scriptId = existingScript.id as Integer
-            logInfo("Updating script '${scriptName}' (id: ${scriptId}) on ${ipAddress}...")
-            appendLog('info', "Updating ${scriptName} on ${deviceDisplayName}...")
+            Integer existingScriptId = existingScript.id as Integer
+            if (existingScriptId == null) {
+                throw new IllegalStateException("Existing script '${scriptName}' has no valid id")
+            }
 
-            LinkedHashMap stopCmd = scriptStopCommand(scriptId)
+            logInfo("Replacing script '${scriptName}' (id: ${existingScriptId}) on ${ipAddress}...")
+            appendLog('info', "Replacing ${scriptName} on ${deviceDisplayName}...")
+
+            LinkedHashMap stopCmd = scriptStopCommand(existingScriptId)
             if (hasAuth) { stopCmd.auth = getAuth() }
-            postCommandSync(stopCmd, uri)
+            LinkedHashMap stopResult = postCommandSync(stopCmd, uri)
+            if (stopResult?.error) {
+                throw new IllegalStateException("Script.Stop failed for '${scriptName}': ${stopResult.error}")
+            }
+
+            LinkedHashMap deleteCmd = scriptDeleteCommand(existingScriptId)
+            if (hasAuth) { deleteCmd.auth = getAuth() }
+            LinkedHashMap deleteResult = postCommandSync(deleteCmd, uri)
+            if (deleteResult?.error) {
+                throw new IllegalStateException("Script.Delete failed for '${scriptName}': ${deleteResult.error}")
+            }
+            logInfo("Removed existing script '${scriptName}' (id: ${existingScriptId}) from ${ipAddress}")
         } else {
             logInfo("Installing script '${scriptName}' on ${ipAddress}...")
             appendLog('info', "Installing ${scriptName} on ${deviceDisplayName}...")
-
-            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
-            if (hasAuth) { createCmd.auth = getAuth() }
-            LinkedHashMap createResult = postCommandSync(createCmd, uri)
-            scriptId = createResult?.result?.id as Integer
-
-            if (scriptId == null) {
-                logError("Failed to create script '${scriptName}' on device")
-                appendLog('error', "Failed to create ${scriptName}")
-                installNextScript(data + [queueIndex: queueIndex + 1])
-                return
-            }
         }
+
+        // Always create a fresh script slot. For updates this follows the
+        // successful stop/delete sequence above; for new scripts this is the
+        // initial create operation.
+        LinkedHashMap createCmd = scriptCreateCommand(scriptName)
+        if (hasAuth) { createCmd.auth = getAuth() }
+        LinkedHashMap createResult = postCommandSync(createCmd, uri)
+        if (createResult == null || createResult.error) {
+            throw new IllegalStateException("Script.Create failed for '${scriptName}': ${createResult?.error ?: 'no response'}")
+        }
+        scriptId = ((createResult?.result as Map)?.id ?: createResult?.id) as Integer
+
+        if (scriptId == null) {
+            throw new IllegalStateException("Script.Create returned no id for '${scriptName}'")
+        }
+        logInfo("Created fresh script '${scriptName}' (id: ${scriptId}) on ${ipAddress}")
 
         // Persist script code in atomicState so scheduled chunks can retrieve it.
         String codeStateKey = "scriptUpload_${scriptId}_${now()}".toString()
