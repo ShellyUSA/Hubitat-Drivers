@@ -14382,19 +14382,38 @@ private void flushBleDiscoveryVolatile() {
 
     if (bleDiscoveryVolatile.isEmpty()) { return }
 
-    Map discoveredBle = state.discoveredBleDevices ?: [:]
+    Map discoveredBle = null
     Boolean changed = false
 
     bleDiscoveryVolatile.each { String macKey, Map volatileData ->
-        Map entry = discoveredBle[macKey] as Map
+        Map existingEntry = (state.discoveredBleDevices ?: [:])[macKey] as Map
+        Map entry = existingEntry ? new LinkedHashMap(existingEntry) : null
         if (!entry) { return }
 
-        if (volatileData.rssi != null) { entry.rssi = volatileData.rssi }
-        if (volatileData.battery != null) { entry.battery = volatileData.battery }
-        if (volatileData.lastSeen != null) { entry.lastSeen = volatileData.lastSeen }
-        if (volatileData.lastGateway != null) { entry.lastGateway = volatileData.lastGateway }
-        discoveredBle[macKey] = entry
-        changed = true
+        Boolean entryChanged = false
+        if (volatileData.rssi != null && entry.rssi != volatileData.rssi) {
+            entry.rssi = volatileData.rssi
+            entryChanged = true
+        }
+        if (volatileData.battery != null && entry.battery != volatileData.battery) {
+            entry.battery = volatileData.battery
+            entryChanged = true
+        }
+        if (volatileData.lastSeen != null && entry.lastSeen != volatileData.lastSeen) {
+            entry.lastSeen = volatileData.lastSeen
+            entryChanged = true
+        }
+        if (volatileData.lastGateway != null && entry.lastGateway != volatileData.lastGateway) {
+            entry.lastGateway = volatileData.lastGateway
+            entryChanged = true
+        }
+        if (entryChanged) {
+            if (discoveredBle == null) {
+                discoveredBle = new LinkedHashMap((state.discoveredBleDevices ?: [:]) as Map)
+            }
+            discoveredBle[macKey] = entry
+            changed = true
+        }
     }
 
     if (changed) {
@@ -14406,19 +14425,25 @@ private void flushBleDiscoveryVolatile() {
     // the full state.deviceConfigs whenever any BLU device received any advertisement in the window,
     // even if all contact times were already persisted on the previous flush.
     Long previousContactFlushTime = bleLastContactFlushTime
-    Map deviceConfigs = new LinkedHashMap((atomicState.deviceConfigs ?: [:]) as Map)
+    Map deviceConfigs = null
     Boolean configChanged = false
     bleLastContact.each { String macKey, Long contactTime ->
         if (contactTime <= previousContactFlushTime) { return }
-        Map config = deviceConfigs[macKey] as Map
+        Map config = (atomicState.deviceConfigs ?: [:])[macKey] as Map
         if (config) {
-            config.lastBleContact = contactTime
-            deviceConfigs[macKey] = config
-            configChanged = true
+            if (((config.lastBleContact as Long) ?: 0L) != contactTime) {
+                if (deviceConfigs == null) {
+                    deviceConfigs = new LinkedHashMap((atomicState.deviceConfigs ?: [:]) as Map)
+                }
+                Map updatedConfig = new LinkedHashMap(config)
+                updatedConfig.lastBleContact = contactTime
+                deviceConfigs[macKey] = updatedConfig
+                configChanged = true
+            }
         }
     }
     if (configChanged) {
-    atomicState.deviceConfigs = deviceConfigs
+        atomicState.deviceConfigs = deviceConfigs
     }
     bleLastContactFlushTime = nowMs
 }
