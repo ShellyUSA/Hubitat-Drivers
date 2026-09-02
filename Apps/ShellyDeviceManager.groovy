@@ -1415,7 +1415,12 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
  * Called when the app is first installed.
  * Initializes the app by calling {@link #initialize()}.
  */
-void installed() { initialize() }
+void installed() {
+    initialize(true)
+    // If the hub is already running, register listeners immediately; after a reboot
+    // systemStartHandler performs this lightweight registration instead.
+    startMdnsDiscovery()
+}
 
 /**
  * Called when the app settings are updated.
@@ -1439,7 +1444,8 @@ void updated() {
 
     unsubscribe()
     unschedule()
-    initialize()
+    initialize(true)
+    startMdnsDiscovery()
     sweepAllUnusedShellyHubDrivers()  // hub-centric sweep: deletes any unused ShellyDeviceManager drivers regardless of tracking state
 }
 
@@ -6416,12 +6422,12 @@ private String stripJsExtension(String filename) {
 }
 
 /**
- * Initializes the app state and sets up mDNS discovery.
- * Initializes state variables for discovered devices and logs,
- * mirrors logging settings to state, subscribes to system start events,
- * and registers mDNS listeners.
+ * Initializes operational app state and reconciles schedules.
+ * Hub-start mDNS registration is handled by {@link #systemStartHandler};
+ * driver maintenance and remote update checks run only during install or
+ * settings-update initialization.
  */
-void initialize() {
+void initialize(Boolean performMaintenance = false, Boolean registerStartupSubscription = true) {
     // Do not carry transient lookup results across app initialization or updates.
     deviceStatusCacheVolatile.clear()
     invalidateDirectChildDeviceCache()
@@ -6437,13 +6443,15 @@ void initialize() {
     atomicState.remove('asyncFetchQueue')
 
     // IP subnet scan state reset
-    atomicState.ipScanRunning = false
-    atomicState.remove('ipScanCurrentOctet')
-    atomicState.remove('ipScanSubnet')
-    atomicState.remove('ipScanResults')
+    if (atomicState.ipScanRunning == true) { atomicState.ipScanRunning = false }
+    if (atomicState.ipScanCurrentOctet != null) { atomicState.remove('ipScanCurrentOctet') }
+    if (atomicState.ipScanSubnet != null) { atomicState.remove('ipScanSubnet') }
+    if (atomicState.ipScanResults != null) { atomicState.remove('ipScanResults') }
 
     // Restore command queues for sleepy battery devices from persistent state
-    loadCommandQueuesFromState()
+    // Restoring queues is operational recovery; publishing every queue status again
+    // is unnecessary because child state survives a hub restart.
+    loadCommandQueuesFromState(false)
 
     // BLE state initialization
     if (!state.discoveredBleDevices) { state.discoveredBleDevices = [:] }
@@ -6475,68 +6483,64 @@ void initialize() {
     }
 
     // Ensure state mirrors current settings for logging
-    state.logLevel = settings?.logLevel ?: (state.logLevel ?: 'debug')
-    state.displayLogLevel = settings?.displayLogLevel ?: state.logLevel
+    String configuredLogLevel = settings?.logLevel ?: (state.logLevel ?: 'debug')
+    String configuredDisplayLogLevel = settings?.displayLogLevel ?: configuredLogLevel
+    if (state.logLevel != configuredLogLevel) { state.logLevel = configuredLogLevel }
+    if (state.displayLogLevel != configuredDisplayLogLevel) { state.displayLogLevel = configuredDisplayLogLevel }
 
-    // mDNS listeners must be registered on system startup per Hubitat docs
-    subscribe(location, 'systemStart', 'systemStartHandler')
-
-    // Also register now in case hub has been up for a while
-    startMdnsDiscovery()
-
-    // Clean up stale state from previous versions
-    state.remove('driverRebuildInProgress')
-    state.remove('driverRebuildQueue')
-    state.remove('driverRebuildCurrentKey')
-    state.remove('driverRebuildErrors')
-    state.remove('pendingDeviceCreations')
-    state.remove('discoveryDriverQueue')
-    state.remove('discoveryDriverInProgress')
-    state.remove('driverGeneration')
-    state.remove('pendingFoundShellyEvent')
-
-    // Recover from in-flight driver update queue across a hub reboot. runIn
-    // schedules don't survive reboots, so a queue with active=true would
-    // otherwise be stranded. We abort rather than resume — silently restarting
-    // a partially-completed queue would surprise the user. They can re-click
-    // Update All if they want to retry.
-    if (atomicState.driverUpdateProgress?.active == true) {
-        appendLog('warn', 'Driver update queue was in progress at reboot — clearing stale state')
-        atomicState.remove('driverUpdateQueue')
-        atomicState.remove('driverUpdateProgress')
-        sendEvent(name: 'driverRebuildStatus', value: 'cleared')
+    // mDNS listeners must be registered on system startup per Hubitat docs.
+    // Avoid re-registering this subscription while handling systemStart itself.
+    if (registerStartupSubscription) {
+        subscribe(location, 'systemStart', 'systemStartHandler')
     }
 
-    // Clean up stale driver tracking entries from old app versions
-    pruneStaleDriverTracking()
+    if (performMaintenance) {
+        // Clean up stale state from previous versions.
+        state.remove('driverRebuildInProgress')
+        state.remove('driverRebuildQueue')
+        state.remove('driverRebuildCurrentKey')
+        state.remove('driverRebuildErrors')
+        state.remove('pendingDeviceCreations')
+        state.remove('discoveryDriverQueue')
+        state.remove('discoveryDriverInProgress')
+        state.remove('driverGeneration')
+        state.remove('pendingFoundShellyEvent')
 
-    // Check for app version change and trigger driver update
-    String currentVersion = getAppVersion()
-    String lastVersion = state.lastAutoconfVersion
-
-    if (lastVersion == null) {
-        // First install: store version, no update needed
-        state.lastAutoconfVersion = currentVersion
-        logInfo("First install detected, storing app version: ${currentVersion}")
-    } else if (lastVersion != currentVersion) {
-        state.lastAutoconfVersion = currentVersion
-        if (settings?.rebuildOnUpdate != false) {
-            logInfo("App version changed from ${lastVersion} to ${currentVersion}, updating drivers")
-            startBulkDriverUpdate()
-        } else {
-            logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver update disabled)")
+        // Recover from an interrupted driver update only during install/settings
+        // maintenance; a reboot should not start or inspect remote driver work.
+        if (atomicState.driverUpdateProgress?.active == true) {
+            appendLog('warn', 'Driver update queue was interrupted — clearing stale state')
+            atomicState.remove('driverUpdateQueue')
+            atomicState.remove('driverUpdateProgress')
+            sendEvent(name: 'driverRebuildStatus', value: 'cleared')
         }
-    } else {
-        // Even if app version hasn't changed, check if any tracked drivers are outdated
-        Map allDrivers = atomicState.autoDrivers ?: [:]
-        // Ignore entries with a null version (partially-written tracking) — treating them as
-        // outdated would trigger a bulk driver update on every app save / hub reboot
-        Boolean hasOutdated = allDrivers.any { key, info -> info.version && info.version.toString() != currentVersion }
-        if (hasOutdated && settings?.rebuildOnUpdate != false) {
-            logInfo("Found outdated drivers at app version ${currentVersion}, triggering update")
-            startBulkDriverUpdate()
+
+        pruneStaleDriverTracking()
+
+        // Check app/driver versions only when the app is installed or settings are
+        // changed, never as part of reboot recovery.
+        String currentVersion = getAppVersion()
+        String lastVersion = state.lastAutoconfVersion
+        if (lastVersion == null) {
+            state.lastAutoconfVersion = currentVersion
+            logInfo("First install detected, storing app version: ${currentVersion}")
+        } else if (lastVersion != currentVersion) {
+            state.lastAutoconfVersion = currentVersion
+            if (settings?.rebuildOnUpdate != false) {
+                logInfo("App version changed from ${lastVersion} to ${currentVersion}, updating drivers")
+                startBulkDriverUpdate()
+            } else {
+                logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver update disabled)")
+            }
         } else {
-            logDebug("App version unchanged (${currentVersion}), no driver update needed")
+            Map allDrivers = atomicState.autoDrivers ?: [:]
+            Boolean hasOutdated = allDrivers.any { key, info -> info.version && info.version.toString() != currentVersion }
+            if (hasOutdated && settings?.rebuildOnUpdate != false) {
+                logInfo("Found outdated drivers at app version ${currentVersion}, triggering update")
+                startBulkDriverUpdate()
+            } else {
+                logDebug("App version unchanged (${currentVersion}), no driver update needed")
+            }
         }
     }
 
@@ -6711,7 +6715,10 @@ private List getShellyHelperEntries() {
  * @param evt The system start event
  */
 void systemStartHandler(evt) {
-    logTrace('System start detected, registering mDNS listeners')
+    logTrace('System start detected, restoring operational state and schedules')
+    // Reboot recovery must restore the runtime state used by every installed
+    // child type, but must not perform driver maintenance or remote checks.
+    initialize(false, false)
     startMdnsDiscovery()
 }
 
@@ -20451,7 +20458,7 @@ private void persistCommandQueue(String dni) {
  * static maps on app startup. Also migrates any legacy {@code state.pendingGen1Settings}
  * entries into the new queue format.
  */
-private void loadCommandQueuesFromState() {
+private void loadCommandQueuesFromState(Boolean publishStatus = true) {
     // Restore persisted queues
     Map persistedQueues = atomicState.commandQueues as Map
     if (persistedQueues) {
@@ -20491,8 +20498,11 @@ private void loadCommandQueuesFromState() {
         logInfo("Migrated ${legacySettings.size()} legacy Gen1 settings to command queue")
     }
 
-    // Refresh syncStatus attributes for all devices with queued commands
-    commandQueues.keySet().each { String dni -> updateSyncStatus(dni) }
+    // Child state survives a reboot, so avoid re-emitting every queue status unless
+    // the caller explicitly requests a maintenance refresh.
+    if (publishStatus) {
+        commandQueues.keySet().each { String dni -> updateSyncStatus(dni) }
+    }
 }
 
 /**
