@@ -15830,8 +15830,12 @@ private Boolean childSendEventIfChanged(def child, Map properties) {
   Boolean unchanged
   if (currentValue == null || newValue == null) {
     unchanged = currentValue == null && newValue == null
-  } else if (currentValue instanceof Number && newValue instanceof Number) {
-    unchanged = new BigDecimal(currentValue.toString()) == new BigDecimal(newValue.toString())
+  } else if (currentValue instanceof Number || newValue instanceof Number) {
+    try {
+      unchanged = new BigDecimal(currentValue.toString()) == new BigDecimal(newValue.toString())
+    } catch (Exception ignored) {
+      unchanged = currentValue.toString() == newValue.toString()
+    }
   } else {
     unchanged = currentValue.toString() == newValue.toString()
   }
