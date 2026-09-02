@@ -41,7 +41,7 @@
 // ─── BLE Performance Caches ────────────────────────────────────────────────────
 // In-memory caches that eliminate per-advertisement state writes.
 // Volatile fields (rssi, battery, lastSeen, lastGateway) are flushed to state every
-// 5 minutes via flushBleDiscoveryVolatile() — called from checkBlePresence().
+// Low-frequency checkpoints via bleDiscoveryCheckpoint().
 
 /** PID dedup ring buffer per MAC — replaces state.recentBlePids (no persistence needed) */
 @Field static ConcurrentHashMap<String, List<Integer>> blePidCache =
@@ -71,6 +71,11 @@
 
 /** How long after the last BLE table render the page is considered open (5 minutes) */
 @Field static final long BLE_PAGE_ACTIVE_MS = 300000L
+
+/** One-shot BLE checkpoint scheduler state; reset during app initialization. */
+@Field static volatile boolean bleCheckpointScheduled = false
+@Field static volatile boolean blePresenceScheduled = false
+@Field static final int BLE_CHECKPOINT_INTERVAL_SECONDS = 300
 
 /** Last-sent event values per MAC/attribute — suppresses duplicate sendEvent calls */
 @Field static ConcurrentHashMap<String, Map<String, String>> bleLastSentValues =
@@ -6647,12 +6652,15 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
         unschedule('checkForAppUpdate')
     }
 
-    // Schedule BLE presence check every 5 minutes (only when BLE is active)
-    if (state.bleGateways || state.discoveredBleDevices) {
-        schedule('0 */5 * ? * *', 'checkBlePresence')
-    } else {
-        unschedule('checkBlePresence')
-    }
+    // BLE presence and persistence are separate jobs. Presence is scheduled
+    // only for created children with presence enabled; persistence starts only
+    // when an active gateway or volatile data needs a checkpoint.
+    unschedule('checkBlePresence')
+    unschedule('bleDiscoveryCheckpoint')
+    blePresenceScheduled = false
+    bleCheckpointScheduled = false
+    reconcileBlePresenceSchedule()
+    ensureBleDiscoveryCheckpointScheduled()
 }
 
 /**
@@ -14010,6 +14018,8 @@ private void createBleDevice(String mac) {
         bleInfo.hubDeviceLabel = existing.label ?: existing.displayName
         discoveredBle[macKey] = bleInfo
         state.discoveredBleDevices = discoveredBle
+        ensureBleDiscoveryCheckpointScheduled()
+        reconcileBlePresenceSchedule()
         return
     }
 
@@ -14054,6 +14064,8 @@ private void createBleDevice(String mac) {
 
         // Prime the model cache so routeBleEventToChild() skips the per-advertisement child.getDataValue() lookup
         bleModelCache.put(macKey, bleModel)
+        ensureBleDiscoveryCheckpointScheduled()
+        reconcileBlePresenceSchedule()
 
         // Update discovery state
         bleInfo.isCreated = true
@@ -14107,6 +14119,7 @@ private void removeBleDevice(String mac) {
         bleDiscoveryVolatile.remove(macKey)
         bleRssiTracker.remove(macKey)
         bleModelCache.remove(macKey)
+        reconcileBlePresenceSchedule()
 
         // Update discovery state
         Map discoveredBle = state.discoveredBleDevices ?: [:]
@@ -14200,6 +14213,8 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
 
     // Track last contact in @Field cache (no state write)
     bleLastContact.put(macKey, nowMs)
+    ensureBleDiscoveryCheckpointScheduled()
+    if (!blePresenceScheduled) { reconcileBlePresenceSchedule() }
 }
 
 /**
@@ -14387,15 +14402,84 @@ private String getCachedTemperatureScale() {
 // BLE Presence Management
 // ─────────────────────────────────────────────────────────────
 
+/** Returns the configured BLE presence timeout, using the driver default safely. */
+private Integer getBlePresenceTimeoutMinutes(def child) {
+    Integer timeoutMinutes = 60
+    try {
+        Object deviceTimeout = child?.getSetting('presenceTimeout')
+        if (deviceTimeout != null) { timeoutMinutes = deviceTimeout as Integer }
+    } catch (Exception e) {
+        bleLogDebug("getBlePresenceTimeoutMinutes: getSetting failed for ${child?.displayName}, using default ${timeoutMinutes}min")
+    }
+    return timeoutMinutes >= 1 ? timeoutMinutes : 60
+}
+
+/** Returns true when a created child actually supports BLE presence monitoring. */
+private Boolean isBlePresenceEligible(def child) {
+    if (!child) { return false }
+    try {
+        return child.hasAttribute('presence') == true && getBlePresenceTimeoutMinutes(child) >= 1
+    } catch (Exception e) {
+        return false
+    }
+}
+
+/** Finds the next BLE presence deadline without writing state. */
+private Long getNextBlePresenceDelaySeconds() {
+    Long currentTime = now()
+    Long nextDeadline = null
+    Map deviceConfigs = (atomicState.deviceConfigs ?: [:]) as Map
+    deviceConfigs.each { String key, configVal ->
+        Map config = configVal as Map
+        if (config?.isBleDevice != true) { return }
+        def child = getChildDevice(key)
+        if (!isBlePresenceEligible(child)) { return }
+
+        Long lastContact = bleLastContact.get(key) ?: (config.lastBleContact as Long ?: 0L)
+        if (!lastContact) { return }
+        Long deadline = lastContact + (getBlePresenceTimeoutMinutes(child) * 60L * 1000L)
+        if (nextDeadline == null || deadline < nextDeadline) { nextDeadline = deadline }
+    }
+
+    if (nextDeadline == null) { return null }
+    return Math.max(1L, (long) Math.ceil((nextDeadline - currentTime) / 1000.0D))
+}
+
+/** Schedules one presence check at the earliest relevant deadline. */
+private void reconcileBlePresenceSchedule() {
+    unschedule('checkBlePresence')
+    blePresenceScheduled = false
+    Long delaySeconds = getNextBlePresenceDelaySeconds()
+    if (delaySeconds == null) {
+        logTrace('BLE presence schedule not needed: no created eligible child with a contact deadline')
+        return
+    }
+    runIn(delaySeconds.intValue(), 'checkBlePresence', [overwrite: true])
+    blePresenceScheduled = true
+    logTrace("BLE presence check scheduled in ${delaySeconds}s")
+}
+
+/** Keeps BLE discovery persistence independent from presence monitoring. */
+private void ensureBleDiscoveryCheckpointScheduled() {
+    if (bleCheckpointScheduled) { return }
+    if (bleDiscoveryVolatile.isEmpty()) { return }
+    runIn(BLE_CHECKPOINT_INTERVAL_SECONDS, 'bleDiscoveryCheckpoint', [overwrite: true])
+    bleCheckpointScheduled = true
+    logTrace("BLE discovery checkpoint scheduled in ${BLE_CHECKPOINT_INTERVAL_SECONDS}s")
+}
+
+void bleDiscoveryCheckpoint() {
+    bleCheckpointScheduled = false
+    flushBleDiscoveryVolatile()
+    ensureBleDiscoveryCheckpointScheduled()
+}
+
 /**
- * Checks all BLE devices for presence timeout.
- * Called on a 5-minute schedule. If a device hasn't been heard from
- * within its presenceTimeout setting, marks it as 'not present'.
- * Also flushes volatile BLE discovery data to state for reboot persistence.
+ * Checks created BLE children for presence timeout. The next run is scheduled
+ * from the earliest child deadline instead of polling every five minutes.
  */
 void checkBlePresence() {
-    // Piggyback volatile cache flush on the existing 5-minute schedule
-    flushBleDiscoveryVolatile()
+    blePresenceScheduled = false
 
     Map deviceConfigs = new LinkedHashMap((atomicState.deviceConfigs ?: [:]) as Map)
     Boolean anyChanged = false
@@ -14411,18 +14495,8 @@ void checkBlePresence() {
         Object child = getChildDevice(key)
         if (!child) { return }
 
-        // Get presenceTimeout from device settings (default 60 minutes)
-        Integer timeoutMinutes = 60
-        try {
-            Object deviceTimeout = child.getSetting('presenceTimeout')
-            if (deviceTimeout != null) { timeoutMinutes = deviceTimeout as Integer }
-        } catch (Exception e) {
-            bleLogDebug("checkBlePresence: getSetting failed for ${child.displayName}, using default ${timeoutMinutes}min")
-        }
-        // Defense in depth against a stale or hand-edited setting slipping past
-        // the input range; a zero/negative timeout would pin the device to
-        // 'not present' permanently.
-        if (timeoutMinutes < 1) { timeoutMinutes = 60 }
+        if (!isBlePresenceEligible(child)) { return }
+        Integer timeoutMinutes = getBlePresenceTimeoutMinutes(child)
 
         Long timeoutMs = timeoutMinutes * 60L * 1000L
         Long elapsed = now() - lastContact
@@ -14444,6 +14518,7 @@ void checkBlePresence() {
     if (anyChanged && now() < blePageActiveUntil) {
         sendEvent(name: 'bleTable', value: 'presence')
     }
+    reconcileBlePresenceSchedule()
 }
 
 /**
