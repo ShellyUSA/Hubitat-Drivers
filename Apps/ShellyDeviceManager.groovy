@@ -5018,21 +5018,21 @@ private void probeBatteryDeviceState(def childDevice, String ip) {
                 BigDecimal temp = (scale == 'C') ? tempC : (tempF ?: tempC)
                 if (temp != null) {
                     String unit = "\u00B0${scale}"
-                    childDevice.sendEvent(name: 'temperature', value: temp, unit: unit,
-                        descriptionText: "Temperature is ${temp}${unit}")
+                    childSendEventIfChanged(childDevice, [name: 'temperature', value: temp, unit: unit,
+                        descriptionText: "Temperature is ${temp}${unit}"])
                     cachedState.temperature = "${temp}${unit}"
                 }
             }
             if (key.startsWith('humidity:') && v instanceof Map && v.rh != null) {
                 BigDecimal humidity = v.rh as BigDecimal
-                childDevice.sendEvent(name: 'humidity', value: humidity, unit: '%',
-                    descriptionText: "Humidity is ${humidity}%")
+                childSendEventIfChanged(childDevice, [name: 'humidity', value: humidity, unit: '%',
+                    descriptionText: "Humidity is ${humidity}%"])
                 cachedState.humidity = "${humidity}%"
             }
             if (key.startsWith('devicepower:') && v instanceof Map && v.battery?.percent != null) {
                 Integer batteryPct = v.battery.percent as Integer
-                childDevice.sendEvent(name: 'battery', value: batteryPct, unit: '%',
-                    descriptionText: "Battery is ${batteryPct}%")
+                childSendEventIfChanged(childDevice, [name: 'battery', value: batteryPct, unit: '%',
+                    descriptionText: "Battery is ${batteryPct}%"])
                 cachedState.battery = "${batteryPct}%"
             }
         }
@@ -13925,18 +13925,20 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
         lastSent = bleLastSentValues.get(macKey)
     }
 
+    Integer sentCount = 0
+
     // Send events — skip unchanged continuous values, always send isStateChange events
     events.each { Map evt ->
         if (evt.isStateChange == true) {
             // Button, motion, contact — always fire
-            childSendEventHelper(child, evt)
+            if (childSendEventIfChanged(child, evt)) { sentCount++ }
         } else {
             // Continuous: temperature, humidity, battery, illuminance, distanceMm, tilt — skip if unchanged
             String evtName = evt.name as String
             String evtVal = evt.value?.toString()
             if (lastSent.get(evtName) != evtVal) {
                 lastSent.put(evtName, evtVal)
-                childSendEventHelper(child, evt)
+                if (childSendEventIfChanged(child, evt)) { sentCount++ }
             }
         }
     }
@@ -13944,13 +13946,15 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
     // Presence — only send when transitioning to present (uses in-memory cache, not DB read)
     if (lastSent.get('presence') != 'present') {
         lastSent.put('presence', 'present')
-        childSendEventHelper(child, [name: 'presence', value: 'present', descriptionText: 'BLE advertisement received'])
+        if (childSendEventIfChanged(child, [name: 'presence', value: 'present', descriptionText: 'BLE advertisement received'])) {
+            sentCount++
+        }
     }
 
     // lastUpdated — throttle to once per 30 seconds
     Long nowMs = now()
     String lastUpdatedTime = lastSent.get('_lastUpdatedAt')
-    if (!lastUpdatedTime || (nowMs - (lastUpdatedTime as Long)) > 30000L) {
+    if (sentCount > 0 && (!lastUpdatedTime || (nowMs - (lastUpdatedTime as Long)) > 30000L)) {
         lastSent.put('_lastUpdatedAt', nowMs.toString())
         childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
     }
@@ -15796,6 +15800,45 @@ private Boolean deviceHasAttributeHelper(DeviceWrapper dev, String attribute) {
 /** Helper for child.sendEvent() calls */
 private void childSendEventHelper(ChildDeviceWrapper child, Map properties) {
   child.sendEvent(properties)
+}
+
+/**
+ * Sends a child event only when its value differs from the current device state.
+ * Momentary events explicitly marked as state changes (button, motion, contact,
+ * etc.) are always delivered because repeating the same value represents a new
+ * occurrence rather than a redundant state update.
+ *
+ * @return true when an event was sent
+ */
+private Boolean childSendEventIfChanged(def child, Map properties) {
+  if (!child || !properties?.name) { return false }
+  if (properties.isStateChange == true) {
+    childSendEventHelper(child as ChildDeviceWrapper, properties)
+    return true
+  }
+
+  String name = properties.name.toString()
+  Object newValue = properties.value
+  Object currentValue = null
+  try {
+    currentValue = child.currentValue(name)
+  } catch (Exception ignored) {
+    // If the current state cannot be read, preserve the existing behavior and
+    // deliver the event rather than silently dropping a device update.
+  }
+
+  Boolean unchanged
+  if (currentValue == null || newValue == null) {
+    unchanged = currentValue == null && newValue == null
+  } else if (currentValue instanceof Number && newValue instanceof Number) {
+    unchanged = new BigDecimal(currentValue.toString()) == new BigDecimal(newValue.toString())
+  } else {
+    unchanged = currentValue.toString() == newValue.toString()
+  }
+
+  if (unchanged) { return false }
+  childSendEventHelper(child as ChildDeviceWrapper, properties)
+  return true
 }
 
 /** Helper for child.updateDataValue() calls */
@@ -19355,11 +19398,14 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
 
         if (child) {
             List<Map> events = buildComponentEvents(dst, baseType, value as Map)
+            Integer sentCount = 0
             events.each { Map evt ->
-                childSendEventHelper(child, evt)
+                if (childSendEventIfChanged(child, evt)) { sentCount++ }
             }
-            childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
-            logDebug("routeScriptNotification: sent ${events.size()} events to ${child.displayName}")
+            if (sentCount > 0) {
+                childSendEventIfChanged(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+            }
+            logDebug("routeScriptNotification: sent ${sentCount}/${events.size()} changed events to ${child.displayName}")
         } else {
             logDebug("routeScriptNotification: no child device found for DNI ${childDni}")
         }
@@ -19452,11 +19498,14 @@ private void processWebhookParams(String parentDni, Map params) {
     }
 
     List<Map> events = buildWebhookEvents(dst, params)
+    Integer sentCount = 0
     events.each { Map evt ->
-        childSendEventHelper(child, evt)
+        if (childSendEventIfChanged(child, evt)) { sentCount++ }
     }
-    childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
-    logDebug("processWebhookParams: sent ${events.size()} events to ${child.displayName}")
+    if (sentCount > 0) {
+        childSendEventIfChanged(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+    }
+    logDebug("processWebhookParams: sent ${sentCount}/${events.size()} changed events to ${child.displayName}")
 }
 
 /**
@@ -20358,7 +20407,7 @@ private void updateSyncStatus(String dni) {
             status = "pending (${count} ${cmdWord})".toString()
         }
     }
-    childSendEventHelper(child, [name: 'syncStatus', value: status, descriptionText: "Sync status: ${status}"])
+    childSendEventIfChanged(child, [name: 'syncStatus', value: status, descriptionText: "Sync status: ${status}"])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -22268,12 +22317,13 @@ private void updateChildFromStatus(def child, String componentType, Map statusDa
             break
     }
 
+    Integer sentCount = 0
     events.each { Map evt ->
-        childSendEventHelper(child, evt)
+        if (childSendEventIfChanged(child, evt)) { sentCount++ }
     }
 
-    if (events.size() > 0) {
-        childSendEventHelper(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
+    if (sentCount > 0) {
+        childSendEventIfChanged(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
     }
 }
 
