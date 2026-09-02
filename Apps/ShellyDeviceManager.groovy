@@ -1446,7 +1446,6 @@ void updated() {
     unschedule()
     initialize(true)
     startMdnsDiscovery()
-    sweepAllUnusedShellyHubDrivers()  // hub-centric sweep: deletes any unused ShellyDeviceManager drivers regardless of tracking state
 }
 
 /**
@@ -4887,8 +4886,9 @@ private void removeDeviceByIp(String ip) {
         atomicState.deviceStatusCache = cache
     }
 
-    // Step 6: Delete any drivers that are now unused after this device removal
+    // Step 6: Delete any tracked drivers that are now unused after this device removal.
     if (deletedDriverNames) { deleteUnusedTrackedDrivers(deletedDriverNames) }
+    scheduleDriverMaintenanceSweep('device deletion')
 }
 
 /**
@@ -17508,6 +17508,7 @@ private void finalizeBulkDriverUpdate() {
     // original btnForceRebuildDrivers handler so it doesn't compete with the
     // install POSTs for hub I/O.
     sweepAllUnusedShellyHubDrivers()
+    atomicState.driverMaintenanceFingerprint = getDriverAssociationFingerprint()
     sendEvent(name: 'driverRebuildStatus', value: 'complete')
 
     runIn(30, 'clearDriverUpdateProgress')
@@ -17586,6 +17587,7 @@ void scheduledDriverUpdate() {
     } else {
         logDebug("Scheduled driver update: all ${allDrivers.size()} driver(s) up to date (v${currentVersion})")
         sweepAllUnusedShellyHubDrivers()
+        atomicState.driverMaintenanceFingerprint = getDriverAssociationFingerprint()
     }
 }
 
@@ -18075,6 +18077,61 @@ private void initializeDriverTracking() {
 }
 
 /**
+ * Builds a stable, local-only fingerprint of the managed device/driver
+ * associations. This is deliberately cheaper than querying the hub's driver
+ * list and is used to skip redundant orphan sweeps.
+ */
+private String getDriverAssociationFingerprint() {
+    List tracked = []
+    (atomicState.autoDrivers ?: [:]).each { key, Object value ->
+        Map info = value as Map ?: [:]
+        tracked << [key: key.toString(), devices: ((info.devicesUsing ?: []) as List).collect { it.toString() }.sort()]
+    }
+    tracked = tracked.sort { Map a, Map b -> a.key <=> b.key }
+
+    List devices = []
+    (getChildDevices() ?: []).each { dev ->
+        devices << [dni: dev.deviceNetworkId?.toString(), type: dev.typeName?.toString()]
+        try {
+            (dev.getChildDevices() ?: []).each { component ->
+                devices << [dni: component.deviceNetworkId?.toString(), type: component.typeName?.toString()]
+            }
+        } catch (Exception ignored) { }
+    }
+    devices = devices.sort { Map a, Map b ->
+        String aKey = "${a.dni}:${a.type}"
+        String bKey = "${b.dni}:${b.type}"
+        aKey <=> bKey
+    }
+    return groovy.json.JsonOutput.toJson([tracked: tracked, devices: devices])
+}
+
+/** Schedules one deferred sweep after an explicit association/deletion change. */
+private void scheduleDriverMaintenanceSweep(String reason) {
+    String fingerprint = getDriverAssociationFingerprint()
+    if (fingerprint == atomicState.driverMaintenanceFingerprint) {
+        logTrace("Driver maintenance sweep skipped (${reason}): association fingerprint unchanged")
+        return
+    }
+    atomicState.pendingDriverMaintenanceFingerprint = fingerprint
+    logTrace("Scheduling deferred driver maintenance sweep (${reason})")
+    runIn(5, 'runDeferredDriverMaintenance', [overwrite: true])
+}
+
+/** Runs the explicitly requested/queued orphan sweep outside the triggering operation. */
+void runDeferredDriverMaintenance() {
+    String fingerprint = atomicState.pendingDriverMaintenanceFingerprint?.toString()
+    if (!fingerprint || fingerprint == atomicState.driverMaintenanceFingerprint) {
+        atomicState.remove('pendingDriverMaintenanceFingerprint')
+        logTrace('Deferred driver maintenance sweep skipped: no association changes remain')
+        return
+    }
+    atomicState.remove('pendingDriverMaintenanceFingerprint')
+    sweepAllUnusedShellyHubDrivers()
+    atomicState.driverMaintenanceFingerprint = fingerprint
+}
+
+/**
  * Removes stale driver tracking entries from {@code state.autoDrivers}.
  * For each base driver name (e.g., "Shelly Autoconf Single Switch PM"),
  * keeps only the entry with the highest version and removes older ones.
@@ -18135,7 +18192,7 @@ private void pruneStaleDriverTracking() {
  *
  * <p>When {@code namesToCheck} is provided, only drivers with those names are inspected
  * (targeted call from {@code removeDeviceByIp}). Passing {@code null} performs a full
- * sweep of all tracked drivers (used from {@code updated()}).</p>
+ * sweep of all tracked drivers (used by explicit maintenance flows).</p>
  *
  * @param namesToCheck Driver names to check, or null to sweep all tracked drivers
  */
@@ -18395,6 +18452,7 @@ private void associateDeviceWithDriver(String driverName, String namespace, Stri
     autoDrivers[key] = entry
     atomicState.autoDrivers = autoDrivers
     logDebug("Associated device ${deviceDNI} with driver ${key}")
+    scheduleDriverMaintenanceSweep('driver association change')
   }
 }
 
@@ -18435,6 +18493,7 @@ private void disassociateDeviceFromDriver(String driverName, String namespace, S
     autoDrivers[key] = entry
     atomicState.autoDrivers = autoDrivers
     logDebug("Disassociated device ${deviceDNI} from driver ${key}")
+    scheduleDriverMaintenanceSweep('driver association change')
   }
 }
 
