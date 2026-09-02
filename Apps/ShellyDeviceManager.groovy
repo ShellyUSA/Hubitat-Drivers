@@ -99,6 +99,12 @@
 @Field static final Object DIRECT_CHILD_CACHE_LOCK = new Object()
 @Field static final long DIRECT_CHILD_CACHE_TTL_MS = 2000L
 
+/** Short-lived component index used by webhook/status hot paths. */
+@Field static ConcurrentHashMap<String, Map> componentChildIndexCache =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static final Object COMPONENT_CHILD_INDEX_LOCK = new Object()
+@Field static final long COMPONENT_CHILD_INDEX_TTL_MS = 2000L
+
 /** Status is shared only briefly so commands and explicit refreshes remain responsive. */
 @Field static final long DEVICE_STATUS_CACHE_TTL_MS = 5000L
 
@@ -2537,6 +2543,51 @@ private void invalidateDirectChildDeviceCache() {
     synchronized (DIRECT_CHILD_CACHE_LOCK) {
         directChildDeviceCache = null
         directChildDeviceCacheTime = 0L
+    }
+    componentChildIndexCache.clear()
+}
+
+/**
+ * Resolves a component child from its parent without calling getChildDevice()
+ * for every webhook component. The index is memory-only and short-lived so
+ * asynchronously-created component children become visible promptly.
+ */
+private def getCachedComponentChild(String parentDni, String childDni) {
+    if (!parentDni || !childDni) { return null }
+
+    Long nowMs = now()
+    Map cached = componentChildIndexCache[parentDni]
+    if (cached && (cached.expiresAt as Long) > nowMs) {
+        return (cached.children as Map)[childDni]
+    }
+
+    synchronized (COMPONENT_CHILD_INDEX_LOCK) {
+        nowMs = now()
+        cached = componentChildIndexCache[parentDni]
+        if (cached && (cached.expiresAt as Long) > nowMs) {
+            return (cached.children as Map)[childDni]
+        }
+
+        Map childrenByDni = [:]
+        def parent = (getCachedDirectChildDevices() ?: []).find {
+            it?.deviceNetworkId?.toString() == parentDni
+        }
+        if (parent) {
+            try {
+                (parent.getChildDevices() ?: []).each { component ->
+                    String dni = component?.deviceNetworkId?.toString()
+                    if (dni) { childrenByDni[dni] = component }
+                }
+            } catch (Exception e) {
+                logTrace("Could not index component children for ${parentDni}: ${e.message}")
+            }
+        }
+
+        componentChildIndexCache[parentDni] = [
+            children: childrenByDni,
+            expiresAt: nowMs + COMPONENT_CHILD_INDEX_TTL_MS
+        ]
+        return childrenByDni[childDni]
     }
 }
 
@@ -19647,7 +19698,7 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
         if (!childType) { return }
 
         String childDni = "${parentDni}-${childType}-${componentId}"
-        def child = getChildDevice(childDni)
+        def child = getCachedComponentChild(parentDni, childDni)
 
         if (child) {
             List<Map> events = buildComponentEvents(dst, baseType, value as Map)
@@ -19744,7 +19795,7 @@ private void processWebhookParams(String parentDni, Map params) {
     if (!childType) { return }
 
     String childDni = "${parentDni}-${childType}-${componentId}"
-    def child = getChildDevice(childDni)
+    def child = getCachedComponentChild(parentDni, childDni)
     if (!child) {
         logDebug("processWebhookParams: no child device for DNI ${childDni}")
         return
@@ -22523,7 +22574,7 @@ private void distributeStatusToChildren(String parentDni, Map deviceStatus) {
 
         Integer componentId = key.contains(':') ? (key.split(':')[1] as Integer) : 0
         String childDni = "${parentDni}-${baseType}-${componentId}"
-        def child = getChildDevice(childDni)
+        def child = getCachedComponentChild(parentDni, childDni)
 
         if (child) {
             updateChildFromStatus(child, baseType, v as Map)
