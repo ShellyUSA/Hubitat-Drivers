@@ -30,7 +30,6 @@
 @Field static ConcurrentHashMap<String, Integer> gen1PollFailureCounts =
     new java.util.concurrent.ConcurrentHashMap<String, Integer>()
 
-@Field static final Integer MAX_COMMAND_RETRIES = 5
 @Field static final Integer MAX_DRIVER_UPDATE_ATTEMPTS = 3
 @Field static final Long OPPORTUNISTIC_DRAIN_WINDOW_MS = 10000L
 // Prevent duplicate callbacks from performing overlapping multi-RPC discovery
@@ -175,7 +174,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.86"
+@Field static final String APP_VERSION = "1.0.87"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -571,10 +570,10 @@ Map mainPage() {
     if (!atomicState.discoveredShellys) { atomicState.discoveredShellys = [:] }
 
     // Clean up orphan settings from removed pages
-    app.removeSetting('selectedToCreate')
-    app.removeSetting('selectedToRemove')
-    app.removeSetting('selectedConfigDevice')
-    app.removeSetting('enableIpScan')
+        appRemoveSettingHelper('selectedToCreate')
+        appRemoveSettingHelper('selectedToRemove')
+        appRemoveSettingHelper('selectedConfigDevice')
+        appRemoveSettingHelper('enableIpScan')
 
     // Clear schedule time edit state after the time picker has been shown for one render
     if (state.editingScheduleTime && state.scheduleEditRendered == true) {
@@ -584,9 +583,9 @@ Map mainPage() {
 
     // Migrate single autoUpdateTime to separate driver/app time settings
     if (settings?.autoUpdateTime && !settings?.driverUpdateTime && !settings?.appUpdateTime) {
-        app.updateSetting('driverUpdateTime', [type: 'time', value: settings.autoUpdateTime])
-        app.updateSetting('appUpdateTime', [type: 'time', value: settings.autoUpdateTime])
-        app.removeSetting('autoUpdateTime')
+        appUpdateSettingHelper('driverUpdateTime', [type: 'time', value: settings.autoUpdateTime])
+        appUpdateSettingHelper('appUpdateTime', [type: 'time', value: settings.autoUpdateTime])
+        appRemoveSettingHelper('autoUpdateTime')
     }
 
     // Requirement: scanning should start (or restart) when app page is opened.
@@ -603,13 +602,13 @@ Map mainPage() {
         if (newLabel) {
             def device = findChildDeviceByIp(editIp)
             if (device) {
-                device.setLabel(newLabel)
+                deviceSetLabelHelper(device, newLabel)
                 logInfo("Updated label for ${editIp} to '${newLabel}'")
                 appendLog('info', "Renamed ${editIp} to '${newLabel}'")
             }
         }
         state.remove('pendingLabelEdit')
-        app.removeSetting('editLabelValue')
+                appRemoveSettingHelper('editLabelValue')
     }
 
     // Apply pending BLE label edit if the user has typed a new label
@@ -617,9 +616,9 @@ Map mainPage() {
     if (editBleMac && settings?.editBleLabelValue != null) {
         String newBleLabel = (settings.editBleLabelValue as String)?.trim()
         if (newBleLabel) {
-            def bleDevice = getChildDevice(editBleMac)
+            def bleDevice = getChildDeviceHelper(editBleMac)
             if (bleDevice) {
-                bleDevice.setLabel(newBleLabel)
+                deviceSetLabelHelper(bleDevice, newBleLabel)
                 logInfo("Updated BLE label for ${editBleMac} to '${newBleLabel}'")
                 appendLog('info', "Renamed BLE ${editBleMac} to '${newBleLabel}'")
                 // Update cached label in discovery state
@@ -634,7 +633,7 @@ Map mainPage() {
             }
         }
         state.remove('pendingBleLabelEdit')
-        app.removeSetting('editBleLabelValue')
+                appRemoveSettingHelper('editBleLabelValue')
     }
 
     // Purge unknown BLE devices from discovery state on page load.
@@ -647,7 +646,7 @@ Map mainPage() {
             Integer entryModelId = bleEntry.modelId != null ? bleEntry.modelId as Integer : null
             String entryModel = (bleEntry.model ?: '') as String
             Map<String, String> info = resolveBleDriverInfo(entryModelId, entryModel)
-            Boolean hasChild = getChildDevice(macKey) != null
+            Boolean hasChild = getChildDeviceHelper(macKey) != null
             if (!info && !hasChild) { toRemove.add(macKey) }
         }
         if (toRemove) {
@@ -690,7 +689,7 @@ Map mainPage() {
             if (state.pendingDeleteIp) {
                 String deleteIp = state.pendingDeleteIp as String
                 def deleteDevice = findChildDeviceByIp(deleteIp)
-                String deleteName = deleteDevice ? deleteDevice.displayName : deleteIp
+                String deleteName = deleteDevice ? deviceDisplayNameHelper(deleteDevice) : deleteIp
                 paragraph "<b style='color:#F44336'>Are you sure you want to remove '${escapeHtml(deleteName?.toString())}' (${deleteIp})?</b>"
                 input 'btnConfirmDelete', 'button', title: 'Yes, Remove Device', submitOnChange: true
                 input 'btnCancelDelete', 'button', title: 'Cancel', submitOnChange: true
@@ -700,7 +699,7 @@ Map mainPage() {
             if (state.pendingLabelEdit) {
                 String labelIp = state.pendingLabelEdit as String
                 def labelDevice = findChildDeviceByIp(labelIp)
-                String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelIp
+                String currentLabel = labelDevice ? (deviceLabelHelper(labelDevice) ?: deviceDisplayNameHelper(labelDevice)) : labelIp
                 paragraph "<b>Editing label for device at ${labelIp}</b>"
                 input name: 'editLabelValue', type: 'text', title: "New label (current: ${currentLabel})",
                     defaultValue: currentLabel, required: false, submitOnChange: true
@@ -713,8 +712,8 @@ Map mainPage() {
         // BLE label editing input (shown when user clicks a label in the BLE table)
         if (state.pendingBleLabelEdit) {
             String labelMac = state.pendingBleLabelEdit as String
-            def labelDevice = getChildDevice(labelMac)
-            String currentLabel = labelDevice ? (labelDevice.label ?: labelDevice.displayName) : labelMac
+            def labelDevice = getChildDeviceHelper(labelMac)
+            String currentLabel = labelDevice ? (deviceLabelHelper(labelDevice) ?: deviceDisplayNameHelper(labelDevice)) : labelMac
             section() {
                 paragraph "<b>Editing label for BLE device ${labelMac}</b>"
                 input name: 'editBleLabelValue', type: 'text', title: "New label (current: ${currentLabel})",
@@ -814,12 +813,12 @@ Map mainPage() {
             // Only intervene when the stored value is OUT of the allowed list (more verbose → less verbose change)
             if (storedDisplay && !(storedDisplay in allowedDisplay)) {
                 // Clear the stale setting so defaultValue takes effect on this render pass
-                app.removeSetting('displayLogLevel')
+                appRemoveSettingHelper('displayLogLevel')
                 state.displayLogLevel = validatedDisplay
                 pruneDisplayedLogs(validatedDisplay)
                 // Persist the validated value AFTER the page finishes rendering
                 state.pendingDisplayLevel = validatedDisplay
-                runInMillis(200, 'applyPendingDisplayLevel')
+                runInMillisHelper(200L, 'applyPendingDisplayLevel')
             }
 
             input name: 'displayLogLevel', type: 'enum', title: 'App page display log level (X and above)', options: displayOptions, defaultValue: validatedDisplay, submitOnChange: true
@@ -849,7 +848,7 @@ void appButtonHandler(String buttonName) {
         String rawInput = settings?.manualDeviceIp?.toString()?.trim()
         if (rawInput) {
             manualDiscoverDevice(rawInput)
-            app.removeSetting('manualDeviceIp')
+        appRemoveSettingHelper('manualDeviceIp')
         } else {
             appendLog('warn', 'Manual discovery: no IP or hostname entered')
         }
@@ -870,12 +869,12 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName == 'btnToggleAutoDrivers') {
         Boolean current = settings?.rebuildOnUpdate != false
-        app.updateSetting('rebuildOnUpdate', [type: 'bool', value: !current])
+        appUpdateSettingHelper('rebuildOnUpdate', [type: 'bool', value: !current])
     }
 
     if (buttonName == 'btnToggleAutoApp') {
         Boolean current = settings?.enableAutoUpdate != false
-        app.updateSetting('enableAutoUpdate', [type: 'bool', value: !current])
+        appUpdateSettingHelper('enableAutoUpdate', [type: 'bool', value: !current])
     }
 
     if (buttonName == 'btnForceUpdateApp') {
@@ -906,14 +905,14 @@ void appButtonHandler(String buttonName) {
     if (buttonName.startsWith('cancelProvisioning|')) {
         String targetIp = buttonName.minus('cancelProvisioning|')
         cancelProvisioningOperation(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
+        runInMillisHelper(500L, 'fireConfigTableSSR')
         return
     }
 
     if (buttonName.startsWith('cancelBleGateway|')) {
         String targetIp = buttonName.minus('cancelBleGateway|')
         cancelBleGatewayOperation(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
+        runInMillisHelper(500L, 'fireConfigTableSSR')
         return
     }
 
@@ -929,7 +928,7 @@ void appButtonHandler(String buttonName) {
         // Set the status and return immediately so the spinner is rendered
         // before the blocking work begins in the scheduled callback.
         String operationId = beginProvisioningOperation(targetIp, 'Creating device…')
-        runInMillis(100, 'runDeviceCreate', [data: [ip: targetIp, operationId: operationId]])
+        runInMillisHelper(100L, 'runDeviceCreate', [data: [ip: targetIp, operationId: operationId]])
     }
 
     if (buttonName.startsWith('refreshDevice|')) {
@@ -968,7 +967,7 @@ void appButtonHandler(String buttonName) {
             removeDeviceByIp(targetIp)
             buildDeviceStatusCacheEntry(targetIp)
             releaseUserAction(targetIp)
-            runInMillis(500, 'fireConfigTableSSR')
+            runInMillisHelper(500L, 'fireConfigTableSSR')
         }
     }
 
@@ -1009,7 +1008,7 @@ void appButtonHandler(String buttonName) {
         installGen1ActionUrls(targetIp)
         buildDeviceStatusCacheEntry(targetIp)
         releaseUserAction(targetIp)
-        runInMillis(500, 'fireConfigTableSSR')
+        runInMillisHelper(500L, 'fireConfigTableSSR')
     }
 
     if (buttonName.startsWith('reinitDev|')) {
@@ -1019,18 +1018,18 @@ void appButtonHandler(String buttonName) {
         setProvisioningStatus(targetIp, 'Reinitializing device…')
         // Reinit can download drivers and perform several RPC calls. Schedule
         // it after this request so the config-table SSR first shows progress.
-        runInMillis(100, 'runDeviceReinitialize', [data: [ip: targetIp]])
+        runInMillisHelper(100L, 'runDeviceReinitialize', [data: [ip: targetIp]])
     }
 
     if (buttonName.startsWith('editLabel|')) {
         String targetIp = buttonName.minus('editLabel|')
         state.pendingLabelEdit = targetIp
-        app.removeSetting('editLabelValue')
+        appRemoveSettingHelper('editLabelValue')
     }
 
     if (buttonName == 'btnCancelLabelEdit') {
         state.remove('pendingLabelEdit')
-        app.removeSetting('editLabelValue')
+        appRemoveSettingHelper('editLabelValue')
     }
 
     // === BLE Device Table Buttons ===
@@ -1038,12 +1037,12 @@ void appButtonHandler(String buttonName) {
     if (buttonName.startsWith('editBleLabel|')) {
         String targetMac = buttonName.minus('editBleLabel|')
         state.pendingBleLabelEdit = targetMac
-        app.removeSetting('editBleLabelValue')
+        appRemoveSettingHelper('editBleLabelValue')
     }
 
     if (buttonName == 'btnCancelBleLabelEdit') {
         state.remove('pendingBleLabelEdit')
-        app.removeSetting('editBleLabelValue')
+        appRemoveSettingHelper('editBleLabelValue')
     }
 
     if (buttonName.startsWith('createBle|')) {
@@ -1057,8 +1056,8 @@ void appButtonHandler(String buttonName) {
         // Render the spinner before driver installation/device creation, which
         // can take long enough to otherwise leave the Add icon unchanged.
         fireBleTableSSR()
-        runInMillis(100, 'runBleDeviceCreate', [data: [mac: mac]])
-        runIn(45, 'expireBleProvisioningOperation', [data: [mac: mac, startedAt: startedAt], overwrite: false])
+        runInMillisHelper(100L, 'runBleDeviceCreate', [data: [mac: mac]])
+        runInHelper(45L, 'expireBleProvisioningOperation', [data: [mac: mac, startedAt: startedAt], overwrite: false])
     }
 
     if (buttonName.startsWith('removeBle|')) {
@@ -1071,7 +1070,7 @@ void appButtonHandler(String buttonName) {
         if (mac) {
             logInfo("Removing BLE device for MAC ${mac}")
             removeBleDevice(mac)
-            runInMillis(500, 'fireBleTableSSR')
+            runInMillisHelper(500L, 'fireBleTableSSR')
         }
         state.remove('pendingBleDeleteMac')
     }
@@ -1090,7 +1089,7 @@ void appButtonHandler(String buttonName) {
         setBleGatewayProgress(targetIp, wasEnabled ? 'Disabling BLE gateway…' : 'Enabling BLE gateway…')
         // Return from the button handler before RPC work begins so Hubitat can
         // render the spinner even for the otherwise-synchronous disable path.
-        runInMillis(100, 'runBleGatewayToggle', [data: [ip: targetIp, wasEnabled: wasEnabled]])
+        runInMillisHelper(100L, 'runBleGatewayToggle', [data: [ip: targetIp, wasEnabled: wasEnabled]])
     }
 }
 
@@ -1229,7 +1228,7 @@ void runDeviceCreate(Map data) {
             logWarn("Device creation did not produce a Hubitat child for ${ipAddress}; retrying in ${delayMs}ms (attempt ${attempt + 1}/3)")
             appendLog('warn', "Device creation incomplete for ${ipAddress}; retrying...")
             retryScheduled = true
-            runInMillis(delayMs, 'runDeviceCreate', [data: [
+            runInMillisHelper(delayMs as Long, 'runDeviceCreate', [data: [
                 ip: ipAddress,
                 operationId: operationId,
                 attempt: attempt + 1
@@ -1246,7 +1245,7 @@ void runDeviceCreate(Map data) {
         }
         buildDeviceStatusCacheEntry(ipAddress)
         reconcileWatchdogSchedule()
-        runInMillis(500, 'fireConfigTableSSR')
+        runInMillisHelper(500L, 'fireConfigTableSSR')
     }
 }
 
@@ -1266,7 +1265,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     String deviceLabel = deviceInfo.name ?: "Shelly ${ipKey}"
 
     // Check if device already exists
-    def existingDevice = getChildDevice(dni)
+    def existingDevice = getChildDeviceHelper(dni)
     if (existingDevice) {
         logWarn("Device already exists: ${existingDevice.displayName} (${dni})")
         appendLog('warn', "Device already exists: ${existingDevice.displayName}")
@@ -1333,7 +1332,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     driverName = versionedDriverNameForCurrentApp(driverName)
 
     try {
-        def childDevice = addChildDevice('ShellyDeviceManager', driverName, dni, deviceProps)
+        def childDevice = addChildDeviceHelper('ShellyDeviceManager', driverName, dni, deviceProps)
         invalidateDirectChildDeviceCache()
         invalidateHubDeviceDniCache()
 
@@ -1380,7 +1379,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     Map<String, Boolean> componentPowerMonitoring = (deviceInfo.componentPowerMonitoring ?: [:]) as Map<String, Boolean>
 
     // Check if parent device already exists
-    def existingParent = getChildDevice(parentDni)
+    def existingParent = getChildDeviceHelper(parentDni)
     if (existingParent) {
         logWarn("Parent device already exists: ${existingParent.displayName} (${parentDni})")
         appendLog('warn', "Parent device already exists: ${existingParent.displayName}")
@@ -1476,7 +1475,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     if (hasPowerstripUi) { logInfo("  POWERSTRIP_UI detected — LED strip child will be created during install") }
 
     try {
-        def parentDevice = addChildDevice('ShellyDeviceManager', parentDriverName, parentDni, parentProps)
+        def parentDevice = addChildDeviceHelper('ShellyDeviceManager', parentDriverName, parentDni, parentProps)
         invalidateDirectChildDeviceCache()
         invalidateHubDeviceDniCache()
         logInfo("Created parent device: ${baseLabel} using driver ${parentDriverName}")
@@ -1537,8 +1536,8 @@ void updated() {
     state.displayLogLevel = newDisplay
     state.logLevel = newOverall
 
-    unsubscribe()
-    unschedule()
+    unsubscribeHelper()
+    unscheduleAllHelper()
     initialize(true)
     startMdnsDiscovery(true)
 }
@@ -1561,8 +1560,8 @@ void uninstalled() {
             logTrace("Could not unregister mDNS listeners: ${e2.message}")
         }
     }
-    unsubscribe()
-    unschedule()
+    unsubscribeHelper()
+    unscheduleAllHelper()
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1921,7 +1920,7 @@ private void setProvisioningStatus(String ip, String status) {
     }
     cache[ip] = entry
     atomicState.deviceStatusCache = cache
-    sendEvent(name: 'configTable', value: 'provisioning')
+    sendEventHelper([name: 'configTable', value: 'provisioning'])
 }
 
 /** Returns true when an asynchronous provisioning operation owns this IP. */
@@ -1943,7 +1942,7 @@ private Boolean claimUserAction(String ip, String action) {
     atomicState.userActionLock = [ip: ip, action: action, startedAt: now()]
     atomicState.actionRequestSubmitted = true
     atomicState.actionRequestSubmittedAt = now()
-    sendEvent(name: 'configTable', value: 'actionStarted')
+    sendEventHelper([name: 'configTable', value: 'actionStarted'])
     return true
 }
 
@@ -1952,7 +1951,7 @@ private void releaseUserAction(String ip) {
     Map lock = (atomicState.userActionLock ?: [:]) as Map
     if (ip && lock.ip?.toString() != ip) { return }
     atomicState.userActionLock = [:]
-    sendEvent(name: 'configTable', value: 'actionComplete')
+    sendEventHelper([name: 'configTable', value: 'actionComplete'])
 }
 
 /**
@@ -2076,7 +2075,7 @@ private void finishProvisioningOperation(String ip, String operationId) {
     // active. Compact them as soon as the operation has completed rather than
     // waiting for the next app initialization.
     compactPersistedDiscoveryState()
-    sendEvent(name: 'configTable', value: 'provisioningComplete')
+    sendEventHelper([name: 'configTable', value: 'provisioningComplete'])
 }
 
 /**
@@ -2410,7 +2409,7 @@ private Set<String> getAllKnownDeviceIps() {
     Map discoveredShellys = atomicState.discoveredShellys ?: [:]
     discoveredShellys.each { ipKey, info -> ips.add(ipKey.toString()) }
 
-    def childDevices = getChildDevices() ?: []
+    def childDevices = getChildDevicesHelper()
     childDevices.each { dev ->
         String ip = dev.getDataValue('ipAddress')
         if (ip) { ips.add(ip) }
@@ -2466,7 +2465,7 @@ void queueStaleTableSummaryRefreshes() {
 private void scheduleNextTableSummaryRefresh() {
     if (tableSummaryRefreshScheduled) { return }
     tableSummaryRefreshScheduled = true
-    runInMillis(250, 'runNextTableSummaryRefresh')
+    runInMillisHelper(250L, 'runNextTableSummaryRefresh')
 }
 
 /** Runs one slow summary refresh at a time to keep Hubitat's async queue bounded. */
@@ -2474,7 +2473,7 @@ void runNextTableSummaryRefresh() {
     tableSummaryRefreshScheduled = false
     if (atomicState.discoveryRunning == true) {
         if (tableSummaryRefreshQueue.peek() != null) {
-            runIn(10, 'runNextTableSummaryRefresh')
+            runInHelper(10L, 'runNextTableSummaryRefresh')
         }
         return
     }
@@ -2484,7 +2483,7 @@ void runNextTableSummaryRefresh() {
         scheduleNextTableSummaryRefresh()
         return
     }
-    runInMillis(1, 'runDeviceSummaryRefresh', [data: [ip: ip, force: false]])
+    runInMillisHelper(1L, 'runDeviceSummaryRefresh', [data: [ip: ip, force: false]])
 }
 
 /** Performs the existing summary queries outside discovery and outside page rendering. */
@@ -2503,7 +2502,7 @@ void runDeviceSummaryRefresh(Map data) {
         logWarn("Table summary refresh failed for ${ip}: ${e.message}")
     } finally {
         tableSummaryRefreshInFlight.remove(ip)
-        sendEvent(name: 'configTable', value: "summary:${ip}")
+        sendEventHelper([name: 'configTable', value: "summary:${ip}"])
         scheduleNextTableSummaryRefresh()
     }
 }
@@ -2663,20 +2662,21 @@ private def findChildDeviceByIp(String ip) {
  * created by parent drivers are grandchildren and must still be resolved with
  * getChildDevice(), so this cache is intentionally limited to app children.
  */
-private List getCachedDirectChildDevices() {
-    Long nowMs = now()
-    List cached = directChildDeviceCache
+@CompileStatic
+private List<ChildDeviceWrapper> getCachedDirectChildDevices() {
+    Long nowMs = nowHelper()
+    List<ChildDeviceWrapper> cached = directChildDeviceCache as List<ChildDeviceWrapper>
     if (cached != null && (nowMs - directChildDeviceCacheTime) < DIRECT_CHILD_CACHE_TTL_MS) {
         return cached
     }
 
     synchronized (DIRECT_CHILD_CACHE_LOCK) {
-        nowMs = now()
-        cached = directChildDeviceCache
+        nowMs = nowHelper()
+        cached = directChildDeviceCache as List<ChildDeviceWrapper>
         if (cached != null && (nowMs - directChildDeviceCacheTime) < DIRECT_CHILD_CACHE_TTL_MS) {
             return cached
         }
-        directChildDeviceCache = (getChildDevices() ?: []) as List
+        directChildDeviceCache = getChildDevicesHelper()
         directChildDeviceCacheTime = nowMs
         return directChildDeviceCache
     }
@@ -2696,30 +2696,31 @@ private void invalidateDirectChildDeviceCache() {
  * for every webhook component. The index is memory-only and short-lived so
  * asynchronously-created component children become visible promptly.
  */
-private def getCachedComponentChild(String parentDni, String childDni) {
+@CompileStatic
+private ChildDeviceWrapper getCachedComponentChild(String parentDni, String childDni) {
     if (!parentDni || !childDni) { return null }
 
-    Long nowMs = now()
+    Long nowMs = nowHelper()
     Map cached = componentChildIndexCache[parentDni]
     if (cached && (cached.expiresAt as Long) > nowMs) {
-        return (cached.children as Map)[childDni]
+        return (cached.children as Map)[childDni] as ChildDeviceWrapper
     }
 
     synchronized (COMPONENT_CHILD_INDEX_LOCK) {
-        nowMs = now()
+        nowMs = nowHelper()
         cached = componentChildIndexCache[parentDni]
         if (cached && (cached.expiresAt as Long) > nowMs) {
-            return (cached.children as Map)[childDni]
+            return (cached.children as Map)[childDni] as ChildDeviceWrapper
         }
 
         Map childrenByDni = [:]
-        def parent = (getCachedDirectChildDevices() ?: []).find {
-            it?.deviceNetworkId?.toString() == parentDni
-        }
+        ChildDeviceWrapper parent = ((getCachedDirectChildDevices() ?: []).find { Object candidate ->
+            deviceNetworkIdHelper(candidate) == parentDni
+        } as ChildDeviceWrapper)
         if (parent) {
             try {
-                (parent.getChildDevices() ?: []).each { component ->
-                    String dni = component?.deviceNetworkId?.toString()
+                getParentChildDevicesHelper(parent).each { ChildDeviceWrapper component ->
+                    String dni = deviceNetworkIdHelper(component)
                     if (dni) { childrenByDni[dni] = component }
                 }
             } catch (Exception e) {
@@ -2731,7 +2732,7 @@ private def getCachedComponentChild(String parentDni, String childDni) {
             children: childrenByDni,
             expiresAt: nowMs + COMPONENT_CHILD_INDEX_TTL_MS
         ]
-        return childrenByDni[childDni]
+        return childrenByDni[childDni] as ChildDeviceWrapper
     }
 }
 
@@ -2767,7 +2768,7 @@ private Set<String> getHubDeviceDnis() {
     try {
         String cookie = login()
         if (!cookie) { return null }
-        httpGet([
+        httpGetHelper([
             uri: 'http://127.0.0.1:8080',
             path: '/hub2/devicesList',
             headers: ['Cookie': cookie],
@@ -2799,7 +2800,7 @@ void refreshHubDeviceDnis() {
         Map previous = new LinkedHashMap((atomicState.hubDniCache ?: [:]) as Map)
         if (dnis != null) {
             atomicState.hubDniCache = [dnis: dnis.toList(), refreshedAt: now(), failures: 0]
-            sendEvent(name: 'configTable', value: 'hubDniCacheRefreshed')
+        sendEventHelper([name: 'configTable', value: 'hubDniCacheRefreshed'])
             return
         }
 
@@ -2808,7 +2809,7 @@ void refreshHubDeviceDnis() {
         previous.failures = failures
         previous.retryAfter = now() + retryDelay
         atomicState.hubDniCache = previous
-        runInMillis(retryDelay as Integer, 'refreshHubDeviceDnis')
+        runInMillisHelper(retryDelay, 'refreshHubDeviceDnis')
         if (failures >= 3) {
             logWarn("Hub DNI conflict check is delayed after ${failures} local endpoint timeouts; using the last successful cache")
         } else {
@@ -2843,7 +2844,7 @@ void runDeviceReinitialize(Map data) {
         releaseUserAction(ipAddress)
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: device unavailable')
         buildDeviceStatusCacheEntry(ipAddress)
-        runInMillis(500, 'fireConfigTableSSR')
+        runInMillisHelper(500L, 'fireConfigTableSSR')
         return
     }
     try {
@@ -2861,21 +2862,21 @@ void runDeviceReinitialize(Map data) {
         if (hasProvisioningOperation(ipAddress)) {
             logDebug("Reinit queued asynchronous provisioning for ${ipAddress}; deferring completion cleanup")
             appendLog('info', "Reinit queued asynchronous provisioning for ${ipAddress}")
-            runInMillis(500, 'fireConfigTableSSR')
+            runInMillisHelper(500L, 'fireConfigTableSSR')
             return
         }
 
         setProvisioningStatus(ipAddress, null)
         releaseUserAction(ipAddress)
         buildDeviceStatusCacheEntry(ipAddress)
-        runInMillis(500, 'fireConfigTableSSR')
+            runInMillisHelper(500L, 'fireConfigTableSSR')
     } catch (Exception ex) {
         logError("Reinit failed for ${ipAddress}: ${ex.message}")
         appendLog('error', "Reinit failed for ${ipAddress}: ${ex.message}")
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: reinitialization failed')
         releaseUserAction(ipAddress)
         buildDeviceStatusCacheEntry(ipAddress)
-        runInMillis(500, 'fireConfigTableSSR')
+            runInMillisHelper(500L, 'fireConfigTableSSR')
     }
 }
 
@@ -3165,7 +3166,7 @@ private void switchDeviceDriver(def childDevice, String ipAddress, String newDri
     // reinitializeDevice again. The guard prevents an infinite loop.
     atomicState.driverSwitchInProgress = true
     try {
-        def updatedDevice = addChildDevice('ShellyDeviceManager', newDriverVersioned, dni, deviceProps)
+        def updatedDevice = addChildDeviceHelper('ShellyDeviceManager', newDriverVersioned, dni, deviceProps)
         invalidateHubDeviceDniCache()
 
         logInfo("Device driver switched: ${currentLabel} → '${newBaseName}'")
@@ -3661,7 +3662,7 @@ void finalizeScriptInstallation(Map data) {
     }
 
     // Fire SSR update event directly — this IS the completion event, no timer needed
-    sendEvent(name: 'configTable', value: 'update')
+    sendEventHelper([name: 'configTable', value: 'update'])
 }
 
 /** Schedules the post-install script verification sequence. */
@@ -3671,8 +3672,8 @@ private void scheduleScriptInstallationVerification(String ipAddress, List<Strin
     pending[ipAddress] = operationId
     atomicState.scriptVerificationPending = pending
     setProvisioningStatus(ipAddress, 'Verifying scripts…')
-    sendEvent(name: 'configTable', value: 'scriptVerification')
-    runIn(5, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, operationId: operationId, attempt: 1], overwrite: false])
+    sendEventHelper([name: 'configTable', value: 'scriptVerification'])
+    runInHelper(5L, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, operationId: operationId, attempt: 1], overwrite: false])
 }
 
 /**
@@ -3687,7 +3688,7 @@ void verifyScriptInstallation(Map data) {
     if (!ipAddress || !scriptQueue || !isCurrentProvisioningOperation(ipAddress, operationId)) { return }
 
     // Let the browser render the in-progress state before the RPC begins.
-    sendEvent(name: 'configTable', value: 'scriptVerificationBefore')
+    sendEventHelper([name: 'configTable', value: 'scriptVerificationBefore'])
     List<Map> installedScripts = listDeviceScripts(ipAddress)
     Set<String> requiredNames = scriptQueue.collect { stripJsExtension(it) } as Set<String>
     Integer installed = 0
@@ -3711,7 +3712,7 @@ void verifyScriptInstallation(Map data) {
         cache[ipAddress] = entry
         atomicState.deviceStatusCache = cache
     }
-    sendEvent(name: 'configTable', value: 'scriptVerificationAfter')
+    sendEventHelper([name: 'configTable', value: 'scriptVerificationAfter'])
 
     Boolean complete = installed >= requiredNames.size() && active >= requiredNames.size()
     if (complete || attempt >= 3) {
@@ -3727,7 +3728,7 @@ void verifyScriptInstallation(Map data) {
         } else if (atomicState.provisioningCompletionPending?.get(ipAddress)?.toString() != operationId) {
             scheduleProvisioningCompletionCheck(ipAddress, operationId)
         }
-        sendEvent(name: 'configTable', value: 'scriptVerificationComplete')
+        sendEventHelper([name: 'configTable', value: 'scriptVerificationComplete'])
         return
     }
 
@@ -3735,7 +3736,7 @@ void verifyScriptInstallation(Map data) {
     Integer delay = retryDelays[attempt - 1]
     logDebug("Script verification ${installed}/${requiredNames.size()} installed, ${active}/${requiredNames.size()} active on ${ipAddress}; retrying in ${delay}s")
     setProvisioningStatus(ipAddress, 'Verifying scripts…')
-    runIn(delay, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, operationId: operationId, attempt: attempt + 1], overwrite: false])
+    runInHelper(delay as Long, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, operationId: operationId, attempt: attempt + 1], overwrite: false])
 }
 
 /** Schedules the final completion gate after scripts and webhooks have run. */
@@ -3746,8 +3747,8 @@ private void scheduleProvisioningCompletionCheck(String ipAddress, String operat
     pending[ipAddress] = operationId
     atomicState.provisioningCompletionPending = pending
     setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
-    sendEvent(name: 'configTable', value: 'provisioningBeforeFinalCheck')
-    runInMillis(500, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: 1], overwrite: false])
+    sendEventHelper([name: 'configTable', value: 'provisioningBeforeFinalCheck'])
+    runInMillisHelper(500L, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: 1], overwrite: false])
 }
 
 /**
@@ -3761,9 +3762,9 @@ void verifyProvisioningCompletion(Map data) {
     Integer attempt = (data?.attempt ?: 1) as Integer
     if (!ipAddress || !isCurrentProvisioningOperation(ipAddress, operationId)) { return }
 
-    sendEvent(name: 'configTable', value: 'provisioningFinalCheckBefore')
+    sendEventHelper([name: 'configTable', value: 'provisioningFinalCheckBefore'])
     Map entry = buildDeviceStatusCacheEntry(ipAddress)
-    sendEvent(name: 'configTable', value: 'provisioningFinalCheckAfter')
+    sendEventHelper([name: 'configTable', value: 'provisioningFinalCheckAfter'])
 
     Integer requiredScripts = entry?.requiredScriptCount as Integer
     Integer installedScripts = entry?.installedScriptCount as Integer
@@ -3785,7 +3786,7 @@ void verifyProvisioningCompletion(Map data) {
     if (attempt >= 4) {
         logWarn("Provisioning final check remains incomplete: scripts ${installedScripts}/${requiredScripts} installed, ${activeScripts}/${requiredScripts} active and webhooks ${createdWebhooks}/${requiredWebhooks} created, ${enabledWebhooks}/${requiredWebhooks} enabled on ${ipAddress}")
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: awaiting device confirmation')
-        sendEvent(name: 'configTable', value: 'provisioningIncomplete')
+        sendEventHelper([name: 'configTable', value: 'provisioningIncomplete'])
         return
     }
 
@@ -3794,7 +3795,7 @@ void verifyProvisioningCompletion(Map data) {
     Integer[] delays = [5, 10, 15]
     Integer delay = delays[Math.min(attempt - 1, delays.length - 1)]
     setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
-    runIn(delay, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: attempt + 1], overwrite: false])
+    runInHelper(delay as Long, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: attempt + 1], overwrite: false])
 }
 
 /**
@@ -5051,10 +5052,10 @@ private void removeDeviceByIp(String ip) {
     if (config?.isParentChild && config?.childDnis) {
         List<String> childDnis = config.childDnis as List<String>
         childDnis.each { String childDni ->
-            def childDev = getChildDevice(childDni)
+            def childDev = getChildDeviceHelper(childDni)
             if (childDev) {
-                String childName = childDev.displayName
-                if (childDev.typeName) { deletedDriverNames << childDev.typeName.toString() }
+                String childName = deviceDisplayNameHelper(childDev)
+                if (deviceTypeNameHelper(childDev)) { deletedDriverNames << deviceTypeNameHelper(childDev) }
                 // Clean up command queue for child before deletion
                 commandQueues.remove(childDni)
                 lastWakeUpTimestamps.remove(childDni)
@@ -5063,7 +5064,7 @@ private void removeDeviceByIp(String ip) {
                     persistedQueues.remove(childDni)
                     atomicState.commandQueues = persistedQueues
                 }
-                deleteChildDevice(childDni)
+                deleteChildDeviceHelper(childDni)
                 logInfo("Removed child device: ${childName} (${childDni})")
                 appendLog('info', "Removed child: ${childName}")
             }
@@ -5071,7 +5072,7 @@ private void removeDeviceByIp(String ip) {
     }
 
     // Step 3: Remove the device (and its command queue) from Hubitat
-    if (device.typeName) { deletedDriverNames << device.typeName.toString() }
+    if (deviceTypeNameHelper(device)) { deletedDriverNames << deviceTypeNameHelper(device) }
     commandQueues.remove(dni)
     lastWakeUpTimestamps.remove(dni)
     gen1PollFailureCounts.remove(ip)
@@ -5080,7 +5081,7 @@ private void removeDeviceByIp(String ip) {
         persistedQueues.remove(dni)
         atomicState.commandQueues = persistedQueues
     }
-    deleteChildDevice(dni)
+    deleteChildDeviceHelper(dni)
     invalidateDirectChildDeviceCache()
     invalidateHubDeviceDniCache()
     logInfo("Removed device: ${name} (${dni})")
@@ -5127,8 +5128,8 @@ private void cleanupStaleDeviceConfig(String ip) {
 
     // Find all DNIs that reference this IP
     List<String> staleDnis = []
-    List<com.hubitat.app.DeviceWrapper> allChildren = getChildDevices() ?: []
-    Set<String> existingDnis = allChildren.collect { it.deviceNetworkId } as Set
+    List allChildren = getChildDevicesHelper()
+    Set<String> existingDnis = allChildren.collect { deviceNetworkIdHelper(it) } as Set
 
     deviceConfigs.each { String dni, Map config ->
         // If the DNI is in our config but not in Hubitat's device list, it's stale
@@ -5788,7 +5789,7 @@ private String renderWebhookStatusHtml(def device, String ip, List<Map> required
  * Using bare {@code sendEvent()} triggers the SSR callback in {@link #processServerSideRender}.
  */
 void fireConfigTableSSR() {
-    sendEvent(name: 'configTable', value: 'update')
+    sendEventHelper([name: 'configTable', value: 'update'])
 }
 
 /**
@@ -5827,13 +5828,13 @@ String processServerSideRender(Map event) {
 
     // Device-level events
     Integer deviceId = event.deviceId as Integer
-    def childDevice = getChildDevices()?.find { (it.id as Integer) == deviceId }
+    def childDevice = getChildDevicesHelper()?.find { (deviceIdHelper(it) as Integer) == deviceId }
     if (!childDevice) {
         logDebug("SSR: no child device found for deviceId ${deviceId}")
         return ''
     }
 
-    String ip = childDevice.getDataValue('ipAddress')
+    String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ip) { return '' }
 
     // Re-probe the device — it's awake if we got an event
@@ -6594,7 +6595,7 @@ private Boolean isDeviceReachable(String ipAddress) {
             timeout: 2
         ]
         Boolean reachable = false
-        httpPost(params) { resp ->
+        httpPostHelper(params) { resp ->
             if (resp.getStatus() == 200) { reachable = true }
         }
         return reachable
@@ -6648,8 +6649,8 @@ private String stripJsExtension(String filename) {
 /**
  * Initializes operational app state and reconciles schedules.
  * Hub-start mDNS registration is handled by {@link #systemStartHandler};
- * driver maintenance and remote update checks run only during install or
- * settings-update initialization.
+ * driver maintenance and remote update checks are handled by their explicit
+ * buttons and scheduled callbacks, never by app initialization.
  */
 void initialize(Boolean performMaintenance = false, Boolean registerStartupSubscription = true) {
     // Do not carry transient lookup results across app initialization or updates.
@@ -6663,10 +6664,10 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     // Capability discovery is no longer scheduled by ordinary discovery. Clear
     // callbacks queued by older app versions so an update cannot unexpectedly
     // resume a full multi-RPC fetch while the page is loading.
-    unschedule('processAsyncDeviceInfoFetch')
-    unschedule('processInstalledDeviceReachability')
-    unschedule('discoveryReachabilityCallback')
-    unschedule('discoveryShellyReachabilityCallback')
+    unscheduleHelper('processAsyncDeviceInfoFetch')
+    unscheduleHelper('processInstalledDeviceReachability')
+    unscheduleHelper('discoveryReachabilityCallback')
+    unscheduleHelper('discoveryShellyReachabilityCallback')
     atomicState.remove('asyncFetchQueue')
 
     // IP subnet scan state reset
@@ -6754,13 +6755,16 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
             appendLog('warn', 'Driver update queue was interrupted — clearing stale state')
             atomicState.remove('driverUpdateQueue')
             atomicState.remove('driverUpdateProgress')
-            sendEvent(name: 'driverRebuildStatus', value: 'cleared')
+            sendEventHelper([name: 'driverRebuildStatus', value: 'cleared'])
         }
 
         pruneStaleDriverTracking()
 
-        // Check app/driver versions only when the app is installed or settings are
-        // changed, never as part of reboot recovery.
+        // Record app-version changes when the app is installed or settings are
+        // changed, but do not update drivers from initialize(). Opening the app
+        // page (or a settings update triggered by Hubitat) must remain a
+        // lightweight lifecycle operation. Driver updates are performed only
+        // by the explicit Update buttons or scheduledDriverUpdate().
         String currentVersion = getAppVersion()
         String lastVersion = state.lastAutoconfVersion
         if (lastVersion == null) {
@@ -6768,18 +6772,12 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
             logInfo("First install detected, storing app version: ${currentVersion}")
         } else if (lastVersion != currentVersion) {
             state.lastAutoconfVersion = currentVersion
-            if (settings?.rebuildOnUpdate != false) {
-                logInfo("App version changed from ${lastVersion} to ${currentVersion}, updating drivers")
-                startBulkDriverUpdate()
-            } else {
-                logInfo("App version changed from ${lastVersion} to ${currentVersion} (driver update disabled)")
-            }
+            logInfo("App version changed from ${lastVersion} to ${currentVersion}; driver updates deferred to the scheduled check or an explicit Update action")
         } else {
             Map allDrivers = atomicState.autoDrivers ?: [:]
             Boolean hasOutdated = allDrivers.any { key, info -> info.version && info.version.toString() != currentVersion }
-            if (hasOutdated && settings?.rebuildOnUpdate != false) {
-                logInfo("Found outdated drivers at app version ${currentVersion}, triggering update")
-                startBulkDriverUpdate()
+            if (hasOutdated) {
+                logInfo("Found outdated drivers at app version ${currentVersion}; updates remain deferred to the scheduled check or an explicit Update action")
             } else {
                 logDebug("App version unchanged (${currentVersion}), no driver update needed")
             }
@@ -6798,10 +6796,10 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
             driverHour = driverTime.format('H') as int
             driverMinute = driverTime.format('m') as int
         }
-        schedule("0 ${driverMinute} ${driverHour} ? * *", 'scheduledDriverUpdate')
+        scheduleHelper("0 ${driverMinute} ${driverHour} ? * *", 'scheduledDriverUpdate')
         logDebug("Driver auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', driverHour, driverMinute))} daily")
     } else {
-        unschedule('scheduledDriverUpdate')
+        unscheduleHelper('scheduledDriverUpdate')
     }
 
     // Schedule daily app auto-update check at configured time (default 3AM)
@@ -6813,17 +6811,17 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
             appHour = appTime.format('H') as int
             appMinute = appTime.format('m') as int
         }
-        schedule("0 ${appMinute} ${appHour} ? * *", 'checkForAppUpdate')
+        scheduleHelper("0 ${appMinute} ${appHour} ? * *", 'checkForAppUpdate')
         logDebug("App auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', appHour, appMinute))} daily")
     } else {
-        unschedule('checkForAppUpdate')
+        unscheduleHelper('checkForAppUpdate')
     }
 
     // BLE presence and persistence are separate jobs. Presence is scheduled
     // only for created children with presence enabled; persistence starts only
     // when an active gateway or volatile data needs a checkpoint.
-    unschedule('checkBlePresence')
-    unschedule('bleDiscoveryCheckpoint')
+    unscheduleHelper('checkBlePresence')
+    unscheduleHelper('bleDiscoveryCheckpoint')
     blePresenceScheduled = false
     bleCheckpointScheduled = false
     reconcileBlePresenceSchedule()
@@ -6902,7 +6900,7 @@ private void recoverStaleTransientState() {
     // These records were only used by older discovery/page implementations.
     // They are not resumable and must not survive a new page session.
     ['clonedName', 'hubDnisCached', 'hubDnisCachedAt'].each { String key -> atomicState.remove(key) }
-    unschedule('processAsyncDeviceInfoFetch')
+    unscheduleHelper('processAsyncDeviceInfoFetch')
     atomicState.remove('asyncFetchQueue')
 
     Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
@@ -6962,7 +6960,7 @@ private void recoverStaleTransientState() {
         atomicState.discoveryRunning = false
         atomicState.discoveryEndTime = null
         ['processMdnsDiscovery', 'processInstalledDeviceReachability', 'updateDiscoveryTimer', 'stopDiscovery', 'scanNextIpAddress']
-            .each { String method -> unschedule(method) }
+            .each { String method -> unscheduleHelper(method) }
     }
 
     if (atomicState.driverSwitchInProgress == true) { atomicState.remove('driverSwitchInProgress') }
@@ -7015,17 +7013,17 @@ void startDiscovery(Boolean resetFound = false) {
     // immediately before the 10-second mDNS delay
     processShellyHelperDiscovery()
 
-    unschedule('stopDiscovery')
-    unschedule('updateDiscoveryTimer')
-    unschedule('updateRecentLogs')
-    unschedule('processMdnsDiscovery')
-    unschedule('processInstalledDeviceReachability')
-    unschedule('scanNextIpAddress')
+    unscheduleHelper('stopDiscovery')
+    unscheduleHelper('updateDiscoveryTimer')
+    unscheduleHelper('updateRecentLogs')
+    unscheduleHelper('processMdnsDiscovery')
+    unscheduleHelper('processInstalledDeviceReachability')
+    unscheduleHelper('scanNextIpAddress')
     ipScanRunningVolatile = false
-    runIn(getDiscoveryDurationSeconds(), 'stopDiscovery')
-    runIn(5, 'updateDiscoveryTimer')
+    runInHelper(getDiscoveryDurationSeconds() as Long, 'stopDiscovery')
+    runInHelper(5L, 'updateDiscoveryTimer')
     // Give the hub 10 seconds after listener registration to collect mDNS responses
-    runIn(10, 'processMdnsDiscovery')
+    runInHelper(10L, 'processMdnsDiscovery')
 
 }
 
@@ -7042,26 +7040,26 @@ void extendDiscovery(Integer seconds) {
     Long newEnd = Math.max(currentEnd, now()) + (extensionSeconds * 1000L)
     atomicState.discoveryRunning = true
     atomicState.discoveryEndTime = newEnd
-    Integer totalRemaining = (Integer)(((newEnd) - now()) / 1000L)
+    Integer totalRemaining = (Integer)((newEnd - now()) / 1000L)
 
     // Always re-register and re-arm discovery. Previously an active scan only
     // moved its stop deadline; if its mDNS callback had already stopped or
     // been unscheduled, the extra time did not actually collect new devices.
     startMdnsDiscovery(true)
-    unschedule('processMdnsDiscovery')
-    unschedule('processInstalledDeviceReachability')
-    unschedule('updateDiscoveryTimer')
-    unschedule('stopDiscovery')
-    runIn(1, 'processMdnsDiscovery')
-    runIn(5, 'updateDiscoveryTimer')
-    runIn(totalRemaining, 'stopDiscovery')
+    unscheduleHelper('processMdnsDiscovery')
+    unscheduleHelper('processInstalledDeviceReachability')
+    unscheduleHelper('updateDiscoveryTimer')
+    unscheduleHelper('stopDiscovery')
+    runInHelper(1L, 'processMdnsDiscovery')
+    runInHelper(5L, 'updateDiscoveryTimer')
+    runInHelper(totalRemaining as Long, 'stopDiscovery')
 
     // ShellyHelper is a separate, local discovery source; refresh it now and
     // then on every mDNS polling pass while the new deadline remains active.
     processShellyHelperDiscovery()
     appendLog('info', "Discovery extended by ${extensionSeconds} seconds; ${totalRemaining} seconds remain")
     logDebug("extendDiscovery: discovery active until ${newEnd} (${totalRemaining}s remaining)")
-    sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${totalRemaining} seconds")
+    sendEventHelper([name: 'discoveryTimer', value: "Discovery time remaining: ${totalRemaining} seconds"])
 
 }
 
@@ -7137,17 +7135,17 @@ void stopDiscovery() {
     atomicState.discoveryRunning = false
     atomicState.discoveryEndTime = null
 
-    unschedule('processMdnsDiscovery')
-    unschedule('processInstalledDeviceReachability')
-    unschedule('updateDiscoveryTimer')
-    unschedule('updateRecentLogs')
-    unschedule('stopDiscovery')
+    unscheduleHelper('processMdnsDiscovery')
+    unscheduleHelper('processInstalledDeviceReachability')
+    unscheduleHelper('updateDiscoveryTimer')
+    unscheduleHelper('updateRecentLogs')
+    unscheduleHelper('stopDiscovery')
 
     // Stop IP subnet scan if running
     stopIpSubnetScan()
 
     // Device summary RPCs run only after identity discovery has stopped.
-    runInMillis(500, 'queueStaleTableSummaryRefreshes')
+    runInMillisHelper(500L, 'queueStaleTableSummaryRefreshes')
 
     Map metrics = discoveryPerformanceMetrics ?: [:]
     Long startedAt = metrics.startedAt as Long
@@ -7177,11 +7175,11 @@ void updateDiscoveryTimer() {
 
     // Use server-side rendering, as the app page does not reliably apply a
     // plain app-state event to arbitrary paragraph HTML.
-    sendEvent(name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds")
+    sendEventHelper([name: 'discoveryTimer', value: "Discovery time remaining: ${remainingSecs} seconds"])
 
     // Continue scheduling if time remaining
     if (remainingSecs > 0) {
-        runIn(5, 'updateDiscoveryTimer')
+        runInHelper(5L, 'updateDiscoveryTimer')
     }
 }
 
@@ -7197,7 +7195,7 @@ void updateRecentLogs() {
     // Send the most recent 10 log lines to the browser for the app-state binding
             String logs = recentLogsVolatile ? recentLogsVolatile.reverse().take(10).join('\n') : ''
     String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-    app.sendEvent(name: 'recentLogs', value: recentPayload)
+    sendAppEventHelper([name: 'recentLogs', value: recentPayload])
 }
 
 /**
@@ -7381,7 +7379,7 @@ void processMdnsDiscovery() {
     }
 
     if (atomicState.discoveryRunning && getRemainingDiscoverySeconds() > 0) {
-        runIn(getMdnsPollSeconds(), 'processMdnsDiscovery')
+        runInHelper(getMdnsPollSeconds() as Long, 'processMdnsDiscovery')
     }
 }
 
@@ -7507,20 +7505,20 @@ void sendFoundShellyEvents() {
     if ((nowMs - lastDiscoveryTableSSR) < 250L) {
         if (!discoveryTableSSRPending) {
             discoveryTableSSRPending = true
-            runInMillis(300, 'flushDiscoveryTableSSR')
+            runInMillisHelper(300L, 'flushDiscoveryTableSSR')
         }
         return
     }
     lastDiscoveryTableSSR = nowMs
     recordDiscoveryMetric('tableSSR')
-    sendEvent(name: 'configTable', value: 'discovery')
+    sendEventHelper([name: 'configTable', value: 'discovery'])
 }
 
 void flushDiscoveryTableSSR() {
     discoveryTableSSRPending = false
     lastDiscoveryTableSSR = now()
     recordDiscoveryMetric('tableSSR')
-    sendEvent(name: 'configTable', value: 'discovery')
+    sendEventHelper([name: 'configTable', value: 'discovery'])
 }
 
 /**
@@ -7785,12 +7783,12 @@ static String extractGen1TypeFromHostname(String hostname) {
 void watchdogScan() {
     if (atomicState.discoveryRunning == true) {
         logTrace('watchdogScan: discovery is active; deferring watchdog scan')
-        runIn(60, 'watchdogScan', [overwrite: true])
+        runInHelper(60L, 'watchdogScan', [overwrite: true])
         return
     }
     if (!hasInstalledLanDevices()) {
         logTrace('watchdogScan: no installed LAN devices, stopping watchdog')
-        unschedule('watchdogScan')
+        unscheduleHelper('watchdogScan')
         return
     }
 
@@ -7808,7 +7806,7 @@ void watchdogScan() {
     startMdnsDiscovery(false)
 
     // Wait 10 seconds for mDNS responses to accumulate before processing
-    runIn(10, 'watchdogProcessResults')
+    runInHelper(10L, 'watchdogProcessResults')
 }
 
 /** Returns true when at least one installed parent represents a LAN device. */
@@ -7821,7 +7819,7 @@ private Boolean hasInstalledLanDevices() {
 
 /** Reconciles the single long-lived watchdog timer with current app children. */
 private void reconcileWatchdogSchedule() {
-    unschedule('watchdogScan')
+    unscheduleHelper('watchdogScan')
     if (settings?.enableWatchdog == false || !hasInstalledLanDevices()) {
         logTrace('Watchdog not scheduled: disabled or no installed LAN devices')
         return
@@ -7831,7 +7829,7 @@ private void reconcileWatchdogSchedule() {
 
 /** Arms the next watchdog run using a fixed interval rather than an hourly cron slot. */
 private void scheduleNextWatchdogScan() {
-    runIn(WATCHDOG_INTERVAL_SECONDS, 'watchdogScan', [overwrite: true])
+    runInHelper(WATCHDOG_INTERVAL_SECONDS as Long, 'watchdogScan', [overwrite: true])
     logTrace("Watchdog next scan scheduled in ${WATCHDOG_INTERVAL_SECONDS / 60} minutes")
 }
 
@@ -7884,7 +7882,7 @@ void watchdogProcessResults() {
             if (!mac) { return }
 
             // Check if we have a child device with this MAC as DNI
-            def child = getChildDevice(mac)
+            def child = getChildDeviceHelper(mac)
             if (!child) { return }
 
             String currentIp = child.getDataValue('ipAddress')
@@ -7915,7 +7913,7 @@ void watchdogProcessResults() {
             String shMac = normalizeMac(shEntry.macAddress?.toString())
             if (!shIp || !shMac) { continue }
 
-            Object child = getChildDevice(shMac)
+            Object child = getChildDeviceHelper(shMac)
             if (!child) { continue }
 
             String currentIp = child.getDataValue('ipAddress')
@@ -8020,7 +8018,7 @@ void startIpSubnetScan() {
     ipScanResultsVolatile = [:]
 
     appendLog('info', "Starting IP subnet scan on ${subnet}.0/24")
-    runInMillis(1000, 'scanNextIpAddress')
+    runInMillisHelper(1000L, 'scanNextIpAddress')
 }
 
 /**
@@ -8083,7 +8081,7 @@ void scanNextIpAddress() {
 
         if (elapsed < cooldownMs) {
             // Skip — still within cooldown for this result type
-            runInMillis(50, 'scanNextIpAddress')
+            runInMillisHelper(50L, 'scanNextIpAddress')
             return
         }
     }
@@ -8099,7 +8097,7 @@ void scanNextIpAddress() {
             logTrace("Discovery HTTP limit reached; deferring subnet probe for ${targetIp}")
             results[targetIp] = [scannedAt: now(), result: 'pending_deferred']
             ipScanResultsVolatile = results
-            runInMillis(1000, 'scanNextIpAddress')
+            runInMillisHelper(1000L, 'scanNextIpAddress')
             return
         }
         Map params = [
@@ -8108,14 +8106,14 @@ void scanNextIpAddress() {
             contentType: 'application/json',
             ignoreSSLIssues: true
         ]
-        asynchttpGet('ipScanCallback', params, [targetIp: targetIp])
+        asynchttpGetHelper('ipScanCallback', params, [targetIp: targetIp])
     } catch (Exception e) {
         releaseDiscoveryHttpRequest("ipScan:${targetIp}")
         logTrace("scanNextIpAddress: exception probing ${targetIp}: ${e.message}")
     }
 
     // Schedule next IP probe (1s interval keeps max ~3 concurrent requests with 3s timeout)
-    runInMillis(1000, 'scanNextIpAddress')
+    runInMillisHelper(1000L, 'scanNextIpAddress')
 }
 
 /**
@@ -8262,7 +8260,7 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
  */
 void stopIpSubnetScan() {
     ipScanRunningVolatile = false
-    unschedule('scanNextIpAddress')
+    unscheduleHelper('scanNextIpAddress')
     // This marker is only needed while the explicit scan is active. Keeping it
     // in atomicState after completion needlessly enlarges persisted state.
     atomicState.remove('discoveryHttpInFlight')
@@ -8950,8 +8948,9 @@ private void syncGen1HTSettings(String ipAddress, def childDevice, String gen1Ty
  * @param childDevice The Hubitat child device to check
  * @return true if the device is Gen 1
  */
-private Boolean isGen1Device(def childDevice) {
-    return childDevice?.getDataValue('shellyGen') == '1'
+@CompileStatic
+private Boolean isGen1Device(Object childDevice) {
+    return genericDeviceDataValueHelper(childDevice, 'shellyGen') == '1'
 }
 
 /**
@@ -8971,8 +8970,9 @@ private Boolean isGen1DeviceByIp(String ipAddress) {
  * @param childDevice The Hubitat child device
  * @return The generation string ({@code "1"}, {@code "2"}, {@code "3"}), or {@code "2"} as default
  */
-private String getDeviceGen(def childDevice) {
-    return childDevice?.getDataValue('shellyGen') ?: '2'
+@CompileStatic
+private String getDeviceGen(Object childDevice) {
+    return genericDeviceDataValueHelper(childDevice, 'shellyGen') ?: '2'
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
@@ -9047,7 +9047,7 @@ private void scheduleAsyncDeviceInfoFetch(String ipKey, Boolean force = false) {
     logDebug("Scheduling async device info fetch for ${ipKey} in ${delayMs}ms${force ? ' (forced)' : ''}")
     // overwrite:false is required — the default overwrite:true would cancel the pending
     // fetch for every previously scheduled device when a discovery batch queues several
-    runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId], overwrite: false])
+    runInMillisHelper(delayMs as Long, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId], overwrite: false])
 }
 
 /**
@@ -9225,7 +9225,7 @@ void processAsyncDeviceInfoFetch(Map data) {
             queue[ipKey] = queueEntry
             atomicState.asyncFetchQueue = queue
         }
-        runInMillis(delayMs, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId, attempt: attempt + 1], overwrite: false])
+        runInMillisHelper(delayMs as Long, 'processAsyncDeviceInfoFetch', [data: [ipKey: ipKey, requestId: requestId, attempt: attempt + 1], overwrite: false])
         capabilityFetchLocks.remove(ipKey)
         return  // Skip cleanup — retry is pending
     } else {
@@ -10775,7 +10775,7 @@ private Boolean installDriver(String sourceCode) {
         ]
 
         def existingDriver = null
-        httpGet(driverParams) { resp ->
+        httpGetHelper(driverParams) { resp ->
             if (resp?.status == 200) {
                 existingDriver = resp.data?.drivers?.find { driver ->
                     driver.type == 'usr' &&
@@ -10809,7 +10809,7 @@ private Boolean installDriver(String sourceCode) {
                 ]
 
                 def updateResponse = null
-                httpPost(params) { resp -> updateResponse = resp }
+                httpPostHelper(params) { resp -> updateResponse = resp }
 
                 if (updateResponse?.status == 200 && updateResponse?.data) {
                     def result = updateResponse.data
@@ -10850,7 +10850,7 @@ private Boolean installDriver(String sourceCode) {
             ]
 
             Boolean shouldVerify = false
-            httpPost(params) { resp ->
+            httpPostHelper(params) { resp ->
                 if (resp?.status == 302) {
                     logInfo("Driver save returned 302 redirect — compilation likely succeeded")
                     shouldVerify = true
@@ -10907,7 +10907,7 @@ private Boolean waitForHubDriverRegistration(String driverName) {
 private Boolean isDriverOnHub(String driverName, String namespace) {
     Boolean found = false
     try {
-        httpGet([uri: "http://127.0.0.1:8080", path: '/device/drivers', contentType: 'application/json', timeout: 5000]) { resp ->
+        httpGetHelper([uri: "http://127.0.0.1:8080", path: '/device/drivers', contentType: 'application/json', timeout: 5000]) { resp ->
             if (resp?.status == 200) {
                 found = resp.data?.drivers?.any { d ->
                     d.type == 'usr' && d?.namespace == namespace && d?.name == driverName
@@ -10933,7 +10933,7 @@ private String fetchHubitatDriverIdByName(String driverName) {
     String foundId = null
     String baseName = driverName.replaceAll(/\s+v\d+(\.\d+)*$/, '')
     try {
-        httpGet([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
+        httpGetHelper([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
             if (resp?.status == 200) {
                 List allDrivers = resp.data?.drivers as List ?: []
                 // 1. Exact match (fastest, most precise)
@@ -11014,7 +11014,7 @@ private void performHubDriverDelete(String driverId, String driverName) {
     try {
         if (location.hub.firmwareVersionString >= '2.3.7.130') {
             // Modern path: GET /driver/editor/deleteJson/{id} → { "status": true }
-            httpGet([
+            httpGetHelper([
                 uri: 'http://127.0.0.1:8080',
                 path: "/driver/editor/deleteJson/${driverId}",
                 timeout: 30
@@ -11026,7 +11026,7 @@ private void performHubDriverDelete(String driverId, String driverName) {
             }
         } else {
             // Legacy path: POST /driver/editor/update with _action_delete=Delete
-            httpPost([
+            httpPostHelper([
                 uri: 'http://127.0.0.1:8080',
                 path: '/driver/editor/update',
                 requestContentType: 'application/x-www-form-urlencoded',
@@ -11195,7 +11195,7 @@ private Boolean isComponentDriverInstalled(String driverName) {
             timeout: 5000
         ]
 
-        httpGet(driverParams) { resp ->
+        httpGetHelper(driverParams) { resp ->
             if (resp?.status == 200) {
                 found = resp.data?.drivers?.any { driver ->
                     driver.type == 'usr' &&
@@ -11397,7 +11397,7 @@ private Integer getMdnsPollSeconds() { 5 }
 private void applyPendingDisplayLevel() {
     String pending = state.pendingDisplayLevel?.toString()
     if (pending) {
-        app.updateSetting('displayLogLevel', [type: 'enum', value: pending])
+        appUpdateSettingHelper('displayLogLevel', [type: 'enum', value: pending])
         state.pendingDisplayLevel = null
     }
 }
@@ -11429,7 +11429,7 @@ private void pruneDisplayedLogs(String displayLevel) {
     if (removed > 0) { logDebug("pruneDisplayedLogs: removed ${removed} entries below ${displayLevel}") }
     String logs = recentLogsVolatile ? recentLogsVolatile.reverse().take(10).join('\n') : ''
     String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-    app.sendEvent(name: 'recentLogs', value: recentPayload)
+    sendAppEventHelper([name: 'recentLogs', value: recentPayload])
 }
 
 
@@ -11442,13 +11442,15 @@ private void pruneDisplayedLogs(String displayLevel) {
  * @param level The log level (trace, debug, info, warn, error)
  * @param msg The message to log
  */
+@CompileStatic
 private void appendLog(String level, String msg) {
     List<String> recentLogs = new ArrayList(recentLogsVolatile ?: [])
 
     // Only append messages that meet the app display threshold
-    String displayLevel = (settings?.displayLogLevel ?: (settings?.logLevel ?: 'warn'))?.toString()
+    String displayLevel = (appSettingValueHelper('displayLogLevel') ?:
+        (appSettingValueHelper('logLevel') ?: 'warn'))?.toString()
     if (levelPriority(level) >= levelPriority(displayLevel)) {
-        recentLogs.add("${new Date().format('yyyy-MM-dd HH:mm:ss')} - ${level?.toUpperCase()}: ${msg}")
+        recentLogs.add("${new Date().format('yyyy-MM-dd HH:mm:ss')} - ${level?.toUpperCase()}: ${msg}".toString())
         if (recentLogs.size() > 300) {
             recentLogs = recentLogs[-300..-1]
         }
@@ -11459,11 +11461,11 @@ private void appendLog(String level, String msg) {
         // Without this, rapid appendLog calls (e.g. inside async callbacks) burst-flood
         // the per-app sendEvent rate limiter and produce LimitExceededException errors.
         Long lastFire = lastLogEventTimestampVolatile as Long
-        Long nowMs = now()
+        Long nowMs = nowHelper()
         if (nowMs - lastFire >= 1000L) {
             String logs = recentLogs.reverse().take(10).join('\n')
             String recentPayload = "Recent log lines (most recent first):\n" + (logs ?: 'No logs yet.')
-            app.sendEvent(name: 'recentLogs', value: recentPayload)
+            sendAppEventHelper([name: 'recentLogs', value: recentPayload])
             lastLogEventTimestampVolatile = nowMs
         }
     }
@@ -11474,6 +11476,7 @@ private void appendLog(String level, String msg) {
  *
  * @return List of log level names: trace, debug, info, warn, error, off
  */
+@CompileStatic
 private List<String> LOG_LEVELS() { ['trace','debug','info','warn','error','off'] }
 
 /**
@@ -11484,6 +11487,7 @@ private List<String> LOG_LEVELS() { ['trace','debug','info','warn','error','off'
  * @param level The log level name (case-insensitive)
  * @return The priority index, or the debug level index if level is null or invalid
  */
+@CompileStatic
 private Integer levelPriority(String level) {
     if (!level) { return LOG_LEVELS().indexOf('debug') }
     int idx = LOG_LEVELS().indexOf(level.toString().toLowerCase())
@@ -11497,8 +11501,9 @@ private Integer levelPriority(String level) {
  * @param level The log level to check
  * @return true if the message should be logged, false otherwise
  */
+@CompileStatic
 private Boolean shouldLogOverall(String level) {
-    return levelPriority(level) >= levelPriority(settings?.logLevel ?: 'debug')
+    return levelPriority(level) >= levelPriority((appSettingValueHelper('logLevel') ?: 'debug').toString())
 }
 
 /**
@@ -11508,9 +11513,10 @@ private Boolean shouldLogOverall(String level) {
  * @param level The log level to check
  * @return true if the message should be logged
  */
+@CompileStatic
 private Boolean shouldBleLogOverall(String level) {
     if (level == 'error' || level == 'warn') { return true }
-    return levelPriority(level) >= levelPriority(settings?.bleLogLevel ?: 'info')
+    return levelPriority((level ?: 'debug').toString()) >= levelPriority((appSettingValueHelper('bleLogLevel') ?: 'info').toString())
 }
 
 /**
@@ -11521,8 +11527,10 @@ private Boolean shouldBleLogOverall(String level) {
  * @param level The log level to check
  * @return true if the message should be displayed in the UI, false otherwise
  */
+@CompileStatic
 private Boolean shouldDisplay(String level) {
-    return levelPriority(level) >= levelPriority(settings?.displayLogLevel ?: (settings?.logLevel ?: 'warn'))
+    return levelPriority(level) >= levelPriority((appSettingValueHelper('displayLogLevel') ?:
+        (appSettingValueHelper('logLevel') ?: 'warn')).toString())
 }
 
 /**
@@ -11532,9 +11540,10 @@ private Boolean shouldDisplay(String level) {
  *
  * @param msg The message to log
  */
+@CompileStatic
 private void logTrace(String msg) {
     if (!shouldLogOverall('trace')) { return }
-    log.trace msg
+    writeLogHelper('trace', msg)
     if (shouldDisplay('trace')) { appendLog('trace', msg) }
 }
 
@@ -11545,6 +11554,7 @@ private void logTrace(String msg) {
  *
  * @param msg The message to log
  */
+@CompileStatic
 private void logDebug(String msg, Boolean prettyPrint = false) {
     if (!shouldLogOverall('debug')) { return }
 
@@ -11554,7 +11564,7 @@ private void logDebug(String msg, Boolean prettyPrint = false) {
         formattedMsg = "<pre>${msg}</pre>"
     }
 
-    log.debug formattedMsg
+    writeLogHelper('debug', formattedMsg)
     if (shouldDisplay('debug')) { appendLog('debug', formattedMsg) }
 }
 
@@ -11565,6 +11575,7 @@ private void logDebug(String msg, Boolean prettyPrint = false) {
  *
  * @param msg The message to log
  */
+@CompileStatic
 private void logInfo(String msg, Boolean prettyPrint = false) {
     if (!shouldLogOverall('info')) { return }
 
@@ -11574,7 +11585,7 @@ private void logInfo(String msg, Boolean prettyPrint = false) {
         formattedMsg = "<pre>${msg}</pre>"
     }
 
-    log.info formattedMsg
+    writeLogHelper('info', formattedMsg)
     if (shouldDisplay('info')) { appendLog('info', formattedMsg) }
 }
 
@@ -11585,9 +11596,10 @@ private void logInfo(String msg, Boolean prettyPrint = false) {
  *
  * @param msg The message to log
  */
+@CompileStatic
 private void logWarn(String msg) {
     if (!shouldLogOverall('warn')) { return }
-    log.warn msg
+    writeLogHelper('warn', msg)
     if (shouldDisplay('warn')) { appendLog('warn', msg) }
 }
 
@@ -11598,9 +11610,10 @@ private void logWarn(String msg) {
  *
  * @param msg The message to log
  */
+@CompileStatic
 private void logError(String msg) {
     if (!shouldLogOverall('error')) { return }
-    log.error msg
+    writeLogHelper('error', msg)
     if (shouldDisplay('error')) { appendLog('error', msg) }
 }
 
@@ -11616,9 +11629,10 @@ private void logError(String msg) {
  * Logs a BLE trace-level message, gated only by bleLogLevel.
  * @param msg The message to log
  */
+@CompileStatic
 private void bleLogTrace(String msg) {
     if (!shouldBleLogOverall('trace')) { return }
-    log.trace msg
+    writeLogHelper('trace', msg)
     if (shouldDisplay('trace')) { appendLog('trace', msg) }
 }
 
@@ -11626,9 +11640,10 @@ private void bleLogTrace(String msg) {
  * Logs a BLE debug-level message, gated only by bleLogLevel.
  * @param msg The message to log
  */
+@CompileStatic
 private void bleLogDebug(String msg) {
     if (!shouldBleLogOverall('debug')) { return }
-    log.debug msg
+    writeLogHelper('debug', msg)
     if (shouldDisplay('debug')) { appendLog('debug', msg) }
 }
 
@@ -11636,9 +11651,10 @@ private void bleLogDebug(String msg) {
  * Logs a BLE info-level message, gated only by bleLogLevel.
  * @param msg The message to log
  */
+@CompileStatic
 private void bleLogInfo(String msg) {
     if (!shouldBleLogOverall('info')) { return }
-    log.info msg
+    writeLogHelper('info', msg)
     if (shouldDisplay('info')) { appendLog('info', msg) }
 }
 
@@ -11646,8 +11662,9 @@ private void bleLogInfo(String msg) {
  * Logs a BLE warning-level message. Always passes through.
  * @param msg The message to log
  */
+@CompileStatic
 private void bleLogWarn(String msg) {
-    log.warn msg
+    writeLogHelper('warn', msg)
     if (shouldDisplay('warn')) { appendLog('warn', msg) }
 }
 
@@ -11655,8 +11672,9 @@ private void bleLogWarn(String msg) {
  * Logs a BLE error-level message. Always passes through.
  * @param msg The message to log
  */
+@CompileStatic
 private void bleLogError(String msg) {
-    log.error msg
+    writeLogHelper('error', msg)
     if (shouldDisplay('error')) { appendLog('error', msg) }
 }
 
@@ -12364,7 +12382,7 @@ void uploadScriptChunk(Map data) {
             Integer[] retryDelays = [1000, 3000, 5000, 10000, 15000]
             Integer delay = retryDelays[chunkRetryCount]
             logWarn("Script upload chunk ${chunkNum} (offset ${offset}) timed out - retrying in ${delay}ms (attempt ${chunkRetryCount + 1}/5)")
-            runInMillis(delay, 'uploadScriptChunk', [data: data + [chunkRetryCount: chunkRetryCount + 1], overwrite: false])
+            runInMillisHelper(delay as Long, 'uploadScriptChunk', [data: data + [chunkRetryCount: chunkRetryCount + 1], overwrite: false])
             return
         }
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${e.message ?: e.toString()}"
@@ -12396,7 +12414,7 @@ void uploadScriptChunk(Map data) {
     if (nextOffset < total) {
         // Schedule next chunk with 150ms delay for device write flush
         // Only pass lightweight scheduling data — code stays in state
-        runInMillis(250, 'uploadScriptChunk', [data: [
+        runInMillisHelper(250L, 'uploadScriptChunk', [data: [
             scriptId: scriptId,
             codeStateKey: codeStateKey,
             uri: uri,
@@ -13597,42 +13615,47 @@ String pm1GetStatus() {
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region HTTP Methods */
 // MARK: HTTP Methods
+@CompileStatic
 LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
   LinkedHashMap json
-  Map params = [uri: (uri ? uri : "${getBaseUriRpc()}")]
-  params.contentType = 'application/json'
-  params.requestContentType = 'application/json'
-  params.body = command
-  params.timeout = 10
+  Map<String, Object> params = new LinkedHashMap<String, Object>()
+  params.put('uri', (uri ? uri : getBaseUriRpc()).toString())
+  params.put('contentType', 'application/json')
+  params.put('requestContentType', 'application/json')
+  params.put('body', command)
+  params.put('timeout', 10)
   // Gate the trace interpolation — GString placeholders evaluate eagerly, so an ungated
   // prettyJson() would serialize the full request/response on EVERY RPC even with trace off
   if(shouldLogOverall('trace')) { logTrace("postCommandSync sending to ${params.uri}: ${prettyJson(params)}") }
   try {
-    httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+    Map response = httpPostResponseHelper(params)
+    if ((response.get('status') as Integer) == 200) { json = response.get('data') as LinkedHashMap }
     // Only clear the auth flag when the request succeeded WITHOUT credentials attached —
     // clearing it after an auth-assisted success forced a 401 re-handshake on every
     // subsequent command to a password-protected device
     if(command.auth == null) { setAuthIsEnabled(false) }
   } catch(HttpResponseException ex) {
-    if(ex.getStatusCode() != 401) {
-      logWarn("HTTP Exception (${ex.getStatusCode()}): ${ex.message ?: ex.toString()}")
+    Integer exceptionStatus = httpResponseExceptionStatusHelper(ex)
+    if(exceptionStatus != 401) {
+      logWarn("HTTP Exception (${exceptionStatus}): ${ex.message ?: ex.toString()}")
       throw ex
     }
     setAuthIsEnabled(true)
-    def authHeader = ex.getResponse()?.getAllHeaders()?.find{ it.getValue()?.contains('nonce')}
-    if (!authHeader) {
+    String authHeaderValue = digestHeaderHelper(ex.getResponse())
+    if (!authHeaderValue) {
       logError("Device requires authentication but no auth header found in response")
       throw new Exception("Authentication required but auth header missing")
     }
-    String authToProcess = authHeader.getValue().replace('Digest ', '')
+    String authToProcess = authHeaderValue.replace('Digest ', '')
     authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
     processUnauthorizedMessage("{${authToProcess}}".toString())
     try {
       if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-      params.body = command
-      httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+      params.put('body', command)
+      Map retryResponse = httpPostResponseHelper(params)
+      if ((retryResponse.get('status') as Integer) == 200) { json = retryResponse.get('data') as LinkedHashMap }
     } catch(HttpResponseException ex2) {
-      logError("Auth failed a second time (${ex2.getStatusCode()}). Double check password correctness.")
+      logError("Auth failed a second time (${httpResponseExceptionStatusHelper(ex2)}). Double check password correctness.")
       throw ex2
     }
   } catch(Exception ex) {
@@ -13643,26 +13666,30 @@ LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
   return json
 }
 
+@CompileStatic
 LinkedHashMap parentPostCommandSync(LinkedHashMap command, String uri = null) {
-  if(hasParent() == true) { return parent?.postCommandSync(command, uri) }
-  else { return postCommandSync(command, uri) }
+  if(hasParent() == true) { return parentPostCommandSyncHelper(getParentHelper(), command, uri) }
+  return postCommandSync(command, uri)
 }
 
+@CompileStatic
 void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null) {
-  if(hasParent() == true) { parent?.postCommandAsync(command, callbackMethod, uri) }
+  if(hasParent() == true) { parentPostCommandAsyncHelper(getParentHelper(), command, callbackMethod, uri) }
   else { postCommandAsync(command, callbackMethod, uri) }
 }
 
+@CompileStatic
 void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null, Map callbackData = null) {
   LinkedHashMap json
-  Map params = [uri: (uri ?: "${getBaseUriRpc()}")]
-  params.contentType = 'application/json'
-  params.requestContentType = 'application/json'
-  params.body = command
+  Map<String, Object> params = new LinkedHashMap<String, Object>()
+  params.put('uri', (uri ?: getBaseUriRpc()).toString())
+  params.put('contentType', 'application/json')
+  params.put('requestContentType', 'application/json')
+  params.put('body', command)
   if(shouldLogOverall('trace')) { logTrace("postCommandAsync sending: ${prettyJson(params)}") }
   Map asyncData = [params:params, command:command, attempt:1, callbackMethod:callbackMethod]
   if (callbackData) { asyncData.putAll(callbackData) }
-  asynchttpPost('postCommandAsyncCallback', params, asyncData)
+  asynchttpPostHelper('postCommandAsyncCallback', params, asyncData)
   // NOTE: deliberately no setAuthIsEnabled(false) here — this is the dispatch path and the
   // request outcome is not yet known; clearing the flag here broke auth for the follow-up 401
 }
@@ -13674,19 +13701,24 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
     Map command = data.command
     setAuthIsEnabled(true)
     // logWarn("Error headers: ${response?.getHeaders()}")
-    String authToProcess = response?.getHeaders().find{ it.getValue().contains('nonce')}.getValue().replace('Digest ', '')
+    String authHeaderValue = digestHeaderFromHeadersHelper(response?.getHeaders())
+    if (!authHeaderValue) {
+      logError('Authentication required but no auth header found in asynchronous response')
+      return
+    }
+    String authToProcess = authHeaderValue.replace('Digest ', '')
     authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
     processUnauthorizedMessage("{${authToProcess}}".toString())
     if(authIsEnabled() == true && getAuth().size() > 0) {
       command.auth = getAuth()
-      params.body = command
+      params.put('body', command)
     }
     if(data?.attempt == 1) {
       Map retryData = new LinkedHashMap(data ?: [:])
       retryData.params = params
       retryData.command = command
       retryData.attempt = 2
-      asynchttpPost('postCommandAsyncCallback', params, retryData)
+      asynchttpPostHelper('postCommandAsyncCallback', params, retryData)
     } else {
       logError('Auth failed a second time. Double check password correctness.')
       String followOnCallback = data?.callbackMethod
@@ -13721,25 +13753,31 @@ void parentCommandAsyncCallback(AsyncResponse response, Map data = null) {
     completeParentCommand(data?.parentCommandKey?.toString(), data?.parentCommandFingerprint?.toString())
 }
 
+@CompileStatic
 LinkedHashMap postSync(LinkedHashMap command) {
   LinkedHashMap json
-  Map params = [uri: "${getBaseUriRpc()}"]
-  params.contentType = 'application/json'
-  params.requestContentType = 'application/json'
-  params.body = command
+  Map<String, Object> params = new LinkedHashMap<String, Object>()
+  params.put('uri', getBaseUriRpc().toString())
+  params.put('contentType', 'application/json')
+  params.put('requestContentType', 'application/json')
+  params.put('body', command)
   if(shouldLogOverall('trace')) { logTrace("postSync sending: ${prettyJson(params)}") }
   try {
-    httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+    Map response = httpPostResponseHelper(params)
+    if ((response.get('status') as Integer) == 200) { json = response.get('data') as LinkedHashMap }
     if(command.auth == null) { setAuthIsEnabled(false) }
   } catch(HttpResponseException ex) {
     logWarn("Exception: ${ex}")
     setAuthIsEnabled(true)
-    String authToProcess = ex.getResponse().getAllHeaders().find{ it.getValue().contains('nonce')}.getValue().replace('Digest ', '')
+    String authHeaderValue = digestHeaderHelper(ex.getResponse())
+    if (!authHeaderValue) { logError('Authentication required but auth header missing'); return json }
+    String authToProcess = authHeaderValue.replace('Digest ', '')
     authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
     processUnauthorizedMessage("{${authToProcess}}".toString())
     try {
       if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-      httpPost(params) { resp -> if(resp.getStatus() == 200) { json = resp.getData() } }
+      Map retryResponse = httpPostResponseHelper(params)
+      if ((retryResponse.get('status') as Integer) == 200) { json = retryResponse.get('data') as LinkedHashMap }
     } catch(HttpResponseException ex2) {
       logError('Auth failed a second time. Double check password correctness.')
     }
@@ -13748,22 +13786,24 @@ LinkedHashMap postSync(LinkedHashMap command) {
   return json
 }
 
+@CompileStatic
 void jsonAsyncGet(String callbackMethod, Map params, Map data) {
-  params.contentType = 'application/json'
-  params.requestContentType = 'application/json'
-  asynchttpGet(callbackMethod, params, data)
+  params.put('contentType', 'application/json')
+  params.put('requestContentType', 'application/json')
+  asynchttpGetHelper(callbackMethod, params, data)
 }
 
+@CompileStatic
 void jsonAsyncPost(String callbackMethod, Map params, Map data) {
-  params.contentType = 'application/json'
-  params.requestContentType = 'application/json'
-  asynchttpPost(callbackMethod, params, data)
+  params.put('contentType', 'application/json')
+  params.put('requestContentType', 'application/json')
+  asynchttpPostHelper(callbackMethod, params, data)
 }
 
 LinkedHashMap jsonSyncGet(Map params) {
   params.contentType = 'application/json'
   params.requestContentType = 'application/json'
-  httpGet(params) { resp ->
+  httpGetHelper(params) { resp ->
     if (resp && resp.data && resp.success) { return resp.data as LinkedHashMap }
     else { logError(resp.data) }
   }
@@ -13791,8 +13831,8 @@ Boolean responseIsValid(AsyncResponse response) {
 @CompileStatic
 void sendShellyCommand(String command, String queryParams = null, String callbackMethod = 'shellyCommandCallback', Map data = null) {
   if(!command) {return}
-  Map<String> params = [:]
-  params.uri = queryParams ? "${getBaseUri()}/${command}${queryParams}".toString() : "${getBaseUri()}/${command}".toString()
+  Map<String, Object> params = [:]
+  params.put('uri', queryParams ? "${getBaseUri()}/${command}${queryParams}".toString() : "${getBaseUri()}/${command}".toString())
   logTrace("sendShellyCommand: ${params}")
   jsonAsyncGet(callbackMethod, params, data)
 }
@@ -13800,9 +13840,9 @@ void sendShellyCommand(String command, String queryParams = null, String callbac
 @CompileStatic
 void sendShellyJsonCommand(String command, Map json, String callbackMethod = 'shellyCommandCallback', Map data = null) {
   if(!command) {return}
-  Map<String> params = [:]
-  params.uri = "${getBaseUri()}/${command}".toString()
-  params.body = json
+  Map<String, Object> params = [:]
+  params.put('uri', "${getBaseUri()}/${command}".toString())
+  params.put('body', json)
   logTrace("sendShellyJsonCommand: ${params}")
   jsonAsyncPost(callbackMethod, params, data)
 }
@@ -13832,8 +13872,9 @@ void shellyCommandCallback(AsyncResponse response, Map data = null) {
  * @param gatewayDevice The gateway device that received the BLE advertisement
  * @param bleData Map containing either a messages list (envelope) or flat BLE fields
  */
+@CompileStatic
 void handleBleRelay(Object gatewayDevice, Map bleData) {
-    String gatewayName = gatewayDevice?.displayName ?: 'Unknown gateway'
+    String gatewayName = deviceDisplayNameHelper(gatewayDevice) ?: 'Unknown gateway'
 
     // Envelope format: unpack messages list
     Object rawMessages = bleData?.messages
@@ -13858,10 +13899,10 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
     // At most once per 10 seconds — BLE advertisements arrive frequently — and only
     // while a page session is plausibly open (the event triggers a full table re-render
     // server-side; firing it 24/7 was ~8,600 wasted hub events per day).
-    Long nowMs = now()
+    Long nowMs = nowHelper()
     if (nowMs < blePageActiveUntil && nowMs - lastBleTableSSR > 10000L) {
         lastBleTableSSR = nowMs
-        sendEvent(name: 'bleTable', value: 'update')
+        sendEventHelper([name: 'bleTable', value: 'update'])
     }
 }
 
@@ -13873,8 +13914,9 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
  * @param gatewayDevice The device that relayed the BLE data
  * @param rawBody The raw JSON body string from the HTTP POST
  */
+@CompileStatic
 void handleBleRelayRaw(Object gatewayDevice, String rawBody) {
-    String gatewayName = gatewayDevice?.displayName ?: 'Unknown gateway'
+    String gatewayName = deviceDisplayNameHelper(gatewayDevice) ?: 'Unknown gateway'
     try {
         Object parsed = new groovy.json.JsonSlurper().parseText(rawBody)
         if (parsed instanceof Map) {
@@ -13894,6 +13936,7 @@ void handleBleRelayRaw(Object gatewayDevice, String rawBody) {
  * @param gatewayName Display name of the gateway that relayed this report
  * @param bleData Map of decoded BTHome fields (mac, pid, model, battery, temperature, etc.)
  */
+@CompileStatic
 private void processBleReport(String gatewayName, Map bleData) {
     String mac = bleData?.mac?.toString()?.toUpperCase()
     if (!mac) {
@@ -13916,7 +13959,7 @@ private void processBleReport(String gatewayName, Map bleData) {
     // pidResult == 0: new PID — full processing continues below
 
     // Single child lookup — passed to both functions to avoid double getChildDevice() call
-    Object child = getChildDevice(mac)
+    Object child = getChildDeviceHelper(mac)
 
     // Update discovery state (volatile fields go to @Field cache, structural to state)
     updateBleDiscoveryState(mac, model, modelId, rssi, gatewayName, bleData, child)
@@ -13987,6 +14030,7 @@ private static Integer checkBlePidAndRssi(String mac, Integer pid, Integer rssi,
  * @param rssi The improved signal strength value
  * @param gatewayName The name of the gateway with the stronger signal
  */
+@CompileStatic
 private void updateBleRssiOnly(String mac, Integer rssi, String gatewayName) {
     String macKey = mac.toString()
     Map volatileEntry = bleDiscoveryVolatile.get(macKey)
@@ -14224,7 +14268,7 @@ void expireBleProvisioningOperation(Map data) {
     Long activeStartedAt = operations[mac] != null ? operations[mac] as Long : null
     if (activeStartedAt == null || activeStartedAt != expectedStartedAt) { return }
 
-    Boolean childExists = getChildDevice(mac) != null
+    Boolean childExists = getChildDeviceHelper(mac) != null
     operations.remove(mac)
     state.bleProvisioningOperations = operations
     logWarn("BLE creation operation for ${mac} exceeded 45 seconds; clearing stale marker (childExists=${childExists})")
@@ -14264,7 +14308,7 @@ private void createBleDevice(String mac) {
     String driverNameWithVersion = "${driverName} v${APP_VERSION}".toString()
 
     // Check if device already exists
-    def existing = getChildDevice(mac)
+    def existing = getChildDeviceHelper(mac)
     if (existing) {
         bleLogWarn("BLE device already exists: ${existing.displayName} (${mac})")
         appendLog('warn', "BLE device already exists: ${existing.displayName}")
@@ -14301,7 +14345,7 @@ private void createBleDevice(String mac) {
     ]
 
     try {
-        def childDevice = addChildDevice('ShellyDeviceManager', driverNameWithVersion, mac, deviceProps)
+        def childDevice = addChildDeviceHelper('ShellyDeviceManager', driverNameWithVersion, mac, deviceProps)
         invalidateDirectChildDeviceCache()
         bleLogInfo("Created BLE device: ${deviceLabel} using driver ${driverNameWithVersion}")
         appendLog('info', "Created BLE device: ${deviceLabel}")
@@ -14349,7 +14393,7 @@ private void removeBleDevice(String mac) {
     String macKey = mac.toString()
 
     try {
-        deleteChildDevice(mac)
+        deleteChildDeviceHelper(mac)
         bleLogInfo("Removed BLE device: ${mac}")
         appendLog('info', "Removed BLE device: ${mac}")
 
@@ -14412,6 +14456,7 @@ private void removeBleDevice(String mac) {
  * @param bleData Map of decoded BTHome fields
  * @param child Pre-fetched child device (must not be null)
  */
+@CompileStatic
 private void routeBleEventToChild(String mac, Map bleData, Object child) {
     String macKey = mac.toString()
     String tempScale = getCachedTemperatureScale()
@@ -14463,7 +14508,7 @@ private void routeBleEventToChild(String mac, Map bleData, Object child) {
     }
 
     // lastUpdated — throttle to once per 30 seconds
-    Long nowMs = now()
+    Long nowMs = nowHelper()
     String lastUpdatedTime = lastSent.get('_lastUpdatedAt')
     if (sentCount > 0 && (!lastUpdatedTime || (nowMs - (lastUpdatedTime as Long)) > 30000L)) {
         lastSent.put('_lastUpdatedAt', nowMs.toString())
@@ -14636,8 +14681,9 @@ private static Map buildButtonEvent(Integer action, Integer buttonNum) {
  *
  * @return 'F' or 'C'
  */
+@CompileStatic
 private String getTemperatureScale() {
-    return getLocationHelper()?.temperatureScale ?: 'F'
+    return hubTemperatureScaleHelper() ?: 'F'
 }
 
 /**
@@ -14646,8 +14692,9 @@ private String getTemperatureScale() {
  *
  * @return 'F' or 'C'
  */
+@CompileStatic
 private String getCachedTemperatureScale() {
-    Long nowMs = now()
+    Long nowMs = nowHelper()
     if (cachedTempScale != null && (nowMs - tempScaleCacheTime) < 300000L) {
         return cachedTempScale
     }
@@ -14662,36 +14709,39 @@ private String getCachedTemperatureScale() {
 // ─────────────────────────────────────────────────────────────
 
 /** Returns the configured BLE presence timeout, using the driver default safely. */
-private Integer getBlePresenceTimeoutMinutes(def child) {
+@CompileStatic
+private Integer getBlePresenceTimeoutMinutes(Object child) {
     Integer timeoutMinutes = 60
     try {
-        Object deviceTimeout = child?.getSetting('presenceTimeout')
+        Object deviceTimeout = deviceSettingValueHelper(child, 'presenceTimeout')
         if (deviceTimeout != null) { timeoutMinutes = deviceTimeout as Integer }
     } catch (Exception e) {
-        bleLogDebug("getBlePresenceTimeoutMinutes: getSetting failed for ${child?.displayName}, using default ${timeoutMinutes}min")
+        bleLogDebug("getBlePresenceTimeoutMinutes: getSetting failed for ${deviceDisplayNameHelper(child)}, using default ${timeoutMinutes}min")
     }
     return timeoutMinutes >= 1 ? timeoutMinutes : 60
 }
 
 /** Returns true when a created child actually supports BLE presence monitoring. */
-private Boolean isBlePresenceEligible(def child) {
+@CompileStatic
+private Boolean isBlePresenceEligible(Object child) {
     if (!child) { return false }
     try {
-        return child.hasAttribute('presence') == true && getBlePresenceTimeoutMinutes(child) >= 1
+        return childHasAttributeHelper(child, 'presence') == true && getBlePresenceTimeoutMinutes(child) >= 1
     } catch (Exception e) {
         return false
     }
 }
 
 /** Finds the next BLE presence deadline without writing state. */
+@CompileStatic
 private Long getNextBlePresenceDelaySeconds() {
-    Long currentTime = now()
+    Long currentTime = nowHelper()
     Long nextDeadline = null
-    Map deviceConfigs = (atomicState.deviceConfigs ?: [:]) as Map
-    deviceConfigs.each { String key, configVal ->
+    Map<String, Object> deviceConfigs = (atomicStateValueHelper('deviceConfigs') ?: [:]) as Map<String, Object>
+    deviceConfigs.each { String key, Object configVal ->
         Map config = configVal as Map
         if (config?.isBleDevice != true) { return }
-        def child = getChildDevice(key)
+        ChildDeviceWrapper child = getChildDeviceHelper(key.toString())
         if (!isBlePresenceEligible(child)) { return }
 
         Long lastContact = bleLastContact.get(key) ?: (config.lastBleContact as Long ?: 0L)
@@ -14705,24 +14755,26 @@ private Long getNextBlePresenceDelaySeconds() {
 }
 
 /** Schedules one presence check at the earliest relevant deadline. */
+@CompileStatic
 private void reconcileBlePresenceSchedule() {
-    unschedule('checkBlePresence')
+    unscheduleHelper('checkBlePresence')
     blePresenceScheduled = false
     Long delaySeconds = getNextBlePresenceDelaySeconds()
     if (delaySeconds == null) {
         logTrace('BLE presence schedule not needed: no created eligible child with a contact deadline')
         return
     }
-    runIn(delaySeconds.intValue(), 'checkBlePresence', [overwrite: true])
+    runInHelper(delaySeconds, 'checkBlePresence', [overwrite: true])
     blePresenceScheduled = true
     logTrace("BLE presence check scheduled in ${delaySeconds}s")
 }
 
 /** Keeps BLE discovery persistence independent from presence monitoring. */
+@CompileStatic
 private void ensureBleDiscoveryCheckpointScheduled() {
     if (bleCheckpointScheduled) { return }
     if (bleDiscoveryVolatile.isEmpty()) { return }
-    runIn(BLE_CHECKPOINT_INTERVAL_SECONDS, 'bleDiscoveryCheckpoint', [overwrite: true])
+    runInHelper(BLE_CHECKPOINT_INTERVAL_SECONDS as Long, 'bleDiscoveryCheckpoint', [overwrite: true])
     bleCheckpointScheduled = true
     logTrace("BLE discovery checkpoint scheduled in ${BLE_CHECKPOINT_INTERVAL_SECONDS}s")
 }
@@ -14737,13 +14789,14 @@ void bleDiscoveryCheckpoint() {
  * Checks created BLE children for presence timeout. The next run is scheduled
  * from the earliest child deadline instead of polling every five minutes.
  */
+@CompileStatic
 void checkBlePresence() {
     blePresenceScheduled = false
 
-    Map deviceConfigs = new LinkedHashMap((atomicState.deviceConfigs ?: [:]) as Map)
+    Map<String, Object> deviceConfigs = new LinkedHashMap<String, Object>(((atomicStateValueHelper('deviceConfigs') ?: [:]) as Map<String, Object>))
     Boolean anyChanged = false
 
-    deviceConfigs.each { String key, configVal ->
+    deviceConfigs.each { String key, Object configVal ->
         Map config = configVal as Map
         if (config?.isBleDevice != true) { return }
 
@@ -14751,21 +14804,21 @@ void checkBlePresence() {
         Long lastContact = bleLastContact.get(key) ?: (config.lastBleContact as Long ?: 0L)
         if (lastContact == 0L) { return }
 
-        Object child = getChildDevice(key)
+        ChildDeviceWrapper child = getChildDeviceHelper(key.toString())
         if (!child) { return }
 
         if (!isBlePresenceEligible(child)) { return }
         Integer timeoutMinutes = getBlePresenceTimeoutMinutes(child)
 
         Long timeoutMs = timeoutMinutes * 60L * 1000L
-        Long elapsed = now() - lastContact
+        Long elapsed = nowHelper() - lastContact
 
         if (elapsed > timeoutMs) {
-            String currentPresence = child.currentValue('presence')?.toString()
+            String currentPresence = deviceCurrentValueHelper(child, 'presence')?.toString()
             if (currentPresence != 'not present') {
                 childSendEventHelper(child, [name: 'presence', value: 'not present',
                     descriptionText: "No BLE data for ${timeoutMinutes} minutes"])
-                bleLogInfo("BLE device ${child.displayName} marked as not present (no data for ${timeoutMinutes} min)")
+                bleLogInfo("BLE device ${deviceDisplayNameHelper(child)} marked as not present (no data for ${timeoutMinutes} min)")
                 // Clear presence from bleLastSentValues so next advertisement re-sends 'present'
                 Map<String, String> lastSent = bleLastSentValues.get(key)
                 if (lastSent) { lastSent.remove('presence') }
@@ -14774,8 +14827,8 @@ void checkBlePresence() {
         }
     }
 
-    if (anyChanged && now() < blePageActiveUntil) {
-        sendEvent(name: 'bleTable', value: 'presence')
+    if (anyChanged && nowHelper() < blePageActiveUntil) {
+        sendEventHelper([name: 'bleTable', value: 'presence'])
     }
     reconcileBlePresenceSchedule()
 }
@@ -14889,7 +14942,7 @@ private void toggleBleGateway(String ip) {
         // UI can briefly show the old enabled icon after the spinner vanishes.
         buildDeviceStatusCacheEntry(ip)
         clearBleGatewayProgress(ip)
-        runInMillis(500, 'fireConfigTableSSR')
+        runInMillisHelper(500L, 'fireConfigTableSSR')
     } else {
         // enableBleGateway is async — gateway list update happens in enableBleGatewayComplete
         enableBleGateway(ip)
@@ -14907,7 +14960,7 @@ void runBleGatewayToggle(Map data) {
         appendLog('error', "BLE gateway toggle failed on ${ip}: ${ex.message}")
         clearBleGatewayProgress(ip)
         buildDeviceStatusCacheEntry(ip)
-        runInMillis(500, 'fireConfigTableSSR')
+        runInMillisHelper(500L, 'fireConfigTableSSR')
     }
 }
 
@@ -14917,7 +14970,7 @@ private void setBleGatewayProgress(String ip, String status) {
     Map progress = new LinkedHashMap((atomicState.bleGatewayProgress ?: [:]) as Map)
     progress[ip] = status
     atomicState.bleGatewayProgress = progress
-    sendEvent(name: 'configTable', value: 'bleGatewayProgress')
+    sendEventHelper([name: 'configTable', value: 'bleGatewayProgress'])
 }
 
 private void clearBleGatewayProgress(String ip) {
@@ -14926,7 +14979,7 @@ private void clearBleGatewayProgress(String ip) {
     progress.remove(ip)
     atomicState.bleGatewayProgress = progress
     releaseUserAction(ip)
-    sendEvent(name: 'configTable', value: 'bleGatewayProgressComplete')
+    sendEventHelper([name: 'configTable', value: 'bleGatewayProgressComplete'])
 }
 
 /**
@@ -15061,7 +15114,7 @@ void enableBleGatewayComplete(Map data) {
     // icon while buildDeviceStatusCacheEntry() is still doing its RPC reads.
     buildDeviceStatusCacheEntry(ip)
     clearBleGatewayProgress(ip)
-    runInMillis(500, 'fireConfigTableSSR')
+    runInMillisHelper(500L, 'fireConfigTableSSR')
 }
 
 /**
@@ -15078,7 +15131,7 @@ void enableBleGatewayError(Map data) {
 
     // Refresh config table to reflect failed state
     buildDeviceStatusCacheEntry(ip)
-    runInMillis(500, 'fireConfigTableSSR')
+    runInMillisHelper(500L, 'fireConfigTableSSR')
 }
 
 /**
@@ -15182,7 +15235,7 @@ private String displayBleDeviceTable() {
  * Fires an SSR update for the BLE device table.
  */
 void fireBleTableSSR() {
-    sendEvent(name: 'bleTable', value: 'update')
+    sendEventHelper([name: 'bleTable', value: 'update'])
 }
 
 /**
@@ -15720,10 +15773,11 @@ ChildDeviceWrapper createChildVoltage(Integer id) {
 }
 
 ChildDeviceWrapper addShellyDevice(String driverName, String dni, Map props) {
-  return addChildDevice('ShellyDeviceManager', driverName, dni, props)
+  return addChildDeviceHelper('ShellyDeviceManager', driverName, dni, props)
 }
 
-ChildDeviceWrapper getShellyDevice(String dni) {return getChildDevice(dni)}
+@CompileStatic
+ChildDeviceWrapper getShellyDevice(String dni) {return getChildDeviceHelper(dni)}
 
 @CompileStatic
 ChildDeviceWrapper getVoltageChildById(Integer id) {
@@ -16131,8 +16185,9 @@ void setAuthIsEnabled(Boolean auth) {
   setAppState('authEnabled', auth)
 }
 
+@CompileStatic
 String getAppState(String key) {
-  return state[key]
+  return stateValueHelper(key) as String
 }
 
 /**
@@ -16142,13 +16197,15 @@ String getAppState(String key) {
  * @param key The state key to read
  * @return true only when the stored value is Boolean true or the string "true"
  */
+@CompileStatic
 private Boolean getAppStateBoolean(String key) {
-  Object value = state[key]
+  Object value = stateValueHelper(key)
   return value == true || value?.toString() == 'true'
 }
 
-void setAppState(String key, value) {
-  state[key] = value
+@CompileStatic
+void setAppState(String key, Object value) {
+  setStateValueHelper(key, value)
 }
 
 /**
@@ -16212,33 +16269,36 @@ String runEveryCustomHoursCronString(Integer hours) {
   return "${currentSecond} * /${hours} ? * * *"
 }
 
+@CompileStatic
 void runEveryCustomSeconds(Integer seconds, String methodToRun) {
   if(seconds < 60) {
-    schedule(runEveryCustomSecondsCronString(seconds as Integer), methodToRun)
+    scheduleHelper(runEveryCustomSecondsCronString(seconds as Integer), methodToRun)
   }
   if(seconds >= 60 && seconds < 3600) {
     String cron = runEveryCustomMinutesCronString((seconds/60) as Integer)
-    schedule(cron, methodToRun)
+    scheduleHelper(cron, methodToRun)
   }
   if(seconds == 3600) {
-    schedule(runEveryCustomHoursCronString((seconds/3600) as Integer), methodToRun)
+    scheduleHelper(runEveryCustomHoursCronString((seconds/3600) as Integer), methodToRun)
   }
 }
 
+@CompileStatic
 void runInRandomSeconds(String methodToRun, Integer seconds = 90) {
   if(seconds < 0 || seconds > 240) {
     logWarn('Seconds must be between 0 and 240')
   } else {
     Long r = new Long(new Random().nextInt(seconds))
-    runIn(r as Long, methodToRun)
+    runInHelper(r as Long, methodToRun)
   }
 }
 
+@CompileStatic
 void runInSeconds(String methodToRun, Integer seconds = 3) {
   if(seconds < 0 || seconds > 240) {
     logWarn('Seconds must be between 0 and 240')
   } else {
-    runIn(seconds as Long, methodToRun)
+    runInHelper(seconds as Long, methodToRun)
   }
 }
 
@@ -16273,13 +16333,14 @@ void clearAllStates() {
 @CompileStatic
 void deleteChildDevices() {
   ArrayList<ChildDeviceWrapper> children = getThisDeviceChildren()
-  children.each { child -> deleteChildByDNI(getChildDeviceNetworkId(child)) }
+  children.each { ChildDeviceWrapper child -> deleteChildByDNI(deviceNetworkIdHelper(child)) }
 }
 
 
 
+@CompileStatic
 void deleteChildByDNI(String dni) {
-    deleteChildDevice(dni)
+    deleteChildDeviceHelper(dni)
     invalidateDirectChildDeviceCache()
 }
 
@@ -16353,13 +16414,22 @@ private void sendAppEventHelper(Map properties) {
 // ═══════════════════════════════════════════════════════════════
 
 /**
+ * Returns the command retry limit through a dynamic app method. Hubitat's
+ * static checker forbids direct access to script @Field constants from some
+ * @CompileStatic methods, even though the value is a fixed app policy.
+ */
+private Integer maxCommandRetriesHelper() {
+  return 5
+}
+
+/**
  * Helper for dev.updateSetting() calls. Skips the write when the setting already
  * holds the target value: updateSetting() triggers the driver's updated(), and the
  * shipped component drivers' updated() relays settings straight back to the app for
  * another SetConfig POST — so unconditional writes during config sync caused an echo
  * loop of redundant RPC traffic on every refresh.
  */
-private void deviceUpdateSettingHelper(DeviceWrapper dev, String name, Object value) {
+private void deviceUpdateSettingHelper(Object dev, String name, Object value) {
   if (value instanceof Map && value.containsKey('value')) {
     try {
       Object current = dev.getSetting(name)
@@ -16373,27 +16443,27 @@ private void deviceUpdateSettingHelper(DeviceWrapper dev, String name, Object va
 }
 
 /** Helper for dev.getDataValue() calls */
-private String deviceGetDataValueHelper(DeviceWrapper dev, String name) {
+private String deviceGetDataValueHelper(Object dev, String name) {
   return dev.getDataValue(name)
 }
 
 /** Helper for dev.updateDataValue() calls */
-private void deviceUpdateDataValueHelper(DeviceWrapper dev, String name, String value) {
+private void deviceUpdateDataValueHelper(Object dev, String name, String value) {
   dev.updateDataValue(name, value)
 }
 
 /** Helper for dev.hasCapability() calls */
-private Boolean deviceHasCapabilityHelper(DeviceWrapper dev, String capability) {
+private Boolean deviceHasCapabilityHelper(Object dev, String capability) {
   return dev.hasCapability(capability)
 }
 
 /** Helper for dev.hasAttribute() calls */
-private Boolean deviceHasAttributeHelper(DeviceWrapper dev, String attribute) {
+private Boolean deviceHasAttributeHelper(Object dev, String attribute) {
   return dev.hasAttribute(attribute)
 }
 
 /** Helper for child.sendEvent() calls */
-private void childSendEventHelper(ChildDeviceWrapper child, Map properties) {
+private void childSendEventHelper(Object child, Map properties) {
   child.sendEvent(properties)
 }
 
@@ -16405,7 +16475,8 @@ private void childSendEventHelper(ChildDeviceWrapper child, Map properties) {
  *
  * @return true when an event was sent
  */
-private Boolean childSendEventIfChanged(def child, Map properties) {
+@CompileStatic
+private Boolean childSendEventIfChanged(Object child, Map properties) {
   if (!child || !properties?.name) { return false }
   if (properties.isStateChange == true) {
     childSendEventHelper(child as ChildDeviceWrapper, properties)
@@ -16416,7 +16487,7 @@ private Boolean childSendEventIfChanged(def child, Map properties) {
   Object newValue = properties.value
   Object currentValue = null
   try {
-    currentValue = child.currentValue(name)
+    currentValue = deviceCurrentValueHelper(child, name)
   } catch (Exception ignored) {
     // If the current state cannot be read, preserve the existing behavior and
     // deliver the event rather than silently dropping a device update.
@@ -16441,23 +16512,188 @@ private Boolean childSendEventIfChanged(def child, Map properties) {
 }
 
 /** Helper for child.updateDataValue() calls */
-private void childUpdateDataValueHelper(ChildDeviceWrapper child, String name, String value) {
+private void childUpdateDataValueHelper(Object child, String name, String value) {
   child.updateDataValue(name, value)
 }
 
 /** Helper for child.hasAttribute() calls */
-private Boolean childHasAttributeHelper(ChildDeviceWrapper child, String attribute) {
+private Boolean childHasAttributeHelper(Object child, String attribute) {
   return child.hasAttribute(attribute)
 }
 
 /** Helper for child.getDataValue() calls */
-private String childGetDataValueHelper(ChildDeviceWrapper child, String name) {
+private String childGetDataValueHelper(Object child, String name) {
   return child.getDataValue(name)
 }
 
 // ═══════════════════════════════════════════════════════════════
 // Hubitat Built-in Method Helpers (non-static for dynamic dispatch)
 // ═══════════════════════════════════════════════════════════════
+
+// These small adapters are the only place where the app talks directly to
+// Hubitat's script/runtime APIs.  Keeping that dynamic boundary here lets the
+// frequently executed RPC, event, and queue code use @CompileStatic without
+// making assumptions about Hubitat's runtime-only methods.
+
+/** Dynamic state accessors used by statically compiled runtime code. */
+private Object stateValueHelper(String key) { return state[key] }
+
+private void setStateValueHelper(String key, Object value) { state[key] = value }
+
+private void removeStateValueHelper(String key) { state.remove(key) }
+
+private Object atomicStateValueHelper(String key) { return atomicState[key] }
+
+private void setAtomicStateValueHelper(String key, Object value) { atomicState[key] = value }
+
+private void removeAtomicStateValueHelper(String key) { atomicState.remove(key) }
+
+/** Dynamic app/settings adapters. */
+private LinkedHashMap appSettingsHelper() { return (settings ?: [:]) as LinkedHashMap }
+
+private Object appSettingValueHelper(String key) { return settings[key] }
+
+private void appUpdateSettingHelper(String name, Map options) { app.updateSetting(name, options) }
+
+private void appRemoveSettingHelper(String name) { app.removeSetting(name) }
+
+/** Dynamic app event adapter (sendEvent is an app DSL method, not a Java API). */
+private void sendEventHelper(Map properties) { sendEvent(properties) }
+
+/** Dynamic clock and scheduler adapters. */
+private Long nowHelper() { return now() as Long }
+
+private void runInHelper(Long seconds, String handlerMethod, Map options = null) {
+  if (options) { runIn(seconds, handlerMethod, options) }
+  else { runIn(seconds, handlerMethod) }
+}
+
+private void runInMillisHelper(Long milliseconds, String handlerMethod, Map options = null) {
+  if (options) { runInMillis(milliseconds, handlerMethod, options) }
+  else { runInMillis(milliseconds, handlerMethod) }
+}
+
+/** Dynamic child-device adapters. */
+private ChildDeviceWrapper getChildDeviceHelper(String dni) { return getChildDevice(dni) }
+
+private ArrayList<ChildDeviceWrapper> getChildDevicesHelper() {
+  return (getChildDevices() ?: []) as ArrayList<ChildDeviceWrapper>
+}
+
+private ChildDeviceWrapper addChildDeviceHelper(String namespace, String typeName, String dni, Map properties) {
+  return addChildDevice(namespace, typeName, dni, properties)
+}
+
+private void deleteChildDeviceHelper(String dni) { deleteChildDevice(dni) }
+
+private ArrayList<ChildDeviceWrapper> getParentChildDevicesHelper(Object parentDevice) {
+  return (parentDevice?.getChildDevices() ?: []) as ArrayList<ChildDeviceWrapper>
+}
+
+private DeviceWrapper thisDeviceHelper() { return device }
+
+private LinkedHashMap parentSettingsHelper(Object parentDevice) {
+  return (parentDevice?.settings ?: [:]) as LinkedHashMap
+}
+
+private LinkedHashMap childSettingsHelper(ChildDeviceWrapper child) {
+  return (child?.settings ?: [:]) as LinkedHashMap
+}
+
+/** Dynamic device-property adapters used by the non-discovery hot paths. */
+private String deviceDisplayNameHelper(Object target) { return target?.displayName?.toString() }
+
+private String deviceLabelHelper(Object target) { return target?.label?.toString() }
+
+private String deviceTypeNameHelper(Object target) { return target?.typeName?.toString() }
+
+private String deviceNetworkIdHelper(Object target) { return target?.deviceNetworkId?.toString() }
+
+private Object deviceIdHelper(Object target) { return target?.id }
+
+private Object deviceCurrentValueHelper(Object target, String attributeName) { return target?.currentValue(attributeName) }
+
+private Object deviceSettingValueHelper(Object target, String settingName) { return target?.getSetting(settingName) }
+
+private String genericDeviceDataValueHelper(Object target, String dataName) {
+  return target?.getDataValue(dataName)?.toString()
+}
+
+private void deviceSetLabelHelper(Object target, String label) { target.setLabel(label) }
+
+private void deviceDistributeStatusHelper(Object target, Map status) { target.distributeStatus(status) }
+
+private LinkedHashMap parentPostCommandSyncHelper(Object parentDevice, LinkedHashMap command, String uri) {
+  return parentDevice?.postCommandSync(command, uri) as LinkedHashMap
+}
+
+private void parentPostCommandAsyncHelper(Object parentDevice, LinkedHashMap command, String callbackMethod, String uri) {
+  parentDevice?.postCommandAsync(command, callbackMethod, uri)
+}
+
+/** Dynamic HTTP adapters. */
+private void asynchttpGetHelper(String callbackMethod, Map params, Map data) {
+  asynchttpGet(callbackMethod, params, data)
+}
+
+private void asynchttpPostHelper(String callbackMethod, Map params, Map data) {
+  asynchttpPost(callbackMethod, params, data)
+}
+
+private Map httpPostResponseHelper(Map params) {
+  Map responseData = [status: null, data: null]
+  httpPost(params) { resp ->
+    responseData.status = resp?.status
+    responseData.data = resp?.data
+  }
+  return responseData
+}
+
+/**
+ * Reads an HTTP exception status through the dynamic runtime boundary. Hubitat's
+ * published HttpResponseException type does not expose getStatusCode() to the
+ * @CompileStatic checker, although the runtime exception does provide it.
+ */
+private Integer httpResponseExceptionStatusHelper(Object exception) {
+  try {
+    Object status = exception?.getStatusCode()
+    if (status != null) { return status as Integer }
+  } catch (Exception ignored) {
+    // Fall through to the response object used by Hubitat's runtime.
+  }
+  try {
+    Object response = exception?.getResponse()
+    Object status = response?.status ?: response?.getStatus()
+    return status == null ? null : status as Integer
+  } catch (Exception ignored) {
+    return null
+  }
+}
+
+private String digestHeaderHelper(Object response) {
+  def header = response?.getAllHeaders()?.find { it?.getValue()?.contains('nonce') }
+  return header?.getValue()?.toString()
+}
+
+private String digestHeaderFromHeadersHelper(Object headers) {
+  def header = headers?.find { it?.getValue()?.contains('nonce') }
+  return header?.getValue()?.toString()
+}
+
+/** Dynamic logging adapters. */
+private void writeLogHelper(String level, String message) {
+  switch (level) {
+    case 'trace': log.trace message; break
+    case 'debug': log.debug message; break
+    case 'info': log.info message; break
+    case 'warn': log.warn message; break
+    default: log.error message; break
+  }
+}
+
+private String hubLocalIpHelper() { return location?.hub?.localIP?.toString() }
+
+private String hubTemperatureScaleHelper() { return location?.temperatureScale?.toString() }
 
 /** Helper for schedule() calls */
 private void scheduleHelper(String cronExpression, String handlerMethod) {
@@ -16469,6 +16705,16 @@ private void unscheduleHelper(String handlerMethod) {
   unschedule(handlerMethod)
 }
 
+/** Helper for the no-argument lifecycle scheduler cleanup call. */
+private void unscheduleAllHelper() {
+  unschedule()
+}
+
+/** Helper for lifecycle unsubscribe calls. */
+private void unsubscribeHelper() {
+  unsubscribe()
+}
+
 /** Helper for getLocation() calls */
 private Object getLocationHelper() {
   return getLocation()
@@ -16477,6 +16723,11 @@ private Object getLocationHelper() {
 /** Helper for parent property access */
 private Object getParentHelper() {
   return parent
+}
+
+/** Helper for parseLanMessage() calls from parent-device webhook handling. */
+private LinkedHashMap parseLanMessageHelper(String description) {
+  return parseLanMessage(description) as LinkedHashMap
 }
 
 /** Helper for httpGet() calls */
@@ -16533,14 +16784,28 @@ String getBaseDNI() {
 
 // Legacy function - kept for backward compatibility with driver code
 // In app context, this doesn't apply, but some functions may still reference it
-DeviceWrapper thisDevice() { return this.device }
-ArrayList<ChildDeviceWrapper> getThisDeviceChildren() { return getChildDevices() }
-ArrayList<ChildDeviceWrapper> getParentDeviceChildren() { return parent?.getChildDevices() }
+@CompileStatic
+DeviceWrapper thisDevice() { return thisDeviceHelper() }
 
-LinkedHashMap getAppSettings() { return this.settings }
-LinkedHashMap getParentDeviceSettings() { return this.parent?.settings }
-LinkedHashMap getChildDeviceSettings(ChildDeviceWrapper child) { return child?.settings }
-Boolean hasParent() { return parent != null }
+@CompileStatic
+ArrayList<ChildDeviceWrapper> getThisDeviceChildren() { return getChildDevicesHelper() }
+
+@CompileStatic
+ArrayList<ChildDeviceWrapper> getParentDeviceChildren() {
+  return getParentChildDevicesHelper(getParentHelper())
+}
+
+@CompileStatic
+LinkedHashMap getAppSettings() { return appSettingsHelper() }
+
+@CompileStatic
+LinkedHashMap getParentDeviceSettings() { return parentSettingsHelper(getParentHelper()) }
+
+@CompileStatic
+LinkedHashMap getChildDeviceSettings(ChildDeviceWrapper child) { return childSettingsHelper(child) }
+
+@CompileStatic
+Boolean hasParent() { return getParentHelper() != null }
 
 
 @CompileStatic
@@ -16561,13 +16826,13 @@ String getStringDeviceSetting(String settingName) {
 
 @CompileStatic
 BigDecimal getBigDecimalAppSetting(String settingName) {
-  return thisAppHasSetting(settingName) ? getAppSettings()[settingName] as BigDecimal : null
+    return thisAppHasSetting(settingName) ? (getAppSettings()[settingName] as BigDecimal) : null
 }
 
 @CompileStatic
 BigDecimal getBigDecimalAppSettingAsCelcius(String settingName) {
   if(thisAppHasSetting(settingName)) {
-    BigDecimal val = getAppSettings()[settingName]
+    BigDecimal val = getAppSettings()[settingName] as BigDecimal
     return isCelciusScale() == true ? val : fToC(val)
   } else { return null }
 }
@@ -16791,8 +17056,9 @@ void unscheduleTask(String taskName) {
   unscheduleHelper(taskName)
 }
 
+@CompileStatic
 Boolean isCelciusScale() {
-  return getLocationHelper().temperatureScale == 'C'
+  return hubTemperatureScaleHelper() == 'C'
 }
 
 /**
@@ -16928,8 +17194,9 @@ String getBaseUriRpc() {
   }
 }
 
+@CompileStatic
 String getHubBaseUri() {
-  return "http://${location.hub.localIP}:39501"
+  return "http://${hubLocalIpHelper()}:39501"
 }
 
 @CompileStatic
@@ -17159,15 +17426,16 @@ import java.io.StringWriter
 // ╔══════════════════════════════════════════════════════════════╗
 // ║  Logging Helpers                                             ║
 // ╚══════════════════════════════════════════════════════════════╝
-void logException(message) {log.error "${loggingLabel()}: ${message}"}
+void logException(Object message) { writeLogHelper('error', "${loggingLabel()}: ${message}") }
 // void logError(message) {log.error "${loggingLabel()}: ${message}"}
 // void logWarn(message) {log.warn "${loggingLabel()}: ${message}"}
 // void logInfo(message) {if (settings.logEnable == true) {log.info "${loggingLabel()}: ${message}"}}
 // void logDebug(message) {if (settings.logEnable == true && settings.debugLogEnable) {log.debug "${loggingLabel()}: ${message}"}}
 // void logTrace(message) {if (settings.logEnable == true && settings.traceLogEnable) {log.trace "${loggingLabel()}: ${message}"}}
 
+@CompileStatic
 void logJson(Map message) {
-  if (settings.logEnable && settings.traceLogEnable) {
+  if (appSettingValueHelper('logEnable') && appSettingValueHelper('traceLogEnable')) {
     String prettyJson = prettyJson(message)
     logTrace(prettyJson)
   }
@@ -17221,7 +17489,7 @@ private String login() {
 
     String cookie = null
 
-    httpPost(params) { resp ->
+    httpPostHelper(params) { resp ->
       logDebug("Login response status: ${resp?.status}")
       if(resp?.status == 200 || resp?.status == 302) {
         def setCookieHeader = resp.headers['Set-Cookie']
@@ -17265,7 +17533,7 @@ private String downloadFile(String uri) {
 
     String fileContent = null
 
-    httpGet(params) { resp ->
+    httpGetHelper(params) { resp ->
       if(resp?.status == 200) {
         fileContent = resp.data.text
       }
@@ -17455,10 +17723,10 @@ private void enqueueAndStartDriverUpdate(List<String> trackingKeys, String start
     ]
     appendLog('info', startMessage)
     logInfo("Driver update queue started: ${trackingKeys.size()} driver(s)")
-    sendEvent(name: 'driverRebuildStatus', value: 'starting')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'starting'])
     // Use 1s rather than 0s — Hubitat's scheduler can silently drop runIn(0)
     // calls, leaving the queue stranded with the banner stuck at "preparing…".
-    runIn(1, 'processNextDriverUpdate')
+    runInHelper(1L, 'processNextDriverUpdate')
 }
 
 /**
@@ -17545,7 +17813,7 @@ void processNextDriverUpdate() {
     Integer position = (((prog.completed ?: 0) as Integer) + ((prog.errors ?: 0) as Integer) + 1)
     Integer total = (prog.total ?: 0) as Integer
     logInfo("Updating driver: ${baseName} (${position} of ${total}) [queue size after pop: ${newQueue.size()}]")
-    sendEvent(name: 'driverRebuildStatus', value: 'progress')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'progress'])
 
     String fileUrl = resolveDriverSourceUrl(driverName, baseName, isComponent)
     if (!fileUrl) {
@@ -17560,7 +17828,7 @@ void processNextDriverUpdate() {
         contentType: 'text/plain',
         timeout: 30
     ]
-    asynchttpGet('downloadDriverCallback', params, [
+    asynchttpGetHelper('downloadDriverCallback', params, [
         trackingKey: trackingKey,
         driverName: driverName,
         baseName: baseName,
@@ -17661,7 +17929,7 @@ void downloadDriverCallback(hubitat.scheduling.AsyncResponse response, Map data)
         contentType: 'application/json',
         timeout: 5
     ]
-    asynchttpGet('listExistingDriversCallback', listParams, nextData)
+    asynchttpGetHelper('listExistingDriversCallback', listParams, nextData)
 }
 
 /**
@@ -17740,7 +18008,7 @@ void listExistingDriversCallback(hubitat.scheduling.AsyncResponse response, Map 
         attempt: data.attempt
     ]
 
-    asynchttpPost('installDriverCallback', params, nextData)
+    asynchttpPostHelper('installDriverCallback', params, nextData)
 }
 
 /**
@@ -17861,9 +18129,9 @@ void installDriverCallback(hubitat.scheduling.AsyncResponse response, Map data) 
     prog.currentName = null
     prog.lastActivityAt = now()
     atomicState.driverUpdateProgress = prog
-    sendEvent(name: 'driverRebuildStatus', value: 'progress')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'progress'])
 
-    runIn(10, 'processNextDriverUpdate')
+    runInHelper(10L, 'processNextDriverUpdate')
 }
 
 /**
@@ -17904,8 +18172,8 @@ private void handleDriverUpdateFailure(String trackingKey, String reason, Intege
     prog.currentName = null
     prog.lastActivityAt = now()
     atomicState.driverUpdateProgress = prog
-    sendEvent(name: 'driverRebuildStatus', value: 'progress')
-    runIn(10, 'processNextDriverUpdate')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'progress'])
+    runInHelper(10L, 'processNextDriverUpdate')
 }
 
 /** Marks a queued driver complete when discovery updated it ahead of the queue. */
@@ -17926,8 +18194,8 @@ private void completeQueuedDriverWithoutInstall(String trackingKey, String baseN
     prog.currentName = null
     prog.lastActivityAt = now()
     atomicState.driverUpdateProgress = prog
-    sendEvent(name: 'driverRebuildStatus', value: 'progress')
-    runIn(10, 'processNextDriverUpdate')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'progress'])
+    runInHelper(10L, 'processNextDriverUpdate')
 }
 
 /**
@@ -17957,8 +18225,8 @@ private Boolean retryDriverUpdate(String trackingKey, String reason, Integer att
     atomicState.driverUpdateProgress = prog
     appendLog('warn', "Driver update transient failure for ${trackingKey}; retrying (${attempt + 1}/${MAX_DRIVER_UPDATE_ATTEMPTS}): ${reason}")
     logWarn("Driver update retry queued for ${trackingKey} (${attempt + 1}/${MAX_DRIVER_UPDATE_ATTEMPTS})")
-    sendEvent(name: 'driverRebuildStatus', value: 'retry')
-    runIn(15, 'processNextDriverUpdate')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'retry'])
+    runInHelper(15L, 'processNextDriverUpdate')
     return true
 }
 
@@ -17987,9 +18255,9 @@ private void finalizeBulkDriverUpdate() {
     // install POSTs for hub I/O.
     sweepAllUnusedShellyHubDrivers()
     atomicState.driverMaintenanceFingerprint = getDriverAssociationFingerprint()
-    sendEvent(name: 'driverRebuildStatus', value: 'complete')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'complete'])
 
-    runIn(30, 'clearDriverUpdateProgress')
+    runInHelper(30L, 'clearDriverUpdateProgress')
 }
 
 /**
@@ -18000,7 +18268,7 @@ private void finalizeBulkDriverUpdate() {
 void clearDriverUpdateProgress() {
     atomicState.remove('driverUpdateQueue')
     atomicState.remove('driverUpdateProgress')
-    sendEvent(name: 'driverRebuildStatus', value: 'cleared')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'cleared'])
 }
 
 /**
@@ -18020,7 +18288,7 @@ void cancelBulkDriverUpdate() {
     Map prog = new LinkedHashMap((atomicState.driverUpdateProgress ?: [:]) as Map)
     prog.lastError = 'Cancelled by user'
     atomicState.driverUpdateProgress = prog
-    sendEvent(name: 'driverRebuildStatus', value: 'cancelling')
+    sendEventHelper([name: 'driverRebuildStatus', value: 'cancelling'])
 }
 
 /* #endregion Driver Auto-Update */
@@ -18323,7 +18591,7 @@ private String getLatestGitHubReleaseVersion() {
         ]
 
         String version = null
-        httpGet(params) { resp ->
+        httpGetHelper(params) { resp ->
             if (resp?.status == 200 && resp.data) {
                 for (release in resp.data) {
                     String tag = release.tag_name as String
@@ -18420,7 +18688,7 @@ private Boolean updateAppCode(String sourceCode) {
         ]
 
         Boolean result = false
-        httpPost(updateParams) { resp ->
+        httpPostHelper(updateParams) { resp ->
             // /app/ajax/update returns HTTP 200 with {status:'error', errorMessage:...} on
             // compile failure — only an explicit status:'success' is a real success.
             // Treating any 200 as success masked permanently failing updates as "updated".
@@ -18458,7 +18726,7 @@ private Integer getAppCodeId(String cookie) {
         ]
 
         Integer codeId = null
-        httpGet(params) { resp ->
+        httpGetHelper(params) { resp ->
             if (resp?.status == 200 && resp.data) {
                 def appEntry = resp.data.find { it.namespace == 'ShellyDeviceManager' && (it.name == 'Shelly Device Manager' || it.name == 'Shelly mDNS Discovery') }
                 if (appEntry) {
@@ -18496,7 +18764,7 @@ private String getAppCodeVersion(String cookie, Integer appCodeId) {
         ]
 
         String codeVersion = null
-        httpGet(params) { resp ->
+        httpGetHelper(params) { resp ->
             if (resp?.status == 200 && resp.data?.version != null) {
                 codeVersion = resp.data.version.toString()
                 logDebug("App code internal version: ${codeVersion}")
@@ -18528,7 +18796,7 @@ private String getInstalledAppVersion(String cookie, Integer appCodeId) {
         ]
 
         String foundVersion = null
-        httpGet(params) { resp ->
+        httpGetHelper(params) { resp ->
             if (resp?.status == 200 && resp.data?.source) {
                 def matcher = (resp.data.source =~ /version:\s*['"]([^'"]+)['"]/)
                 if (matcher.find()) {
@@ -18568,11 +18836,11 @@ private String getDriverAssociationFingerprint() {
     tracked = tracked.sort { Map a, Map b -> a.key <=> b.key }
 
     List devices = []
-    (getChildDevices() ?: []).each { dev ->
-        devices << [dni: dev.deviceNetworkId?.toString(), type: dev.typeName?.toString()]
+    getChildDevicesHelper()?.each { ChildDeviceWrapper dev ->
+        devices << [dni: deviceNetworkIdHelper(dev), type: deviceTypeNameHelper(dev)]
         try {
-            (dev.getChildDevices() ?: []).each { component ->
-                devices << [dni: component.deviceNetworkId?.toString(), type: component.typeName?.toString()]
+            getParentChildDevicesHelper(dev)?.each { ChildDeviceWrapper component ->
+                devices << [dni: deviceNetworkIdHelper(component), type: deviceTypeNameHelper(component)]
             }
         } catch (Exception ignored) { }
     }
@@ -18593,14 +18861,14 @@ private void scheduleDriverMaintenanceSweep(String reason) {
     }
     atomicState.pendingDriverMaintenanceFingerprint = fingerprint
     logTrace("Scheduling deferred driver maintenance sweep (${reason})")
-    runIn(5, 'runDeferredDriverMaintenance', [overwrite: true])
+    runInHelper(5L, 'runDeferredDriverMaintenance', [overwrite: true])
 }
 
 /** Runs the explicitly requested/queued orphan sweep outside the triggering operation. */
 void runDeferredDriverMaintenance() {
     if (atomicState.discoveryRunning == true) {
         logTrace('runDeferredDriverMaintenance: discovery is active; deferring maintenance')
-        runIn(60, 'runDeferredDriverMaintenance', [overwrite: true])
+        runInHelper(60L, 'runDeferredDriverMaintenance', [overwrite: true])
         return
     }
     String fingerprint = atomicState.pendingDriverMaintenanceFingerprint?.toString()
@@ -18725,25 +18993,25 @@ private List<Set<String>> collectAllManagedDeviceTypeNames() {
     Set<String> usedExact = [] as Set<String>
     Set<String> usedBase  = [] as Set<String>
 
-    List<com.hubitat.app.DeviceWrapper> directChildren = getChildDevices() ?: []
+    List<ChildDeviceWrapper> directChildren = getChildDevicesHelper()
     directChildren.each { com.hubitat.app.DeviceWrapper dev ->
-        String tn = dev.typeName?.toString() ?: ''
+        String tn = deviceTypeNameHelper(dev) ?: ''
         if (tn) {
             usedExact << tn.toString()
             usedBase  << tn.replaceAll(/\s+v\d+(\.\d+)*$/, '').toString()
         }
         // Traverse component children (grandchildren of the app)
         try {
-            List grandchildren = dev.getChildDevices() ?: []
-            grandchildren.each { Object gc ->
-                String gcTn = gc.typeName?.toString() ?: ''
+            List<ChildDeviceWrapper> grandchildren = getParentChildDevicesHelper(dev)
+            grandchildren.each { ChildDeviceWrapper gc ->
+                String gcTn = deviceTypeNameHelper(gc) ?: ''
                 if (gcTn) {
                     usedExact << gcTn.toString()
                     usedBase  << gcTn.replaceAll(/\s+v\d+(\.\d+)*$/, '').toString()
                 }
             }
         } catch (Exception e) {
-            logDebug("collectAllManagedDeviceTypeNames: could not get children of '${dev.displayName}': ${e.message}")
+            logDebug("collectAllManagedDeviceTypeNames: could not get children of '${deviceDisplayNameHelper(dev)}': ${e.message}")
         }
     }
     return [usedExact, usedBase]
@@ -18772,7 +19040,7 @@ private void sweepAllUnusedShellyHubDrivers() {
     Set<String> usedBase  = usedNames[1]
 
     try {
-        httpGet([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
+        httpGetHelper([uri: 'http://127.0.0.1:8080', path: '/device/drivers', contentType: 'application/json', timeout: 10]) { resp ->
             if (resp?.status != 200) {
                 logWarn("sweepAllUnusedShellyHubDrivers: /device/drivers returned HTTP ${resp?.status}")
                 return
@@ -19012,11 +19280,13 @@ void componentOff(def childDevice) {
  *
  * @param parentDevice The parent device requesting all switches on
  */
-void componentOnAll(def parentDevice) {
-  logDebug("componentOnAll() called from parent: ${parentDevice.displayName}")
-  String parentDni = parentDevice.deviceNetworkId
-  getChildDevices()?.each { child ->
-    if (child.deviceNetworkId.startsWith("${parentDni}-switch-")) {
+@CompileStatic
+void componentOnAll(Object parentDevice) {
+  String parentName = deviceDisplayNameHelper(parentDevice) ?: 'unknown parent'
+  logDebug("componentOnAll() called from parent: ${parentName}")
+  String parentDni = deviceNetworkIdHelper(parentDevice)
+  getChildDevicesHelper()?.each { ChildDeviceWrapper child ->
+    if (deviceNetworkIdHelper(child).startsWith("${parentDni}-switch-")) {
       sendSwitchCommand(child, true)
     }
   }
@@ -19029,11 +19299,13 @@ void componentOnAll(def parentDevice) {
  *
  * @param parentDevice The parent device requesting all switches off
  */
-void componentOffAll(def parentDevice) {
-  logDebug("componentOffAll() called from parent: ${parentDevice.displayName}")
-  String parentDni = parentDevice.deviceNetworkId
-  getChildDevices()?.each { child ->
-    if (child.deviceNetworkId.startsWith("${parentDni}-switch-")) {
+@CompileStatic
+void componentOffAll(Object parentDevice) {
+  String parentName = deviceDisplayNameHelper(parentDevice) ?: 'unknown parent'
+  logDebug("componentOffAll() called from parent: ${parentName}")
+  String parentDni = deviceNetworkIdHelper(parentDevice)
+  getChildDevicesHelper()?.each { ChildDeviceWrapper child ->
+    if (deviceNetworkIdHelper(child).startsWith("${parentDni}-switch-")) {
       sendSwitchCommand(child, false)
     }
   }
@@ -19046,14 +19318,16 @@ void componentOffAll(def parentDevice) {
  * @param childDevice The child device to control
  * @param onState true to turn on, false to turn off
  */
-private void sendSwitchCommand(def childDevice, Boolean onState) {
+@CompileStatic
+private void sendSwitchCommand(Object childDevice, Boolean onState) {
   String action = onState ? 'on' : 'off'
-  logDebug("sendSwitchCommand(${action}) called from device: ${childDevice.displayName}")
+  String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("sendSwitchCommand(${action}) called from device: ${deviceName}")
 
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("sendSwitchCommand: No IP address found for device ${childDevice.displayName}")
+      logError("sendSwitchCommand: No IP address found for device ${deviceName}")
       return
     }
 
@@ -19075,8 +19349,8 @@ private void sendSwitchCommand(def childDevice, Boolean onState) {
     logDebug("sendSwitchCommand: response from ${ipAddress}: ${response}")
 
   } catch (Exception e) {
-    logError("sendSwitchCommand(${action}) exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("sendSwitchCommand(${action}) exception for ${deviceName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19103,8 +19377,9 @@ void componentRequestBatteryLevel(def childDevice) {
  * @param dataKey The data value key name (e.g., 'switchId', 'coverId', 'lightId')
  * @return The component ID, or 0 if not found
  */
-private Integer extractComponentId(def childDevice, String dataKey) {
-  String idValue = childDevice.getDataValue(dataKey)
+@CompileStatic
+private Integer extractComponentId(Object childDevice, String dataKey) {
+  String idValue = genericDeviceDataValueHelper(childDevice, dataKey)
   if (idValue != null) {
     try {
       return idValue as Integer
@@ -19124,12 +19399,14 @@ private Integer extractComponentId(def childDevice, String dataKey) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentOpen(def childDevice) {
-  logDebug("componentOpen() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentOpen(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentOpen() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentOpen: No IP address found for device ${childDevice.displayName}")
+      logError("componentOpen: No IP address found for device ${childName}")
       return
     }
 
@@ -19148,8 +19425,8 @@ void componentOpen(def childDevice) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentOpen: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentOpen exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentOpen exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19158,12 +19435,14 @@ void componentOpen(def childDevice) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentClose(def childDevice) {
-  logDebug("componentClose() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentClose(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentClose() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentClose: No IP address found for device ${childDevice.displayName}")
+      logError("componentClose: No IP address found for device ${childName}")
       return
     }
 
@@ -19182,8 +19461,8 @@ void componentClose(def childDevice) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentClose: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentClose exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentClose exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19193,12 +19472,14 @@ void componentClose(def childDevice) {
  * @param childDevice The child device that sent the command
  * @param position Target position (0 = closed, 100 = open)
  */
-void componentSetPosition(def childDevice, Integer position) {
-  logDebug("componentSetPosition(${position}) called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentSetPosition(Object childDevice, Integer position) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentSetPosition(${position}) called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentSetPosition: No IP address found for device ${childDevice.displayName}")
+      logError("componentSetPosition: No IP address found for device ${childName}")
       return
     }
 
@@ -19217,8 +19498,8 @@ void componentSetPosition(def childDevice, Integer position) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentSetPosition: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentSetPosition exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentSetPosition exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19227,12 +19508,14 @@ void componentSetPosition(def childDevice, Integer position) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentStop(def childDevice) {
-  logDebug("componentStop() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentStop(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentStop() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentStop: No IP address found for device ${childDevice.displayName}")
+      logError("componentStop: No IP address found for device ${childName}")
       return
     }
 
@@ -19251,8 +19534,8 @@ void componentStop(def childDevice) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentStop: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentStop exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentStop exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19265,12 +19548,14 @@ void componentStop(def childDevice) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentLightOn(def childDevice) {
-  logDebug("componentLightOn() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentLightOn(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentLightOn() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentLightOn: No IP address found for device ${childDevice.displayName}")
+      logError("componentLightOn: No IP address found for device ${childName}")
       return
     }
 
@@ -19289,8 +19574,8 @@ void componentLightOn(def childDevice) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentLightOn: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentLightOn exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentLightOn exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19299,12 +19584,14 @@ void componentLightOn(def childDevice) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentLightOff(def childDevice) {
-  logDebug("componentLightOff() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentLightOff(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentLightOff() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentLightOff: No IP address found for device ${childDevice.displayName}")
+      logError("componentLightOff: No IP address found for device ${childName}")
       return
     }
 
@@ -19323,8 +19610,8 @@ void componentLightOff(def childDevice) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentLightOff: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentLightOff exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentLightOff exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19335,12 +19622,14 @@ void componentLightOff(def childDevice) {
  * @param level Brightness level (0 to 100)
  * @param transitionMs Optional transition duration in milliseconds
  */
-void componentSetLevel(def childDevice, Integer level, Integer transitionMs = null) {
-  logDebug("componentSetLevel(${level}, ${transitionMs}) called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentSetLevel(Object childDevice, Integer level, Integer transitionMs = null) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentSetLevel(${level}, ${transitionMs}) called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentSetLevel: No IP address found for device ${childDevice.displayName}")
+      logError("componentSetLevel: No IP address found for device ${childName}")
       return
     }
 
@@ -19367,8 +19656,8 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentSetLevel: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentSetLevel exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentSetLevel exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19380,11 +19669,12 @@ void componentSetLevel(def childDevice, Integer level, Integer transitionMs = nu
  * @param colorMap Map with keys: hue (0-100), saturation (0-100), level (0-100)
  */
 void componentSetColor(def childDevice, Map colorMap) {
-  logDebug("componentSetColor(${colorMap}) called from device: ${childDevice.displayName}")
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentSetColor(${colorMap}) called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentSetColor: No IP address found for device ${childDevice.displayName}")
+      logError("componentSetColor: No IP address found for device ${childName}")
       return
     }
 
@@ -19402,7 +19692,7 @@ void componentSetColor(def childDevice, Map colorMap) {
       ]
 
       // RGBW2 uses /color/{id} endpoint; bulbs use /light/{id} with mode=color
-      String gen1Type = childDevice.getDataValue('gen1Type')
+      String gen1Type = genericDeviceDataValueHelper(childDevice, 'gen1Type')
       if (gen1Type == 'SHRGBW2') {
         logDebug("componentSetColor: Gen 1 color/${lightId} params=${params}")
         sendGen1Get(ipAddress, "color/${lightId}", params)
@@ -19417,8 +19707,8 @@ void componentSetColor(def childDevice, Map colorMap) {
     // Gen 2/3 color support can be added here later
     logWarn("componentSetColor: Gen 2/3 color control not yet implemented")
   } catch (Exception e) {
-    logError("componentSetColor exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentSetColor exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19431,12 +19721,14 @@ void componentSetColor(def childDevice, Map colorMap) {
  * @param level Optional brightness level (0-100)
  * @param transitionSecs Optional transition time in seconds
  */
-void componentSetColorTemperature(def childDevice, BigDecimal colorTemp, BigDecimal level = null, BigDecimal transitionSecs = null) {
-  logDebug("componentSetColorTemperature(${colorTemp}, ${level}, ${transitionSecs}) called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentSetColorTemperature(Object childDevice, BigDecimal colorTemp, BigDecimal level = null, BigDecimal transitionSecs = null) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentSetColorTemperature(${colorTemp}, ${level}, ${transitionSecs}) called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentSetColorTemperature: No IP address found for device ${childDevice.displayName}")
+      logError("componentSetColorTemperature: No IP address found for device ${childName}")
       return
     }
 
@@ -19454,8 +19746,8 @@ void componentSetColorTemperature(def childDevice, BigDecimal colorTemp, BigDeci
     // Gen 2/3 CT support can be added here later
     logWarn("componentSetColorTemperature: Gen 2/3 color temperature control not yet implemented")
   } catch (Exception e) {
-    logError("componentSetColorTemperature exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentSetColorTemperature exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19464,20 +19756,22 @@ void componentSetColorTemperature(def childDevice, BigDecimal colorTemp, BigDeci
  *
  * @param childDevice The child device that sent the command
  */
-void componentColorOn(def childDevice) {
-  logDebug("componentColorOn() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentColorOn(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentColorOn() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentColorOn: No IP address found for device ${childDevice.displayName}")
+      logError("componentColorOn: No IP address found for device ${childName}")
       return
     }
     Integer lightId = extractComponentId(childDevice, 'lightId')
     logDebug("componentColorOn: Gen 1 color/${lightId}?turn=on")
     sendGen1Get(ipAddress, "color/${lightId}", [turn: 'on'])
   } catch (Exception e) {
-    logError("componentColorOn exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentColorOn exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19486,20 +19780,22 @@ void componentColorOn(def childDevice) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentColorOff(def childDevice) {
-  logDebug("componentColorOff() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentColorOff(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentColorOff() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentColorOff: No IP address found for device ${childDevice.displayName}")
+      logError("componentColorOff: No IP address found for device ${childName}")
       return
     }
     Integer lightId = extractComponentId(childDevice, 'lightId')
     logDebug("componentColorOff: Gen 1 color/${lightId}?turn=off")
     sendGen1Get(ipAddress, "color/${lightId}", [turn: 'off'])
   } catch (Exception e) {
-    logError("componentColorOff exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentColorOff exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19511,12 +19807,14 @@ void componentColorOff(def childDevice) {
  * @param gain Brightness gain level (0-100)
  * @param transitionMs Optional transition duration in milliseconds
  */
-void componentSetColorGain(def childDevice, Integer gain, Integer transitionMs = null) {
-  logDebug("componentSetColorGain(${gain}, ${transitionMs}) called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentSetColorGain(Object childDevice, Integer gain, Integer transitionMs = null) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentSetColorGain(${gain}, ${transitionMs}) called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentSetColorGain: No IP address found for device ${childDevice.displayName}")
+      logError("componentSetColorGain: No IP address found for device ${childName}")
       return
     }
     Integer lightId = extractComponentId(childDevice, 'lightId')
@@ -19528,8 +19826,8 @@ void componentSetColorGain(def childDevice, Integer gain, Integer transitionMs =
     logDebug("componentSetColorGain: Gen 1 color/${lightId} params=${params}")
     sendGen1Get(ipAddress, "color/${lightId}", params)
   } catch (Exception e) {
-    logError("componentSetColorGain exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentSetColorGain exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19539,12 +19837,14 @@ void componentSetColorGain(def childDevice, Integer gain, Integer transitionMs =
  * @param childDevice The child device that sent the command
  * @param direction Direction of level change ("up" or "down")
  */
-void componentStartLevelChange(def childDevice, String direction) {
-  logDebug("componentStartLevelChange(${direction}) called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentStartLevelChange(Object childDevice, String direction) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentStartLevelChange(${direction}) called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentStartLevelChange: No IP address found for device ${childDevice.displayName}")
+      logError("componentStartLevelChange: No IP address found for device ${childName}")
       return
     }
     String rpcUri = "http://${ipAddress}/rpc"
@@ -19553,8 +19853,8 @@ void componentStartLevelChange(def childDevice, String direction) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentStartLevelChange: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentStartLevelChange exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentStartLevelChange exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19563,12 +19863,14 @@ void componentStartLevelChange(def childDevice, String direction) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentStopLevelChange(def childDevice) {
-  logDebug("componentStopLevelChange() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentStopLevelChange(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentStopLevelChange() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentStopLevelChange: No IP address found for device ${childDevice.displayName}")
+      logError("componentStopLevelChange: No IP address found for device ${childName}")
       return
     }
     String rpcUri = "http://${ipAddress}/rpc"
@@ -19577,8 +19879,8 @@ void componentStopLevelChange(def childDevice) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentStopLevelChange: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentStopLevelChange exception for ${childDevice.displayName}: ${e.message}")
-    if (settings?.enableWatchdog != false) { watchdogScan() }
+    logError("componentStopLevelChange exception for ${childName}: ${e.message}")
+    if (appSettingValueHelper('enableWatchdog') != false) { watchdogScan() }
   }
 }
 
@@ -19592,12 +19894,14 @@ void componentStopLevelChange(def childDevice) {
  *
  * @param childDevice The child device that sent the command
  */
-void componentResetEnergyMonitors(def childDevice) {
-  logDebug("componentResetEnergyMonitors() called from device: ${childDevice.displayName}")
+@CompileStatic
+void componentResetEnergyMonitors(Object childDevice) {
+  String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+  logDebug("componentResetEnergyMonitors() called from device: ${childName}")
   try {
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-      logError("componentResetEnergyMonitors: No IP address found for device ${childDevice.displayName}")
+      logError("componentResetEnergyMonitors: No IP address found for device ${childName}")
       return
     }
     String rpcUri = "http://${ipAddress}/rpc"
@@ -19611,7 +19915,7 @@ void componentResetEnergyMonitors(def childDevice) {
     LinkedHashMap response = postCommandSync(command, rpcUri)
     logDebug("componentResetEnergyMonitors: response from ${ipAddress}: ${response}")
   } catch (Exception e) {
-    logError("componentResetEnergyMonitors exception for ${childDevice.displayName}: ${e.message}")
+    logError("componentResetEnergyMonitors exception for ${childName}: ${e.message}")
   }
 }
 
@@ -19626,8 +19930,9 @@ void componentResetEnergyMonitors(def childDevice) {
  * @param childDevice The child device requesting valve open
  */
 void componentGasValveOpen(def childDevice) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentGasValveOpen: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentGasValveOpen: no IP for ${deviceName}"); return }
     logDebug("componentGasValveOpen: opening valve at ${ipAddress}")
     sendGen1Get(ipAddress, 'valve/0', [go: 'open'])
 }
@@ -19639,8 +19944,9 @@ void componentGasValveOpen(def childDevice) {
  * @param childDevice The child device requesting valve close
  */
 void componentGasValveClose(def childDevice) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentGasValveClose: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentGasValveClose: no IP for ${deviceName}"); return }
     logDebug("componentGasValveClose: closing valve at ${ipAddress}")
     sendGen1Get(ipAddress, 'valve/0', [go: 'close'])
 }
@@ -19652,8 +19958,9 @@ void componentGasValveClose(def childDevice) {
  * @param childDevice The child device requesting self-test
  */
 void componentGasSelfTest(def childDevice) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentGasSelfTest: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentGasSelfTest: no IP for ${deviceName}"); return }
     logDebug("componentGasSelfTest: starting self-test at ${ipAddress}")
     sendGen1Get(ipAddress, 'self_test')
 }
@@ -19665,8 +19972,9 @@ void componentGasSelfTest(def childDevice) {
  * @param childDevice The child device requesting mute
  */
 void componentGasMute(def childDevice) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentGasMute: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentGasMute: no IP for ${deviceName}"); return }
     logDebug("componentGasMute: muting alarm at ${ipAddress}")
     sendGen1Get(ipAddress, 'mute')
 }
@@ -19678,8 +19986,9 @@ void componentGasMute(def childDevice) {
  * @param childDevice The child device requesting unmute
  */
 void componentGasUnmute(def childDevice) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentGasUnmute: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentGasUnmute: no IP for ${deviceName}"); return }
     logDebug("componentGasUnmute: unmuting alarm at ${ipAddress}")
     sendGen1Get(ipAddress, 'unmute')
 }
@@ -19696,8 +20005,9 @@ void componentGasUnmute(def childDevice) {
  * @param prontoHex The Pronto hex string to transmit
  */
 void componentSenseEmitIR(def childDevice, String prontoHex) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentSenseEmitIR: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentSenseEmitIR: no IP for ${deviceName}"); return }
     logDebug("componentSenseEmitIR: emitting Pronto hex at ${ipAddress}")
     sendGen1Get(ipAddress, 'ir/emit', [type: 'pronto_hex', code: prontoHex])
 }
@@ -19710,8 +20020,9 @@ void componentSenseEmitIR(def childDevice, String prontoHex) {
  * @param codeId The numeric ID of the stored code to emit
  */
 void componentSenseEmitStoredIR(def childDevice, Integer codeId) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentSenseEmitStoredIR: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentSenseEmitStoredIR: no IP for ${deviceName}"); return }
     logDebug("componentSenseEmitStoredIR: emitting stored code ID=${codeId} at ${ipAddress}")
     sendGen1Get(ipAddress, 'ir/emit', [type: 'stored', id: codeId.toString()])
 }
@@ -19725,8 +20036,9 @@ void componentSenseEmitStoredIR(def childDevice, Integer codeId) {
  * @param childDevice The Sense child device
  */
 void componentSenseListIRCodes(def childDevice) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentSenseListIRCodes: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentSenseListIRCodes: no IP for ${deviceName}"); return }
     logDebug("componentSenseListIRCodes: listing codes at ${ipAddress}")
     try {
         String uri = "http://${ipAddress}/ir/list"
@@ -19741,11 +20053,11 @@ void componentSenseListIRCodes(def childDevice) {
                 String codesJson = JsonOutput.toJson(resp.data)
                 childSendEventHelper(childDevice, [name: 'irCodes', value: codesJson,
                     descriptionText: 'IR code list updated'])
-                logInfo("IR codes list updated for ${childDevice.displayName}")
+                logInfo("IR codes list updated for ${deviceName}")
             }
         }
     } catch (Exception e) {
-        logError("componentSenseListIRCodes: failed for ${childDevice.displayName}: ${e.message}")
+        logError("componentSenseListIRCodes: failed for ${deviceName}: ${e.message}")
     }
 }
 
@@ -19759,12 +20071,13 @@ void componentSenseListIRCodes(def childDevice) {
  * @param codeName A human-readable name for the stored code
  */
 void componentSenseAddIRCode(def childDevice, String prontoHex, String codeName) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentSenseAddIRCode: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentSenseAddIRCode: no IP for ${deviceName}"); return }
     logDebug("componentSenseAddIRCode: adding '${codeName}' at ${ipAddress}")
     Map result = sendGen1Get(ipAddress, 'ir/add', [type: 'pronto_hex', code: prontoHex, name: codeName])
     if (result != null) {
-        logInfo("IR code '${codeName}' added to ${childDevice.displayName}")
+        logInfo("IR code '${codeName}' added to ${deviceName}")
         componentSenseListIRCodes(childDevice)
     }
 }
@@ -19778,12 +20091,13 @@ void componentSenseAddIRCode(def childDevice, String prontoHex, String codeName)
  * @param codeId The numeric ID of the stored code to remove
  */
 void componentSenseRemoveIRCode(def childDevice, Integer codeId) {
-    String ipAddress = childDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("componentSenseRemoveIRCode: no IP for ${childDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    if (!ipAddress) { logError("componentSenseRemoveIRCode: no IP for ${deviceName}"); return }
     logDebug("componentSenseRemoveIRCode: removing code ID=${codeId} at ${ipAddress}")
     Map result = sendGen1Get(ipAddress, 'ir/remove', [id: codeId.toString()])
     if (result != null) {
-        logInfo("IR code ID=${codeId} removed from ${childDevice.displayName}")
+        logInfo("IR code ID=${codeId} removed from ${deviceName}")
         componentSenseListIRCodes(childDevice)
     }
 }
@@ -19802,15 +20116,15 @@ void componentSenseRemoveIRCode(def childDevice, Integer codeId) {
  * @param parentDevice The parent device that received the LAN message
  * @param description Raw LAN message description string from Hubitat
  */
-void componentParse(def parentDevice, String description) {
-    logDebug("componentParse() called from parent: ${parentDevice.displayName}")
+@CompileStatic
+void componentParse(Object parentDevice, String description) {
+    String parentDni = deviceNetworkIdHelper(parentDevice)
+    logDebug("componentParse() called from parent: ${deviceDisplayNameHelper(parentDevice)}")
 
     try {
-        Map msg = parseLanMessage(description)
+        Map msg = parseLanMessageHelper(description)
 
         if (msg?.status != null) { return }
-
-        String parentDni = parentDevice.deviceNetworkId
 
         if (msg?.body) {
             handlePostWebhook(parentDni, msg)
@@ -19829,9 +20143,10 @@ void componentParse(def parentDevice, String description) {
  * @param parentDni The parent device network ID
  * @param msg The parsed LAN message map containing a JSON body
  */
+@CompileStatic
 private void handlePostWebhook(String parentDni, Map msg) {
     try {
-        Map json = slurper.parseText(msg.body) as Map
+        Map json = slurper.parseText(msg.body.toString()) as Map
         String dst = json?.dst?.toString()
         if (!dst) { logDebug('componentParse: POST webhook has no dst in body'); return }
 
@@ -19851,13 +20166,14 @@ private void handlePostWebhook(String parentDni, Map msg) {
  * @param parentDni The parent device network ID
  * @param msg The parsed LAN message map (no body)
  */
+@CompileStatic
 private void handleGetWebhook(String parentDni, Map msg) {
     Map params = parseWebhookPath(msg)
     if (params?.dst) {
         logDebug("componentParse: GET webhook dst=${params.dst}, cid=${params.cid}")
         processWebhookParams(parentDni, params)
     } else {
-        logDebug("componentParse: no actionable data in message — headers keys: ${msg?.headers?.keySet()}, raw header present: ${msg?.header != null}")
+        logDebug("componentParse: no actionable data in message — headers keys: ${((msg?.headers as Map)?.keySet())}, raw header present: ${msg?.header != null}")
     }
 }
 
@@ -19874,12 +20190,12 @@ void componentLogParsedMessage(DeviceWrapper device, Map msg) {
     // Early exit if app trace logging is disabled (driver already checked its own setting)
     if (!(settings.logEnable == true && settings.traceLogEnable == true)) { return }
 
+    String deviceLabel = deviceDisplayNameHelper(device) ?: 'unknown device'
+
     if (!msg) {
-        logTrace("[${device.displayName}] componentLogParsedMessage: msg is null")
+        logTrace("[${deviceLabel}] componentLogParsedMessage: msg is null")
         return
     }
-
-    String deviceLabel = device.displayName
 
     // Determine message type
     String messageType = "Unknown"
@@ -20026,9 +20342,9 @@ void componentNotifyIpChanged(DeviceWrapper childDevice, String oldIp, String ne
     invalidateDeviceStatusCache(newIp)
     invalidateConfigurationSync(oldIp)
     invalidateConfigurationSync(newIp)
-    String deviceName = childDevice?.displayName ?: 'Unknown'
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'Unknown'
     logInfo("componentNotifyIpChanged: ${deviceName} IP changed: ${oldIp} -> ${newIp}")
-    childDevice.updateSetting('ipAddress', newIp)
+    deviceUpdateSettingHelper(childDevice, 'ipAddress', newIp)
     if (atomicState.discoveredShellys?.containsKey(oldIp)) {
         Map discovered = new LinkedHashMap((atomicState.discoveredShellys as Map))
         Map deviceEntry = discovered.remove(oldIp) as Map
@@ -20050,10 +20366,12 @@ void componentNotifyIpChanged(DeviceWrapper childDevice, String oldIp, String ne
  * @param dst The notification destination type
  * @param result The result map from the script notification
  */
+@CompileStatic
 private void routeScriptNotification(String parentDni, String dst, Map result) {
-    result.each { String key, Object value ->
+    result.each { Object rawKey, Object value ->
         if (!(value instanceof Map)) { return }
 
+        String key = rawKey.toString()
         String baseType = key.contains(':') ? key.split(':')[0] : key
         Integer componentId = key.contains(':') ? (key.split(':')[1] as Integer) : 0
 
@@ -20061,7 +20379,7 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
         if (!childType) { return }
 
         String childDni = "${parentDni}-${childType}-${componentId}"
-        def child = getCachedComponentChild(parentDni, childDni)
+        ChildDeviceWrapper child = getCachedComponentChild(parentDni, childDni)
 
         if (child) {
             List<Map> events = buildComponentEvents(dst, baseType, value as Map)
@@ -20072,7 +20390,7 @@ private void routeScriptNotification(String parentDni, String dst, Map result) {
             if (sentCount > 0) {
                 childSendEventIfChanged(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
             }
-            logDebug("routeScriptNotification: sent ${sentCount}/${events.size()} changed events to ${child.displayName}")
+            logDebug("routeScriptNotification: sent ${sentCount}/${events.size()} changed events to ${deviceDisplayNameHelper(child)}")
         } else {
             logDebug("routeScriptNotification: no child device found for DNI ${childDni}")
         }
@@ -20145,8 +20463,9 @@ private Map parseWebhookPath(Map msg) {
  * @param parentDni The parent device network ID
  * @param params The parsed query parameters map
  */
+@CompileStatic
 private void processWebhookParams(String parentDni, Map params) {
-    String dst = params.dst
+    String dst = params.dst as String
     if (!dst || params.cid == null) {
         logDebug("processWebhookParams: missing dst or cid parameter")
         return
@@ -20158,7 +20477,7 @@ private void processWebhookParams(String parentDni, Map params) {
     if (!childType) { return }
 
     String childDni = "${parentDni}-${childType}-${componentId}"
-    def child = getCachedComponentChild(parentDni, childDni)
+    ChildDeviceWrapper child = getCachedComponentChild(parentDni, childDni)
     if (!child) {
         logDebug("processWebhookParams: no child device for DNI ${childDni}")
         return
@@ -20172,7 +20491,7 @@ private void processWebhookParams(String parentDni, Map params) {
     if (sentCount > 0) {
         childSendEventIfChanged(child, [name: 'lastUpdated', value: new Date().format('yyyy-MM-dd HH:mm:ss')])
     }
-    logDebug("processWebhookParams: sent ${sentCount}/${events.size()} changed events to ${child.displayName}")
+    logDebug("processWebhookParams: sent ${sentCount}/${events.size()} changed events to ${deviceDisplayNameHelper(child)}")
 }
 
 /**
@@ -20714,45 +21033,47 @@ private List<Map> buildComponentEvents(String dst, String baseType, Map data) {
  * @param childDevice The device that requested refresh (parent or child)
  */
 void componentRefresh(def childDevice) {
-    logDebug("componentRefresh() called from device: ${childDevice.displayName}")
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String childDni = deviceNetworkIdHelper(childDevice)
+    logDebug("componentRefresh() called from device: ${childName}")
 
     try {
-        String ipAddress = childDevice.getDataValue('ipAddress')
+        String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
         if (!ipAddress) {
-            logError("componentRefresh: No IP address found for device ${childDevice.displayName}")
+            logError("componentRefresh: No IP address found for device ${childName}")
             return
         }
 
         // Gen 1 devices use REST polling instead of RPC status query
         if (isGen1Device(childDevice)) {
             // Backfill gen1Type data value for devices created before this field was stored
-            String resolvedGen1Type = childDevice.getDataValue('gen1Type') ?: ''
+            String resolvedGen1Type = genericDeviceDataValueHelper(childDevice, 'gen1Type') ?: ''
             if (!resolvedGen1Type) {
                 Map deviceInfo = atomicState.discoveredShellys?.get(ipAddress)
                 if (deviceInfo?.gen1Type) {
                     resolvedGen1Type = deviceInfo.gen1Type.toString()
-                    childDevice.updateDataValue('gen1Type', resolvedGen1Type)
+                    childUpdateDataValueHelper(childDevice as ChildDeviceWrapper, 'gen1Type', resolvedGen1Type)
                 }
             }
             // For battery devices: attempt pending action URL installation and drain command queue on wake-up
             if (isSleepyBatteryDevice(childDevice)) {
                 attemptGen1ActionUrlInstallOnWake(ipAddress)
-                drainCommandQueue(childDevice.deviceNetworkId)
+                drainCommandQueue(childDni)
             }
             pollGen1DeviceStatus(ipAddress)
-            if (childDevice.getDataValue('isParentDevice') == 'true') {
-                String typeName = childDevice.typeName ?: ''
+            if (genericDeviceDataValueHelper(childDevice, 'isParentDevice') == 'true') {
+                String typeName = deviceTypeNameHelper(childDevice) ?: ''
                 if (typeName.contains('EM Parent')) {
                     // EM parent: relay is on the parent device itself, not children
                     syncSwitchConfigToDriver(childDevice, ipAddress)
                 } else {
-                    syncSwitchConfigForParentChildren(childDevice.deviceNetworkId, ipAddress)
+                    syncSwitchConfigForParentChildren(childDni, ipAddress)
                 }
             } else {
                 syncSwitchConfigToDriver(childDevice, ipAddress)
             }
             // Sync device-side settings to driver preferences (once after creation)
-            if (!childDevice.getDataValue('gen1SettingsSynced')) {
+            if (!genericDeviceDataValueHelper(childDevice, 'gen1SettingsSynced')) {
                 syncGen1MotionSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1TrvSettings(ipAddress, childDevice, resolvedGen1Type)
                 syncGen1ButtonSettings(ipAddress, childDevice, resolvedGen1Type)
@@ -20767,8 +21088,8 @@ void componentRefresh(def childDevice) {
         }
 
         // Gen 2/3: Determine if this is a parent device or a child device
-        String parentDni = childDevice.getDataValue('parentDni') ?: childDevice.deviceNetworkId
-        Boolean isParent = childDevice.getDataValue('isParentDevice') == 'true'
+        String parentDni = genericDeviceDataValueHelper(childDevice, 'parentDni') ?: childDni
+        Boolean isParent = genericDeviceDataValueHelper(childDevice, 'isParentDevice') == 'true'
 
         // Query full device status via RPC
         Map deviceStatus = queryDeviceStatus(ipAddress)
@@ -20782,16 +21103,16 @@ void componentRefresh(def childDevice) {
             distributeStatusToChildren(parentDni, deviceStatus)
             syncConfigurationForParentIfNeeded(childDevice, parentDni, ipAddress, deviceStatus)
         } else {
-            String refreshTypeName = childDevice.typeName ?: ''
+            String refreshTypeName = deviceTypeNameHelper(childDevice) ?: ''
             // DALI Dimmer consumes the full deviceStatus map directly because it maps
             // lights dynamically and has no single componentType/componentId pairing.
             // (Linkedgo thermostats also need the full map but own their own polling
             // flow via componentLinkedgoFetchStatus → driver-side distributeStatus.)
             if (refreshTypeName.contains('DALI Dimmer')) {
-                childDevice.distributeStatus(deviceStatus)
+                deviceDistributeStatusHelper(childDevice, deviceStatus)
             } else {
                 // Single child refresh: only update this child
-                String componentType = childDevice.getDataValue('componentType')
+                String componentType = genericDeviceDataValueHelper(childDevice, 'componentType')
                 String idDataKey = "${componentType}Id"
                 Integer componentId = extractComponentId(childDevice, idDataKey)
                 String componentKey = "${componentType}:${componentId}"
@@ -20804,7 +21125,7 @@ void componentRefresh(def childDevice) {
             syncConfigurationForChildIfNeeded(childDevice, ipAddress, deviceStatus)
         }
     } catch (Exception e) {
-        logError("componentRefresh exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentRefresh exception for ${childName}: ${e.message}")
     }
 }
 
@@ -20851,13 +21172,13 @@ private void syncConfigurationForChildIfNeeded(def childDevice, String ipAddress
         Map record = (records[ipAddress] ?: [:]) as Map
         Boolean alreadySynced = !force && record.identity?.toString() == identity &&
             record.cfgRev?.toString() == revision &&
-            (record.parentSynced == true || ((record.childDnis ?: []) as List).contains(childDevice.deviceNetworkId?.toString()))
+            (record.parentSynced == true || ((record.childDnis ?: []) as List).contains(deviceNetworkIdHelper(childDevice)))
         if (alreadySynced) {
-            logTrace("Skipping configuration sync for ${ipAddress}/${childDevice.deviceNetworkId}: cfg_rev=${revision} already synchronized")
+            logTrace("Skipping configuration sync for ${ipAddress}/${deviceNetworkIdHelper(childDevice)}: cfg_rev=${revision} already synchronized")
             return
         }
 
-        String refreshTypeName = childDevice.typeName ?: ''
+        String refreshTypeName = deviceTypeNameHelper(childDevice) ?: ''
         syncSwitchConfigToDriver(childDevice, ipAddress)
         syncCoverConfigToDriver(childDevice, ipAddress)
         // Sync light config for dimmer devices (dimmers have light:N components, not switch:N)
@@ -20867,7 +21188,7 @@ private void syncConfigurationForChildIfNeeded(def childDevice, String ipAddress
         }
 
         List childDnis = new ArrayList((record.childDnis ?: []) as List)
-        String childDni = childDevice.deviceNetworkId?.toString()
+        String childDni = deviceNetworkIdHelper(childDevice)
         if (childDni && !childDnis.contains(childDni)) { childDnis.add(childDni) }
         Map updatedRecord = [identity: identity, cfgRev: revision, childDnis: childDnis, syncedAt: now()]
         Map updatedRecords = new LinkedHashMap(records)
@@ -21013,9 +21334,10 @@ private void completeParentCommand(String queueKey, String fingerprint) {
 }
 
 /** Forces configuration synchronization from an explicit parent configure request. */
-private void forceConfigurationSync(def parentDevice) {
-    String ipAddress = parentDevice?.getDataValue('ipAddress')
-    String parentDni = parentDevice?.deviceNetworkId
+@CompileStatic
+private void forceConfigurationSync(Object parentDevice) {
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
+    String parentDni = deviceNetworkIdHelper(parentDevice)
     if (!ipAddress || !parentDni || isGen1Device(parentDevice)) { return }
 
     Map deviceStatus = queryDeviceStatus(ipAddress)
@@ -21033,7 +21355,7 @@ private void forceConfigurationSync(def parentDevice) {
  * @param parentDevice The parent device that is initializing
  */
 void componentInitialize(def parentDevice) {
-    logDebug("componentInitialize() called from parent: ${parentDevice.displayName}")
+    logDebug("componentInitialize() called from parent: ${deviceDisplayNameHelper(parentDevice) ?: 'unknown device'}")
     // Script and webhook installation is handled by the existing
     // installRequiredScripts and installRequiredActions functions
     // which are triggered during device discovery/creation
@@ -21045,7 +21367,7 @@ void componentInitialize(def parentDevice) {
  * @param parentDevice The parent device to configure
  */
 void componentConfigure(def parentDevice) {
-    logDebug("componentConfigure() called from parent: ${parentDevice.displayName}")
+    logDebug("componentConfigure() called from parent: ${deviceDisplayNameHelper(parentDevice) ?: 'unknown device'}")
     // Configuration is handled during device creation and explicit configure.
     // A configure request is the driver's force/resync path; normal refreshes
     // only synchronize when the Shelly configuration revision changes.
@@ -21061,34 +21383,36 @@ void componentConfigure(def parentDevice) {
  * @param childDevice The child device relaying its settings
  * @param settingsMap Map of Gen 1 /settings query parameters
  */
-void componentUpdateGen1Settings(def childDevice, Map settingsMap) {
+@CompileStatic
+void componentUpdateGen1Settings(Object childDevice, Map settingsMap) {
     if (!childDevice || !settingsMap) { return }
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     if (!ipAddress) {
-        logError("componentUpdateGen1Settings: no IP for ${childDevice.displayName}")
+        logError("componentUpdateGen1Settings: no IP for ${deviceName}")
         return
     }
 
     if (isSleepyBatteryDevice(childDevice)) {
         // Sleepy devices: always queue — opportunistic drain handles "just woke up" case
-        queueCommand(childDevice.deviceNetworkId, [
+        queueCommand(deviceNetworkIdHelper(childDevice), [
             dedupKey    : 'gen1_setting:settings'.toString(),
             commandType : 'gen1_setting',
             endpoint    : 'settings',
             params      : settingsMap,
-            queuedAt    : now(),
+            queuedAt    : nowHelper(),
             retryCount  : 0
         ])
-        logInfo("Queued Gen 1 settings for ${childDevice.displayName} (device may be asleep)")
+        logInfo("Queued Gen 1 settings for ${deviceName} (device may be asleep)")
         return
     }
 
-    logInfo("Sending Gen 1 settings to ${childDevice.displayName} at ${ipAddress}: ${settingsMap}")
+    logInfo("Sending Gen 1 settings to ${deviceName} at ${ipAddress}: ${settingsMap}")
     Map result = sendGen1Setting(ipAddress, 'settings', settingsMap)
     if (result != null) {
-        logInfo("Gen 1 settings applied to ${childDevice.displayName}")
+        logInfo("Gen 1 settings applied to ${deviceName}")
     } else {
-        logWarn("Failed to apply Gen 1 settings to ${childDevice.displayName} — device may be unreachable")
+        logWarn("Failed to apply Gen 1 settings to ${deviceName} — device may be unreachable")
     }
 }
 
@@ -21183,6 +21507,7 @@ private void clearCommandQueue(String dni) {
  * @param dni The device network ID
  * @return The count of queued command entries
  */
+@CompileStatic
 private Integer getQueuedCommandCount(String dni) {
     ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
     return deviceQueue ? deviceQueue.size() : 0
@@ -21268,14 +21593,16 @@ private void loadCommandQueuesFromState(Boolean publishStatus = true) {
  *
  * @param dni The device network ID
  */
+@CompileStatic
 private void updateSyncStatus(String dni) {
     List<ChildDeviceWrapper> children = getCachedDirectChildDevices()
-    ChildDeviceWrapper child = children?.find { it.deviceNetworkId == dni }
+    ChildDeviceWrapper child = children?.find { ChildDeviceWrapper candidate -> deviceNetworkIdHelper(candidate) == dni }
     if (!child) { return }
     if (!deviceHasAttributeHelper(child, 'syncStatus')) { return }
 
     // Single snapshot read to avoid TOCTOU race between size check and error scan
     ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
+    Integer maxRetries = maxCommandRetriesHelper()
     Integer count = deviceQueue ? deviceQueue.size() : 0
     String status
     if (count == 0) {
@@ -21283,7 +21610,7 @@ private void updateSyncStatus(String dni) {
     } else {
         // Check if any entries have a permanent error or exceeded max retries
         Boolean hasErrors = deviceQueue.values().any { Map entry ->
-            entry.permanentError == true || (entry.retryCount as Integer ?: 0) >= MAX_COMMAND_RETRIES
+            entry.permanentError == true || (entry.retryCount as Integer ?: 0) >= maxRetries
         }
         if (hasErrors) {
             status = 'error'
@@ -21306,15 +21633,16 @@ private void updateSyncStatus(String dni) {
  *
  * @param childDevice The child device that just woke up
  */
+@CompileStatic
 void componentDeviceAwoke(com.hubitat.app.DeviceWrapper childDevice) {
     if (!childDevice) { return }
-    String dni = childDevice.deviceNetworkId
-    lastWakeUpTimestamps.put(dni, now())
+    String dni = deviceNetworkIdHelper(childDevice)
+    lastWakeUpTimestamps.put(dni, nowHelper())
 
     // Drain any pending commands
     Integer queueSize = getQueuedCommandCount(dni)
     if (queueSize > 0) {
-        logInfo("Device ${childDevice.displayName} woke up with ${queueSize} pending commands — draining queue")
+        logInfo("Device ${deviceDisplayNameHelper(childDevice)} woke up with ${queueSize} pending commands — draining queue")
         drainCommandQueue(dni)
     }
 }
@@ -21326,6 +21654,7 @@ void componentDeviceAwoke(com.hubitat.app.DeviceWrapper childDevice) {
  *
  * @param dni The device network ID
  */
+@CompileStatic
 private void drainCommandQueue(String dni) {
     ConcurrentHashMap<String, Map> deviceQueue = commandQueues.get(dni)
     if (!deviceQueue || deviceQueue.isEmpty()) { return }
@@ -21336,7 +21665,7 @@ private void drainCommandQueue(String dni) {
     }
 
     Long retryNotBefore = commandQueueRetryNotBefore.get(dni)
-    if (retryNotBefore != null && now() < retryNotBefore) {
+    if (retryNotBefore != null && nowHelper() < retryNotBefore) {
         commandQueueDrainInFlight.remove(dni)
         logTrace("drainCommandQueue: retry backoff active for ${dni} until ${retryNotBefore}")
         return
@@ -21344,16 +21673,17 @@ private void drainCommandQueue(String dni) {
 
     // Look up child device and IP address
     List<ChildDeviceWrapper> children = getCachedDirectChildDevices()
-    ChildDeviceWrapper child = children?.find { it.deviceNetworkId == dni }
+    ChildDeviceWrapper child = children?.find { ChildDeviceWrapper candidate -> deviceNetworkIdHelper(candidate) == dni }
     if (!child) {
         commandQueueDrainInFlight.remove(dni)
         logWarn("drainCommandQueue: no child device found for DNI ${dni}")
         return
     }
-    String ipAddress = child.getDataValue('ipAddress')
+    String ipAddress = genericDeviceDataValueHelper(child, 'ipAddress')
+    String deviceName = deviceDisplayNameHelper(child) ?: dni
     if (!ipAddress) {
         commandQueueDrainInFlight.remove(dni)
-        logWarn("drainCommandQueue: no IP address for ${child.displayName}")
+        logWarn("drainCommandQueue: no IP address for ${deviceName}")
         return
     }
 
@@ -21370,14 +21700,14 @@ private void drainCommandQueue(String dni) {
 
     String dispatchToken = commandQueueDrainInFlight.get(dni)
     entry.dispatchToken = dispatchToken
-    logDebug("Draining one of ${entries.size()} queued commands for ${child.displayName} at ${ipAddress}: ${entry.dedupKey}")
+    logDebug("Draining one of ${entries.size()} queued commands for ${deviceName} at ${ipAddress}: ${entry.dedupKey}")
 
     String commandType = entry.commandType?.toString() ?: ''
     String endpoint = entry.endpoint?.toString() ?: ''
     String dedupKey = entry.dedupKey?.toString() ?: ''
     Map params = entry.params as Map ?: [:]
 
-    Map callbackData = [dni: dni, dedupKey: dedupKey, dispatchToken: dispatchToken, deviceName: child.displayName.toString()]
+    Map callbackData = [dni: dni, dedupKey: dedupKey, dispatchToken: dispatchToken, deviceName: deviceName]
 
     switch (commandType) {
         case 'gen1_setting':
@@ -21389,13 +21719,18 @@ private void drainCommandQueue(String dni) {
             String uri = "http://${ipAddress}/${endpoint}".toString()
             if (queryString) { uri += "?${queryString}" }
 
-            Map httpParams = [uri: uri, timeout: 10, contentType: 'application/json']
+            Map<String, Object> httpParams = new LinkedHashMap<String, Object>()
+            httpParams.put('uri', uri)
+            httpParams.put('timeout', 10)
+            httpParams.put('contentType', 'application/json')
             if (authIsEnabledGen1()) {
                 String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
                 String encoded = credentials.bytes.encodeBase64().toString()
-                httpParams.headers = ['Authorization': "Basic ${encoded}".toString()]
+                Map<String, Object> authHeaders = new LinkedHashMap<String, Object>()
+                authHeaders.put('Authorization', "Basic ${encoded}".toString())
+                httpParams.put('headers', authHeaders as Object)
             }
-            asynchttpGet('commandQueueDrainCallback', httpParams, callbackData)
+            asynchttpGetHelper('commandQueueDrainCallback', httpParams, callbackData)
             break
 
         case 'gen2_rpc':
@@ -21408,7 +21743,7 @@ private void drainCommandQueue(String dni) {
                 requestContentType: 'application/json',
                 body: groovy.json.JsonOutput.toJson(rpcBody)
             ]
-            asynchttpPost('commandQueueDrainCallback', httpParams2, callbackData)
+            asynchttpPostHelper('commandQueueDrainCallback', httpParams2, callbackData)
             break
 
         default:
@@ -21420,18 +21755,21 @@ private void drainCommandQueue(String dni) {
 /**
  * Async HTTP callback for command queue drain operations.
  * On HTTP 200: dequeues the entry (success). On failure: increments retryCount
- * and leaves the entry in the queue for the next wake-up cycle (up to {@link #MAX_COMMAND_RETRIES}).
+ * and leaves the entry in the queue for the next wake-up cycle, up to the
+ * configured command retry limit.
  * When max retries are exhausted, the entry is marked with {@code permanentError: true}
  * and left in the queue so {@code syncStatus} shows "error" instead of falsely showing "synced".
  *
  * @param response The async HTTP response
  * @param data Callback data containing dni, dedupKey, and deviceName
  */
+@CompileStatic
 void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map data) {
     String dni = data?.dni?.toString() ?: ''
     String dedupKey = data?.dedupKey?.toString() ?: ''
     String dispatchToken = data?.dispatchToken?.toString() ?: ''
     String deviceName = data?.deviceName?.toString() ?: dni
+    Integer maxRetries = maxCommandRetriesHelper()
 
     if (commandQueueDrainInFlight.get(dni) != dispatchToken) {
         logTrace("Ignoring stale command queue callback for ${deviceName}: ${dedupKey}")
@@ -21461,15 +21799,15 @@ void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map da
         if (entry) {
             Integer retries = (entry.retryCount as Integer ?: 0) + 1
             entry.retryCount = retries
-            if (retries >= MAX_COMMAND_RETRIES) {
-                logError("Command ${dedupKey} for ${deviceName} exceeded max retries (${MAX_COMMAND_RETRIES}) — marked as error")
+            if (retries >= maxRetries) {
+                logError("Command ${dedupKey} for ${deviceName} exceeded max retries (${maxRetries}) — marked as error")
                 entry.permanentError = true
             }
             persistCommandQueue(dni)
-            logDebug("Command ${dedupKey} for ${deviceName} retry count: ${retries}/${MAX_COMMAND_RETRIES}")
-            if (retries < MAX_COMMAND_RETRIES) {
+            logDebug("Command ${dedupKey} for ${deviceName} retry count: ${retries}/${maxRetries}")
+            if (retries < maxRetries) {
                 Long backoffSeconds = Math.min(60L, 5L * (1L << Math.min(retries - 1, 3)))
-                commandQueueRetryNotBefore.put(dni, now() + (backoffSeconds * 1000L))
+                commandQueueRetryNotBefore.put(dni, nowHelper() + (backoffSeconds * 1000L))
                 logTrace("Command ${dedupKey} retry backoff for ${deviceName}: ${backoffSeconds}s")
             }
         }
@@ -21484,12 +21822,13 @@ void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map da
  *
  * @param childDevice The child device requesting cancellation
  */
+@CompileStatic
 void componentCancelPendingCommands(com.hubitat.app.DeviceWrapper childDevice) {
     if (!childDevice) { return }
-    String dni = childDevice.deviceNetworkId
+    String dni = deviceNetworkIdHelper(childDevice)
     Integer count = getQueuedCommandCount(dni)
     clearCommandQueue(dni)
-    logInfo("Cancelled ${count} pending commands for ${childDevice.displayName}")
+    logInfo("Cancelled ${count} pending commands for ${deviceDisplayNameHelper(childDevice)}")
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -21503,14 +21842,16 @@ void componentCancelPendingCommands(com.hubitat.app.DeviceWrapper childDevice) {
  * @param childDevice The TRV child device
  * @param tempC Target temperature in Celsius
  */
-void componentSetTrvHeatingSetpoint(def childDevice, BigDecimal tempC) {
+@CompileStatic
+void componentSetTrvHeatingSetpoint(Object childDevice, BigDecimal tempC) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
-        if (!ip) { logError("componentSetTrvHeatingSetpoint: no IP for ${childDevice.displayName}"); return }
-        logDebug("componentSetTrvHeatingSetpoint: setting ${tempC}°C on ${childDevice.displayName}")
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+        if (!ip) { logError("componentSetTrvHeatingSetpoint: no IP for ${childName}"); return }
+        logDebug("componentSetTrvHeatingSetpoint: setting ${tempC}°C on ${childName}")
         sendGen1Get(ip, 'thermostats/0', [target_t_enabled: '1', target_t: tempC.toString()])
     } catch (Exception e) {
-        logError("componentSetTrvHeatingSetpoint exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentSetTrvHeatingSetpoint exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21522,14 +21863,16 @@ void componentSetTrvHeatingSetpoint(def childDevice, BigDecimal tempC) {
  * @param childDevice The TRV child device
  * @param enabled true to activate thermostat mode, false for manual valve-position mode
  */
-void componentSetTrvThermostatEnabled(def childDevice, Boolean enabled) {
+@CompileStatic
+void componentSetTrvThermostatEnabled(Object childDevice, Boolean enabled) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
-        if (!ip) { logError("componentSetTrvThermostatEnabled: no IP for ${childDevice.displayName}"); return }
-        logDebug("componentSetTrvThermostatEnabled: setting target_t_enabled=${enabled} on ${childDevice.displayName}")
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+        if (!ip) { logError("componentSetTrvThermostatEnabled: no IP for ${childName}"); return }
+        logDebug("componentSetTrvThermostatEnabled: setting target_t_enabled=${enabled} on ${childName}")
         sendGen1Get(ip, 'thermostats/0', [target_t_enabled: enabled ? '1' : '0'])
     } catch (Exception e) {
-        logError("componentSetTrvThermostatEnabled exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentSetTrvThermostatEnabled exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21539,14 +21882,16 @@ void componentSetTrvThermostatEnabled(def childDevice, Boolean enabled) {
  * @param childDevice The TRV child device
  * @param position Valve position percentage (0 = closed, 100 = fully open)
  */
-void componentSetTrvValvePosition(def childDevice, Integer position) {
+@CompileStatic
+void componentSetTrvValvePosition(Object childDevice, Integer position) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
-        if (!ip) { logError("componentSetTrvValvePosition: no IP for ${childDevice.displayName}"); return }
-        logDebug("componentSetTrvValvePosition: setting pos=${position} on ${childDevice.displayName}")
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+        if (!ip) { logError("componentSetTrvValvePosition: no IP for ${childName}"); return }
+        logDebug("componentSetTrvValvePosition: setting pos=${position} on ${childName}")
         sendGen1Get(ip, 'thermostats/0', [pos: position.toString()])
     } catch (Exception e) {
-        logError("componentSetTrvValvePosition exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentSetTrvValvePosition exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21557,14 +21902,16 @@ void componentSetTrvValvePosition(def childDevice, Integer position) {
  * @param childDevice The TRV child device
  * @param tempC External temperature in Celsius
  */
-void componentSetTrvExternalTemp(def childDevice, BigDecimal tempC) {
+@CompileStatic
+void componentSetTrvExternalTemp(Object childDevice, BigDecimal tempC) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
-        if (!ip) { logError("componentSetTrvExternalTemp: no IP for ${childDevice.displayName}"); return }
-        logDebug("componentSetTrvExternalTemp: sending ${tempC}°C to ${childDevice.displayName}")
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+        if (!ip) { logError("componentSetTrvExternalTemp: no IP for ${childName}"); return }
+        logDebug("componentSetTrvExternalTemp: sending ${tempC}°C to ${childName}")
         sendGen1Get(ip, 'ext_t', [temp: tempC.toString()])
     } catch (Exception e) {
-        logError("componentSetTrvExternalTemp exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentSetTrvExternalTemp exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21577,14 +21924,16 @@ void componentSetTrvExternalTemp(def childDevice, BigDecimal tempC) {
  * @param childDevice The child device representing the TRV
  * @param windowState Either "open" or "close"
  */
-void componentSetTrvWindowState(def childDevice, String windowState) {
+@CompileStatic
+void componentSetTrvWindowState(Object childDevice, String windowState) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
-        if (!ip) { logError("componentSetTrvWindowState: no IP for ${childDevice.displayName}"); return }
-        logDebug("componentSetTrvWindowState: setting window ${windowState} on ${childDevice.displayName}")
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+        if (!ip) { logError("componentSetTrvWindowState: no IP for ${childName}"); return }
+        logDebug("componentSetTrvWindowState: setting window ${windowState} on ${childName}")
         sendGen1Get(ip, 'window', [state: windowState])
     } catch (Exception e) {
-        logError("componentSetTrvWindowState exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentSetTrvWindowState exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21595,14 +21944,16 @@ void componentSetTrvWindowState(def childDevice, String windowState) {
  * @param childDevice The TRV child device
  * @param minutes Boost duration in minutes (0 to cancel)
  */
-void componentSetTrvBoostMinutes(def childDevice, Integer minutes) {
+@CompileStatic
+void componentSetTrvBoostMinutes(Object childDevice, Integer minutes) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
-        if (!ip) { logError("componentSetTrvBoostMinutes: no IP for ${childDevice.displayName}"); return }
-        logDebug("componentSetTrvBoostMinutes: setting ${minutes} minutes on ${childDevice.displayName}")
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+        if (!ip) { logError("componentSetTrvBoostMinutes: no IP for ${childName}"); return }
+        logDebug("componentSetTrvBoostMinutes: setting ${minutes} minutes on ${childName}")
         sendGen1Get(ip, 'thermostats/0', [boost_minutes: minutes.toString()])
     } catch (Exception e) {
-        logError("componentSetTrvBoostMinutes exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentSetTrvBoostMinutes exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21612,14 +21963,16 @@ void componentSetTrvBoostMinutes(def childDevice, Integer minutes) {
  * @param childDevice The TRV child device
  * @param enabled true to enable, false to disable
  */
-void componentSetTrvScheduleEnabled(def childDevice, Boolean enabled) {
+@CompileStatic
+void componentSetTrvScheduleEnabled(Object childDevice, Boolean enabled) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
-        if (!ip) { logError("componentSetTrvScheduleEnabled: no IP for ${childDevice.displayName}"); return }
-        logDebug("componentSetTrvScheduleEnabled: setting schedule=${enabled} on ${childDevice.displayName}")
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
+        if (!ip) { logError("componentSetTrvScheduleEnabled: no IP for ${childName}"); return }
+        logDebug("componentSetTrvScheduleEnabled: setting schedule=${enabled} on ${childName}")
         sendGen1Setting(ip, 'settings/thermostats/0', [schedule: enabled ? '1' : '0'])
     } catch (Exception e) {
-        logError("componentSetTrvScheduleEnabled exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentSetTrvScheduleEnabled exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21630,19 +21983,21 @@ void componentSetTrvScheduleEnabled(def childDevice, Boolean enabled) {
  * @param childDevice The TRV child device relaying its settings
  * @param settingsMap Map of thermostat settings parameters
  */
-void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
+@CompileStatic
+void componentUpdateGen1ThermostatSettings(Object childDevice, Map settingsMap) {
     if (!childDevice || !settingsMap) { return }
-    String ip = childDevice.getDataValue('ipAddress')
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ip) {
-        logError("componentUpdateGen1ThermostatSettings: no IP for ${childDevice.displayName}")
+        logError("componentUpdateGen1ThermostatSettings: no IP for ${childName}")
         return
     }
-    logInfo("Sending Gen 1 TRV settings to ${childDevice.displayName} at ${ip}: ${settingsMap}")
+    logInfo("Sending Gen 1 TRV settings to ${childName} at ${ip}: ${settingsMap}")
     Map result = sendGen1Setting(ip, 'settings/thermostats/0', settingsMap)
     if (result != null) {
-        logInfo("Gen 1 TRV settings applied to ${childDevice.displayName}")
+        logInfo("Gen 1 TRV settings applied to ${childName}")
     } else {
-        logWarn("Failed to apply Gen 1 TRV settings to ${childDevice.displayName} — device may be unreachable")
+        logWarn("Failed to apply Gen 1 TRV settings to ${childName} — device may be unreachable")
     }
 }
 
@@ -21658,8 +22013,9 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
 // the wire RPC methods (Number.Set, Enum.Set, Boolean.Set), discovering
 // instance IDs via Shelly.GetComponents on demand.
 //
-// None can be @CompileStatic — all access dynamic device data and call
-// postCommandSync (which itself is non-static).
+// Device access is isolated behind the runtime adapters; the pure response
+// mapping and command paths below can therefore remain statically compiled
+// when their dependent query path permits it.
 
 /**
  * Queries Shelly.GetComponents and returns a role->"type:id" map for all virtual
@@ -21676,15 +22032,16 @@ void componentUpdateGen1ThermostatSettings(def childDevice, Map settingsMap) {
  */
 Map componentLinkedgoGetComponents(def childDevice) {
     Map<String, String> result = [:]
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
         if (!ip) {
-            logError("componentLinkedgoGetComponents: no IP for ${childDevice.displayName}")
+            logError("componentLinkedgoGetComponents: no IP for ${childName}")
             return result
         }
         List<Map> components = queryDeviceComponents(ip, [include: ['config']], 'linkedgoGetComponents')
         if (!components) {
-            logWarn("componentLinkedgoGetComponents: empty components list for ${childDevice.displayName}")
+            logWarn("componentLinkedgoGetComponents: empty components list for ${childName}")
             return result
         }
         components.each { Map comp ->
@@ -21695,9 +22052,9 @@ Map componentLinkedgoGetComponents(def childDevice) {
             if (key.split(':').length != 2) { return }
             result[role] = key
         }
-        logDebug("componentLinkedgoGetComponents: discovered ${result.size()} role mappings for ${childDevice.displayName}: ${result}")
+        logDebug("componentLinkedgoGetComponents: discovered ${result.size()} role mappings for ${childName}: ${result}")
     } catch (Exception e) {
-        logError("componentLinkedgoGetComponents exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentLinkedgoGetComponents exception for ${childName}: ${e.message}")
     }
     return result
 }
@@ -21722,15 +22079,16 @@ Map componentLinkedgoGetComponents(def childDevice) {
  */
 Map componentLinkedgoFetchStatus(def childDevice) {
     Map<String, Map> result = [:]
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
         if (!ip) {
-            logError("componentLinkedgoFetchStatus: no IP for ${childDevice.displayName}")
+            logError("componentLinkedgoFetchStatus: no IP for ${childName}")
             return result
         }
         List<Map> components = queryDeviceComponents(ip, [include: ['status']], 'linkedgoFetchStatus')
         if (!components) {
-            logWarn("componentLinkedgoFetchStatus: empty/null components list for ${childDevice.displayName}")
+            logWarn("componentLinkedgoFetchStatus: empty/null components list for ${childName}")
             return result
         }
 
@@ -21742,9 +22100,9 @@ Map componentLinkedgoFetchStatus(def childDevice) {
             result[key] = comp.status as Map
         }
 
-        logDebug("componentLinkedgoFetchStatus: ${childDevice.displayName} returning ${result.size()} component statuses: ${result.keySet()}")
+        logDebug("componentLinkedgoFetchStatus: ${childName} returning ${result.size()} component statuses: ${result.keySet()}")
     } catch (Exception e) {
-        logError("componentLinkedgoFetchStatus exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentLinkedgoFetchStatus exception for ${childName}: ${e.message}")
     }
     return result
 }
@@ -21758,10 +22116,11 @@ Map componentLinkedgoFetchStatus(def childDevice) {
  * @return The Service.GetConfig result map, or null on failure
  */
 Map componentLinkedgoGetServiceConfig(def childDevice) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
         if (!ip) {
-            logError("componentLinkedgoGetServiceConfig: no IP for ${childDevice.displayName}")
+            logError("componentLinkedgoGetServiceConfig: no IP for ${childName}")
             return null
         }
         String uri = "http://${ip}/rpc"
@@ -21771,10 +22130,10 @@ Map componentLinkedgoGetServiceConfig(def childDevice) {
         LinkedHashMap json = postCommandSync(command, uri)
         logTrace("componentLinkedgoGetServiceConfig: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
         Map config = json?.result as Map
-        logDebug("componentLinkedgoGetServiceConfig: ${childDevice.displayName} config: ${config}")
+        logDebug("componentLinkedgoGetServiceConfig: ${childName} config: ${config}")
         return config
     } catch (Exception e) {
-        logError("componentLinkedgoGetServiceConfig exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentLinkedgoGetServiceConfig exception for ${childName}: ${e.message}")
         return null
     }
 }
@@ -21788,22 +22147,23 @@ Map componentLinkedgoGetServiceConfig(def childDevice) {
  * @param value The numeric value to write
  */
 void componentLinkedgoSetNumber(def childDevice, String role, Number value) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
         if (!ip) {
-            logError("componentLinkedgoSetNumber: no IP for ${childDevice.displayName}")
+            logError("componentLinkedgoSetNumber: no IP for ${childName}")
             return
         }
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoSetNumber', method: 'Number.Set',
             params: [owner: 'service:0', role: role, value: value]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        logDebug("componentLinkedgoSetNumber: ${childDevice.displayName} ${role}=${value}")
+        logDebug("componentLinkedgoSetNumber: ${childName} ${role}=${value}")
         logTrace("componentLinkedgoSetNumber: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
         logTrace("componentLinkedgoSetNumber: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
     } catch (Exception e) {
-        logError("componentLinkedgoSetNumber exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentLinkedgoSetNumber exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21816,22 +22176,23 @@ void componentLinkedgoSetNumber(def childDevice, String role, Number value) {
  * @param value The enum value to write (e.g. 'heat', 'cool', 'auto')
  */
 void componentLinkedgoSetEnum(def childDevice, String role, String value) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
-        String ip = childDevice.getDataValue('ipAddress')
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
         if (!ip) {
-            logError("componentLinkedgoSetEnum: no IP for ${childDevice.displayName}")
+            logError("componentLinkedgoSetEnum: no IP for ${childName}")
             return
         }
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoSetEnum', method: 'Enum.Set',
             params: [owner: 'service:0', role: role, value: value]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        logDebug("componentLinkedgoSetEnum: ${childDevice.displayName} ${role}=${value}")
+        logDebug("componentLinkedgoSetEnum: ${childName} ${role}=${value}")
         logTrace("componentLinkedgoSetEnum: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
         logTrace("componentLinkedgoSetEnum: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
     } catch (Exception e) {
-        logError("componentLinkedgoSetEnum exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentLinkedgoSetEnum exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21848,26 +22209,27 @@ void componentLinkedgoSetEnum(def childDevice, String role, String value) {
  * @param value The boolean value to write
  */
 void componentLinkedgoSetBoolean(def childDevice, Integer instanceId, String role, Boolean value) {
+    String childName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
     try {
         if (instanceId == null) {
-            logWarn("componentLinkedgoSetBoolean: no instance ID for role '${role}' on ${childDevice.displayName} — virtualMap may be stale")
+            logWarn("componentLinkedgoSetBoolean: no instance ID for role '${role}' on ${childName} — virtualMap may be stale")
             return
         }
-        String ip = childDevice.getDataValue('ipAddress')
+        String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
         if (!ip) {
-            logError("componentLinkedgoSetBoolean: no IP for ${childDevice.displayName}")
+            logError("componentLinkedgoSetBoolean: no IP for ${childName}")
             return
         }
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoSetBoolean', method: 'Boolean.Set',
             params: [id: instanceId, value: value]]
         if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-        logDebug("componentLinkedgoSetBoolean: ${childDevice.displayName} ${role} (id=${instanceId})=${value}")
+        logDebug("componentLinkedgoSetBoolean: ${childName} ${role} (id=${instanceId})=${value}")
         logTrace("componentLinkedgoSetBoolean: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
         logTrace("componentLinkedgoSetBoolean: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
     } catch (Exception e) {
-        logError("componentLinkedgoSetBoolean exception for ${childDevice.displayName}: ${e.message}")
+        logError("componentLinkedgoSetBoolean exception for ${childName}: ${e.message}")
     }
 }
 
@@ -21885,10 +22247,12 @@ void componentLinkedgoSetBoolean(def childDevice, Integer instanceId, String rol
  * @param method The TRV method to call (e.g., 'TRV.SetTarget')
  * @param methodParams Parameters for the TRV method
  */
-void sendBluTrvCommand(com.hubitat.app.DeviceWrapper gatewayDevice, Integer bluetrvComponentId, String method, Map methodParams) {
-    String gatewayIp = gatewayDevice.getDataValue('ipAddress')
+@CompileStatic
+void sendBluTrvCommand(Object gatewayDevice, Integer bluetrvComponentId, String method, Map methodParams) {
+    String gatewayName = deviceDisplayNameHelper(gatewayDevice) ?: 'unknown gateway'
+    String gatewayIp = genericDeviceDataValueHelper(gatewayDevice, 'ipAddress')
     if (!gatewayIp) {
-        logError("sendBluTrvCommand: no IP for gateway ${gatewayDevice.displayName}")
+        logError("sendBluTrvCommand: no IP for gateway ${gatewayName}")
         return
     }
 
@@ -21908,13 +22272,13 @@ void sendBluTrvCommand(com.hubitat.app.DeviceWrapper gatewayDevice, Integer blue
             body: rpcBody,
             timeout: 90
         ]
-        asynchttpPost('bluTrvCommandCallback', httpParams, [
-            gateway: gatewayDevice.displayName,
+        asynchttpPostHelper('bluTrvCommandCallback', httpParams, [
+            gateway: gatewayName,
             method: method,
             componentId: bluetrvComponentId
         ])
     } catch (Exception e) {
-        logError("sendBluTrvCommand exception for ${gatewayDevice.displayName}: ${e.message}")
+        logError("sendBluTrvCommand exception for ${gatewayName}: ${e.message}")
     }
 }
 
@@ -21946,10 +22310,12 @@ void bluTrvCommandCallback(AsyncResponse response, Map data = null) {
  * @param gatewayDevice The BLU Gateway parent device
  * @param bluetrvComponentId The blutrv component ID (200-299)
  */
-void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper gatewayDevice, Integer bluetrvComponentId) {
-    String gatewayIp = gatewayDevice.getDataValue('ipAddress')
+@CompileStatic
+void componentBluTrvRefresh(Object gatewayDevice, Integer bluetrvComponentId) {
+    String gatewayName = deviceDisplayNameHelper(gatewayDevice) ?: 'unknown gateway'
+    String gatewayIp = genericDeviceDataValueHelper(gatewayDevice, 'ipAddress')
     if (!gatewayIp) {
-        logError("componentBluTrvRefresh: no IP for gateway ${gatewayDevice.displayName}")
+        logError("componentBluTrvRefresh: no IP for gateway ${gatewayName}")
         return
     }
 
@@ -21958,7 +22324,7 @@ void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper gatewayDevice, Integer
     try {
         String uri = "http://${gatewayIp}/rpc"
         LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: bluetrvComponentId]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
+        if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.put('auth', getAuth()) }
         LinkedHashMap trvResp = postCommandSync(trvCmd, uri)
         logInfo("componentBluTrvRefresh: raw response keys: ${trvResp?.keySet()}, result keys: ${trvResp?.result instanceof Map ? (trvResp.result as Map).keySet() : 'N/A'}")
 
@@ -21967,8 +22333,8 @@ void componentBluTrvRefresh(com.hubitat.app.DeviceWrapper gatewayDevice, Integer
             logInfo("componentBluTrvRefresh: TRV status: ${trvStatus}")
             String compKey = "blutrv:${bluetrvComponentId}".toString()
             Map syntheticStatus = [(compKey): trvStatus]
-            gatewayDevice.distributeStatus(syntheticStatus)
-            logInfo("componentBluTrvRefresh: distributeStatus called on ${gatewayDevice.displayName} with key ${compKey}")
+            deviceDistributeStatusHelper(gatewayDevice, syntheticStatus)
+            logInfo("componentBluTrvRefresh: distributeStatus called on ${gatewayName} with key ${compKey}")
         } else {
             logWarn("componentBluTrvRefresh: no result in response for blutrv:${bluetrvComponentId}, full response: ${trvResp}")
         }
@@ -22009,9 +22375,10 @@ private static String parseHubitatTimeToHHMM(String timeStr) {
  */
 void componentUpdateLightSettings(def childDevice, Map lightSettings) {
     if (!childDevice || !lightSettings) { return }
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("componentUpdateLightSettings: no IP for ${childDevice.displayName}")
+        logError("componentUpdateLightSettings: no IP for ${deviceName}")
         return
     }
 
@@ -22031,7 +22398,7 @@ void componentUpdateLightSettings(def childDevice, Map lightSettings) {
 
         Map result = sendGen1Setting(ipAddress, "settings/light/${lightId}", params)
         if (result != null) {
-            logInfo("Applied Gen1 light settings to ${childDevice.displayName}: ${params}")
+            logInfo("Applied Gen1 light settings to ${deviceName}: ${params}")
         }
     } else {
         // Gen 2/3: JSON-RPC Light.SetConfig
@@ -22099,9 +22466,9 @@ void componentUpdateLightSettings(def childDevice, Map lightSettings) {
         LinkedHashMap command = lightSetConfigCommandJson(config, lightId)
         LinkedHashMap response = postCommandSync(command, rpcUri)
         if (response != null) {
-            logInfo("Applied Gen2+ light config to ${childDevice.displayName} light:${lightId}: ${config}")
+            logInfo("Applied Gen2+ light config to ${deviceName} light:${lightId}: ${config}")
         } else {
-            logWarn("Failed to apply Gen2+ light config to ${childDevice.displayName}: no response")
+            logWarn("Failed to apply Gen2+ light config to ${deviceName}: no response")
         }
     }
 }
@@ -22116,9 +22483,10 @@ void componentUpdateLightSettings(def childDevice, Map lightSettings) {
  */
 void componentUpdateWdUiSettings(def childDevice, Map wdUiSettings) {
     if (!childDevice || !wdUiSettings) { return }
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("componentUpdateWdUiSettings: no IP for ${childDevice.displayName}")
+        logError("componentUpdateWdUiSettings: no IP for ${deviceName}")
         return
     }
     Map config = [:]
@@ -22130,9 +22498,9 @@ void componentUpdateWdUiSettings(def childDevice, Map wdUiSettings) {
     LinkedHashMap command = [id: 0, src: 'wdUiSetConfig', method: 'WD_UI.SetConfig', params: [config: config]]
     LinkedHashMap response = postCommandSync(command, rpcUri)
     if (response != null) {
-        logInfo("Applied WD_UI config to ${childDevice.displayName}: ${config}")
+        logInfo("Applied WD_UI config to ${deviceName}: ${config}")
     } else {
-        logWarn("Failed to apply WD_UI config to ${childDevice.displayName} (device may not support WD_UI)")
+        logWarn("Failed to apply WD_UI config to ${deviceName} (device may not support WD_UI)")
     }
 }
 
@@ -22240,7 +22608,7 @@ private void syncWdUiConfigToDriver(def targetDevice, String ipAddress) {
  * @param ipAddress The Shelly device IP address
  */
 private void syncPowerstripUiConfigToDriver(def parentDevice, String ipAddress) {
-    if (!parentDevice || parentDevice.getDataValue('hasPowerstripUi') != 'true') { return }
+    if (!parentDevice || genericDeviceDataValueHelper(parentDevice, 'hasPowerstripUi') != 'true') { return }
 
     String rpcUri = "http://${ipAddress}/rpc"
     LinkedHashMap command = powerstripUiGetConfigCommand('syncPowerstripUiConfig')
@@ -22266,9 +22634,10 @@ private void syncPowerstripUiConfigToDriver(def parentDevice, String ipAddress) 
  */
 void componentUpdateColorSettings(def childDevice, Map colorSettings) {
     if (!childDevice || !colorSettings) { return }
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("componentUpdateColorSettings: no IP for ${childDevice.displayName}")
+        logError("componentUpdateColorSettings: no IP for ${deviceName}")
         return
     }
 
@@ -22288,7 +22657,7 @@ void componentUpdateColorSettings(def childDevice, Map colorSettings) {
 
         Map result = sendGen1Setting(ipAddress, "settings/color/${lightId}", params)
         if (result != null) {
-            logInfo("Applied Gen1 color settings to ${childDevice.displayName}: ${params}")
+            logInfo("Applied Gen1 color settings to ${deviceName}: ${params}")
         }
     }
     // Gen 2/3 color settings can be added here later
@@ -22307,13 +22676,14 @@ void componentUpdateColorSettings(def childDevice, Map colorSettings) {
  */
 void componentUpdateCoverSettings(def childDevice, Map coverSettings) {
     if (!childDevice || !coverSettings) { return }
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("componentUpdateCoverSettings: no IP for ${childDevice.displayName}")
+        logError("componentUpdateCoverSettings: no IP for ${deviceName}")
         return
     }
     if (isGen1Device(childDevice)) {
-        logDebug("componentUpdateCoverSettings: skipping Gen 1 cover config for ${childDevice.displayName}")
+        logDebug("componentUpdateCoverSettings: skipping Gen 1 cover config for ${deviceName}")
         return
     }
 
@@ -22330,13 +22700,14 @@ void componentUpdateCoverSettings(def childDevice, Map coverSettings) {
  */
 void parentUpdateCoverSettings(def parentDevice, Integer coverId, Map coverSettings) {
     if (!parentDevice || !coverSettings) { return }
-    String ipAddress = parentDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(parentDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("parentUpdateCoverSettings: no IP for ${parentDevice.displayName}")
+        logError("parentUpdateCoverSettings: no IP for ${deviceName}")
         return
     }
     if (isGen1Device(parentDevice)) {
-        logDebug("parentUpdateCoverSettings: skipping Gen 1 cover config for ${parentDevice.displayName}")
+        logDebug("parentUpdateCoverSettings: skipping Gen 1 cover config for ${deviceName}")
         return
     }
 
@@ -22352,6 +22723,7 @@ void parentUpdateCoverSettings(def parentDevice, Integer coverId, Map coverSetti
  * @param coverSettings Map with cover configuration keys from driver preferences
  */
 private void applyGen2CoverSettings(String ipAddress, def device, Integer coverId, Map coverSettings) {
+    String deviceName = deviceDisplayNameHelper(device) ?: 'unknown device'
     Map config = [:]
     if (coverSettings.invert_directions != null) { config.invert_directions = coverSettings.invert_directions as Boolean }
     if (coverSettings.in_mode != null) { config.in_mode = coverSettings.in_mode as String }
@@ -22394,9 +22766,9 @@ private void applyGen2CoverSettings(String ipAddress, def device, Integer coverI
     LinkedHashMap command = coverSetConfigCommandJson(config, coverId)
     LinkedHashMap response = postCommandSync(command, rpcUri)
     if (response != null) {
-        logInfo("Applied Gen2+ cover config to ${device.displayName} cover:${coverId}: ${config}")
+        logInfo("Applied Gen2+ cover config to ${deviceName} cover:${coverId}: ${config}")
     } else {
-        logWarn("Failed to apply Gen2+ cover config to ${device.displayName}: no response")
+        logWarn("Failed to apply Gen2+ cover config to ${deviceName}: no response")
     }
 }
 
@@ -22410,7 +22782,7 @@ private void applyGen2CoverSettings(String ipAddress, def device, Integer coverI
 private void syncCoverConfigToDriver(def targetDevice, String ipAddress) {
     if (isGen1Device(targetDevice)) { return }
 
-    String componentType = targetDevice.getDataValue('componentType')
+    String componentType = genericDeviceDataValueHelper(targetDevice, 'componentType')
     if (componentType != null && componentType != 'cover') { return }
 
     Integer coverId = 0
@@ -22419,7 +22791,7 @@ private void syncCoverConfigToDriver(def targetDevice, String ipAddress) {
     } else {
         String componentStr = targetDevice.getDataValue('components') ?: ''
         Integer coverCount = componentStr ? componentStr.split(',').count { it.trim().startsWith('cover:') } : 0
-        if (coverCount != 1 && !(targetDevice.typeName ?: '').contains('Single Cover')) { return }
+        if (coverCount != 1 && !(deviceTypeNameHelper(targetDevice) ?: '').contains('Single Cover')) { return }
     }
 
     String rpcUri = "http://${ipAddress}/rpc"
@@ -22444,8 +22816,8 @@ private void syncCoverConfigToDriver(def targetDevice, String ipAddress) {
  * @param ipAddress The device IP address
  */
 private void syncCoverConfigForParentChildren(String parentDni, String ipAddress) {
-    getChildDevices()?.each { child ->
-        if (child.deviceNetworkId.startsWith("${parentDni}-cover-")) {
+    getChildDevicesHelper()?.each { ChildDeviceWrapper child ->
+        if (deviceNetworkIdHelper(child).startsWith("${parentDni}-cover-")) {
             syncCoverConfigToDriver(child, ipAddress)
         }
     }
@@ -22546,9 +22918,10 @@ private void syncCoverConfigToPreferences(def targetDevice, Map config) {
  */
 void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
     if (!childDevice || !switchSettings) { return }
-    String ipAddress = childDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(childDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("componentUpdateSwitchSettings: no IP for ${childDevice.displayName}")
+        logError("componentUpdateSwitchSettings: no IP for ${deviceName}")
         return
     }
     Integer switchId = extractComponentId(childDevice, 'switchId')
@@ -22568,9 +22941,10 @@ void componentUpdateSwitchSettings(def childDevice, Map switchSettings) {
  */
 void parentUpdateSwitchSettings(def parentDevice, Integer switchId, Map switchSettings) {
     if (!parentDevice || !switchSettings) { return }
-    String ipAddress = parentDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(parentDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("parentUpdateSwitchSettings: no IP for ${parentDevice.displayName}")
+        logError("parentUpdateSwitchSettings: no IP for ${deviceName}")
         return
     }
     if (isGen1Device(parentDevice)) {
@@ -22588,14 +22962,15 @@ void parentUpdateSwitchSettings(def parentDevice, Integer switchId, Map switchSe
  * @param inputModes Map of inputIndex (Integer) → type String ('button' or 'switch')
  */
 void parentSetGen1InputTypes(def parentDevice, Map inputModes) {
-    String ipAddress = parentDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("parentSetGen1InputTypes: no IP for ${parentDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(parentDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
+    if (!ipAddress) { logError("parentSetGen1InputTypes: no IP for ${deviceName}"); return }
     inputModes.each { index, type ->
         Map result = sendGen1Setting(ipAddress, "settings/input/${index}", [input_type: type.toString()])
         if (result != null) {
-            logInfo("Set input:${index} type to '${type}' on ${parentDevice.displayName}")
+            logInfo("Set input:${index} type to '${type}' on ${deviceName}")
         } else {
-            logWarn("Failed to set input:${index} type on ${parentDevice.displayName}")
+            logWarn("Failed to set input:${index} type on ${deviceName}")
         }
     }
 }
@@ -22609,17 +22984,18 @@ void parentSetGen1InputTypes(def parentDevice, Map inputModes) {
  */
 void parentApplyGen1AdcSettings(def parentDevice, Map adcSettings) {
     if (!adcSettings) { return }
-    String ipAddress = parentDevice.getDataValue('ipAddress')
-    if (!ipAddress) { logError("parentApplyGen1AdcSettings: no IP for ${parentDevice.displayName}"); return }
+    String deviceName = deviceDisplayNameHelper(parentDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
+    if (!ipAddress) { logError("parentApplyGen1AdcSettings: no IP for ${deviceName}"); return }
     Map params = [:]
     if (adcSettings.lower_limit != null) { params.lower_limit = (adcSettings.lower_limit as BigDecimal).toString() }
     if (adcSettings.upper_limit != null) { params.upper_limit = (adcSettings.upper_limit as BigDecimal).toString() }
     if (!params) { return }
     Map result = sendGen1Setting(ipAddress, 'settings/adc/0', params)
     if (result != null) {
-        logInfo("Applied ADC settings to ${parentDevice.displayName}: ${params}")
+        logInfo("Applied ADC settings to ${deviceName}: ${params}")
     } else {
-        logWarn("Failed to apply ADC settings to ${parentDevice.displayName}")
+        logWarn("Failed to apply ADC settings to ${deviceName}")
     }
 }
 
@@ -22633,9 +23009,10 @@ void parentApplyGen1AdcSettings(def parentDevice, Map adcSettings) {
  */
 void parentUpdateWhiteSettings(def parentDevice, Integer whiteId, Map whiteSettings) {
     if (!parentDevice || !whiteSettings) { return }
-    String ipAddress = parentDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(parentDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("parentUpdateWhiteSettings: no IP for ${parentDevice.displayName}")
+        logError("parentUpdateWhiteSettings: no IP for ${deviceName}")
         return
     }
 
@@ -22653,7 +23030,7 @@ void parentUpdateWhiteSettings(def parentDevice, Integer whiteId, Map whiteSetti
 
     Map result = sendGen1Setting(ipAddress, "settings/white/${whiteId}", params)
     if (result != null) {
-        logInfo("Applied Gen1 white settings to ${parentDevice.displayName} channel ${whiteId}: ${params}")
+        logInfo("Applied Gen1 white settings to ${deviceName} channel ${whiteId}: ${params}")
     }
 }
 
@@ -22669,6 +23046,7 @@ void parentUpdateWhiteSettings(def parentDevice, Integer whiteId, Map whiteSetti
  * @param switchSettings Map with switch configuration keys from child driver preferences
  */
 private void applyGen2SwitchSettings(String ipAddress, def device, Integer switchId, Map switchSettings) {
+    String deviceName = deviceDisplayNameHelper(device) ?: 'unknown device'
     Map config = [:]
     if (switchSettings.defaultState != null) {
         String state = switchSettings.defaultState as String
@@ -22700,7 +23078,7 @@ private void applyGen2SwitchSettings(String ipAddress, def device, Integer switc
     String rpcUri = "http://${ipAddress}/rpc"
     LinkedHashMap command = switchSetConfigCommandJson(config, switchId)
     LinkedHashMap response = postCommandSync(command, rpcUri)
-    logInfo("Applied Gen2+ switch config to ${device.displayName} switch:${switchId}: ${config}")
+    logInfo("Applied Gen2+ switch config to ${deviceName} switch:${switchId}: ${config}")
 }
 
 /**
@@ -22712,6 +23090,7 @@ private void applyGen2SwitchSettings(String ipAddress, def device, Integer switc
  * @param switchSettings Map with keys: defaultState, autoOffTime, autoOnTime
  */
 private void applyGen1SwitchSettings(String ipAddress, def device, Integer switchId, Map switchSettings) {
+    String deviceName = deviceDisplayNameHelper(device) ?: 'unknown device'
     Map params = [:]
     if (switchSettings.defaultState != null) {
         String rawState = switchSettings.defaultState as String
@@ -22736,9 +23115,9 @@ private void applyGen1SwitchSettings(String ipAddress, def device, Integer switc
 
     Map result = sendGen1Setting(ipAddress, "settings/relay/${switchId}", params)
     if (result != null) {
-        logInfo("Applied Gen1 switch settings to ${device.displayName} relay:${switchId}: ${params}")
+        logInfo("Applied Gen1 switch settings to ${deviceName} relay:${switchId}: ${params}")
     } else {
-        logWarn("Failed to apply Gen1 switch settings to ${device.displayName} relay:${switchId}")
+        logWarn("Failed to apply Gen1 switch settings to ${deviceName} relay:${switchId}")
     }
 }
 
@@ -22750,16 +23129,16 @@ private void applyGen1SwitchSettings(String ipAddress, def device, Integer switc
  * @param ipAddress The device IP address
  */
 private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
-    String componentType = targetDevice.getDataValue('componentType')
+    String componentType = genericDeviceDataValueHelper(targetDevice, 'componentType')
     if (componentType != null && componentType != 'switch') { return }
 
     // For standalone devices (componentType is null), check stored config
     // to avoid querying settings/relay on devices without switches (TRV, Motion, etc.)
     if (componentType == null) {
-        String typeName = targetDevice.typeName ?: ''
+        String typeName = deviceTypeNameHelper(targetDevice) ?: ''
         // EM Parent always has relay:0 even though config.hasSwitch is false (no switch: components)
         Boolean isEmParent = typeName.contains('EM Parent')
-        String dni = targetDevice.deviceNetworkId
+        String dni = deviceNetworkIdHelper(targetDevice)
     Map config = (atomicState.deviceConfigs ?: [:])[dni] as Map
         if (config) {
             if (!config.hasSwitch && !isEmParent) { return }
@@ -22777,7 +23156,7 @@ private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
         if (relaySettings) { syncGen1ConfigToPreferences(targetDevice, relaySettings) }
 
         // Sync device-level settings (LED control) for Plug and EM Parent drivers
-        String typeName = targetDevice.typeName ?: ''
+        String typeName = deviceTypeNameHelper(targetDevice) ?: ''
         if (typeName.contains('Plug') || typeName.contains('EM Parent')) {
             Map deviceSettings = sendGen1Get(ipAddress, 'settings', [:])
             if (deviceSettings) { syncGen1DeviceSettingsToPreferences(targetDevice, deviceSettings) }
@@ -22797,8 +23176,8 @@ private void syncSwitchConfigToDriver(def targetDevice, String ipAddress) {
  * @param ipAddress The device IP address
  */
 private void syncSwitchConfigForParentChildren(String parentDni, String ipAddress) {
-    getChildDevices()?.each { child ->
-        if (child.deviceNetworkId.startsWith("${parentDni}-switch-")) {
+    getChildDevicesHelper()?.each { ChildDeviceWrapper child ->
+        if (deviceNetworkIdHelper(child).startsWith("${parentDni}-switch-")) {
             syncSwitchConfigToDriver(child, ipAddress)
         }
     }
@@ -22918,16 +23297,18 @@ private void syncGen1DeviceSettingsToPreferences(def targetDevice, Map deviceSet
  * @param method The Shelly RPC method name (e.g., 'Switch.Set', 'Cover.Open')
  * @param params The RPC method parameters map
  */
-void parentSendCommand(def parentDevice, String method, Map params) {
-    String ipAddress = parentDevice.getDataValue('ipAddress')
+@CompileStatic
+void parentSendCommand(Object parentDevice, String method, Map params) {
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
+    String parentName = deviceDisplayNameHelper(parentDevice) ?: 'unknown parent'
     if (!ipAddress) {
-        logError("parentSendCommand: no IP for ${parentDevice.displayName}")
+        logError("parentSendCommand: no IP for ${parentName}")
         return
     }
 
     params = normalizePowerstripUiSetConfigParams(method, params)
     params = normalizeLightSetTransitionParams(method, params)
-    logDebug("parentSendCommand from ${parentDevice.displayName}: ${method} with params ${params}")
+    logDebug("parentSendCommand from ${parentName}: ${method} with params ${params}")
 
     // Gen 1: route standard RPC method names to Gen 1 REST endpoints
     if (isGen1Device(parentDevice)) {
@@ -23075,14 +23456,17 @@ private Map normalizePowerstripUiSetConfigParams(String method, Map params) {
  *
  * @param parentDevice The parent device requesting refresh
  */
-void parentRefresh(def parentDevice) {
-    String ipAddress = parentDevice.getDataValue('ipAddress')
+@CompileStatic
+void parentRefresh(Object parentDevice) {
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
+    String parentName = deviceDisplayNameHelper(parentDevice) ?: 'unknown parent'
+    String parentDni = deviceNetworkIdHelper(parentDevice)
     if (!ipAddress) {
-        logError("parentRefresh: no IP for ${parentDevice.displayName}")
+        logError("parentRefresh: no IP for ${parentName}")
         return
     }
 
-    logDebug("parentRefresh called for ${parentDevice.displayName} (${ipAddress})")
+    logDebug("parentRefresh called for ${parentName} (${ipAddress})")
 
     // Query device status
     Map deviceStatus = queryDeviceStatus(ipAddress)
@@ -23093,11 +23477,11 @@ void parentRefresh(def parentDevice) {
 
     // Send status to parent driver via distributeStatus() callback
     try {
-        parentDevice.distributeStatus(deviceStatus)
-        syncConfigurationForParentIfNeeded(parentDevice, parentDevice.deviceNetworkId, ipAddress, deviceStatus)
-        logDebug("Sent status to ${parentDevice.displayName}")
+        deviceDistributeStatusHelper(parentDevice, deviceStatus)
+        syncConfigurationForParentIfNeeded(parentDevice, parentDni, ipAddress, deviceStatus)
+        logDebug("Sent status to ${parentName}")
     } catch (Exception e) {
-        logError("Failed to distribute status to ${parentDevice.displayName}: ${e.message}")
+        logError("Failed to distribute status to ${parentName}: ${e.message}")
     }
 }
 
@@ -23109,13 +23493,14 @@ void parentRefresh(def parentDevice) {
  * @param parentDevice The parent device to reinitialize
  */
 void reinitializeDevice(def parentDevice) {
-    String ipAddress = parentDevice.getDataValue('ipAddress')
+    String deviceName = deviceDisplayNameHelper(parentDevice) ?: 'unknown device'
+    String ipAddress = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
     if (!ipAddress) {
-        logError("reinitializeDevice: no IP for ${parentDevice.displayName}")
+        logError("reinitializeDevice: no IP for ${deviceName}")
         return
     }
 
-    logInfo("Reinitializing parent device ${parentDevice.displayName} via driver request")
+    logInfo("Reinitializing parent device ${deviceName} via driver request")
     reinitializeDevice(ipAddress)
 }
 
