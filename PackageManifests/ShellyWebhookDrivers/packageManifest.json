@@ -32,7 +32,7 @@
       "id": "a5f0c8de-0e68-4a32-9a7c-5ed2d7e2b6f1",
       "name": "Shelly Voltmeter Component",
       "namespace": "ShellyUSA",
-      "location": "https://github.com/ShellyUSA/Hubitat-Drivers/releases/download/v2.17.6/ShellyVoltmeterComponent-v2.17.6.groovy",
+      "location": "https://raw.githubusercontent.com/ShellyUSA/Hubitat-Drivers/fbc705535728dc4c2cbc23898118987fe12bec69/ComponentDrivers/ShellyVoltmeterComponent.groovy",
       "required": true
     },
     {
