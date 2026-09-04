@@ -13,7 +13,7 @@
 // ==========================================
 
 // === USER CONFIGURATION ===
-let POWERMONITOR_SCRIPT_VERSION = "2.1.1";
+let POWERMONITOR_SCRIPT_VERSION = "2.1.2";
 let DEFAULT_REPORT_INTERVAL = 60; // Fallback if KVS lookup fails
 let REPORT_INTERVAL = DEFAULT_REPORT_INTERVAL;
 let REPORT_INTERVAL_KVS_KEY = "hubitat_sdm_pm_ri"; // KVS key for dynamic report interval (seconds)
@@ -22,6 +22,7 @@ let STATUS_POLL_INTERVAL_SECS = 900; // GetStatus is a fallback, not the normal 
 let STATUS_POLL_RETRY_SECS = 120; // Retry sooner after a failed startup/status poll
 let REPORT_REQUEST_TIMEOUT_MS = 15000;
 let MAX_PENDING_REPORTS = 16;
+let MAX_TRACKED_COMPONENTS = 16;
 
 // Hubitat KVS configuration
 let HUBITAT_KVS_KEY = "hubitat_sdm_ip"; // store only the IP (no protocol/port) in Shelly KVS
@@ -322,6 +323,10 @@ function roundF(val) { return val === null ? null : Math.round(val * 10) / 10; }
 // Get or create a component accumulator entry
 function getOrCreateComp(key, type, id) {
   if (comps[key]) return comps[key];
+  if (compKeys.length >= MAX_TRACKED_COMPONENTS) {
+    print("Power monitor component limit reached; ignoring " + key);
+    return null;
+  }
   let c;
   if (type === "em") {
     c = {
@@ -357,6 +362,7 @@ function onStatus(ev) {
   if (type === "emdata") {
     let emKey = "em:" + JSON.stringify(id);
     let entry = getOrCreateComp(emKey, "em", id);
+    if (!entry) return;
     if (typeof d.a_total_act_energy === "number") entry.a.e = d.a_total_act_energy;
     if (typeof d.b_total_act_energy === "number") entry.b.e = d.b_total_act_energy;
     if (typeof d.c_total_act_energy === "number") entry.c.e = d.c_total_act_energy;
@@ -368,6 +374,7 @@ function onStatus(ev) {
   if (type === "em1data") {
     let em1Key = "em1:" + JSON.stringify(id);
     let entry = getOrCreateComp(em1Key, "em1", id);
+    if (!entry) return;
     if (typeof d.total_act_energy === "number") entry.e = d.total_act_energy;
     noteStatusData();
     return;
@@ -376,6 +383,7 @@ function onStatus(ev) {
   // em: 3-phase energy meter (a_voltage, a_current, a_act_power, a_freq, etc.)
   if (type === "em") {
     let entry = getOrCreateComp(comp, "em", id);
+    if (!entry) return;
     let phases = ["a", "b", "c"];
     for (let i = 0; i < phases.length; i++) {
       let p = phases[i];
@@ -392,6 +400,7 @@ function onStatus(ev) {
   // em1: single-phase energy meter (voltage, current, act_power, freq)
   if (type === "em1") {
     let entry = getOrCreateComp(comp, "em1", id);
+    if (!entry) return;
     if (typeof d.voltage === "number") addSample(entry.vs, d.voltage);
     if (typeof d.current === "number") addSample(entry.cs, d.current);
     if (typeof d.act_power === "number") addSample(entry.ps, d.act_power);
@@ -404,6 +413,7 @@ function onStatus(ev) {
   if (type !== "switch" && type !== "pm1" && type !== "cover") return;
 
   let entry = getOrCreateComp(comp, type, id);
+  if (!entry) return;
   if (typeof d.voltage === "number") addSample(entry.vs, d.voltage);
   if (typeof d.current === "number") addSample(entry.cs, d.current);
   if (typeof d.apower === "number") addSample(entry.ps, d.apower);
@@ -512,6 +522,10 @@ function onReportResponse(token, report, result, error_code, error_message) {
     totalReportsSent++;
     print("Power report sent:", report.key);
   }
+  // Do not keep the request payload or accumulator reachable through the
+  // callback after this request has completed.
+  report.body = null;
+  report.data = null;
   drainReportQueue();
 }
 
@@ -521,7 +535,13 @@ function onReportTimeout(token, report) {
   reportInFlight = false;
   failedReports++;
   markReportUnsent(report);
-  for (let i = 0; i < reportQueue.length; i++) markReportUnsent(reportQueue[i]);
+  report.body = null;
+  report.data = null;
+  for (let i = 0; i < reportQueue.length; i++) {
+    markReportUnsent(reportQueue[i]);
+    reportQueue[i].body = null;
+    reportQueue[i].data = null;
+  }
   reportQueue = [];
   print("Power report timed out; abandoning pending reports until the next cycle");
   finishReportCycle();
@@ -545,9 +565,13 @@ function drainReportQueue() {
     reportInFlightTimer = Timer.set(REPORT_REQUEST_TIMEOUT_MS, false, function () {
       onReportTimeout(token, report);
     });
+    // The serialized body is copied into the RPC request; clear the object
+    // immediately so the in-flight callback retains only scalar metadata.
+    let body = JSON.stringify(report.body);
+    report.body = null;
     Shelly.call(
       "HTTP.POST",
-      { url: url, body: JSON.stringify(report.body), content_type: "application/json" },
+      { url: url, body: body, content_type: "application/json" },
       function (result, error_code, error_message) {
         onReportResponse(token, report, result, error_code, error_message);
       },
@@ -572,6 +596,7 @@ function pushStatusReadings(res, seed) {
 
       if (prefixes[p] === "em") {
         let entry = getOrCreateComp(key, "em", id);
+        if (!entry) continue;
         let phases = ["a", "b", "c"];
         for (let j = 0; j < phases.length; j++) {
           let ph = entry[phases[j]];
@@ -586,12 +611,14 @@ function pushStatusReadings(res, seed) {
         }
       } else if (prefixes[p] === "em1") {
         let entry = getOrCreateComp(key, "em1", id);
+        if (!entry) continue;
         if (typeof s.voltage === "number") { addSample(entry.vs, s.voltage); if (isSeed) entry.lastV = s.voltage; }
         if (typeof s.current === "number") { addSample(entry.cs, s.current); if (isSeed) entry.lastC = s.current; }
         if (typeof s.act_power === "number") { addSample(entry.ps, s.act_power); if (isSeed) entry.lastP = s.act_power; }
         if (typeof s.freq === "number") { addSample(entry.fs, s.freq); if (isSeed) entry.lastF = s.freq; }
       } else {
         let entry = getOrCreateComp(key, prefixes[p], id);
+        if (!entry) continue;
         if (typeof s.voltage === "number") { addSample(entry.vs, s.voltage); if (isSeed) entry.lastV = s.voltage; }
         if (typeof s.current === "number") { addSample(entry.cs, s.current); if (isSeed) entry.lastC = s.current; }
         if (typeof s.apower === "number") { addSample(entry.ps, s.apower); if (isSeed) entry.lastP = s.apower; }
@@ -610,16 +637,18 @@ function pushStatusReadings(res, seed) {
     if (emd) {
       let emKey = "em:" + JSON.stringify(id);
       let entry = getOrCreateComp(emKey, "em", id);
-      if (typeof emd.a_total_act_energy === "number") entry.a.e = emd.a_total_act_energy;
-      if (typeof emd.b_total_act_energy === "number") entry.b.e = emd.b_total_act_energy;
-      if (typeof emd.c_total_act_energy === "number") entry.c.e = emd.c_total_act_energy;
+      if (entry) {
+        if (typeof emd.a_total_act_energy === "number") entry.a.e = emd.a_total_act_energy;
+        if (typeof emd.b_total_act_energy === "number") entry.b.e = emd.b_total_act_energy;
+        if (typeof emd.c_total_act_energy === "number") entry.c.e = emd.c_total_act_energy;
+      }
     }
     let em1dKey = "em1data:" + JSON.stringify(id);
     let em1d = res[em1dKey];
     if (em1d) {
       let em1Key = "em1:" + JSON.stringify(id);
       let entry = getOrCreateComp(em1Key, "em1", id);
-      if (typeof em1d.total_act_energy === "number") entry.e = em1d.total_act_energy;
+      if (entry && typeof em1d.total_act_energy === "number") entry.e = em1d.total_act_energy;
     }
   }
 }
