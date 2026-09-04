@@ -1,4 +1,11 @@
 @Field static ConcurrentHashMap<String, LinkedHashMap> authMaps = new java.util.concurrent.ConcurrentHashMap<String, LinkedHashMap>()
+// Authentication is scoped to the managed endpoint, not to the app. A single
+// manager may control Gen 1/2/4 devices with different auth settings and
+// different Shelly nonce lifetimes at the same time.
+@Field static ConcurrentHashMap<String, Object> authSessionLocks = new java.util.concurrent.ConcurrentHashMap<String, Object>()
+@Field static ConcurrentHashMap<String, Long> authFailureRetryNotBefore = new java.util.concurrent.ConcurrentHashMap<String, Long>()
+@Field static final Long AUTH_FAILURE_COOLDOWN_MS = 300000L
+@Field static final String AUTH_FAILURE_PREFIX = 'SHELLY_AUTH_'
 @Field static ConcurrentHashMap<String, Boolean> foundDevices = new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static groovy.json.JsonSlurper slurper = new groovy.json.JsonSlurper()
 
@@ -1146,6 +1153,12 @@ private void createShellyDevice(String ipKey) {
         // Re-read state after fetch
         deviceInfo = atomicState.discoveredShellys[ipKey]
         deviceStatus = deviceInfo?.deviceStatus
+        if (!deviceStatus && deviceAuthBlocked(ipKey)) {
+            String authStatus = deviceInfo?.authStatus?.toString()
+            logError("Could not authenticate with ${ipKey} (${authStatus}). Check the device password.")
+            appendLog('error', "Failed to create device for ${ipKey}: authentication required or password is incorrect")
+            return
+        }
         if (!deviceStatus) {
             Map snapshot = (atomicState.installationCapabilitySnapshots ?: [:])[ipKey] as Map
             if (snapshot?.deviceStatus) {
@@ -1167,6 +1180,12 @@ private void createShellyDevice(String ipKey) {
             fetchAndStoreDeviceInfo(ipKey)
             deviceInfo = atomicState.discoveredShellys[ipKey]
             deviceStatus = deviceInfo?.deviceStatus
+            if (!deviceStatus && deviceAuthBlocked(ipKey)) {
+                String authStatus = deviceInfo?.authStatus?.toString()
+                logError("Could not authenticate with ${ipKey} (${authStatus}). Check the device password.")
+                appendLog('error', "Failed to create device for ${ipKey}: authentication required or password is incorrect")
+                return
+            }
             if (!deviceStatus) {
                 Map snapshot = (atomicState.installationCapabilitySnapshots ?: [:])[ipKey] as Map
                 if (snapshot?.deviceStatus) {
@@ -1222,7 +1241,7 @@ void runDeviceCreate(Map data) {
         // Sleepy Gen2 devices can miss the first status read while waking.
         // Keep the provisioning operation alive and retry the complete create
         // path while the device is still expected to be reachable.
-        if (!findChildDeviceByIp(ipAddress) && attempt < 3 &&
+        if (!findChildDeviceByIp(ipAddress) && !deviceAuthBlocked(ipAddress) && attempt < 3 &&
                 isCurrentProvisioningOperation(ipAddress, operationId)) {
             Integer delayMs = attempt * 1500
             logWarn("Device creation did not produce a Hubitat child for ${ipAddress}; retrying in ${delayMs}ms (attempt ${attempt + 1}/3)")
@@ -1298,6 +1317,9 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     ]
     if (deviceInfo.gen1Type) {
         dataMap.gen1Type = deviceInfo.gen1Type.toString()
+    }
+    if (deviceInfo.auth_en != null) {
+        dataMap.auth_en = authValueEnabled(deviceInfo.auth_en) ? 'true' : 'false'
     }
     if (hasPlugsUi) { dataMap.hasPlugsUi = 'true' }
     if (hasPowerstripUi) { dataMap.hasPowerstripUi = 'true' }
@@ -1453,6 +1475,9 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
     if (deviceInfo.gen1Type) {
         dataMap.gen1Type = deviceInfo.gen1Type.toString()
     }
+    if (deviceInfo.auth_en != null) {
+        dataMap.auth_en = authValueEnabled(deviceInfo.auth_en) ? 'true' : 'false'
+    }
     if (pmComponentStr) { dataMap.pmComponents = pmComponentStr }
     if (hasPlugsUi) { dataMap.hasPlugsUi = 'true' }
     if (hasPowerstripUi) { dataMap.hasPowerstripUi = 'true' }
@@ -1536,6 +1561,11 @@ void updated() {
     state.displayLogLevel = newDisplay
     state.logLevel = newOverall
 
+    // A changed password invalidates every cached digest session. Sessions are
+    // endpoint-scoped, so this also safely handles a manager that controls a
+    // mix of authenticated and unauthenticated devices.
+    resetAuthenticationSessions()
+
     unsubscribeHelper()
     unscheduleAllHelper()
     initialize(true)
@@ -1548,6 +1578,7 @@ void updated() {
  */
 void uninstalled() {
     stopDiscovery()
+    resetAuthenticationSessions()
     // Unregister mDNS listeners — try no-arg form first (some firmware versions),
     // then per-service-type form as fallback
     try {
@@ -1777,6 +1808,9 @@ private List<Map> buildDeviceList() {
             entry.isGen1 = info.gen.toString() == '1'
             entry.deviceGen = info.gen.toString()
         }
+        ['auth_en', 'authScheme', 'authStatus', 'authLastError'].each { String field ->
+            if (info[field] != null) { entry[field] = info[field] }
+        }
 
         // Check if a child device exists for this IP
         def dev = childByIp[ip]
@@ -1881,6 +1915,10 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
         hubDeviceId: null,
         isBatteryDevice: (info?.isBatteryDevice ?: false) as Boolean,
         batteryDetermined: (info?.batteryDetermined == true) as Boolean,
+        auth_en: info?.auth_en,
+        authScheme: info?.authScheme,
+        authStatus: info?.authStatus,
+        authLastError: info?.authLastError,
         shellyHelperOnline: info?.shellyHelperOnline,
         fwUpdateAvailable: info?.fwUpdateAvailable,
         isReachable: null,
@@ -2132,7 +2170,20 @@ private String buildDeviceRow(Map entry) {
         fwIcon = " <iconify-icon icon='material-symbols:system-update-alt' title='Firmware update available' style='color:#FF9800;font-size:14px;vertical-align:middle'></iconify-icon>"
     }
 
-    String indicators = "${genBadge}${onlineDot}${fwIcon}"
+    // Authentication indicator is per device. A red lock means the last
+    // challenge failed; an orange lock means credentials are required but the
+    // endpoint has not completed a successful request yet.
+    String authIcon = ''
+    if (authValueEnabled(entry.auth_en)) {
+        String authStatus = entry.authStatus?.toString() ?: 'required'
+        String authColor = authStatus == 'authenticated' ? '#4CAF50' :
+            (authStatus in ['invalid_credentials', 'missing_password', 'challenge_missing', 'challenge_invalid'] ? '#F44336' : '#FF9800')
+        String authTitle = authStatus == 'authenticated' ? 'Authentication active' :
+            (authStatus == 'invalid_credentials' ? 'Authentication failed — check device password' : 'Authentication required')
+        authIcon = " <iconify-icon icon='material-symbols:lock' title='${authTitle}' style='color:${authColor};font-size:14px;vertical-align:middle'></iconify-icon>"
+    }
+
+    String indicators = "${genBadge}${onlineDot}${fwIcon}${authIcon}"
     if (isCreated && entry.hubDeviceId) {
         // Device names originate from the Shelly device itself (network-controlled) —
         // escape before interpolating into HTML to prevent script/attribute injection
@@ -2525,6 +2576,9 @@ private Map buildDeviceStatusCacheEntry(String ip) {
         entry.shellyName = (info.name ?: "Shelly ${ip}") as String
         entry.mac = (info.mac ?: '') as String
         entry.model = (info.model ?: 'Unknown') as String
+        ['auth_en', 'authScheme', 'authStatus', 'authLastError'].each { String field ->
+            if (info[field] != null) { entry[field] = info[field] }
+        }
     }
 
     // Find the Hubitat child device for this IP
@@ -3232,7 +3286,6 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
     String branch = GITHUB_BRANCH
     String baseUrl = "https://raw.githubusercontent.com/${GITHUB_REPO}/${branch}/Scripts"
     String uri = "http://${ipAddress}/rpc"
-    Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
     // Build the script queue as a list of file names
     List<String> scriptQueue = requiredScripts.toList()
@@ -3241,7 +3294,6 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
         ipAddress: ipAddress,
         deviceDisplayName: device.displayName.toString(),
         uri: uri,
-        hasAuth: hasAuth,
         baseUrl: baseUrl,
         installedScripts: installedScripts,
         scriptQueue: scriptQueue,
@@ -3277,7 +3329,6 @@ void installNextScript(Map data) {
     String scriptName = stripJsExtension(scriptFile)
     String ipAddress = data.ipAddress as String
     String uri = data.uri as String
-    Boolean hasAuth = data.hasAuth as Boolean
     String baseUrl = data.baseUrl as String
     List<Map> installedScripts = data.installedScripts as List<Map>
     String deviceDisplayName = data.deviceDisplayName as String
@@ -3320,14 +3371,12 @@ void installNextScript(Map data) {
             appendLog('info', "Replacing ${scriptName} on ${deviceDisplayName}...")
 
             LinkedHashMap stopCmd = scriptStopCommand(existingScriptId)
-            if (hasAuth) { stopCmd.auth = getAuth() }
             LinkedHashMap stopResult = postCommandSync(stopCmd, uri)
             if (stopResult?.error) {
                 throw new IllegalStateException("Script.Stop failed for '${scriptName}': ${stopResult.error}")
             }
 
             LinkedHashMap deleteCmd = scriptDeleteCommand(existingScriptId)
-            if (hasAuth) { deleteCmd.auth = getAuth() }
             LinkedHashMap deleteResult = postCommandSync(deleteCmd, uri)
             if (deleteResult?.error) {
                 throw new IllegalStateException("Script.Delete failed for '${scriptName}': ${deleteResult.error}")
@@ -3342,7 +3391,6 @@ void installNextScript(Map data) {
         // successful stop/delete sequence above; for new scripts this is the
         // initial create operation.
         LinkedHashMap createCmd = scriptCreateCommand(scriptName)
-        if (hasAuth) { createCmd.auth = getAuth() }
         LinkedHashMap createResult = postCommandSync(createCmd, uri)
         if (createResult == null || createResult.error) {
             throw new IllegalStateException("Script.Create failed for '${scriptName}': ${createResult?.error ?: 'no response'}")
@@ -3368,7 +3416,6 @@ void installNextScript(Map data) {
             ipAddress: data.ipAddress,
             deviceDisplayName: data.deviceDisplayName,
             uri: data.uri,
-            hasAuth: data.hasAuth,
             baseUrl: data.baseUrl,
             installedScripts: data.installedScripts,
             scriptQueue: data.scriptQueue,
@@ -3383,7 +3430,6 @@ void installNextScript(Map data) {
             scriptId: scriptId,
             codeStateKey: codeStateKey,
             uri: uri,
-            hasAuth: hasAuth,
             offset: 0,
             chunkNum: 0,
             completionCallback: 'scriptInstallStepComplete',
@@ -3420,7 +3466,6 @@ void installNextScript(Map data) {
         String scriptName = data.currentScriptName as String
         Boolean isUpdate = data.isUpdate as Boolean
         String uri = data.uri as String
-        Boolean hasAuth = data.hasAuth as Boolean
         String deviceDisplayName = data.deviceDisplayName as String
         Integer queueIndex = data.queueIndex as Integer
         Integer retryCount = (data.retryCount ?: 0) as Integer
@@ -3429,7 +3474,6 @@ void installNextScript(Map data) {
         Integer expectedLen = data.expectedCodeLength as Integer
         if (expectedLen != null && expectedLen > 0) {
             LinkedHashMap getCodeCmd = scriptGetCodeCommand(scriptId, 0, 1)
-            if (hasAuth) { getCodeCmd.auth = getAuth() }
             LinkedHashMap codeResult = postCommandSync(getCodeCmd, uri)
             Integer uploadedLen = codeResult?.result?.len as Integer
             if (uploadedLen != null && uploadedLen != expectedLen) {
@@ -3452,14 +3496,12 @@ void installNextScript(Map data) {
 
         try {
             LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-            if (hasAuth) { enableCmd.auth = getAuth() }
             LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
             if (enableResult?.error) {
                 logWarn("Script.Enable failed for '${scriptName}': ${enableResult.error}")
                 appendLog('warn', "Failed to enable ${scriptName}: ${enableResult.error?.message ?: enableResult.error}")
             } else {
                 LinkedHashMap startCmd = scriptStartCommand(scriptId)
-                if (hasAuth) { startCmd.auth = getAuth() }
                 LinkedHashMap startResult = postCommandSync(startCmd, uri)
                 if (startResult?.error) {
                     String errMsg = startResult.error?.message ?: startResult.error?.toString() ?: 'unknown error'
@@ -3530,7 +3572,6 @@ void retryScriptUpload(Map data) {
     Integer queueIndex = data.queueIndex as Integer
     Integer retryCount = ((data.retryCount ?: 0) as Integer) + 1
     String uri = data.uri as String
-    Boolean hasAuth = data.hasAuth as Boolean
     String baseUrl = data.baseUrl as String
     String ipAddress = data.ipAddress as String
     String deviceDisplayName = data.deviceDisplayName as String
@@ -3559,7 +3600,6 @@ void retryScriptUpload(Map data) {
     try {
         // Stop the existing (corrupted) script before re-uploading
         LinkedHashMap stopCmd = scriptStopCommand(scriptId)
-        if (hasAuth) { stopCmd.auth = getAuth() }
         postCommandSync(stopCmd, uri)
     } catch (Exception ex) {
         logDebug("retryScriptUpload: stop before retry failed (non-fatal): ${ex.message}")
@@ -3574,7 +3614,6 @@ void retryScriptUpload(Map data) {
         ipAddress: ipAddress,
         deviceDisplayName: deviceDisplayName,
         uri: uri,
-        hasAuth: hasAuth,
         baseUrl: baseUrl,
         installedScripts: data.installedScripts,
         scriptQueue: scriptQueue,
@@ -3588,7 +3627,6 @@ void retryScriptUpload(Map data) {
         scriptId: scriptId,
         codeStateKey: codeStateKey,
         uri: uri,
-        hasAuth: hasAuth,
         offset: 0,
         chunkNum: 0,
         completionCallback: 'scriptInstallStepComplete',
@@ -3855,7 +3893,6 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
         try {
             if (!enabled) {
                 LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-                if (authIsEnabled() == true && getAuth().size() > 0) { enableCmd.auth = getAuth() }
                 LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
                 if (enableResult?.error) {
                     logWarn("Script.Enable failed for '${name}': ${enableResult.error}")
@@ -3865,7 +3902,6 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
             }
             if (!running) {
                 LinkedHashMap startCmd = scriptStartCommand(scriptId)
-                if (authIsEnabled() == true && getAuth().size() > 0) { startCmd.auth = getAuth() }
                 LinkedHashMap startResult = postCommandSync(startCmd, uri)
                 if (startResult?.error) {
                     String errMsg = startResult.error?.message ?: startResult.error?.toString() ?: 'unknown error'
@@ -3990,7 +4026,6 @@ private void installRequiredActionsForIp(String ipAddress, String operationId = 
             }
             logInfo("Updating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
             LinkedHashMap updateCmd = webhookUpdateCommand(existing.id as Integer, name, [hookUrl])
-            if (authIsEnabled() == true && getAuth().size() > 0) { updateCmd.auth = getAuth() }
             postCommandSync(updateCmd, uri)
             installed++
             return
@@ -3999,7 +4034,6 @@ private void installRequiredActionsForIp(String ipAddress, String operationId = 
         logInfo("Creating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
         appendLog('info', "Creating webhook ${name} on ${device.displayName}")
         LinkedHashMap createCmd = webhookCreateCommand(cid, event, name, [hookUrl])
-        if (authIsEnabled() == true && getAuth().size() > 0) { createCmd.auth = getAuth() }
         LinkedHashMap result = postCommandSync(createCmd, uri)
 
         if (result?.result?.id != null) {
@@ -4810,7 +4844,6 @@ private void removeObsoleteWebhooks(String ipAddress, def device, List<Map> requ
             appendLog('info', "Removing obsolete webhook ${name} from ${device.displayName}")
             try {
                 LinkedHashMap deleteCmd = webhookDeleteCommand(hookId)
-                if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
                 postCommandSync(deleteCmd, uri)
                 removed++
             } catch (Exception ex) {
@@ -4848,7 +4881,6 @@ private void removeObsoleteScripts(String ipAddress, def device) {
             appendLog('info', "Removing obsolete ${name} from ${device.displayName}")
             try {
                 LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
-                if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
                 postCommandSync(deleteCmd, uri)
             } catch (Exception ex) {
                 logDebug("Could not remove obsolete script '${name}': ${ex.message}")
@@ -4888,7 +4920,6 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
                 if ((hookName?.startsWith('hubitat_sdm_') || hookName?.startsWith('hubitat.')) && hookId != null) {
                     try {
                         LinkedHashMap deleteCmd = webhookDeleteCommand(hookId)
-                        if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
                         LinkedHashMap result = postCommandSync(deleteCmd, uri)
                         if (result?.error) {
                             logWarn("RPC error removing webhook '${hookName}' (id: ${hookId}): ${result.error}")
@@ -4929,7 +4960,6 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
                 if (MANAGED_SCRIPT_NAMES.contains(scriptName) && scriptId != null) {
                     try {
                         LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
-                        if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
                         LinkedHashMap result = postCommandSync(deleteCmd, uri)
                         if (result?.error) {
                             logWarn("RPC error removing script '${scriptName}' (id: ${scriptId}): ${result.error}")
@@ -4968,7 +4998,6 @@ private void cleanupShellyDevice(String ipAddress, String deviceName) {
         hubitatKvsKeys.each { String key ->
             try {
                 LinkedHashMap deleteCmd = kvsDeleteCommand(key)
-                if (authIsEnabled() == true && getAuth().size() > 0) { deleteCmd.auth = getAuth() }
                 LinkedHashMap response = postCommandSync(deleteCmd, uri)
                 if (response?.error) {
                     Integer errorCode = response.error.code as Integer
@@ -5364,7 +5393,6 @@ List<Map> listDeviceScripts(String ipAddress) {
     for (int attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
             LinkedHashMap command = scriptListCommand()
-            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
             LinkedHashMap json = postCommandSync(command, uri)
             if (json?.result?.scripts) {
                 return json.result.scripts as List<Map>
@@ -5862,7 +5890,6 @@ List<Map> listDeviceWebhooks(String ipAddress) {
     try {
         String uri = "http://${ipAddress}/rpc"
         LinkedHashMap command = webhookListCommand()
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         LinkedHashMap json = postCommandSync(command, uri)
         if (json?.result?.hooks) {
             return json.result.hooks as List<Map>
@@ -5917,7 +5944,6 @@ private List<String> querySupportedWebhookEvents(String ipAddress) {
 
         while (true) {
             LinkedHashMap command = webhookListAllSupportedCommand(offset)
-            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
             LinkedHashMap json = postCommandSync(command, uri)
             if (json?.error) { break }
 
@@ -5937,7 +5963,6 @@ private List<String> querySupportedWebhookEvents(String ipAddress) {
 
         // Older firmware has no ListAllSupported method (or returns an error).
         LinkedHashMap legacyCommand = webhookListSupportedCommand()
-        if (authIsEnabled() == true && getAuth().size() > 0) { legacyCommand.auth = getAuth() }
         LinkedHashMap legacyJson = postCommandSync(legacyCommand, uri)
         if (legacyJson?.error) {
             logError("Supported webhook event query failed for ${ipAddress}: ${legacyJson.error}")
@@ -5996,7 +6021,6 @@ private Map<Integer, String> getInputTypes(String ipAddress, List<Integer> input
     inputCids.each { Integer cid ->
         try {
             LinkedHashMap command = inputGetConfigCommand(cid)
-            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
             LinkedHashMap json = postCommandSync(command, uri)
             if (json?.result?.type) {
                 inputTypes[cid] = json.result.type as String
@@ -6435,7 +6459,6 @@ private Map queryDeviceStatus(String ipAddress) {
         try {
             String uri = "http://${ipAddress}/rpc"
             LinkedHashMap command = shellyGetStatusCommand('deviceConfig')
-            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
             LinkedHashMap json = postCommandSync(command, uri)
             Map status = json?.result as Map
 
@@ -6452,7 +6475,6 @@ private Map queryDeviceStatus(String ipAddress) {
                             // Query full TRV thermostat status via BluTrv.GetStatus
                             try {
                                 LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: trvId]]
-                                if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
                                 LinkedHashMap trvResp = postCommandSync(trvCmd, uri)
                                 if (trvResp?.result) {
                                     status[compKey] = trvResp.result
@@ -6511,7 +6533,6 @@ private List<Map> queryDeviceComponents(String ipAddress, Map requestParams = [:
             Map params = new LinkedHashMap(requestParams ?: [:])
             params.offset = offset
             LinkedHashMap command = [id: 0, src: src, method: 'Shelly.GetComponents', params: params]
-            if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
             LinkedHashMap response = postCommandSync(command, uri)
             if (response?.error || response?.result == null) {
                 logError("Shelly.GetComponents failed for ${ipAddress}: ${response?.error ?: 'no result'}")
@@ -7316,7 +7337,7 @@ void processMdnsDiscovery() {
                 // Preserve enriched fields from prior /shelly probe or REST/RPC fetch
                 if (existingEntry) {
                     for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice',
-                                         'auth_en', 'fw_id', 'profile',
+                                         'auth_en', 'authScheme', 'authStatus', 'authLastError', 'fw_id', 'profile',
                                          'capabilityCacheVersion', 'capabilityFetchedAt', 'capabilityFingerprint',
                                          'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter',
                                          'generatedDriverName', 'installedDriverName', 'needsParentChild',
@@ -7621,7 +7642,7 @@ void processShellyHelperDiscovery() {
                 }
 
                 for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice',
-                                     'auth_en', 'fw_id', 'profile',
+                                     'auth_en', 'authScheme', 'authStatus', 'authLastError', 'fw_id', 'profile',
                                      'deviceApp', 'ver', 'capabilityCacheVersion', 'capabilityFetchedAt',
                                      'capabilityFingerprint', 'capabilityFetchState', 'capabilityFetchError',
                                      'capabilityRetryAfter']) {
@@ -8223,7 +8244,7 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
     // installation data and must not be carried by normal discovery records.
     if (existingEntry) {
         for (String field : ['mac', 'model', 'gen1Type', 'isBatteryDevice',
-                             'auth_en', 'fw_id', 'profile',
+                             'auth_en', 'authScheme', 'authStatus', 'authLastError', 'fw_id', 'profile',
                              'capabilityCacheVersion', 'capabilityFetchedAt', 'capabilityFingerprint',
                              'capabilityFetchState', 'capabilityFetchError', 'capabilityRetryAfter']) {
             if (existingEntry[field] != null && !deviceEntry.containsKey(field)) {
@@ -8334,23 +8355,59 @@ private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], Bo
     if (queryString) { uri += "?${queryString}" }
 
     try {
-        Map result = null
-        Map params = [uri: uri, timeout: 10, contentType: 'application/json']
-
-        // Add Basic Auth if device password is configured
-        // Gen 1 devices always use username 'admin'
-        if (authIsEnabledGen1()) {
-            String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
-            String encoded = credentials.bytes.encodeBase64().toString()
-            params.headers = ['Authorization': "Basic ${encoded}"]
+        if (authCooldownActive(uri) && gen1AuthRequired(ipAddress)) {
+            if (!suppressErrors) { logWarn("Gen 1 authentication retry is paused for ${ipAddress}; check the configured device password") }
+            return null
         }
-
-        httpGetHelper(params) { resp ->
-            if (resp?.status == 200 && resp.data) {
-                result = resp.data as Map
+        Boolean initiallyAuthenticated = gen1AuthRequired(ipAddress) && getBasicAuthHeader() != null
+        Closure<Map> request = { Boolean withBasicAuth ->
+            Map responseData = [status: null, data: null]
+            Map params = [uri: uri, timeout: 10, contentType: 'application/json']
+            if (withBasicAuth) {
+                String basicHeader = getBasicAuthHeader()
+                if (basicHeader) { params.headers = ['Authorization': "Basic ${basicHeader}"] }
             }
+            try {
+                httpGetHelper(params) { resp ->
+                    responseData.status = resp?.status
+                    if (resp?.status == 200 && resp.data) { responseData.data = resp.data as Map }
+                }
+            } catch (Exception requestException) {
+                responseData.status = httpResponseExceptionStatusHelper(requestException)
+                if (responseData.status != 401) { throw requestException }
+            }
+            return responseData
         }
-        return result
+
+        Map response = request(initiallyAuthenticated)
+        if (response.status == 200) {
+            updateDeviceAuthMetadata(uri, initiallyAuthenticated, 'basic', initiallyAuthenticated ? 'authenticated' : 'not_required', null)
+            return response.data as Map
+        }
+
+        // Gen1 exposes auth state from /shelly, but a device can be changed
+        // after discovery. Promote the endpoint on the first 401 and retry
+        // with Basic Auth exactly once.
+        if (response.status == 401 && !initiallyAuthenticated) {
+            if (!getBasicAuthHeader()) {
+                markBasicAuthFailure(uri, 'missing_password', 'Device requires authentication')
+                return null
+            }
+            updateDeviceAuthMetadata(uri, true, 'basic', 'challenge_received', null)
+            Map retryResponse = request(true)
+            if (retryResponse.status == 200) {
+                updateDeviceAuthMetadata(uri, true, 'basic', 'authenticated', null)
+                return retryResponse.data as Map
+            }
+            if (retryResponse.status == 401) {
+                markBasicAuthFailure(uri, 'invalid_credentials', 'Basic Auth returned 401')
+                logError("Gen 1 authentication failed for ${ipAddress}. Check the device password.")
+            }
+        } else if (response.status == 401 && initiallyAuthenticated) {
+            markBasicAuthFailure(uri, 'invalid_credentials', 'Basic Auth returned 401')
+            logError("Gen 1 authentication failed for ${ipAddress}. Check the device password.")
+        }
+        return null
     } catch (Exception e) {
         if (!suppressErrors) {
             logError("Gen 1 GET ${path} failed for ${ipAddress}: ${e.message}")
@@ -9196,6 +9253,11 @@ void processAsyncDeviceInfoFetch(Map data) {
     } catch (Exception e) {
         failureMessage = e.message ?: e.toString()
     }
+    String authState = knownDeviceAuthValue(ipKey, 'authStatus')?.toString()
+    Boolean authBlocked = authState in ['missing_password', 'invalid_credentials', 'challenge_missing', 'challenge_invalid']
+    if (!fetchSucceeded && !failureMessage && authBlocked) {
+        failureMessage = "${AUTH_FAILURE_PREFIX}${authState}"
+    }
 
     // A discovery pass may have recovered this IP as a newer request while
     // this network call was in flight. Do not let the old callback overwrite
@@ -9215,7 +9277,7 @@ void processAsyncDeviceInfoFetch(Map data) {
             atomicState.asyncFetchQueue = queue
         }
         logDebug("Async fetch completed for ${ipKey}")
-    } else if (attempt < maxAttempts) {
+    } else if (!authBlocked && attempt < maxAttempts) {
         Integer delayMs = attempt * 2000
         logDebug("Async fetch attempt ${attempt}/${maxAttempts} failed for ${ipKey}${failureMessage ? ": ${failureMessage}" : ''} — retrying in ${delayMs}ms")
         if (queueEntry) {
@@ -9371,6 +9433,13 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
             appendLog('warn', "No device info returned from ${ip} — device may be offline or not Gen2+")
             return false
         }
+        // Shelly.GetDeviceInfo is explicitly exempt from authentication and
+        // reports the authoritative per-device auth_en flag. This lets a
+        // device move from no-auth to auth (or back) without affecting any
+        // other device managed by this app.
+        if (deviceInfo.auth_en != null) {
+            syncDeviceAuthFromInfo(rpcUri, deviceInfo.auth_en, 'digest')
+        }
 
         LinkedHashMap configCmd = shellyGetConfigCommand('discovery')
         LinkedHashMap deviceConfigResp = postCommandSync(configCmd, rpcUri)
@@ -9394,7 +9463,6 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
                         Integer trvId = compKey.split(':')[1] as Integer
                         try {
                             LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: trvId]]
-                            if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.auth = getAuth() }
                             LinkedHashMap trvResp = postCommandSync(trvCmd, rpcUri)
                             if (trvResp?.result) {
                                 deviceStatus[compKey] = trvResp.result
@@ -9435,6 +9503,10 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         device.deviceInfo = deviceInfo
         if (deviceConfig) { device.deviceConfig = deviceConfig }
         if (deviceStatus) { device.deviceStatus = deviceStatus }
+        Map authMetadata = atomicState.discoveredShellys?.get(ipKey) as Map
+        ['auth_en', 'authScheme', 'authStatus', 'authLastError', 'authUpdatedAt'].each { String field ->
+            if (authMetadata?.containsKey(field)) { device[field] = authMetadata[field] }
+        }
         device.ts = now()
         markCapabilityCacheComplete(ipKey, device)
 
@@ -9502,7 +9574,7 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         }
 
         // Gen 1 fallback: if RPC failed, try Gen 1 REST API
-        if (isLikelyGen1Device(device.gen?.toString() ?: '', device.deviceApp?.toString() ?: '', device.name?.toString() ?: '')) {
+        if (!isAuthFailure(e) && isLikelyGen1Device(device.gen?.toString() ?: '', device.deviceApp?.toString() ?: '', device.name?.toString() ?: '')) {
             // Persist gen='1' before attempting fetch — sleepy devices may not respond,
             // but the badge should still display correctly on the Discovery page.
             device.gen = '1'
@@ -9600,7 +9672,15 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
         device.isBatteryDevice = GEN1_BATTERY_TYPES.contains(typeCode)
         if (shellyInfo.mac) { device.mac = shellyInfo.mac.toString().toUpperCase() }
         if (shellyInfo.fw) { device.ver = shellyInfo.fw.toString() }
-        if (shellyInfo.auth != null) { device.auth_en = shellyInfo.auth }
+        if (shellyInfo.auth != null) {
+            device.auth_en = shellyInfo.auth
+            if (authValueEnabled(shellyInfo.auth)) {
+                updateDeviceAuthMetadata("http://${ip}/settings", true, 'basic', 'required', null)
+            } else {
+                clearAuthSession("http://${ip}/settings")
+                updateDeviceAuthMetadata("http://${ip}/settings", false, 'basic', 'not_required', null)
+            }
+        }
 
         // Step 2: /settings — device configuration (may require auth)
         Map gen1Settings = sendGen1Get(ip, 'settings')
@@ -9640,6 +9720,10 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
             }
         }
 
+        Map authMetadata = atomicState.discoveredShellys?.get(ipKey) as Map
+        ['auth_en', 'authScheme', 'authStatus', 'authLastError', 'authUpdatedAt'].each { String field ->
+            if (authMetadata?.containsKey(field)) { device[field] = authMetadata[field] }
+        }
         device.ts = now()
         atomicState.discoveredShellys[ipKey] = device
 
@@ -12303,7 +12387,7 @@ LinkedHashMap scriptPutCodeCommand(Integer id, String code, Boolean append = tru
  *   <li>{@code codeStateKey} — state key where the full script source is stored</li>
  *   <li>{@code codeLength} — total length of the script code (avoids reading state each chunk)</li>
  *   <li>{@code uri} — device RPC URI</li>
- *   <li>{@code hasAuth} — whether auth header is required</li>
+ *   <li>Authentication is selected from the endpoint's current auth state</li>
  *   <li>{@code offset} — current byte offset into code (0 on first call)</li>
  *   <li>{@code chunkNum} — current chunk counter (0 on first call)</li>
  *   <li>{@code completionCallback} — method name to invoke when upload finishes</li>
@@ -12346,7 +12430,6 @@ void uploadScriptChunk(Map data) {
         code = asciiCode
     }
     String uri = data.uri as String
-    Boolean hasAuth = data.hasAuth as Boolean
     Integer offset = (data.offset ?: 0) as Integer
     Integer chunkNum = (data.chunkNum ?: 0) as Integer
     // Some Gen4 2.0.0 builds reject the first Script.PutCode request when the
@@ -12363,7 +12446,6 @@ void uploadScriptChunk(Map data) {
     String chunk = code.substring(offset, end)
 
     LinkedHashMap putCmd = scriptPutCodeCommand(scriptId, chunk, !first)
-    if (hasAuth) { putCmd.auth = getAuth() }
 
     // postCommandSync RETHROWS transport exceptions. Without this guard, a device dropping
     // offline mid-upload aborted the scheduled execution before cleanup: the multi-KB script
@@ -12418,7 +12500,6 @@ void uploadScriptChunk(Map data) {
             scriptId: scriptId,
             codeStateKey: codeStateKey,
             uri: uri,
-            hasAuth: hasAuth,
             offset: nextOffset,
             chunkNum: nextChunkNum,
             completionCallback: completionCallback,
@@ -12631,9 +12712,6 @@ private Boolean writeHubitatIpToKVS(String ipAddress) {
     String uri = "http://${ipAddress}/rpc"
 
     LinkedHashMap command = kvsSetCommand('hubitat_sdm_ip', hubitatIp)
-    if (authIsEnabled() == true && getAuth().size() > 0) {
-        command.auth = getAuth()
-    }
 
     LinkedHashMap response = postCommandSync(command, uri)
     if (response?.error) {
@@ -12662,7 +12740,6 @@ void componentWriteKvsToDevice(def parentDevice, String key, Object value) {
     logDebug("Writing KVS key '${key}'=${value} to ${ipAddress}")
     String uri = "http://${ipAddress}/rpc"
     LinkedHashMap command = kvsSetCommand(key, value)
-    if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
     LinkedHashMap response = postCommandSync(command, uri)
     if (response?.error) {
         logError("Failed to write KVS key '${key}' on ${ipAddress}: ${response.error}")
@@ -12683,9 +12760,6 @@ private void removeKvsEntry(String ipAddress, String key) {
     String uri = "http://${ipAddress}/rpc"
 
     LinkedHashMap command = kvsDeleteCommand(key)
-    if (authIsEnabled() == true && getAuth().size() > 0) {
-        command.auth = getAuth()
-    }
 
     LinkedHashMap response = postCommandSync(command, uri)
     if (response?.error) {
@@ -13480,43 +13554,30 @@ String shellyGetDeviceInfo(Boolean fullInfo = false, String src = 'shellyGetDevi
 @CompileStatic
 String shellyGetStatus(String src = 'shellyGetStatus') {
   LinkedHashMap command = shellyGetStatusCommand(src)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
-
-// @CompileStatic
-// String shellyGetStatusWs(String src = 'shellyGetStatus') {
-//   LinkedHashMap command = shellyGetStatusCommand(src)
-//   if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-//   String json = JsonOutput.toJson(command)
-//   parentSendWsMessage(json)
-// }
 
 @CompileStatic
 String sysGetStatus(String src = 'sysGetStatus') {
   LinkedHashMap command = sysGetStatusCommand(src)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 String switchGetStatus() {
   LinkedHashMap command = switchGetStatusCommand()
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 String switchSet(Boolean on) {
   LinkedHashMap command = switchSetCommand(on)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 String switchGetConfig(Integer id = 0, String src = 'switchGetConfig') {
   LinkedHashMap command = switchGetConfigCommand(id, src)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
@@ -13533,56 +13594,48 @@ void switchSetConfig(
   Long current_limit
 ) {
   Map command = switchSetConfigCommand(initial_state, auto_on, auto_on_delay, auto_off, auto_off_delay, power_limit, voltage_limit, autorecover_voltage_errors, current_limit)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 void switchSetConfigJson(Map jsonConfigToSend, Integer switchId = 0) {
   Map command = switchSetConfigCommandJson(jsonConfigToSend, switchId)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 void coverSetConfigJson(Map jsonConfigToSend, Integer coverId = 0) {
   Map command = coverSetConfigCommandJson(jsonConfigToSend, coverId)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 void inputSetConfigJson(Map jsonConfigToSend, Integer inputId = 0) {
   Map command = inputSetConfigCommandJson(jsonConfigToSend, inputId)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 void switchResetCounters(Integer id = 0, String src = 'switchResetCounters') {
   LinkedHashMap command = switchResetCountersCommand(id, src)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandAsync(command, 'resetCountersCallback')
 }
 
 @CompileStatic
 void lightResetCounters(Integer id = 0, String src = 'lightResetCounters') {
   LinkedHashMap command = lightResetCountersCommand(id, src)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandAsync(command, 'resetCountersCallback')
 }
 
 @CompileStatic
 void coverResetCounters(Integer id = 0, String src = 'coverResetCounters') {
   LinkedHashMap command = coverResetCountersCommand(id, src)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandAsync(command, 'resetCountersCallback')
 }
 
 @CompileStatic
 void em1DataResetCounters(Integer id = 0, String src = 'em1DataResetCounters') {
   LinkedHashMap command = em1DataResetCountersCommand(id, src)
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandAsync(command, 'resetCountersCallback')
 }
 
@@ -13598,14 +13651,12 @@ void resetCountersCallback(AsyncResponse response, Map data = null) {
 @CompileStatic
 void scriptList() {
   LinkedHashMap command = scriptListCommand()
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 
 @CompileStatic
 String pm1GetStatus() {
   LinkedHashMap command = pm1GetStatusCommand()
-  if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
   parentPostCommandSync(command)
 }
 /* #endregion */
@@ -13617,53 +13668,67 @@ String pm1GetStatus() {
 // MARK: HTTP Methods
 @CompileStatic
 LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
-  LinkedHashMap json
+  String targetUri = (uri ? uri : getBaseUriRpc()).toString()
+  LinkedHashMap requestCommand
   Map<String, Object> params = new LinkedHashMap<String, Object>()
-  params.put('uri', (uri ? uri : getBaseUriRpc()).toString())
+  params.put('uri', targetUri)
   params.put('contentType', 'application/json')
   params.put('requestContentType', 'application/json')
-  params.put('body', command)
   params.put('timeout', 10)
-  // Gate the trace interpolation — GString placeholders evaluate eagerly, so an ungated
-  // prettyJson() would serialize the full request/response on EVERY RPC even with trace off
-  if(shouldLogOverall('trace')) { logTrace("postCommandSync sending to ${params.uri}: ${prettyJson(params)}") }
+  requestCommand = prepareRpcCommand(command, targetUri)
+  params.put('body', requestCommand)
+  Boolean usedAuth = requestCommand.auth instanceof Map && requestCommand.auth.size() > 0
+  if(shouldLogOverall('trace')) { logTrace("postCommandSync sending ${requestCommand.method} to ${targetUri} (auth=${usedAuth})") }
   try {
     Map response = httpPostResponseHelper(params)
-    if ((response.get('status') as Integer) == 200) { json = response.get('data') as LinkedHashMap }
-    // Only clear the auth flag when the request succeeded WITHOUT credentials attached —
-    // clearing it after an auth-assisted success forced a 401 re-handshake on every
-    // subsequent command to a password-protected device
-    if(command.auth == null) { setAuthIsEnabled(false) }
+    if ((response.get('status') as Integer) == 200) {
+      markAuthRequestSuccess(targetUri, usedAuth)
+      return response.get('data') as LinkedHashMap
+    }
+    return response.get('data') as LinkedHashMap
   } catch(HttpResponseException ex) {
     Integer exceptionStatus = httpResponseExceptionStatusHelper(ex)
     if(exceptionStatus != 401) {
       logWarn("HTTP Exception (${exceptionStatus}): ${ex.message ?: ex.toString()}")
       throw ex
     }
-    setAuthIsEnabled(true)
     String authHeaderValue = digestHeaderHelper(ex.getResponse())
     if (!authHeaderValue) {
-      logError("Device requires authentication but no auth header found in response")
-      throw new Exception("Authentication required but auth header missing")
+      markAuthFailure(targetUri, 'challenge_missing', '401 response did not include a Digest challenge')
+      throw authFailure('CHALLENGE_MISSING', targetUri)
     }
-    String authToProcess = authHeaderValue.replace('Digest ', '')
-    authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
-    processUnauthorizedMessage("{${authToProcess}}".toString())
+    if (!getPassword()) {
+      markAuthFailure(targetUri, 'missing_password', 'Device requires authentication')
+      throw authFailure('MISSING_PASSWORD', targetUri)
+    }
+    if (!captureDigestChallenge(targetUri, authHeaderValue)) {
+      markAuthFailure(targetUri, 'challenge_invalid', 'Digest challenge was missing realm or nonce')
+      throw authFailure('CHALLENGE_INVALID', targetUri)
+    }
     try {
-      if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-      params.put('body', command)
+      requestCommand = prepareRpcCommand(command, targetUri)
+      params.put('body', requestCommand)
       Map retryResponse = httpPostResponseHelper(params)
-      if ((retryResponse.get('status') as Integer) == 200) { json = retryResponse.get('data') as LinkedHashMap }
+      if ((retryResponse.get('status') as Integer) == 200) {
+        markAuthRequestSuccess(targetUri, true)
+        return retryResponse.get('data') as LinkedHashMap
+      }
+      return retryResponse.get('data') as LinkedHashMap
     } catch(HttpResponseException ex2) {
-      logError("Auth failed a second time (${httpResponseExceptionStatusHelper(ex2)}). Double check password correctness.")
+      Integer retryStatus = httpResponseExceptionStatusHelper(ex2)
+      if (retryStatus == 401) {
+        markAuthFailure(targetUri, 'invalid_credentials', 'Second authenticated request returned 401')
+        logError("Auth failed for ${authDeviceIp(targetUri)} (401). Double check the device password.")
+        throw authFailure('INVALID_CREDENTIALS', targetUri)
+      }
       throw ex2
     }
   } catch(Exception ex) {
-    logError("postCommandSync exception for ${describeDeviceForUri(params.uri as String)}: ${ex.class.simpleName}: ${ex.message ?: ex.toString()}")
+    if (isAuthFailure(ex)) { throw ex }
+    logError("postCommandSync exception for ${describeDeviceForUri(targetUri)}: ${ex.class.simpleName}: ${ex.message ?: ex.toString()}")
     throw ex
   }
-  if(shouldLogOverall('trace')) { logTrace("postCommandSync returned from ${params.uri}: ${prettyJson(json)}") }
-  return json
+  return null
 }
 
 @CompileStatic
@@ -13680,58 +13745,79 @@ void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '', S
 
 @CompileStatic
 void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null, Map callbackData = null) {
-  LinkedHashMap json
+  String targetUri = (uri ?: getBaseUriRpc()).toString()
+  LinkedHashMap requestCommand = prepareRpcCommand(command, targetUri)
   Map<String, Object> params = new LinkedHashMap<String, Object>()
-  params.put('uri', (uri ?: getBaseUriRpc()).toString())
+  params.put('uri', targetUri)
   params.put('contentType', 'application/json')
   params.put('requestContentType', 'application/json')
-  params.put('body', command)
-  if(shouldLogOverall('trace')) { logTrace("postCommandAsync sending: ${prettyJson(params)}") }
-  Map asyncData = [params:params, command:command, attempt:1, callbackMethod:callbackMethod]
+  params.put('body', requestCommand)
+  Boolean usedAuth = requestCommand.auth instanceof Map && requestCommand.auth.size() > 0
+  if(shouldLogOverall('trace')) { logTrace("postCommandAsync sending ${requestCommand.method} to ${targetUri} (auth=${usedAuth})") }
+  Map asyncData = [params:params, command:new LinkedHashMap(command ?: [:]), attempt:1,
+                   requestUsedAuth:usedAuth, callbackMethod:callbackMethod]
   if (callbackData) { asyncData.putAll(callbackData) }
   asynchttpPostHelper('postCommandAsyncCallback', params, asyncData)
-  // NOTE: deliberately no setAuthIsEnabled(false) here — this is the dispatch path and the
-  // request outcome is not yet known; clearing the flag here broke auth for the follow-up 401
 }
 
 void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
-  logTrace("postCommandAsyncCallback has data: ${data}")
-  if (response?.status == 401 && response?.getErrorMessage() == 'Unauthorized') {
-    Map params = data.params
-    Map command = data.command
-    setAuthIsEnabled(true)
-    // logWarn("Error headers: ${response?.getHeaders()}")
-    String authHeaderValue = digestHeaderFromHeadersHelper(response?.getHeaders())
+  String targetUri = data?.params?.uri?.toString() ?: data?.uri?.toString() ?: getBaseUriRpc()
+  String followOnCallback = data?.callbackMethod
+  if (response?.status == 200) {
+    markAuthRequestSuccess(targetUri, data?.requestUsedAuth == true)
+  } else if (response?.status == 401) {
+    String authHeaderValue = digestHeaderFromResponseHelper(response)
     if (!authHeaderValue) {
-      logError('Authentication required but no auth header found in asynchronous response')
-      return
-    }
-    String authToProcess = authHeaderValue.replace('Digest ', '')
-    authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
-    processUnauthorizedMessage("{${authToProcess}}".toString())
-    if(authIsEnabled() == true && getAuth().size() > 0) {
-      command.auth = getAuth()
-      params.put('body', command)
-    }
-    if(data?.attempt == 1) {
-      Map retryData = new LinkedHashMap(data ?: [:])
-      retryData.params = params
-      retryData.command = command
-      retryData.attempt = 2
-      asynchttpPostHelper('postCommandAsyncCallback', params, retryData)
-    } else {
-      logError('Auth failed a second time. Double check password correctness.')
-      String followOnCallback = data?.callbackMethod
-      if (followOnCallback != null && followOnCallback != '') {
-        "${followOnCallback}"(response, data)
+      markAuthFailure(targetUri, 'challenge_missing', '401 response did not include a Digest challenge')
+    } else if (!getPassword()) {
+      markAuthFailure(targetUri, 'missing_password', 'Device requires authentication')
+    } else if (!captureDigestChallenge(targetUri, authHeaderValue)) {
+      markAuthFailure(targetUri, 'challenge_invalid', 'Digest challenge was missing realm or nonce')
+    } else if (data?.attempt == 1) {
+      try {
+        LinkedHashMap requestCommand = prepareRpcCommand(data?.command as LinkedHashMap, targetUri)
+        Map retryParams = new LinkedHashMap(data.params as Map)
+        retryParams.body = requestCommand
+        Map retryData = new LinkedHashMap(data ?: [:])
+        retryData.params = retryParams
+        retryData.requestUsedAuth = true
+        retryData.attempt = 2
+        asynchttpPostHelper('postCommandAsyncCallback', retryParams, retryData)
+        return
+      } catch (Exception retryException) {
+        markAuthFailure(targetUri, 'invalid_credentials', retryException.message ?: 'Unable to build authenticated request')
       }
+    } else {
+      Map session = authMaps[authSessionKey(targetUri)] as Map
+      if (data?.attempt == 2 && session?.nonceMode?.toString() == 'modern' &&
+          session?.httpHa2Mode?.toString() != 'dummy') {
+        // A few Gen4 firmware builds emit an opaque nonce but verify the RPC
+        // auth response using dummy_method:dummy_uri instead of POST:/rpc.
+        session.httpHa2Mode = 'dummy'
+        session.nextNc = 1
+        authMaps[authSessionKey(targetUri)] = session as LinkedHashMap
+        try {
+          LinkedHashMap requestCommand = prepareRpcCommand(data?.command as LinkedHashMap, targetUri)
+          Map retryParams = new LinkedHashMap(data.params as Map)
+          retryParams.body = requestCommand
+          Map retryData = new LinkedHashMap(data ?: [:])
+          retryData.params = retryParams
+          retryData.requestUsedAuth = true
+          retryData.attempt = 3
+          logTrace("Async RPC auth compatibility retry for ${targetUri}: using dummy_method:dummy_uri hash with nonceType=String, nc=${requestCommand.auth?.nc}, responseLength=${requestCommand.auth?.response?.toString()?.length()}")
+          asynchttpPostHelper('postCommandAsyncCallback', retryParams, retryData)
+          return
+        } catch (Exception retryException) {
+          logTrace("Async RPC auth compatibility retry preparation failed for ${targetUri}: ${retryException.message ?: retryException.toString()}")
+        }
+      }
+      markAuthFailure(targetUri, 'invalid_credentials', 'Authenticated request returned 401')
     }
-  } else {
-    String followOnCallback = data?.callbackMethod
-    if(followOnCallback != null && followOnCallback != '') {
-      logTrace("Follow On Callback: ${followOnCallback}")
-      "${followOnCallback}"(response, data)
-    }
+    logError("Auth failed for ${authDeviceIp(targetUri)}. Check the device password.")
+  }
+  if(followOnCallback != null && followOnCallback != '') {
+    logTrace("Follow On Callback: ${followOnCallback}")
+    "${followOnCallback}"(response, data)
   }
 }
 
@@ -13747,7 +13833,7 @@ void parentCommandAsyncCallback(AsyncResponse response, Map data = null) {
   if (response?.status == 200) {
     logDebug("parent command completed asynchronously for ${ipAddress}")
     } else {
-        logWarn("parent command failed asynchronously for ${ipAddress}: HTTP ${response?.status} — ${response?.getErrorMessage() ?: 'unknown error'}")
+        logWarn("parent command failed asynchronously for ${ipAddress}: HTTP ${response?.status}")
     }
 
     completeParentCommand(data?.parentCommandKey?.toString(), data?.parentCommandFingerprint?.toString())
@@ -13755,35 +13841,7 @@ void parentCommandAsyncCallback(AsyncResponse response, Map data = null) {
 
 @CompileStatic
 LinkedHashMap postSync(LinkedHashMap command) {
-  LinkedHashMap json
-  Map<String, Object> params = new LinkedHashMap<String, Object>()
-  params.put('uri', getBaseUriRpc().toString())
-  params.put('contentType', 'application/json')
-  params.put('requestContentType', 'application/json')
-  params.put('body', command)
-  if(shouldLogOverall('trace')) { logTrace("postSync sending: ${prettyJson(params)}") }
-  try {
-    Map response = httpPostResponseHelper(params)
-    if ((response.get('status') as Integer) == 200) { json = response.get('data') as LinkedHashMap }
-    if(command.auth == null) { setAuthIsEnabled(false) }
-  } catch(HttpResponseException ex) {
-    logWarn("Exception: ${ex}")
-    setAuthIsEnabled(true)
-    String authHeaderValue = digestHeaderHelper(ex.getResponse())
-    if (!authHeaderValue) { logError('Authentication required but auth header missing'); return json }
-    String authToProcess = authHeaderValue.replace('Digest ', '')
-    authToProcess = authToProcess.replace('qop=','"qop":').replace('realm=','"realm":').replace('nonce=','"nonce":').replace('algorithm=SHA-256','"algorithm":"SHA-256","nc":1')
-    processUnauthorizedMessage("{${authToProcess}}".toString())
-    try {
-      if(authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
-      Map retryResponse = httpPostResponseHelper(params)
-      if ((retryResponse.get('status') as Integer) == 200) { json = retryResponse.get('data') as LinkedHashMap }
-    } catch(HttpResponseException ex2) {
-      logError('Auth failed a second time. Double check password correctness.')
-    }
-  }
-  if(shouldLogOverall('trace')) { logTrace("postSync returned: ${prettyJson(json)}") }
-  return json
+  return postCommandSync(command, getBaseUriRpc())
 }
 
 @CompileStatic
@@ -14992,14 +15050,12 @@ private void clearBleGatewayProgress(String ip) {
  */
 private void enableBleGateway(String ip) {
     String uri = "http://${ip}/rpc"
-    Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
     // Step 1: Enable Bluetooth and BLE RPC, but leave Shelly's cloud observer off.
     // The HubitatBLEHelper owns the scanner; enabling the observer at the same time
     // can interfere with script scan results, particularly on newer firmware.
     bleLogInfo("Enabling Bluetooth on ${ip}...")
     LinkedHashMap bleCmd = bleSetConfigCommand(true, true, false)
-    if (hasAuth) { bleCmd.auth = getAuth() }
     LinkedHashMap bleResult = postCommandSync(bleCmd, uri)
     if (bleResult?.error) {
         bleLogError("BLE.SetConfig failed on ${ip}: ${bleResult.error}")
@@ -15029,12 +15085,10 @@ private void enableBleGateway(String ip) {
         bleLogInfo("Updating HubitatBLEHelper script (id: ${scriptId}) on ${ip}...")
 
         LinkedHashMap stopCmd = scriptStopCommand(scriptId)
-        if (hasAuth) { stopCmd.auth = getAuth() }
         postCommandSync(stopCmd, uri)
     } else {
         bleLogInfo("Creating HubitatBLEHelper script on ${ip}...")
         LinkedHashMap createCmd = scriptCreateCommand('HubitatBLEHelper')
-        if (hasAuth) { createCmd.auth = getAuth() }
         LinkedHashMap createResult = postCommandSync(createCmd, uri)
         scriptId = ((createResult?.result as Map)?.id ?: (createResult?.id)) as Integer
         if (scriptId == null) {
@@ -15055,12 +15109,11 @@ private void enableBleGateway(String ip) {
         scriptId: scriptId,
         codeStateKey: codeStateKey,
         uri: uri,
-        hasAuth: hasAuth,
         offset: 0,
         chunkNum: 0,
         completionCallback: 'enableBleGatewayComplete',
         errorCallback: 'enableBleGatewayError',
-        completionData: [ip: ip, scriptId: scriptId, uri: uri, hasAuth: hasAuth]
+        completionData: [ip: ip, scriptId: scriptId, uri: uri]
     ])
 }
 
@@ -15068,17 +15121,15 @@ private void enableBleGateway(String ip) {
  * Completion callback after BLE gateway script upload finishes successfully.
  * Enables and starts the script, writes hub IP to KVS, and updates the gateway list.
  *
- * @param data Map containing ip, scriptId, uri, hasAuth
+ * @param data Map containing ip, scriptId, and uri
  */
 void enableBleGatewayComplete(Map data) {
     String ip = data.ip as String
     Integer scriptId = data.scriptId as Integer
     String uri = data.uri as String
-    Boolean hasAuth = data.hasAuth as Boolean
 
     // Step 5: Enable and start
     LinkedHashMap enableCmd = scriptEnableCommand(scriptId)
-    if (hasAuth) { enableCmd.auth = getAuth() }
     LinkedHashMap enableResult = postCommandSync(enableCmd, uri)
     if (enableResult?.error) {
         bleLogWarn("Script.Enable failed for HubitatBLEHelper on ${ip}: ${enableResult.error}")
@@ -15088,7 +15139,6 @@ void enableBleGatewayComplete(Map data) {
     }
 
     LinkedHashMap startCmd = scriptStartCommand(scriptId)
-    if (hasAuth) { startCmd.auth = getAuth() }
     LinkedHashMap startResult = postCommandSync(startCmd, uri)
     if (startResult?.error) {
         bleLogWarn("Script.Start failed for HubitatBLEHelper on ${ip}: ${startResult.error}")
@@ -15142,7 +15192,6 @@ void enableBleGatewayError(Map data) {
  */
 private void disableBleGateway(String ip) {
     String uri = "http://${ip}/rpc"
-    Boolean hasAuth = authIsEnabled() == true && getAuth().size() > 0
 
     List<Map> installedScripts = listDeviceScripts(ip)
     Map existingScript = installedScripts?.find { (it.name ?: '') == 'HubitatBLEHelper' }
@@ -15152,14 +15201,12 @@ private void disableBleGateway(String ip) {
         bleLogInfo("Removing HubitatBLEHelper (id: ${scriptId}) from ${ip}...")
 
         LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
-        if (hasAuth) { deleteCmd.auth = getAuth() }
         postCommandSync(deleteCmd, uri)
     }
 
     // Disable BLE observer but keep BLE enabled for RPC
     bleLogInfo("Disabling BLE observer on ${ip}...")
     LinkedHashMap bleCmd = bleSetConfigCommand(true, true, false)
-    if (hasAuth) { bleCmd.auth = getAuth() }
     LinkedHashMap bleResult = postCommandSync(bleCmd, uri)
     if (bleResult?.error) {
         bleLogWarn("BLE.SetConfig (observer off) failed on ${ip}: ${bleResult.error}")
@@ -16104,43 +16151,368 @@ ChildDeviceWrapper getAdcSwitchChildById(Integer id) {
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region Authentication */
 // MARK: Authentication
-void processUnauthorizedMessage(String message) {
-  LinkedHashMap json = (LinkedHashMap)slurper.parseText(message)
-  setAuthMap(json)
+@CompileStatic
+String getPassword() { return getAppSettings()?.devicePassword as String }
+
+/**
+ * Returns the app instance's endpoint identity for auth-session scoping.
+ * The IP/port is deliberately included: auth state must never leak from one
+ * Shelly to another when the manager controls a mixed fleet.
+ */
+private String authEndpointAddress(String uri) {
+  String value = (uri ?: getBaseUriRpc()).toString().replaceFirst('^https?://', '')
+  Integer slash = value.indexOf('/')
+  return slash >= 0 ? value.substring(0, slash).toLowerCase() : value.toLowerCase()
 }
 
-@CompileStatic
-String getPassword() { return getAppSettings().devicePassword as String }
-LinkedHashMap getAuth() {
-  LinkedHashMap authMap = getAuthMap()
-  if(authMap == null || authMap.size() == 0) {return [:]}
-  String realm = authMap['realm']
-  String ha1 = "admin:${realm}:${getPassword()}".toString()
-  // Shelly sends the digest nonce hex-encoded (e.g. nonce="60dc59c6"); the JSON auth
-  // object requires its numeric value. Base-10 parsing throws NumberFormatException for
-  // any nonce containing a-f (~94% of them). Decimal fallback is defensive only.
-  String nonceStr = authMap['nonce'].toString()
-  Long nonce
-  try {
-    nonce = Long.parseLong(nonceStr, 16)
-  } catch (NumberFormatException ignored) {
-    nonce = Long.valueOf(nonceStr)
+private String authDeviceIp(String uri) {
+  String authority = authEndpointAddress(uri)
+  if (authority.startsWith('[')) {
+    Integer closing = authority.indexOf(']')
+    return closing > 0 ? authority.substring(1, closing) : authority
   }
-  String nc = (authMap['nc']).toString()
-  Long cnonce = now()
-  String ha2 = '6370ec69915103833b5222b368555393393f098bfbfbb59f47e0590af135f062'
-  ha1 = sha256(ha1)
-  String response = ha1 + ':' + nonce.toString() + ':' + nc + ':' + cnonce.toString() + ':' + 'auth'  + ':' + ha2
-  response = sha256(response)
-  String algorithm = authMap['algorithm'].toString()
-  return [
-    'realm':realm,
-    'username':'admin',
-    'nonce':nonce,
-    'cnonce':cnonce,
-    'response':response,
-    'algorithm':algorithm
-  ]
+  Integer colon = authority.indexOf(':')
+  return colon >= 0 ? authority.substring(0, colon) : authority
+}
+
+private String authSessionKey(String uri) {
+  return "${getThisDeviceDNI()}|${authEndpointAddress(uri)}".toString()
+}
+
+private Object authSessionLock(String uri) {
+  String key = authSessionKey(uri)
+  Object lock = authSessionLocks.get(key)
+  if (lock == null) {
+    Object candidate = new Object()
+    Object prior = authSessionLocks.putIfAbsent(key, candidate)
+    lock = prior ?: candidate
+  }
+  return lock
+}
+
+private Boolean authValueEnabled(Object value) {
+  return value == true || value?.toString()?.equalsIgnoreCase('true')
+}
+
+/** Reads a per-device auth field, falling back to the status cache for a
+ * child that is temporarily absent from the current discovery result. */
+private Object knownDeviceAuthValue(String ip, String field) {
+  Map discovered = atomicState.discoveredShellys?.get(ip) as Map
+  if (discovered?.containsKey(field)) { return discovered[field] }
+  return (atomicState.deviceStatusCache ?: [:])[ip]?.get(field)
+}
+
+private Boolean authFirmwareUsesModernNonce(String uri) {
+  String ip = authDeviceIp(uri)
+  String version = knownDeviceAuthValue(ip, 'ver')?.toString() ?: ''
+  List<String> parts = version.tokenize('.-_')
+  if (!parts) { return false }
+  try {
+    return (parts[0] as Integer) >= 2
+  } catch (Exception ignored) {
+    return false
+  }
+}
+
+/** Splits a Digest challenge without corrupting commas inside quoted values. */
+private List<String> splitDigestChallenge(String value) {
+  List<String> parts = []
+  StringBuilder current = new StringBuilder()
+  Boolean quoted = false
+  for (int i = 0; i < value.length(); i++) {
+    char character = value.charAt(i)
+    if (character == '"') { quoted = !quoted }
+    if (character == ',' && !quoted) {
+      parts.add(current.toString().trim())
+      current = new StringBuilder()
+    } else {
+      current.append(character)
+    }
+  }
+  if (current.length() > 0) { parts.add(current.toString().trim()) }
+  return parts
+}
+
+/** Parses the Shelly WWW-Authenticate Digest challenge into plain fields. */
+private Map parseDigestChallenge(String header, String uri) {
+  if (!header) { return null }
+  String value = header.trim()
+  Integer digestIndex = value.toLowerCase().indexOf('digest')
+  if (digestIndex < 0) { return null }
+  value = value.substring(digestIndex + 6).trim()
+  Map challenge = [:]
+  splitDigestChallenge(value).each { String part ->
+    Integer equals = part.indexOf('=')
+    if (equals <= 0) { return }
+    String key = part.substring(0, equals).trim().toLowerCase()
+    String fieldValue = part.substring(equals + 1).trim()
+    if (fieldValue.length() >= 2 && fieldValue.startsWith('"') && fieldValue.endsWith('"')) {
+      fieldValue = fieldValue.substring(1, fieldValue.length() - 1)
+    }
+    challenge[key] = fieldValue
+  }
+  if (!challenge.realm || !challenge.nonce) { return null }
+
+  String nonce = challenge.nonce.toString()
+  // Legacy challenges are numeric (or the short eight-character hex form).
+  // Modern firmware uses a longer opaque base64 token; firmware metadata is a
+  // second signal for tokens that happen not to contain base64 punctuation.
+  Boolean modern = nonce.length() > 16 || nonce ==~ /.*[+\/=].*/ || authFirmwareUsesModernNonce(uri)
+  challenge.nonceMode = modern ? 'modern' : 'legacy'
+  challenge.qop = challenge.qop ?: 'auth'
+  return challenge
+}
+
+private Map captureDigestChallenge(String uri, String header) {
+  Map challenge = parseDigestChallenge(header, uri)
+  if (!challenge) { return null }
+  String key = authSessionKey(uri)
+  synchronized (authSessionLock(uri)) {
+    authMaps[key] = [
+      realm: challenge.realm.toString(),
+      nonce: challenge.nonce.toString(),
+      nonceMode: challenge.nonceMode?.toString() ?: 'modern',
+      qop: challenge.qop?.toString() ?: 'auth',
+      algorithm: challenge.algorithm?.toString(),
+      cnonce: (new java.util.Random().nextInt(Integer.MAX_VALUE - 1) + 1) as Integer,
+      nextNc: 1,
+      createdAt: now(),
+      lastUsedAt: null
+    ] as LinkedHashMap
+  }
+  authFailureRetryNotBefore.remove(key)
+  updateDeviceAuthMetadata(uri, true, 'digest', 'challenge_received', null)
+  return authMaps[key]
+}
+
+/**
+ * Builds the Shelly RPC auth object for one request and reserves its nonce
+ * count under the endpoint lock. Modern firmware requires the opaque nonce
+ * string and an eight-character hexadecimal nc; legacy firmware receives its
+ * numeric nonce and the legacy dummy URI hash.
+ */
+private LinkedHashMap buildAuthForRequest(String uri) {
+  String key = authSessionKey(uri)
+  String password = getPassword()
+  if (!password) { return [:] }
+  synchronized (authSessionLock(uri)) {
+    Map session = authMaps[key] as Map
+    if (!session) { return [:] }
+    Integer nextNc = (session.nextNc ?: 1) as Integer
+    if (nextNc > 30000) {
+      authMaps.remove(key)
+      return [:]
+    }
+
+    String nonceText = session.nonce?.toString()
+    Object nonceValue = nonceText
+    String ha2
+    if (session.nonceMode?.toString() == 'legacy' || session.httpHa2Mode?.toString() == 'dummy') {
+      try {
+        nonceValue = nonceText ==~ /[0-9]+/ ? Long.valueOf(nonceText) : Long.parseLong(nonceText, 16)
+      } catch (Exception ignored) {
+        // Some Gen4 firmware uses an opaque nonce with the RPC hash form.
+        nonceValue = nonceText
+      }
+      ha2 = sha256('dummy_method:dummy_uri')
+    } else {
+      String requestUri = authEndpointAddress(uri)
+      Integer slash = requestUri.indexOf('/')
+      String path = slash >= 0 ? requestUri.substring(slash) : '/rpc'
+      ha2 = sha256("POST:${path}")
+    }
+
+    String nc = Integer.toHexString(nextNc).padLeft(8, '0')
+    Integer cnonce = (session.cnonce ?: 1) as Integer
+    String ha1 = sha256("admin:${session.realm}:${password}".toString())
+    // Legacy devices expose a numeric nonce in the RPC auth object and the
+    // response hash uses that numeric representation. Modern firmware keeps
+    // the opaque base64 nonce string verbatim in both places.
+    String nonceForHash = (session.nonceMode?.toString() == 'legacy' || session.httpHa2Mode?.toString() == 'dummy') ? nonceValue.toString() : nonceText
+    String response = sha256("${ha1}:${nonceForHash}:${nc}:${cnonce}:auth:${ha2}".toString())
+    LinkedHashMap auth = [
+      realm: session.realm.toString(),
+      username: 'admin',
+      nonce: nonceValue,
+      cnonce: cnonce,
+      nc: nc,
+      response: response
+    ]
+    if (session.algorithm) { auth.algorithm = session.algorithm.toString() }
+    if (session.nonceMode?.toString() == 'legacy') {
+      // Pre-2.0 firmware requires a fresh 401 challenge for every HTTP
+      // request and does not track nonce counts server-side.
+      authMaps.remove(key)
+    } else {
+      session.nextNc = nextNc + 1
+      session.lastUsedAt = now()
+      authMaps[key] = session as LinkedHashMap
+    }
+    return auth
+  }
+}
+
+private Boolean isAuthExemptRpcCommand(Map command) {
+  return command?.method?.toString() == 'Shelly.GetDeviceInfo'
+}
+
+private Boolean authCooldownActive(String uri) {
+  Long retryNotBefore = authFailureRetryNotBefore.get(authSessionKey(uri))
+  return retryNotBefore != null && now() < retryNotBefore
+}
+
+private LinkedHashMap prepareRpcCommand(LinkedHashMap command, String uri) {
+  LinkedHashMap prepared = new LinkedHashMap(command ?: [:])
+  // Discard stale/manual auth objects from older code paths. The only valid
+  // credential source is the session belonging to this request's endpoint.
+  prepared.remove('auth')
+  if (isAuthExemptRpcCommand(prepared)) { return prepared }
+  if (authCooldownActive(uri)) {
+    throw new IllegalStateException("${AUTH_FAILURE_PREFIX}COOLDOWN: authentication retry is paused for ${authDeviceIp(uri)}")
+  }
+  LinkedHashMap auth = buildAuthForRequest(uri)
+  if (auth) { prepared.auth = auth }
+  return prepared
+}
+
+private void markAuthRequestSuccess(String uri, Boolean usedAuth) {
+  String ip = authDeviceIp(uri)
+  if (usedAuth && knownDeviceAuthValue(ip, 'authStatus')?.toString() != 'authenticated') {
+    updateDeviceAuthMetadata(uri, true, 'digest', 'authenticated', null)
+  }
+}
+
+private Boolean isAuthFailure(Exception exception) {
+  String message = exception?.message ?: exception?.toString() ?: ''
+  return message.startsWith(AUTH_FAILURE_PREFIX)
+}
+
+private IllegalStateException authFailure(String code, String uri, String detail = null) {
+  String suffix = detail ? ": ${detail}" : ''
+  return new IllegalStateException("${AUTH_FAILURE_PREFIX}${code} for ${authDeviceIp(uri)}${suffix}")
+}
+
+private void clearAuthSession(String uri) {
+  String key = authSessionKey(uri)
+  synchronized (authSessionLock(uri)) {
+    authMaps.remove(key)
+    authFailureRetryNotBefore.remove(key)
+  }
+}
+
+private void markAuthFailure(String uri, String status, String detail = null) {
+  String key = authSessionKey(uri)
+  clearAuthSession(uri)
+  authFailureRetryNotBefore.put(key, now() + AUTH_FAILURE_COOLDOWN_MS)
+  updateDeviceAuthMetadata(uri, true, 'digest', status, detail)
+}
+
+private void markBasicAuthFailure(String uri, String status, String detail = null) {
+  String key = authSessionKey(uri)
+  clearAuthSession(uri)
+  authFailureRetryNotBefore.put(key, now() + AUTH_FAILURE_COOLDOWN_MS)
+  updateDeviceAuthMetadata(uri, true, 'basic', status, detail)
+}
+
+private void resetAuthenticationSessions() {
+  String prefix = "${getThisDeviceDNI()}|"
+  String legacyKey = getThisDeviceDNI()
+  authMaps.keySet().toList().each { String key ->
+    if (key == legacyKey || key.startsWith(prefix)) { authMaps.remove(key) }
+  }
+  authFailureRetryNotBefore.keySet().toList().each { String key ->
+    if (key.startsWith(prefix)) { authFailureRetryNotBefore.remove(key) }
+  }
+  Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+  discovered.each { Object ip, Object value ->
+    if (value instanceof Map) {
+      Map device = new LinkedHashMap(value as Map)
+      if (authValueEnabled(device.auth_en) && device.authStatus?.toString() in
+          ['missing_password', 'invalid_credentials', 'challenge_missing', 'challenge_invalid']) {
+        device.authStatus = 'required'
+        device.remove('authLastError')
+        discovered[ip] = device
+      }
+    }
+  }
+  atomicState.discoveredShellys = discovered
+
+  Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+  cache.each { Object ip, Object value ->
+    if (value instanceof Map) {
+      Map entry = new LinkedHashMap(value as Map)
+      if (authValueEnabled(entry.auth_en) && entry.authStatus?.toString() in
+          ['missing_password', 'invalid_credentials', 'challenge_missing', 'challenge_invalid']) {
+        entry.authStatus = 'required'
+        entry.remove('authLastError')
+        cache[ip] = entry
+      }
+    }
+  }
+  atomicState.deviceStatusCache = cache
+}
+
+/**
+ * Updates durable discovery/cache metadata and the child data values without
+ * storing a password, nonce, cnonce, or digest response.
+ */
+private void updateDeviceAuthMetadata(String uri, Boolean enabled, String scheme, String status, String error = null) {
+  String ip = authDeviceIp(uri)
+  if (!ip) { return }
+  String normalizedError = error ? error.toString().take(120) : null
+  Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+  Map device = discovered[ip] instanceof Map ? new LinkedHashMap(discovered[ip] as Map) : null
+  Map existingCache = (atomicState.deviceStatusCache ?: [:])[ip] as Map
+  Boolean deviceChanged = device != null &&
+      (device.auth_en != enabled || device.authScheme?.toString() != scheme ||
+       device.authStatus?.toString() != status || device.authLastError?.toString() != normalizedError)
+  Boolean cacheChanged = existingCache != null &&
+      (existingCache.auth_en != enabled || existingCache.authScheme?.toString() != scheme ||
+       existingCache.authStatus?.toString() != status || existingCache.authLastError?.toString() != normalizedError)
+  if (!deviceChanged && !cacheChanged) { return }
+  if (device) {
+    device.auth_en = enabled
+    if (scheme) { device.authScheme = scheme }
+    if (status) { device.authStatus = status }
+    if (normalizedError) { device.authLastError = normalizedError } else { device.remove('authLastError') }
+    device.authUpdatedAt = now()
+    discovered[ip] = device
+    atomicState.discoveredShellys = discovered
+  }
+
+  Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+  Map entry = cache[ip] instanceof Map ? new LinkedHashMap(cache[ip] as Map) : null
+  if (entry) {
+    entry.auth_en = enabled
+    if (scheme) { entry.authScheme = scheme }
+    if (status) { entry.authStatus = status }
+    if (normalizedError) { entry.authLastError = normalizedError } else { entry.remove('authLastError') }
+    cache[ip] = entry
+    atomicState.deviceStatusCache = cache
+  }
+
+  try {
+    def child = findChildDeviceByIp(ip)
+    if (child) {
+      deviceUpdateDataValueHelper(child, 'auth_en', enabled ? 'true' : 'false')
+      if (status) { deviceUpdateDataValueHelper(child, 'authStatus', status.toString()) }
+    }
+  } catch (Exception ignored) {
+    // Auth state must still be persisted if a child is being created/deleted.
+  }
+  sendEventHelper([name: 'configTable', value: "auth:${ip}"])
+}
+
+/** Applies authoritative auth_en data from Shelly.GetDeviceInfo. */
+private void syncDeviceAuthFromInfo(String uri, Object enabled, String scheme = 'digest') {
+  if (!authValueEnabled(enabled)) {
+    clearAuthSession(uri)
+    updateDeviceAuthMetadata(uri, false, scheme, 'not_required', null)
+    return
+  }
+  String priorStatus = knownDeviceAuthValue(authDeviceIp(uri), 'authStatus')?.toString()
+  String status = priorStatus == 'authenticated' ? 'authenticated' : 'required'
+  updateDeviceAuthMetadata(uri, true, scheme, status, null)
 }
 
 @CompileStatic
@@ -16158,56 +16530,6 @@ String sha256(String base) {
   return hexString.toString()
 }
 
-@CompileStatic
-LinkedHashMap getAuthMap() {
-  if(authMaps == null) { authMaps = new ConcurrentHashMap<String, LinkedHashMap>() }
-  if(!authMaps.containsKey(getThisDeviceDNI())) { authMaps[getThisDeviceDNI()] = [:] }
-  return authMaps[getThisDeviceDNI()]
-}
-@CompileStatic
-void setAuthMap(LinkedHashMap map) {
-  if(authMaps == null) { authMaps = new ConcurrentHashMap<String, LinkedHashMap>() }
-  logTrace("Device authentication detected, setting authmap to ${map}")
-  authMaps[getThisDeviceDNI()] = map
-}
-
-@CompileStatic
-Boolean authIsEnabled() {
-  // In app context, use state instead of device data values.
-  // Must read through the Boolean accessor: getAppState() declares a String return type,
-  // which coerces a stored Boolean true to "true" — making 'value == true' always false
-  // (this silently disabled digest auth entirely).
-  return getAppStateBoolean('authEnabled')
-}
-@CompileStatic
-void setAuthIsEnabled(Boolean auth) {
-  // In app context, use state instead of device data values
-  setAppState('authEnabled', auth)
-}
-
-@CompileStatic
-String getAppState(String key) {
-  return stateValueHelper(key) as String
-}
-
-/**
- * Reads a Boolean value from app state without the String coercion that
- * getAppState()'s declared return type applies (Boolean true -> "true").
- *
- * @param key The state key to read
- * @return true only when the stored value is Boolean true or the string "true"
- */
-@CompileStatic
-private Boolean getAppStateBoolean(String key) {
-  Object value = stateValueHelper(key)
-  return value == true || value?.toString() == 'true'
-}
-
-@CompileStatic
-void setAppState(String key, Object value) {
-  setStateValueHelper(key, value)
-}
-
 /**
  * Checks whether Gen 1 Basic Auth credentials are available.
  * Gen 1 devices use HTTP Basic Auth with username 'admin' and the
@@ -16219,6 +16541,16 @@ void setAppState(String key, Object value) {
 Boolean authIsEnabledGen1() {
   String password = getAppSettings()?.devicePassword?.toString()
   return password != null && password != ''
+}
+
+/** Returns the last authoritative per-device Gen1 auth state. */
+private Boolean gen1AuthRequired(String ipAddress) {
+  return authValueEnabled(knownDeviceAuthValue(ipAddress, 'auth_en'))
+}
+
+private Boolean deviceAuthBlocked(String ipAddress) {
+  return knownDeviceAuthValue(ipAddress, 'authStatus')?.toString() in
+      ['missing_password', 'invalid_credentials', 'challenge_missing', 'challenge_invalid']
 }
 
 // @CompileStatic
@@ -16671,13 +17003,86 @@ private Integer httpResponseExceptionStatusHelper(Object exception) {
 }
 
 private String digestHeaderHelper(Object response) {
-  def header = response?.getAllHeaders()?.find { it?.getValue()?.contains('nonce') }
-  return header?.getValue()?.toString()
+  String header = digestHeaderFromHeadersHelper(response?.getAllHeaders())
+  if (header) { return header }
+  return digestHeaderFromHeadersHelper(response?.getHeaders())
 }
 
 private String digestHeaderFromHeadersHelper(Object headers) {
-  def header = headers?.find { it?.getValue()?.contains('nonce') }
-  return header?.getValue()?.toString()
+  if (!headers) { return null }
+
+  // Hubitat has returned response headers as an Apache Header[]/collection,
+  // a Map, and (in some async callback versions) a single header value. Keep
+  // the parser tolerant of all three shapes; auth must not depend on which
+  // HTTP path delivered the 401 challenge.
+  if (headers instanceof CharSequence) {
+    String value = headers.toString()
+    return value.toLowerCase().contains('digest') && value.toLowerCase().contains('nonce') ? value : null
+  }
+
+  if (headers instanceof Map) {
+    for (Object key : (headers as Map).keySet()) {
+      Object raw = (headers as Map).get(key)
+      if (raw instanceof Collection) {
+        raw = (raw as Collection).find { Object item ->
+          String candidate = item?.toString()
+          candidate?.toLowerCase()?.contains('digest') && candidate.toLowerCase().contains('nonce')
+        }
+      }
+      String value = raw?.toString()
+      if (key?.toString()?.equalsIgnoreCase('www-authenticate') &&
+          value?.toLowerCase()?.contains('digest') && value?.toLowerCase()?.contains('nonce')) {
+        return value
+      }
+    }
+  }
+
+  if (headers instanceof Object[]) {
+    Object[] headerArray = headers as Object[]
+    for (Integer index = 0; index < headerArray.length; index++) {
+      Object headerEntry = headerArray[index]
+      String value = null
+      try { value = headerEntry?.getValue()?.toString() } catch (Exception ignored) { }
+      if (value?.toLowerCase()?.contains('digest') && value.toLowerCase().contains('nonce')) {
+        return value
+      }
+    }
+  }
+
+  try {
+    for (Object headerEntry : headers as Iterable) {
+      String name = null
+      Object rawValue = null
+      if (headerEntry instanceof Map) {
+        name = ((Map) headerEntry).get('name')?.toString() ?: ((Map) headerEntry).get('header')?.toString()
+        rawValue = ((Map) headerEntry).get('value') ?: ((Map) headerEntry).get('Value')
+      } else {
+        try { name = headerEntry?.getName()?.toString() } catch (Exception ignored) { }
+        try { rawValue = headerEntry?.getValue() } catch (Exception ignored) { }
+      }
+      String value = rawValue?.toString()
+      if ((!name || name.equalsIgnoreCase('www-authenticate')) &&
+          value?.toLowerCase()?.contains('digest') && value?.toLowerCase()?.contains('nonce')) {
+        return value
+      }
+    }
+  } catch (Exception ignored) {
+    // Fall through to the direct lookup below.
+  }
+
+  try {
+    Object value = headers?.get('WWW-Authenticate') ?: headers?.get('www-authenticate')
+    String text = value?.toString()
+    return text?.toLowerCase()?.contains('digest') && text?.toLowerCase()?.contains('nonce') ? text : null
+  } catch (Exception ignored) {
+    return null
+  }
+}
+
+private String digestHeaderFromResponseHelper(Object response) {
+  String header = digestHeaderFromHeadersHelper(response?.getHeaders())
+  if (header) { return header }
+  return digestHeaderFromHeadersHelper(response?.getAllHeaders())
 }
 
 /** Dynamic logging adapters. */
@@ -20043,10 +20448,9 @@ void componentSenseListIRCodes(def childDevice) {
     try {
         String uri = "http://${ipAddress}/ir/list"
         Map params = [uri: uri, timeout: 10, contentType: 'application/json']
-        if (authIsEnabledGen1()) {
-            String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
-            String encoded = credentials.bytes.encodeBase64().toString()
-            params.headers = ['Authorization': "Basic ${encoded}"]
+        if (gen1AuthRequired(ipAddress)) {
+            String basicHeader = getBasicAuthHeader()
+            if (basicHeader) { params.headers = ['Authorization': "Basic ${basicHeader}"] }
         }
         httpGetHelper(params) { resp ->
             if (resp?.status == 200 && resp.data) {
@@ -21686,6 +22090,11 @@ private void drainCommandQueue(String dni) {
         logWarn("drainCommandQueue: no IP address for ${deviceName}")
         return
     }
+    if (deviceAuthBlocked(ipAddress) && authCooldownActive("http://${ipAddress}/rpc")) {
+        commandQueueDrainInFlight.remove(dni)
+        logWarn("drainCommandQueue: authentication is paused for ${deviceName}; update the device password before retrying")
+        return
+    }
 
     // Sort entries by queuedAt (oldest first) to preserve order
     List<Map> entries = deviceQueue.values().toList().sort { Map a, Map b ->
@@ -21707,7 +22116,9 @@ private void drainCommandQueue(String dni) {
     String dedupKey = entry.dedupKey?.toString() ?: ''
     Map params = entry.params as Map ?: [:]
 
-    Map callbackData = [dni: dni, dedupKey: dedupKey, dispatchToken: dispatchToken, deviceName: deviceName]
+    Map callbackData = [dni: dni, dedupKey: dedupKey, dispatchToken: dispatchToken, deviceName: deviceName,
+                        ipAddress: ipAddress, endpoint: endpoint, commandType: commandType,
+                        usedBasicAuth: gen1AuthRequired(ipAddress) && getBasicAuthHeader() != null]
 
     switch (commandType) {
         case 'gen1_setting':
@@ -21723,27 +22134,21 @@ private void drainCommandQueue(String dni) {
             httpParams.put('uri', uri)
             httpParams.put('timeout', 10)
             httpParams.put('contentType', 'application/json')
-            if (authIsEnabledGen1()) {
-                String credentials = "admin:${getAppSettings()?.devicePassword}".toString()
-                String encoded = credentials.bytes.encodeBase64().toString()
+            if (gen1AuthRequired(ipAddress)) {
+                String basicHeader = getBasicAuthHeader()
                 Map<String, Object> authHeaders = new LinkedHashMap<String, Object>()
-                authHeaders.put('Authorization', "Basic ${encoded}".toString())
-                httpParams.put('headers', authHeaders as Object)
+                if (basicHeader) {
+                    authHeaders.put('Authorization', "Basic ${basicHeader}".toString())
+                    httpParams.put('headers', authHeaders as Object)
+                }
             }
             asynchttpGetHelper('commandQueueDrainCallback', httpParams, callbackData)
             break
 
         case 'gen2_rpc':
             // Gen2+: async POST with JSON-RPC body
-            Map rpcBody = [id: 1, method: endpoint, params: params]
-            Map httpParams2 = [
-                uri: "http://${ipAddress}/rpc".toString(),
-                timeout: 10,
-                contentType: 'application/json',
-                requestContentType: 'application/json',
-                body: groovy.json.JsonOutput.toJson(rpcBody)
-            ]
-            asynchttpPostHelper('commandQueueDrainCallback', httpParams2, callbackData)
+            LinkedHashMap rpcBody = [id: 1, method: endpoint, params: params]
+            postCommandAsync(rpcBody, 'commandQueueDrainCallback', "http://${ipAddress}/rpc".toString(), callbackData)
             break
 
         default:
@@ -21792,6 +22197,18 @@ void commandQueueDrainCallback(hubitat.scheduling.AsyncResponse response, Map da
     Integer statusCode = response?.status ?: 0
     String errorMsg = response?.getErrorMessage() ?: 'unknown error'
     logWarn("Command delivery failed for ${deviceName} (${dedupKey}): HTTP ${statusCode} — ${errorMsg}")
+
+    if (statusCode == 401 && data?.commandType?.toString() in ['gen1_setting', 'gen1_action_url']) {
+        String authUri = "http://${data?.ipAddress}/${data?.endpoint ?: ''}"
+        if (data?.usedBasicAuth == true) {
+            markBasicAuthFailure(authUri, 'invalid_credentials', 'Basic Auth returned 401')
+        } else if (getBasicAuthHeader()) {
+            updateDeviceAuthMetadata(authUri, true, 'basic', 'challenge_received', null)
+            logInfo("Gen 1 authentication detected for ${data?.ipAddress}; queued command will retry with Basic Auth")
+        } else {
+            updateDeviceAuthMetadata(authUri, true, 'basic', 'missing_password', 'Device requires authentication')
+        }
+    }
 
     // Increment retry count
     if (deviceQueue && entryStillMatches) {
@@ -22125,7 +22542,6 @@ Map componentLinkedgoGetServiceConfig(def childDevice) {
         }
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoGetServiceConfig', method: 'Service.GetConfig', params: [id: 0]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         logTrace("componentLinkedgoGetServiceConfig: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
         logTrace("componentLinkedgoGetServiceConfig: raw response=${groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(json))}")
@@ -22157,7 +22573,6 @@ void componentLinkedgoSetNumber(def childDevice, String role, Number value) {
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoSetNumber', method: 'Number.Set',
             params: [owner: 'service:0', role: role, value: value]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         logDebug("componentLinkedgoSetNumber: ${childName} ${role}=${value}")
         logTrace("componentLinkedgoSetNumber: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
@@ -22186,7 +22601,6 @@ void componentLinkedgoSetEnum(def childDevice, String role, String value) {
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoSetEnum', method: 'Enum.Set',
             params: [owner: 'service:0', role: role, value: value]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         logDebug("componentLinkedgoSetEnum: ${childName} ${role}=${value}")
         logTrace("componentLinkedgoSetEnum: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
@@ -22223,7 +22637,6 @@ void componentLinkedgoSetBoolean(def childDevice, Integer instanceId, String rol
         String uri = "http://${ip}/rpc"
         LinkedHashMap command = [id: 0, src: 'linkedgoSetBoolean', method: 'Boolean.Set',
             params: [id: instanceId, value: value]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { command.auth = getAuth() }
         logDebug("componentLinkedgoSetBoolean: ${childName} ${role} (id=${instanceId})=${value}")
         logTrace("componentLinkedgoSetBoolean: URI=${uri} request=${groovy.json.JsonOutput.toJson(command)}")
         LinkedHashMap json = postCommandSync(command, uri)
@@ -22265,14 +22678,7 @@ void sendBluTrvCommand(Object gatewayDevice, Integer bluetrvComponentId, String 
     logDebug("sendBluTrvCommand: ${method} via gateway ${gatewayIp} → blutrv:${bluetrvComponentId}, params: ${methodParams}")
 
     try {
-        Map httpParams = [
-            uri: "http://${gatewayIp}/rpc",
-            contentType: 'application/json',
-            requestContentType: 'application/json',
-            body: rpcBody,
-            timeout: 90
-        ]
-        asynchttpPostHelper('bluTrvCommandCallback', httpParams, [
+        postCommandAsync(rpcBody as LinkedHashMap, 'bluTrvCommandCallback', "http://${gatewayIp}/rpc", [
             gateway: gatewayName,
             method: method,
             componentId: bluetrvComponentId
@@ -22324,7 +22730,6 @@ void componentBluTrvRefresh(Object gatewayDevice, Integer bluetrvComponentId) {
     try {
         String uri = "http://${gatewayIp}/rpc"
         LinkedHashMap trvCmd = [id: 1, method: 'BluTrv.GetStatus', params: [id: bluetrvComponentId]]
-        if (authIsEnabled() == true && getAuth().size() > 0) { trvCmd.put('auth', getAuth()) }
         LinkedHashMap trvResp = postCommandSync(trvCmd, uri)
         logInfo("componentBluTrvRefresh: raw response keys: ${trvResp?.keySet()}, result keys: ${trvResp?.result instanceof Map ? (trvResp.result as Map).keySet() : 'N/A'}")
 
