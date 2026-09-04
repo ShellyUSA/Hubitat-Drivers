@@ -11,7 +11,7 @@ Basic rules
 
 Agent workflow (step-by-step)
 
-1. Create a branch named `ai/<short-description>`.
+1. Stay on the currently checked-out branch. Do not create, switch, or checkout branches unless the human explicitly requests it.
 2. Run a quick safety scan: grep for `TODO|HACK|FIXME` and scan for accidental secrets.
 3. Make the minimal code changes required.
 4. If you change active-scope app or driver behavior, follow the release/versioning flow for that surface:
@@ -34,6 +34,12 @@ When to require human sign-off
 If unsure
 
 - Ask for clarification in a draft PR comment and explicitly request which files/hardware to use for verification.
+
+Naming boundary: Voltmeter drivers
+
+- The HPM-distributed package driver in `ComponentDrivers/ShellyVoltmeterComponent.groovy` is named `Shelly Voltmeter Component` and uses the `ShellyUSA` namespace.
+- The SDM-generated Universal driver is named `Shelly Autoconf Voltmeter` and is a separate driver surface.
+- Do not rename the HPM package driver to `Shelly Autoconf Voltmeter`; `Autoconf` is reserved for SDM-generated drivers.
 
 References
 

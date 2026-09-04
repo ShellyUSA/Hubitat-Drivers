@@ -17,6 +17,13 @@ All future development work is scoped to:
 - **Drivers:** `UniversalDrivers/` folder (all `.groovy` files and `component_driver.json`)
 - **Scripts:** `Scripts/` folder (JavaScript files that run on Shelly Gen 2+ device firmware via the Shelly scripting runtime)
 
+### Agent workflow and naming boundaries
+
+- Stay on the currently checked-out branch. Never create, switch, or checkout branches unless the human explicitly requests it.
+- The HPM package driver `ComponentDrivers/ShellyVoltmeterComponent.groovy` is named `Shelly Voltmeter Component` in the `ShellyUSA` namespace.
+- The SDM-generated Universal driver is separately named `Shelly Autoconf Voltmeter`; `Autoconf` is reserved for SDM-generated drivers.
+- Keep these Voltmeter names and surfaces distinct when updating manifests, parent mappings, or child-device creation logic.
+
 **DO NOT modify or reference** `ShellyDriverLibrary/ShellyUSA.ShellyUSA_Driver_Library.groovy`. This is **legacy code** that is no longer maintained. Do not use it as a reference for new work, do not update it, and do not port patterns from it into the active codebase.
 
 ## Gen 1 Shelly `report_url` — DO NOT USE
