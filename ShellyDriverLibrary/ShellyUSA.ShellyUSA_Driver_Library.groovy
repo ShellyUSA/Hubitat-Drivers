@@ -1064,6 +1064,14 @@ private static BigDecimal parseVoltmeterDecimal(Object value) {
   catch(NumberFormatException ignored) { return null }
 }
 
+/** Parses a component ID without allowing malformed webhook values to abort parsing. */
+@CompileStatic
+private static Integer parseComponentId(Object value) {
+  if(value == null) { return null }
+  try { return value as Integer }
+  catch(NumberFormatException ignored) { return null }
+}
+
 @CompileStatic
 void setXVoltage(BigDecimal value, Integer id = 0) {
   if(getIntegerDeviceDataValue('voltageId') == id) {sendDeviceEvent([name: 'xvoltage', value: value])}
@@ -4312,63 +4320,100 @@ void parseGen2Message(String raw) {
   List<String> query = ((String)res[1]).tokenize('/')
   logTrace("Incoming query ${query}")
   Integer id = 0
-  if(query.size() > 3) { id = query[3] as Integer}
+
+  // Voltmeter callbacks carry a decimal reading in the URL. Handle every
+  // supported route shape before the generic component branches, and never
+  // let a malformed/missing component ID fall through to an unrelated cast.
+  Boolean isVoltmeterRoute = query.size() > 0 &&
+    (query[0] == 'voltmeter' || query[0].startsWith('voltmeter.'))
+  if(isVoltmeterRoute) {
+    String metric = null
+    Object rawValue = null
+    Integer voltmeterId = null
+
+    if(query.size() >= 4 && query[1] in ['voltage', 'xvoltage']) {
+      // voltmeter.change/voltage/0.65/100
+      metric = query[1]
+      rawValue = query[2]
+      voltmeterId = parseComponentId(query[3])
+      if(voltmeterId == null && query[0].startsWith('voltmeter.')) {
+        voltmeterId = parseComponentId(query[0].substring('voltmeter.'.length()))
+      }
+    } else if(query.size() >= 4 && query[0] == 'voltmeter' && query[2] in ['voltage', 'xvoltage']) {
+      // voltmeter/100/voltage/0.65
+      voltmeterId = parseComponentId(query[1])
+      metric = query[2]
+      rawValue = query[3]
+    } else if(query.size() >= 3 && query[1] in ['voltage', 'xvoltage']) {
+      // voltmeter.100/voltage/0.65 (or a route without a trailing cid)
+      metric = query[1]
+      rawValue = query[2]
+      if(query[0].startsWith('voltmeter.')) {
+        voltmeterId = parseComponentId(query[0].substring('voltmeter.'.length()))
+      }
+    }
+
+    id = voltmeterId ?: 0
+    if(metric == 'voltage') {
+      BigDecimal voltage = parseVoltmeterDecimal(rawValue)
+      if(voltage != null) { setVoltage(voltage, id) }
+    } else if(metric == 'xvoltage') {
+      BigDecimal xvoltage = parseVoltmeterDecimal(rawValue)
+      if(xvoltage != null) { setXVoltage(xvoltage, id) }
+    }
+    setLastUpdated()
+    return
+  }
+
+  if(query.size() > 3) { id = parseComponentId(query[3]) ?: 0 }
   if(query[0] == 'report') {}
   else if(query[0] == 'humidity.change' && query[1] == 'rh') {setHumidityPercent(new BigDecimal(query[2]), id)}
   else if(query[0] == 'temperature.change' && query[1] == 'tC') {setTemperatureC(new BigDecimal(query[2]), id)}
   else if(query[0] == 'temperature.change' && query[1] == 'tF') {setTemperatureF(new BigDecimal(query[2]), id)}
   else if(query[0].startsWith('switch.o')) {
     String command = query[0]
-    id = query[1] as Integer
-    setSwitchState(command.toString() == 'switch.on', id)
+    Integer componentId = parseComponentId(query[1])
+    if(componentId != null) { setSwitchState(command.toString() == 'switch.on', componentId) }
   }
   else if(query[0].startsWith('input.toggle')) {
     String command = query[0]
-    id = query[1] as Integer
-    setInputSwitchState(command.toString() == 'input.toggle_on', id)
+    Integer componentId = parseComponentId(query[1])
+    if(componentId != null) { setInputSwitchState(command.toString() == 'input.toggle_on', componentId) }
   }
   else if(query[0].startsWith('input.analog_measurement') && query[1].startsWith('percent')) {
     String command = query[0]
-    id = query[3] as Integer
-    setInputAnalogState(new BigDecimal(query[2]), id)
+    Integer componentId = parseComponentId(query[3])
+    if(componentId != null) { setInputAnalogState(new BigDecimal(query[2]), componentId) }
   }
   else if(query[0] in ['cover.opening', 'cover.closing']) {
     String command = query[0]
-    id = query[1] as Integer
-    setCoverState(query[0].replace('cover.',''), id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
+    Integer componentId = parseComponentId(query[1])
+    if(componentId != null) { setCoverState(query[0].replace('cover.',''), componentId) } //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
   }
   else if(query[0] in ['cover.open', 'cover.closed']) {
     String command = query[0]
-    id = query[1] as Integer
-    setCoverState(query[0].replace('cover.',''), id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
+    Integer componentId = parseComponentId(query[1])
+    if(componentId != null) { setCoverState(query[0].replace('cover.',''), componentId) } //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
     getStatusGen2()
     runInSeconds('getStatusGen2', 30)
   }
   else if(query[0] in ['cover.stopped']) {
     String command = query[0]
-    id = query[1] as Integer
-    setCoverState('partially open', id) //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
+    Integer componentId = parseComponentId(query[1])
+    if(componentId != null) { setCoverState('partially open', componentId) } //['opening', 'partially open', 'closed', 'open', 'closing', 'unknown']
     getStatusGen2()
     runInSeconds('getStatusGen2', 30)
   }
-  else if(query[0] == 'smoke.alarm')      {setSmokeState('detected', query[1] as Integer)}
-  else if(query[0] == 'smoke.alarm_off')  {setSmokeState('clear', query[1] as Integer)}
-  else if(query[0] == 'smoke.alarm_test') {setSmokeState('tested', query[1] as Integer)}
+  else if(query[0] == 'smoke.alarm')      {Integer componentId = parseComponentId(query[1]); if(componentId != null) {setSmokeState('detected', componentId)}}
+  else if(query[0] == 'smoke.alarm_off')  {Integer componentId = parseComponentId(query[1]); if(componentId != null) {setSmokeState('clear', componentId)}}
+  else if(query[0] == 'smoke.alarm_test') {Integer componentId = parseComponentId(query[1]); if(componentId != null) {setSmokeState('tested', componentId)}}
   else if(query[0] == 'flood.alarm')           {setFloodOn(true)}
   else if(query[0] == 'flood.alarm_off')       {setFloodOn(false)}
   else if(query[0] == 'flood.cable_unplugged') {logWarn('Flood sensor reports sensing cable unplugged')}
-  else if(query[0].startsWith('voltmeter.') && query[1] == 'voltage' && query.size() == 4) {
-    BigDecimal voltage = parseVoltmeterDecimal(query[2])
-    if(voltage != null) { setVoltage(voltage, id) }
-  }
-  else if(query[0].startsWith('voltmeter.') && query[1] == 'xvoltage' && query.size() == 4) {
-    BigDecimal xvoltage = parseVoltmeterDecimal(query[2])
-    if(xvoltage != null) { setXVoltage(xvoltage, id) }
-  }
   else if(query[0].startsWith('light.o')) {
     String command = query[0]
-    id = query[1] as Integer
-    setSwitchState(command.toString() == 'light.on', id)
+    Integer componentId = parseComponentId(query[1])
+    if(componentId != null) { setSwitchState(command.toString() == 'light.on', componentId) }
     getStatusGen2()
   }
   setLastUpdated()
