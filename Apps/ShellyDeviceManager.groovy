@@ -59,6 +59,12 @@
 @Field static volatile boolean tableSummaryRefreshScheduled = false
 @Field static ConcurrentHashMap<String, Boolean> tableSummaryRefreshInFlight =
     new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+// Durable operation metadata lets delayed callbacks prove that they still
+// belong to the current per-device refresh before touching the shared cache.
+@Field static ConcurrentHashMap<String, Map> tableSummaryRefreshOperations =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, Map> tableSummaryRefreshData =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
 @Field static volatile long lastDiscoveryTableSSR = 0L
 @Field static volatile boolean discoveryTableSSRPending = false
 @Field static volatile Map discoveryPerformanceMetrics = [:]
@@ -94,13 +100,6 @@
 
 /** Throttle timestamp for BLE table SSR updates — replaces state.lastBleTableUpdate */
 @Field static volatile long lastBleTableSSR = 0L
-
-/** BLE table page-activity window — SSR events are only worth firing while a page session
- *  is plausibly open. Set on every table render; checked before firing 'bleTable' events. */
-@Field static volatile long blePageActiveUntil = 0L
-
-/** How long after the last BLE table render the page is considered open (5 minutes) */
-@Field static final long BLE_PAGE_ACTIVE_MS = 300000L
 
 /** One-shot BLE checkpoint scheduler state; reset during app initialization. */
 @Field static volatile boolean bleCheckpointScheduled = false
@@ -559,109 +558,11 @@ preferences {
  * @return Map containing the dynamic page definition
  */
 Map mainPage() {
-    recoverStaleTransientState()
-    // A fresh navigation must not inherit a lock left by an interrupted
-    // request. Preserve it for the immediate response to an action button so
-    // the spinner renders during that operation.
-    Long actionSubmittedAt = atomicState.actionRequestSubmittedAt as Long
-    if (atomicState.actionRequestSubmitted == true && actionSubmittedAt != null &&
-        (now() - actionSubmittedAt) < 60_000L) {
-        atomicState.actionRequestSubmitted = false
-        atomicState.remove('actionRequestSubmittedAt')
-    } else {
-        atomicState.actionRequestSubmitted = false
-        atomicState.remove('actionRequestSubmittedAt')
-        atomicState.userActionLock = [:]
-        state.remove('pendingDeleteIp')
-    }
-    if (!atomicState.discoveredShellys) { atomicState.discoveredShellys = [:] }
+    // Page construction is intentionally read-only. Discovery, migrations,
+    // cleanup, and pending actions run from lifecycle/button callbacks.
 
-    // Clean up orphan settings from removed pages
-        appRemoveSettingHelper('selectedToCreate')
-        appRemoveSettingHelper('selectedToRemove')
-        appRemoveSettingHelper('selectedConfigDevice')
-        appRemoveSettingHelper('enableIpScan')
-
-    // Clear schedule time edit state after the time picker has been shown for one render
-    if (state.editingScheduleTime && state.scheduleEditRendered == true) {
-        state.remove('editingScheduleTime')
-        state.remove('scheduleEditRendered')
-    }
-
-    // Migrate single autoUpdateTime to separate driver/app time settings
-    if (settings?.autoUpdateTime && !settings?.driverUpdateTime && !settings?.appUpdateTime) {
-        appUpdateSettingHelper('driverUpdateTime', [type: 'time', value: settings.autoUpdateTime])
-        appUpdateSettingHelper('appUpdateTime', [type: 'time', value: settings.autoUpdateTime])
-        appRemoveSettingHelper('autoUpdateTime')
-    }
-
-    // Requirement: scanning should start (or restart) when app page is opened.
     Integer remainingSecs = getRemainingDiscoverySeconds()
-    if (!atomicState.discoveryRunning || remainingSecs <= 0) {
-        startDiscovery(false)
-        remainingSecs = getRemainingDiscoverySeconds()
-    }
-
-    // Apply pending WiFi label edit if the user has typed a new label
-    String editIp = state.pendingLabelEdit as String
-    if (editIp && settings?.editLabelValue != null) {
-        String newLabel = (settings.editLabelValue as String)?.trim()
-        if (newLabel) {
-            def device = findChildDeviceByIp(editIp)
-            if (device) {
-                deviceSetLabelHelper(device, newLabel)
-                logInfo("Updated label for ${editIp} to '${newLabel}'")
-                appendLog('info', "Renamed ${editIp} to '${newLabel}'")
-            }
-        }
-        state.remove('pendingLabelEdit')
-                appRemoveSettingHelper('editLabelValue')
-    }
-
-    // Apply pending BLE label edit if the user has typed a new label
-    String editBleMac = state.pendingBleLabelEdit as String
-    if (editBleMac && settings?.editBleLabelValue != null) {
-        String newBleLabel = (settings.editBleLabelValue as String)?.trim()
-        if (newBleLabel) {
-            def bleDevice = getChildDeviceHelper(editBleMac)
-            if (bleDevice) {
-                deviceSetLabelHelper(bleDevice, newBleLabel)
-                logInfo("Updated BLE label for ${editBleMac} to '${newBleLabel}'")
-                appendLog('info', "Renamed BLE ${editBleMac} to '${newBleLabel}'")
-                // Update cached label in discovery state
-                Map discoveredBle = state.discoveredBleDevices ?: [:]
-                String macKey = editBleMac.toString()
-                Map bleEntry = discoveredBle[macKey] as Map
-                if (bleEntry) {
-                    bleEntry.hubDeviceLabel = newBleLabel
-                    discoveredBle[macKey] = bleEntry
-                    state.discoveredBleDevices = discoveredBle
-                }
-            }
-        }
-        state.remove('pendingBleLabelEdit')
-                appRemoveSettingHelper('editBleLabelValue')
-    }
-
-    // Purge unknown BLE devices from discovery state on page load.
-    // Keeps entries that resolve to a known model OR have an existing child device.
-    Map discoveredBle = state.discoveredBleDevices as Map ?: [:]
-    if (discoveredBle) {
-        List<String> toRemove = []
-        discoveredBle.each { String macKey, bleVal ->
-            Map bleEntry = bleVal as Map
-            Integer entryModelId = bleEntry.modelId != null ? bleEntry.modelId as Integer : null
-            String entryModel = (bleEntry.model ?: '') as String
-            Map<String, String> info = resolveBleDriverInfo(entryModelId, entryModel)
-            Boolean hasChild = getChildDeviceHelper(macKey) != null
-            if (!info && !hasChild) { toRemove.add(macKey) }
-        }
-        if (toRemove) {
-            toRemove.each { String key -> discoveredBle.remove(key) }
-            state.discoveredBleDevices = discoveredBle
-            logInfo("Purged ${toRemove.size()} unknown BLE device(s) from discovery state")
-        }
-    }
+    Boolean discoveryActive = atomicState.discoveryRunning == true && remainingSecs > 0
 
     dynamicPage(name: "mainPage", title: "Shelly Device Manager v${APP_VERSION}", install: true, uninstall: true) {
         section() {
@@ -676,8 +577,10 @@ Map mainPage() {
                 #app-form-container { margin-top: 0 !important; padding-top: 0 !important; }
                 .mdl-cell { margin-top: 0 !important; }
             </style>"""
-            String extendBtn = buttonLink('btnExtendScan', 'Extend Scan (10 min)', '#1A77C9', '14px')
-            if (atomicState.discoveryRunning) {
+            String scanButtonName = discoveryActive ? 'btnExtendScan' : 'btnStartScan'
+            String scanButtonLabel = discoveryActive ? 'Extend Scan (10 min)' : 'Start Scan'
+            String extendBtn = buttonLink(scanButtonName, scanButtonLabel, '#1A77C9', '14px')
+            if (discoveryActive) {
                 paragraph "<div style='display:flex;align-items:center;gap:12px'>" +
                     "<b><span class='ssr-app-state-${app.id}-discoveryTimer'>Discovery time remaining: ${remainingSecs} seconds</span></b>" +
                     "<span>${extendBtn}</span>" +
@@ -688,7 +591,7 @@ Map mainPage() {
                     "<span>${extendBtn}</span>" +
                     "</div>"
             }
-            if (!atomicState.discoveryRunning && !(atomicState.discoveredShellys as Map)?.findAll { String k, v -> v }) {
+            if (!discoveryActive && !(atomicState.discoveredShellys as Map)?.findAll { String k, v -> v }) {
                 paragraph "<b style='color:#FF9800'>No devices discovered.</b> If this is a new installation, a hub reboot is required before mDNS discovery will find devices. Go to <i>Settings > Reboot Hub</i>, then reopen this app."
             }
 
@@ -773,12 +676,10 @@ Map mainPage() {
                 input name: 'driverUpdateTime', type: 'time', title: 'Driver auto-update time',
                     description: 'Daily time to check for and install driver updates',
                     defaultValue: '2000-01-01T03:00:00.000+0000', required: false, submitOnChange: true
-                state.scheduleEditRendered = true
             } else if (state.editingScheduleTime == 'app') {
                 input name: 'appUpdateTime', type: 'time', title: 'App auto-update time',
                     description: 'Daily time to check for app updates',
                     defaultValue: '2000-01-01T03:00:00.000+0000', required: false, submitOnChange: true
-                state.scheduleEditRendered = true
             }
 
             String driverMgmtHtml = renderDriverManagementHtml()
@@ -817,17 +718,6 @@ Map mainPage() {
 
             String validatedDisplay = (storedDisplay && storedDisplay in allowedDisplay) ? storedDisplay : overallLevel
 
-            // Only intervene when the stored value is OUT of the allowed list (more verbose → less verbose change)
-            if (storedDisplay && !(storedDisplay in allowedDisplay)) {
-                // Clear the stale setting so defaultValue takes effect on this render pass
-                appRemoveSettingHelper('displayLogLevel')
-                state.displayLogLevel = validatedDisplay
-                pruneDisplayedLogs(validatedDisplay)
-                // Persist the validated value AFTER the page finishes rendering
-                state.pendingDisplayLevel = validatedDisplay
-                runInMillisHelper(200L, 'applyPendingDisplayLevel')
-            }
-
             input name: 'displayLogLevel', type: 'enum', title: 'App page display log level (X and above)', options: displayOptions, defaultValue: validatedDisplay, submitOnChange: true
 
             input name: 'bleLogLevel', type: 'enum', title: 'BLE logging level', options: levelOptions, defaultValue: 'info', submitOnChange: true
@@ -849,7 +739,19 @@ Map mainPage() {
  * @param buttonName The name of the button that was clicked
  */
 void appButtonHandler(String buttonName) {
-    if (buttonName == 'btnExtendScan') { extendDiscovery(600) }
+    if (buttonName == 'btnStartScan') {
+        if (isAnyDeviceActionActive()) {
+            logWarn('Ignoring discovery request: another device action is in progress')
+            return
+        }
+        startDiscovery(false)
+        return
+    }
+
+    if (buttonName == 'btnExtendScan') {
+        extendDiscovery(600)
+        return
+    }
 
     if (buttonName == 'btnManualDiscover') {
         String rawInput = settings?.manualDeviceIp?.toString()?.trim()
@@ -892,12 +794,12 @@ void appButtonHandler(String buttonName) {
 
     if (buttonName == 'btnEditDriverTime') {
         state.editingScheduleTime = 'drivers'
-        state.remove('scheduleEditRendered')
+        state.scheduleEditOriginal = settings?.driverUpdateTime?.toString() ?: ''
     }
 
     if (buttonName == 'btnEditAppTime') {
         state.editingScheduleTime = 'app'
-        state.remove('scheduleEditRendered')
+        state.scheduleEditOriginal = settings?.appUpdateTime?.toString() ?: ''
     }
 
     if (buttonName.startsWith('btnUpdateDriver|')) {
@@ -1542,11 +1444,149 @@ void installed() {
 }
 
 /**
+ * Applies page-submitted state changes from a lifecycle callback. Dynamic page
+ * construction must remain read-only; settings and state reconciliation belongs
+ * here so a page refresh cannot mutate the app or device model.
+ */
+private void reconcilePageStateAfterUpdate() {
+    // Clean up settings from removed pages.
+    ['selectedToCreate', 'selectedToRemove', 'selectedConfigDevice', 'enableIpScan'].each { String key ->
+        appRemoveSettingHelper(key)
+    }
+
+    // Migrate the former shared schedule setting once, when settings are saved.
+    if (settings?.autoUpdateTime && !settings?.driverUpdateTime && !settings?.appUpdateTime) {
+        Object legacyTime = settings.autoUpdateTime
+        appUpdateSettingHelper('driverUpdateTime', [type: 'time', value: legacyTime])
+        appUpdateSettingHelper('appUpdateTime', [type: 'time', value: legacyTime])
+        appRemoveSettingHelper('autoUpdateTime')
+    }
+
+    String editIp = state.pendingLabelEdit as String
+    if (editIp && settings?.editLabelValue != null) {
+        String newLabel = (settings.editLabelValue as String)?.trim()
+        if (newLabel) {
+            def device = findChildDeviceByIp(editIp)
+            if (device) {
+                deviceSetLabelHelper(device, newLabel)
+                logInfo("Updated label for ${editIp} to '${newLabel}'")
+                appendLog('info', "Renamed ${editIp} to '${newLabel}'")
+            }
+        }
+        state.remove('pendingLabelEdit')
+        appRemoveSettingHelper('editLabelValue')
+    }
+
+    String editBleMac = state.pendingBleLabelEdit as String
+    if (editBleMac && settings?.editBleLabelValue != null) {
+        String newBleLabel = (settings.editBleLabelValue as String)?.trim()
+        if (newBleLabel) {
+            def bleDevice = getChildDeviceHelper(editBleMac)
+            if (bleDevice) {
+                deviceSetLabelHelper(bleDevice, newBleLabel)
+                logInfo("Updated BLE label for ${editBleMac} to '${newBleLabel}'")
+                appendLog('info', "Renamed BLE ${editBleMac} to '${newBleLabel}'")
+                Map discoveredBle = new LinkedHashMap((state.discoveredBleDevices ?: [:]) as Map)
+                Map bleEntry = discoveredBle[editBleMac] as Map
+                if (bleEntry) {
+                    bleEntry = new LinkedHashMap(bleEntry)
+                    bleEntry.hubDeviceLabel = newBleLabel
+                    discoveredBle[editBleMac] = bleEntry
+                    state.discoveredBleDevices = discoveredBle
+                }
+            }
+        }
+        state.remove('pendingBleLabelEdit')
+        appRemoveSettingHelper('editBleLabelValue')
+    }
+
+    String editing = state.editingScheduleTime?.toString()
+    if (editing == 'drivers' || editing == 'app') {
+        String original = state.scheduleEditOriginal?.toString() ?: ''
+        String current = (editing == 'drivers' ? settings?.driverUpdateTime : settings?.appUpdateTime)?.toString() ?: ''
+        if (current != original) {
+            state.remove('editingScheduleTime')
+            state.remove('scheduleEditOriginal')
+        }
+    }
+
+    normalizeDisplaySettingAfterUpdate()
+    pruneUnknownBleDevices()
+}
+
+/** Keeps the display-level setting valid after an overall logging-level change. */
+private void normalizeDisplaySettingAfterUpdate() {
+    List<String> levelOrder = ['trace', 'debug', 'info', 'warn', 'error', 'off']
+    String overall = (settings?.logLevel ?: state.logLevel ?: 'debug').toString().toLowerCase()
+    if (!(overall in levelOrder)) { overall = 'debug' }
+    String rawDisplay = (settings?.displayLogLevel ?: state.displayLogLevel)?.toString()?.toLowerCase()
+    String display = rawDisplay in levelOrder ? rawDisplay : overall
+    Integer overallIndex = levelOrder.indexOf(overall)
+    List<String> allowed = levelOrder[overallIndex..-1]
+    String validated = display in allowed ? display : overall
+
+    if (display != validated) {
+        state.displayLogLevel = validated
+        pruneDisplayedLogs(validated)
+        if (state.pendingDisplayLevel?.toString() != validated) {
+            state.pendingDisplayLevel = validated
+            runInMillisHelper(200L, 'applyPendingDisplayLevel')
+        }
+    }
+}
+
+/** Removes unknown BLE advertisements and repairs cached display metadata. */
+private void pruneUnknownBleDevices() {
+    Map discoveredBle = new LinkedHashMap((state.discoveredBleDevices ?: [:]) as Map)
+    if (discoveredBle.isEmpty()) { return }
+    List<String> toRemove = []
+    Boolean changed = false
+    discoveredBle.each { String macKey, bleVal ->
+        Map bleEntry = new LinkedHashMap((bleVal ?: [:]) as Map)
+        Integer entryModelId = bleEntry.modelId != null ? bleEntry.modelId as Integer : null
+        String entryModel = (bleEntry.model ?: '') as String
+        Map<String, String> info = resolveBleDriverInfo(entryModelId, entryModel)
+        Boolean hasChild = getChildDeviceHelper(macKey) != null
+        if (!info && !hasChild) {
+            toRemove.add(macKey)
+            return
+        }
+        if (info) {
+            Boolean entryChanged = false
+            if (bleEntry.friendlyModel != info.friendlyModel) {
+                bleEntry.friendlyModel = info.friendlyModel
+                entryChanged = true
+            }
+            if (bleEntry.driverName != info.driverName) {
+                bleEntry.driverName = info.driverName
+                entryChanged = true
+            }
+            if (info.modelCode && bleEntry.modelCode != info.modelCode) {
+                bleEntry.modelCode = info.modelCode
+                entryChanged = true
+            }
+            if (entryChanged) {
+                discoveredBle[macKey] = bleEntry
+                changed = true
+            }
+        }
+    }
+    if (toRemove) {
+        toRemove.each { String key -> discoveredBle.remove(key) }
+        logInfo("Purged ${toRemove.size()} unknown BLE device(s) from discovery state")
+        changed = true
+    }
+    if (changed) { state.discoveredBleDevices = discoveredBle }
+}
+
+/**
  * Called when the app settings are updated.
  * Detects logging level changes, prunes displayed logs accordingly,
  * updates state with new settings, and reinitializes the app.
  */
 void updated() {
+    reconcilePageStateAfterUpdate()
+
     // Detect logging-level changes and prune displayed logs immediately
     String oldDisplay = state.displayLogLevel
     String oldOverall = state.logLevel
@@ -1606,7 +1646,6 @@ void uninstalled() {
  * @return Complete HTML string for the config table
  */
 private String displayDeviceConfigTable() {
-    ensureDeviceStatusCache()
     String tableMarkup = renderDeviceConfigTableMarkup()
     return loadConfigTableCSS() + loadConfigTableScript() +
         "<span class='ssr-app-state-${getAppIdHelper()}-configTable' id='config-table'>" +
@@ -1675,7 +1714,6 @@ private String loadConfigTableScript() {
  * @return HTML table markup string
  */
 private String renderDeviceConfigTableMarkup() {
-    clearCompletedProvisioningStateForRender()
     List<Map> deviceList = buildDeviceList()
     if (deviceList.size() == 0) {
         return "<p>No devices discovered yet. Discovery is running...</p>"
@@ -1715,10 +1753,10 @@ private String renderDeviceConfigTableMarkup() {
 /**
  * Recovers UI state when the final provisioning callback was lost after the
  * cache already showed every required script/webhook as complete. This is
- * intentionally render-time and side-effect-light: it clears only the stale
- * token/status/lock and never performs device RPCs.
+ * intentionally side-effect-light: it clears only the stale token/status/lock
+ * and never performs device RPCs. Call it from lifecycle maintenance, not SSR.
  */
-private void clearCompletedProvisioningStateForRender() {
+private void clearCompletedProvisioningState() {
     Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
     Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
     Map pendingScripts = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
@@ -1872,6 +1910,12 @@ private List<Map> buildDeviceList() {
                     requiredWebhookCount: null,
                     createdWebhookCount: null,
                     enabledWebhookCount: null,
+                    webhookSupportQueryFailed: false,
+                    requiredWebhookActions: [],
+                    webhookStatus: [],
+                    summaryRefreshState: 'stale',
+                    summaryRefreshError: null,
+                    lastRefreshAttempt: null,
                     lastRefreshed: null
                 ])
             }
@@ -1928,6 +1972,12 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
         requiredWebhookCount: null,
         createdWebhookCount: null,
         enabledWebhookCount: null,
+        webhookSupportQueryFailed: false,
+        requiredWebhookActions: [],
+        webhookStatus: [],
+        summaryRefreshState: 'stale',
+        summaryRefreshError: null,
+        lastRefreshAttempt: null,
         lastRefreshed: null
     ]
 }
@@ -1980,6 +2030,7 @@ private Boolean claimUserAction(String ip, String action) {
     atomicState.userActionLock = [ip: ip, action: action, startedAt: now()]
     atomicState.actionRequestSubmitted = true
     atomicState.actionRequestSubmittedAt = now()
+    runInHelper(65L, 'recoverStaleTransientState', [overwrite: false])
     sendEventHelper([name: 'configTable', value: 'actionStarted'])
     return true
 }
@@ -2131,6 +2182,7 @@ private String buildDeviceRow(Map entry) {
     Boolean isBattery = entry.isBatteryDevice as Boolean
     Long lastRefreshed = entry.lastRefreshed as Long
     Boolean isStale = lastRefreshed == null || (now() - lastRefreshed) >= DEVICE_TABLE_SUMMARY_TTL_MS
+    String summaryState = entry.summaryRefreshState?.toString() ?: (isStale ? 'stale' : 'fresh')
 
     // Column 1: Action button (provisioning progress, create, remove, or conflict)
     String provisioningStatus = entry.provisioningStatus?.toString()
@@ -2237,7 +2289,9 @@ private String buildDeviceRow(Map entry) {
     // Column 10: Refresh button
     if (isCreated) {
         String refreshIcon = "<iconify-icon icon='material-symbols:sync' style='font-size:18px'></iconify-icon>"
-        String refreshTitle = isStale ? 'Refresh stale table data' : 'Refresh table data now'
+        String refreshTitle = summaryState == 'refreshing' ? 'Table data refresh in progress' :
+            (summaryState == 'failed' ? "Table refresh failed: ${entry.summaryRefreshError ?: 'retry'}" :
+             (isStale ? 'Refresh stale table data' : 'Refresh table data now'))
         String refreshButton = buttonLink("refreshDevice|${ip}", refreshIcon, '#1A77C9', '18px')
         str.append("<td title='${refreshTitle}'>${refreshButton}</td>")
     } else {
@@ -2412,7 +2466,12 @@ private static String escapeHtml(String value) {
  * Initializes from discovered devices and child devices with null status fields.
  */
 private void ensureDeviceStatusCache() {
-    if (atomicState.deviceStatusCache != null) { return }
+    if (atomicState.deviceStatusCache != null) {
+        // Warm the short-lived child snapshot during lifecycle initialization so
+        // ordinary page rendering only reads the already-prepared snapshot.
+        getCachedDirectChildDevices()
+        return
+    }
     Map cache = [:]
     Map discoveredShellys = atomicState.discoveredShellys ?: [:]
 
@@ -2530,32 +2589,441 @@ void runNextTableSummaryRefresh() {
     }
     String ip = tableSummaryRefreshQueue.poll()
     if (!ip) { return }
-    if (hasProvisioningOperation(ip) || tableSummaryRefreshInFlight.putIfAbsent(ip, true) != null) {
+    if (hasProvisioningOperation(ip)) {
+        if (!tableSummaryRefreshQueue.contains(ip)) { tableSummaryRefreshQueue.add(ip) }
+        scheduleNextTableSummaryRefresh()
+        return
+    }
+    if (tableSummaryRefreshInFlight.putIfAbsent(ip, true) != null) {
         scheduleNextTableSummaryRefresh()
         return
     }
     runInMillisHelper(1L, 'runDeviceSummaryRefresh', [data: [ip: ip, force: false]])
 }
 
-/** Performs the existing summary queries outside discovery and outside page rendering. */
+/** Starts one non-blocking summary operation outside discovery and page rendering. */
 void runDeviceSummaryRefresh(Map data) {
     String ip = data?.ip as String
     if (!ip) { return }
+    if (atomicState.discoveryRunning == true || hasProvisioningOperation(ip)) {
+        logWarn("Deferring table summary refresh for ${ip}: discovery or another operation is active")
+        tableSummaryRefreshInFlight.remove(ip)
+        if (!tableSummaryRefreshQueue.contains(ip)) { tableSummaryRefreshQueue.add(ip) }
+        scheduleNextTableSummaryRefresh()
+        return
+    }
+    startDeviceSummaryRefresh(ip, data?.force == true)
+}
+
+private String tableSummaryOperationId(String ip) {
+    return "${ip}:${now()}:${Math.abs(new Random().nextInt())}"
+}
+
+private Boolean isCurrentTableSummaryOperation(String ip, String operationId) {
+    Map operation = tableSummaryRefreshOperations[ip] as Map
+    return operation != null && operation.operationId?.toString() == operationId
+}
+
+private void updateTableSummaryOperation(String ip, String operationId, String stage) {
+    if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map operations = new LinkedHashMap((atomicState.tableSummaryRefreshOperations ?: [:]) as Map)
+    Map operation = new LinkedHashMap((operations[ip] ?: [:]) as Map)
+    operation.stage = stage
+    operation.updatedAt = now()
+    operations[ip] = operation
+    atomicState.tableSummaryRefreshOperations = operations
+    tableSummaryRefreshOperations[ip] = operation
+}
+
+private void markTableSummaryRefreshState(String ip, String refreshState, String error = null) {
+    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+    Map entry = new LinkedHashMap((cache[ip] ?: buildMinimalCacheEntry(ip, (atomicState.discoveredShellys ?: [:])[ip] as Map ?: [:])) as Map)
+    entry.summaryRefreshState = refreshState
+    entry.summaryRefreshError = error
+    entry.lastRefreshAttempt = now()
+    cache[ip] = entry
+    atomicState.deviceStatusCache = cache
+}
+
+private Map tableSummaryResponseJson(AsyncResponse response) {
     try {
-        if (atomicState.discoveryRunning == true || hasProvisioningOperation(ip)) {
-            logWarn("Deferring table summary refresh for ${ip}: discovery or another operation is active")
-            if (!tableSummaryRefreshQueue.contains(ip)) { tableSummaryRefreshQueue.add(ip) }
+        def parsed = response?.getJson()
+        if (parsed instanceof Map) { return parsed as Map }
+    } catch (Exception ignored) {}
+    try {
+        if (response?.data instanceof Map) { return response.data as Map }
+        if (response?.data) { return slurper.parseText(response.data.toString()) as Map }
+    } catch (Exception ignored) {}
+    return null
+}
+
+private String tableSummaryResponseError(AsyncResponse response, Map json) {
+    if (response?.status != 200) { return "HTTP ${response?.status ?: 'request'}" }
+    if (json?.error) { return json.error instanceof Map ? (json.error.message ?: json.error.code ?: 'RPC error').toString() : json.error.toString() }
+    if (!json?.result) { return 'Empty RPC response' }
+    return null
+}
+
+private void addTableSummaryError(Map refreshData, String message) {
+    if (!refreshData.errors) { refreshData.errors = [] }
+    refreshData.errors.add(message ?: 'Unknown refresh error')
+}
+
+private void startDeviceSummaryRefresh(String ip, Boolean force = false) {
+    if (!ip) { return }
+    if (atomicState.discoveryRunning == true || hasProvisioningOperation(ip)) {
+        tableSummaryRefreshInFlight.remove(ip)
+        if (!tableSummaryRefreshQueue.contains(ip)) { tableSummaryRefreshQueue.add(ip) }
+        scheduleNextTableSummaryRefresh()
+        return
+    }
+
+    String operationId = tableSummaryOperationId(ip)
+    Map operation = [ip: ip, operationId: operationId, stage: 'starting', startedAt: now(), force: force]
+    tableSummaryRefreshOperations[ip] = operation
+    tableSummaryRefreshData[operationId] = [ip: ip, errors: []]
+    Map operations = new LinkedHashMap((atomicState.tableSummaryRefreshOperations ?: [:]) as Map)
+    operations[ip] = operation
+    atomicState.tableSummaryRefreshOperations = operations
+    markTableSummaryRefreshState(ip, 'refreshing', null)
+
+    try {
+        if (isGen1DeviceByIp(ip)) {
+            updateTableSummaryOperation(ip, operationId, 'gen1Status')
+            asynchttpGetHelper('tableSummaryGen1Callback',
+                               [uri: "http://${ip}/shelly", contentType: 'application/json',
+                                requestContentType: 'application/json'],
+                               [summaryIp: ip, summaryOperationId: operationId])
             return
         }
-        logDebug("Refreshing table summary for ${ip}")
-        buildDeviceStatusCacheEntry(ip)
-    } catch (Exception e) {
-        logWarn("Table summary refresh failed for ${ip}: ${e.message}")
-    } finally {
-        tableSummaryRefreshInFlight.remove(ip)
-        sendEventHelper([name: 'configTable', value: "summary:${ip}"])
-        scheduleNextTableSummaryRefresh()
+        updateTableSummaryOperation(ip, operationId, 'status')
+        postCommandAsync(shellyGetStatusCommand('tableSummary'), 'tableSummaryStatusCallback',
+                         "http://${ip}/rpc", [summaryIp: ip, summaryOperationId: operationId])
+    } catch (Exception ex) {
+        completeDeviceSummaryRefresh(ip, operationId, false, ex.message ?: 'Unable to start status refresh')
     }
+}
+
+void tableSummaryGen1Callback(AsyncResponse response, Map data = null) {
+    String ip = data?.summaryIp?.toString()
+    String operationId = data?.summaryOperationId?.toString()
+    if (!ip || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    if (response?.status != 200 || !tableSummaryResponseJson(response)) {
+        completeDeviceSummaryRefresh(ip, operationId, false, "Gen 1 status: HTTP ${response?.status ?: 'request'}")
+        return
+    }
+    refreshData.reachable = true
+    refreshData.scriptCounts = [required: -1, installed: -1, active: -1]
+    List<Map> actions = getGen1RequiredActionUrls(ip)
+    Map config = ((atomicState.deviceConfigs ?: [:])[findChildDeviceByIp(ip)?.deviceNetworkId] ?: [:]) as Map
+    Boolean configured = config.gen1ActionUrlsInstalled == true
+    refreshData.webhookCounts = [required: actions.size(), created: configured ? actions.size() : 0,
+                                 enabled: configured ? actions.size() : 0]
+    refreshData.webhookStatus = actions.collect { Map action ->
+        [name: action.name, event: action.event, cid: action.cid, status: configured ? 'configured' : 'MISSING']
+    }
+    completeDeviceSummaryRefresh(ip, operationId, true, null)
+}
+
+private void finishTableSummaryStage(String ip, String operationId) {
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    if (!refreshData || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    def child = findChildDeviceByIp(ip)
+    Boolean battery = child ? isBatteryPoweredDevice(child) : ((atomicState.deviceStatusCache ?: [:])[ip]?.isBatteryDevice == true)
+    if (!refreshData.webhookCounts && (!child || battery || refreshData.reachable != true)) {
+        refreshData.webhookCounts = [required: battery ? -1 : 0, created: battery ? -1 : 0, enabled: battery ? -1 : 0]
+    }
+    completeDeviceSummaryRefresh(ip, operationId, refreshData.errors?.isEmpty() == true, refreshData.errors?.join('; '))
+}
+
+private void completeDeviceSummaryRefresh(String ip, String operationId, Boolean success, String error = null) {
+    if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map ?: [:]
+    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+    Map info = (atomicState.discoveredShellys ?: [:])[ip] as Map ?: [:]
+    Map entry = new LinkedHashMap((cache[ip] ?: buildMinimalCacheEntry(ip, info)) as Map)
+    if (refreshData.reachable != null) { entry.isReachable = refreshData.reachable }
+    if (refreshData.scriptCounts) {
+        entry.requiredScriptCount = refreshData.scriptCounts.required
+        entry.installedScriptCount = refreshData.scriptCounts.installed
+        entry.activeScriptCount = refreshData.scriptCounts.active
+    }
+    if (refreshData.webhookCounts) {
+        entry.requiredWebhookCount = refreshData.webhookCounts.required
+        entry.createdWebhookCount = refreshData.webhookCounts.created
+        entry.enabledWebhookCount = refreshData.webhookCounts.enabled
+    }
+    if (refreshData.supportQueryFailed != null) {
+        entry.webhookSupportQueryFailed = refreshData.supportQueryFailed == true
+    }
+    if (refreshData.requiredActions != null) { entry.requiredWebhookActions = refreshData.requiredActions }
+    if (refreshData.webhookStatus != null) { entry.webhookStatus = refreshData.webhookStatus }
+    entry.summaryRefreshState = success ? 'fresh' : 'failed'
+    entry.summaryRefreshError = success ? null : (error ?: 'Refresh failed')
+    entry.lastRefreshAttempt = now()
+    if (success) { entry.lastRefreshed = now() }
+    cache[ip] = entry
+    atomicState.deviceStatusCache = cache
+
+    Map operations = new LinkedHashMap((atomicState.tableSummaryRefreshOperations ?: [:]) as Map)
+    operations.remove(ip)
+    if (operations) { atomicState.tableSummaryRefreshOperations = operations }
+    else { atomicState.remove('tableSummaryRefreshOperations') }
+    tableSummaryRefreshOperations.remove(ip)
+    tableSummaryRefreshData.remove(operationId)
+    tableSummaryRefreshInFlight.remove(ip)
+    sendEventHelper([name: 'configTable', value: "summary:${ip}"])
+    scheduleNextTableSummaryRefresh()
+}
+
+void tableSummaryStatusCallback(AsyncResponse response, Map data = null) {
+    String ip = data?.summaryIp?.toString()
+    String operationId = data?.summaryOperationId?.toString()
+    if (!ip || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map json = tableSummaryResponseJson(response)
+    String responseError = tableSummaryResponseError(response, json)
+    if (responseError) {
+        completeDeviceSummaryRefresh(ip, operationId, false, "Status: ${responseError}")
+        return
+    }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    refreshData.status = json.result as Map
+    refreshData.reachable = true
+    deviceStatusCacheVolatile.put(ip, [status: refreshData.status, cachedAt: now()])
+    startTableSummaryDefinitions(ip, operationId)
+}
+
+private void startTableSummaryDefinitions(String ip, String operationId) {
+    if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    Map cached = componentJsonCache
+    if (cached != null && (now() - componentJsonCacheTime) < COMPONENT_JSON_CACHE_MS) {
+        refreshData.componentJson = cached
+        startTableSummaryScripts(ip, operationId)
+        return
+    }
+    updateTableSummaryOperation(ip, operationId, 'definitions')
+    String url = "https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/UniversalDrivers/component_driver.json"
+    asynchttpGetHelper('tableSummaryDefinitionsCallback',
+                       [uri: url, contentType: 'application/json', requestContentType: 'application/json'],
+                       [summaryIp: ip, summaryOperationId: operationId])
+}
+
+void tableSummaryDefinitionsCallback(AsyncResponse response, Map data = null) {
+    String ip = data?.summaryIp?.toString()
+    String operationId = data?.summaryOperationId?.toString()
+    if (!ip || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    Map json = tableSummaryResponseJson(response)
+    if (response?.status == 200 && json) {
+        componentJsonCache = json
+        componentJsonCacheTime = now()
+        refreshData.componentJson = json
+        startTableSummaryScripts(ip, operationId)
+        return
+    }
+    // A stale in-memory definition set is still useful for a device summary;
+    // report the refresh as partial rather than blocking all later stages.
+    if (componentJsonCache) {
+        addTableSummaryError(refreshData, 'Definitions: refresh failed; using cached definitions')
+        refreshData.componentJson = componentJsonCache
+        startTableSummaryScripts(ip, operationId)
+    } else {
+        completeDeviceSummaryRefresh(ip, operationId, false, 'Definitions: unable to load component definitions')
+    }
+}
+
+private void startTableSummaryScripts(String ip, String operationId) {
+    if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    def child = findChildDeviceByIp(ip)
+    Boolean battery = child ? isBatteryPoweredDevice(child) : false
+    if (battery) {
+        refreshData.scriptCounts = [required: -1, installed: -1, active: -1]
+        startTableSummarySupportedWebhooks(ip, operationId)
+        return
+    }
+    updateTableSummaryOperation(ip, operationId, 'scripts')
+    List<Map> capabilities = refreshData.componentJson?.capabilities as List<Map>
+    Set<String> requiredScripts = child ?
+        getRequiredScriptsForDeviceStatus(child, ip, refreshData.status as Map, capabilities) : [] as Set<String>
+    refreshData.requiredScripts = requiredScripts
+    postCommandAsync(scriptListCommand(), 'tableSummaryScriptsCallback', "http://${ip}/rpc",
+                     [summaryIp: ip, summaryOperationId: operationId])
+}
+
+void tableSummaryScriptsCallback(AsyncResponse response, Map data = null) {
+    String ip = data?.summaryIp?.toString()
+    String operationId = data?.summaryOperationId?.toString()
+    if (!ip || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    Map json = tableSummaryResponseJson(response)
+    String responseError = tableSummaryResponseError(response, json)
+    if (responseError) {
+        addTableSummaryError(refreshData, "Scripts: ${responseError}")
+    } else {
+        List<Map> scripts = (json.result?.scripts ?: []) as List<Map>
+        Set<String> requiredNames = (refreshData.requiredScripts ?: [])
+            .collect { stripJsExtension(it.toString()) } as Set<String>
+        Integer installed = 0
+        Integer active = 0
+        requiredNames.each { String requiredName ->
+            Map script = scripts.find { Map item -> stripJsExtension((item.name ?: '').toString()) == requiredName }
+            if (script) { installed++ }
+            if (script?.enable == true && script?.running == true) { active++ }
+        }
+        refreshData.scriptCounts = [required: requiredNames.size(), installed: installed, active: active]
+    }
+    startTableSummarySupportedWebhooks(ip, operationId)
+}
+
+private void startTableSummarySupportedWebhooks(String ip, String operationId) {
+    if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    refreshData.supportedEvents = []
+    refreshData.supportQueryFailed = false
+    refreshData.supportMode = 'paged'
+    refreshData.supportOffset = 0
+    updateTableSummaryOperation(ip, operationId, 'supportedWebhooks')
+    postCommandAsync(webhookListAllSupportedCommand(0, 'tableSummarySupported'), 'tableSummarySupportedCallback',
+                     "http://${ip}/rpc", [summaryIp: ip, summaryOperationId: operationId])
+}
+
+void tableSummarySupportedCallback(AsyncResponse response, Map data = null) {
+    String ip = data?.summaryIp?.toString()
+    String operationId = data?.summaryOperationId?.toString()
+    if (!ip || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    Map json = tableSummaryResponseJson(response)
+    String responseError = tableSummaryResponseError(response, json)
+    if (responseError) {
+        if (refreshData.supportMode == 'paged') {
+            refreshData.supportMode = 'legacy'
+            postCommandAsync(webhookListSupportedCommand('tableSummarySupportedLegacy'), 'tableSummarySupportedCallback',
+                             "http://${ip}/rpc", [summaryIp: ip, summaryOperationId: operationId])
+            return
+        }
+        refreshData.supportQueryFailed = true
+        addTableSummaryError(refreshData, "Supported webhooks: ${responseError}")
+        startTableSummaryInputs(ip, operationId)
+        return
+    }
+
+    List<String> page = webhookEventNames(json.result?.types ?: json.result?.hook_types)
+    refreshData.supportedEvents = ((refreshData.supportedEvents ?: []) + page).unique()
+    if (refreshData.supportMode == 'paged' && json.result?.total != null &&
+        refreshData.supportedEvents.size() < (json.result.total as Integer) && page) {
+        Integer offset = (refreshData.supportOffset as Integer) + page.size()
+        refreshData.supportOffset = offset
+        postCommandAsync(webhookListAllSupportedCommand(offset, 'tableSummarySupported'), 'tableSummarySupportedCallback',
+                         "http://${ip}/rpc", [summaryIp: ip, summaryOperationId: operationId])
+        return
+    }
+    startTableSummaryInputs(ip, operationId)
+}
+
+private void startTableSummaryInputs(String ip, String operationId) {
+    if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    List<Integer> inputCids = []
+    (refreshData.status ?: [:]).each { key, value ->
+        String componentKey = key.toString()
+        if (componentKey.startsWith('input:')) {
+            try { inputCids.add(componentKey.split(':')[1] as Integer) } catch (Exception ignored) {}
+        }
+    }
+    refreshData.inputCids = inputCids.unique()
+    refreshData.inputIndex = 0
+    refreshData.inputTypes = [:]
+    if (!inputCids) {
+        startTableSummaryWebhooks(ip, operationId)
+        return
+    }
+    updateTableSummaryOperation(ip, operationId, 'inputConfigs')
+    postCommandAsync(inputGetConfigCommand(inputCids[0], 'tableSummaryInput'), 'tableSummaryInputCallback',
+                     "http://${ip}/rpc", [summaryIp: ip, summaryOperationId: operationId])
+}
+
+void tableSummaryInputCallback(AsyncResponse response, Map data = null) {
+    String ip = data?.summaryIp?.toString()
+    String operationId = data?.summaryOperationId?.toString()
+    if (!ip || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    Integer index = refreshData.inputIndex as Integer
+    List<Integer> inputCids = refreshData.inputCids as List<Integer>
+    Map json = tableSummaryResponseJson(response)
+    String responseError = tableSummaryResponseError(response, json)
+    if (responseError) {
+        addTableSummaryError(refreshData, "Input ${inputCids[index]}: ${responseError}")
+    } else if (json.result?.type) {
+        refreshData.inputTypes[inputCids[index]] = json.result.type.toString()
+    }
+    index++
+    refreshData.inputIndex = index
+    if (index < inputCids.size()) {
+        postCommandAsync(inputGetConfigCommand(inputCids[index], 'tableSummaryInput'), 'tableSummaryInputCallback',
+                         "http://${ip}/rpc", [summaryIp: ip, summaryOperationId: operationId])
+    } else {
+        startTableSummaryWebhooks(ip, operationId)
+    }
+}
+
+private void startTableSummaryWebhooks(String ip, String operationId) {
+    if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    def child = findChildDeviceByIp(ip)
+    Map componentJson = refreshData.componentJson as Map
+    List<Map> actions = []
+    if (child && componentJson?.webhookDefinitions?.events) {
+        actions = buildActionsFromWebhookDefs(componentJson.webhookDefinitions as Map, refreshData.status as Map,
+                                               refreshData.supportQueryFailed ? null : refreshData.supportedEvents as List<String>,
+                                               child, refreshData.requiredScripts as Set<String>,
+                                               refreshData.inputTypes as Map<Integer, String>)
+    } else if (child) {
+        actions = buildActionsFromCapabilities(refreshData.status as Map,
+                                               refreshData.supportQueryFailed ? null : refreshData.supportedEvents as List<String>,
+                                               child, componentJson?.capabilities as List<Map>)
+    }
+    refreshData.requiredActions = actions
+    if (refreshData.supportQueryFailed) {
+        finishTableSummaryStage(ip, operationId)
+        return
+    }
+    updateTableSummaryOperation(ip, operationId, 'webhooks')
+    postCommandAsync(webhookListCommand('tableSummaryWebhooks'), 'tableSummaryWebhooksCallback',
+                     "http://${ip}/rpc", [summaryIp: ip, summaryOperationId: operationId])
+}
+
+void tableSummaryWebhooksCallback(AsyncResponse response, Map data = null) {
+    String ip = data?.summaryIp?.toString()
+    String operationId = data?.summaryOperationId?.toString()
+    if (!ip || !isCurrentTableSummaryOperation(ip, operationId)) { return }
+    Map refreshData = tableSummaryRefreshData[operationId] as Map
+    Map json = tableSummaryResponseJson(response)
+    String responseError = tableSummaryResponseError(response, json)
+    if (responseError) {
+        addTableSummaryError(refreshData, "Webhooks: ${responseError}")
+    } else {
+        List<Map> installedHooks = (json.result?.hooks ?: []) as List<Map>
+        String hubIp = getLocationHelper()?.hub?.localIP ?: ''
+        Integer created = 0
+        Integer enabled = 0
+        List<Map> status = []
+        (refreshData.requiredActions ?: []).each { Map action ->
+            Map hook = installedHooks.find { Map item ->
+                item.event == action.event && (item.cid as Integer) == (action.cid as Integer)
+            }
+            Boolean configured = hook != null && hook.enable == true && hubIp &&
+                ((hook.urls ?: []) as List).any { String url -> url?.contains(hubIp) }
+            if (hook) { created++ }
+            if (configured) { enabled++ }
+            status.add([name: action.name, event: action.event, cid: action.cid, status: configured ? 'configured' : 'MISSING'])
+        }
+        refreshData.webhookCounts = [required: (refreshData.requiredActions ?: []).size(), created: created, enabled: enabled]
+        refreshData.webhookStatus = status
+    }
+    finishTableSummaryStage(ip, operationId)
 }
 
 /**
@@ -5586,21 +6054,14 @@ private String renderDriverManagementHtml() {
     // committed by an in-flight installDriverCallback chain.
     Map allDrivers = atomicState.autoDrivers ?: [:]
 
-    // Progress banner — shown while a queue is active or just completed.
-    // The completed banner is supposed to fade after 30 s via runIn(30,
-    // 'clearDriverUpdateProgress'), but if that schedule is dropped the
-    // banner would stick forever. Auto-suppress (and lazy-clear state) if
-    // finishedAt is older than 60 s, so a page refresh always recovers.
+    // Progress banner — shown while a queue is active or recently completed.
+    // Expired progress state is cleared by lifecycle/scheduled maintenance;
+    // rendering only decides whether the current snapshot is still visible.
     Map prog = atomicState.driverUpdateProgress as Map
-    if (prog != null && prog.active != true && prog.finishedAt != null) {
-        Long finishedAt = (prog.finishedAt as Long) ?: 0L
-        if (now() - finishedAt > 60000L) {
-            atomicState.remove('driverUpdateQueue')
-            atomicState.remove('driverUpdateProgress')
-            prog = null
-        }
-    }
-    if (prog != null && (prog.active == true || prog.finishedAt != null)) {
+    Long finishedAt = prog?.finishedAt as Long
+    Boolean progressVisible = prog != null && (prog.active == true ||
+        (finishedAt != null && now() - finishedAt <= 60000L))
+    if (progressVisible) {
         sb.append(renderDriverUpdateProgressBanner(prog))
     }
 
@@ -5726,7 +6187,8 @@ private List<String> buildSensorStateList(def childDevice) {
 
 /**
  * Renders webhook status HTML for the device config page.
- * Probes the device for installed webhooks and compares against required actions.
+ * Reads the last completed summary; device RPCs are performed by the
+ * asynchronous summary worker, never during SSR.
  *
  * @param device The child device
  * @param ip The device IP address
@@ -5735,78 +6197,35 @@ private List<String> buildSensorStateList(def childDevice) {
  * @return HTML string showing webhook status
  */
 private String renderWebhookStatusHtml(def device, String ip, List<Map> requiredActions, Boolean deviceIsReachable) {
-    String dni = device.deviceNetworkId
-
-    if (!deviceIsReachable) {
-        // Show last known webhook status from stored config
-    Map deviceConfigs = new LinkedHashMap((atomicState.deviceConfigs ?: [:]) as Map)
-        Map config = deviceConfigs[dni] as Map
-        List<Map> cachedStatus = config?.lastWebhookStatus as List<Map>
-
-        StringBuilder sb = new StringBuilder()
-        if (cachedStatus) {
-            sb.append("<b>Last known webhook status</b> (device is asleep):<br>")
-            sb.append("<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>")
-            cachedStatus.each { Map entry ->
-                sb.append("${entry.name} (${entry.event} cid:${entry.cid}) — ${entry.status}\n")
-            }
-            sb.append("</pre>")
-        } else {
-            sb.append("<b>Device is currently asleep.</b><br>")
-            sb.append("Webhook status has not been checked yet. Wake the device to check.")
-        }
-        return sb.toString().trim()
-    }
-
-    List<Map> installedHooks = listDeviceWebhooks(ip)
-    String hubIp = location.hub.localIP
-    List<Map> missingActions = []
-    List<Map> okActions = []
-    requiredActions.each { Map action ->
-        Map hook = installedHooks?.find { Map h ->
-            h.event == action.event && (h.cid as Integer) == (action.cid as Integer)
-        }
-        if (hook) {
-            List<String> urls = hook.urls as List<String>
-            Boolean enabled = hook.enable as Boolean
-            if (urls?.any { it?.contains(hubIp) } && enabled) {
-                okActions.add(action)
-            } else {
-                missingActions.add(action)
-            }
-        } else {
-            missingActions.add(action)
-        }
-    }
-
-    // Cache the webhook status for display when device is asleep
-    List<Map> webhookStatusCache = requiredActions.collect { Map action ->
-        Boolean isOk = okActions.contains(action)
-        [name: action.name, event: action.event, cid: action.cid, status: isOk ? 'configured' : 'MISSING']
-    }
-    Map deviceConfigs = new LinkedHashMap((atomicState.deviceConfigs ?: [:]) as Map)
-    Map config = deviceConfigs[dni] as Map
-    if (config) {
-        config.lastWebhookStatus = webhookStatusCache
-        deviceConfigs[dni] = config
-    atomicState.deviceConfigs = deviceConfigs
-    }
-
+    Map summaryEntry = (atomicState.deviceStatusCache ?: [:])[ip] as Map
+    Map config = ((atomicState.deviceConfigs ?: [:])[device?.deviceNetworkId] ?: [:]) as Map
+    List<Map> cachedStatus = (summaryEntry?.webhookStatus ?: config.lastWebhookStatus ?: []) as List<Map>
+    String refreshState = summaryEntry?.summaryRefreshState?.toString() ?: 'stale'
     StringBuilder sb = new StringBuilder()
-    sb.append("<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>")
-    requiredActions.each { Map action ->
-        Boolean isOk = okActions.contains(action)
-        String status = isOk ? 'configured' : 'MISSING'
-        sb.append("${action.name} (${action.event} cid:${action.cid}) — ${status}\n")
-    }
-    sb.append("</pre>")
 
-    if (missingActions.size() > 0) {
-        sb.append("<b>${missingActions.size()} action(s) need to be configured.</b>")
+    if (cachedStatus) {
+        sb.append("<pre style='white-space:pre-wrap; font-size:14px; line-height:1.4;'>")
+        cachedStatus.each { Map entry ->
+            sb.append("${entry.name} (${entry.event} cid:${entry.cid}) — ${entry.status}\n")
+        }
+        sb.append("</pre>")
+        Integer missingCount = cachedStatus.count { Map entry -> entry.status?.toString() == 'MISSING' }
+        if (missingCount > 0) {
+            sb.append("<b>${missingCount} action(s) need to be configured.</b>")
+        } else {
+            sb.append("<b>All required actions are configured.</b>")
+        }
+    } else if (refreshState == 'refreshing') {
+        sb.append("<b>Refreshing webhook status…</b>")
+    } else if (refreshState == 'failed') {
+        sb.append("<b>Webhook status refresh failed.</b><br>")
+        sb.append("${summaryEntry?.summaryRefreshError ?: 'The last known status is unavailable.'}")
+    } else if (!deviceIsReachable) {
+        sb.append("<b>Device is currently asleep.</b><br>")
+        sb.append("Webhook status has not been checked yet. Wake the device to check.")
     } else {
-        sb.append("<b>All required actions are configured.</b>")
+        sb.append("<b>Webhook status has not been refreshed yet.</b>")
     }
-
     return sb.toString().trim()
 }
 
@@ -5837,7 +6256,6 @@ String processServerSideRender(Map event) {
 
     // App-level events
     if (eventName == 'configTable') {
-        ensureDeviceStatusCache()
         return "<div id='config-table-wrapper'>${renderDeviceConfigTableMarkup()}</div>"
     }
 
@@ -5865,14 +6283,14 @@ String processServerSideRender(Map event) {
     String ip = genericDeviceDataValueHelper(childDevice, 'ipAddress')
     if (!ip) { return '' }
 
-    // Re-probe the device — it's awake if we got an event
-    Boolean deviceIsReachable = false
-    Map deviceStatus = queryDeviceStatus(ip)
-    if (deviceStatus) { deviceIsReachable = true }
+    // SSR must be cache-only. A refresh is queued by the table lifecycle and
+    // its completion event will cause this element to be rendered again.
+    Map summaryEntry = (atomicState.deviceStatusCache ?: [:])[ip] as Map
+    Boolean deviceIsReachable = summaryEntry?.isReachable == true
 
     // Determine what to render based on the element
     if (elementId?.contains('webhook-status')) {
-        List<Map> requiredActions = getRequiredActionsForDevice(childDevice, deviceIsReachable)
+        List<Map> requiredActions = (summaryEntry?.requiredWebhookActions ?: []) as List<Map>
         return renderWebhookStatusHtml(childDevice, ip, requiredActions, deviceIsReachable)
     }
 
@@ -6176,7 +6594,9 @@ List<Map> getRequiredActionsForDevice(def device, Boolean deviceIsReachable = tr
  * @param device The device for logging context
  * @return List of action maps with keys: event, name, dst, cid, urlParams
  */
-private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus, List<String> supportedEvents, def device) {
+private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus, List<String> supportedEvents,
+                                              def device, Set<String> suppliedRequiredScripts = null,
+                                              Map<Integer, String> suppliedInputTypes = null) {
     List<Map> requiredActions = []
 
     // Determine which component types the device has
@@ -6194,7 +6614,7 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
     }
 
     // Check if device uses powermonitoring.js script (if so, don't create power webhooks)
-    Set<String> requiredScripts = getRequiredScriptsForDevice(device)
+    Set<String> requiredScripts = suppliedRequiredScripts != null ? suppliedRequiredScripts : getRequiredScriptsForDevice(device)
     Boolean usesPowerScript = requiredScripts.any { it.toLowerCase().contains('powermonitoring') }
     Boolean usesPresenceScript = deviceComponentTypes.contains('presencezone')
     if (usesPowerScript) {
@@ -6205,8 +6625,8 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
     }
 
     // Query input configurations to determine their types (button, switch, analog)
-    Map<Integer, String> inputTypes = [:]
-    if (inputCids) {
+    Map<Integer, String> inputTypes = suppliedInputTypes != null ? suppliedInputTypes : [:]
+    if (suppliedInputTypes == null && inputCids) {
         String ip = device.getDataValue('ipAddress')
         if (ip) {
             inputTypes = getInputTypes(ip, inputCids)
@@ -6309,10 +6729,11 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
  * @param device The device for logging context
  * @return List of action maps with keys: event, name, dst, cid
  */
-private List<Map> buildActionsFromCapabilities(Map deviceStatus, List<String> supportedEvents, def device) {
+private List<Map> buildActionsFromCapabilities(Map deviceStatus, List<String> supportedEvents, def device,
+                                                List<Map> suppliedCapabilities = null) {
     List<Map> requiredActions = []
 
-    List<Map> capabilities = fetchCapabilityDefinitions()
+    List<Map> capabilities = suppliedCapabilities != null ? suppliedCapabilities : fetchCapabilityDefinitions()
     if (!capabilities) { return requiredActions }
 
     deviceStatus.each { k, v ->
@@ -6368,24 +6789,32 @@ private Set<String> getExpectedScriptNamesForStatus(def device, String ipAddress
  * @return Set of required script filenames (e.g., ["switchstatus.js", "powermonitoring.js"])
  */
 Set<String> getRequiredScriptsForDevice(def device) {
-    Set<String> requiredScripts = [] as Set
-
     String ip = device.getDataValue('ipAddress')
     if (!ip) {
         logDebug("getRequiredScriptsForDevice: no IP for ${device.displayName}")
-        return requiredScripts
+        return [] as Set<String>
     }
 
     // Query the device's actual status to discover its components
     Map deviceStatus = queryDeviceStatus(ip)
     if (!deviceStatus) {
         logDebug("getRequiredScriptsForDevice: could not query status for ${device.displayName}")
-        return requiredScripts
+        return [] as Set<String>
     }
 
     // Fetch and parse component_driver.json from GitHub
     List<Map> capabilities = fetchCapabilityDefinitions()
-    if (!capabilities) { return requiredScripts }
+    return getRequiredScriptsForDeviceStatus(device, ip, deviceStatus, capabilities)
+}
+
+/**
+ * Pure status-based script calculation used by the asynchronous summary
+ * pipeline. The caller supplies all RPC-derived data so this helper never
+ * performs network I/O.
+ */
+private Set<String> getRequiredScriptsForDeviceStatus(def device, String ip, Map deviceStatus, List<Map> capabilities) {
+    Set<String> requiredScripts = [] as Set
+    if (!deviceStatus || !capabilities) { return requiredScripts }
 
     // Walk status keys to find components and detect power monitoring
     deviceStatus.each { k, v ->
@@ -6676,10 +7105,15 @@ private String stripJsExtension(String filename) {
 void initialize(Boolean performMaintenance = false, Boolean registerStartupSubscription = true) {
     // Do not carry transient lookup results across app initialization or updates.
     deviceStatusCacheVolatile.clear()
+    tableSummaryRefreshQueue.clear()
+    tableSummaryRefreshInFlight.clear()
+    tableSummaryRefreshOperations.clear()
+    tableSummaryRefreshData.clear()
     invalidateDirectChildDeviceCache()
 
     if (!atomicState.discoveredShellys) { atomicState.discoveredShellys = [:] }
     if (atomicState.discoveryRunning == null) { atomicState.discoveryRunning = false }
+    ensureDeviceStatusCache()
     recoverStaleTransientState()
 
     // Capability discovery is no longer scheduled by ordinary discovery. Clear
@@ -6720,6 +7154,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     // BLE state initialization
     if (!state.discoveredBleDevices) { state.discoveredBleDevices = [:] }
     if (!state.bleGateways) { state.bleGateways = [] }
+    pruneUnknownBleDevices()
 
     // Migrate: PID dedup is now in @Field blePidCache — remove obsolete state key
     state.remove('recentBlePids')
@@ -6759,6 +7194,9 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     }
 
     if (performMaintenance) {
+        reconcilePageStateAfterUpdate()
+        clearCompletedProvisioningState()
+
         // Clean up stale state from previous versions.
         state.remove('driverRebuildInProgress')
         state.remove('driverRebuildQueue')
@@ -6934,6 +7372,20 @@ private void recoverStaleTransientState() {
         logWarn("Recovering abandoned provisioning state for ${ip}")
         cancelProvisioningOperation(ip)
     }
+
+    Map summaryOperations = new LinkedHashMap((atomicState.tableSummaryRefreshOperations ?: [:]) as Map)
+    summaryOperations.keySet().toList().each { Object ipKey ->
+        String ip = ipKey.toString()
+        Map operation = summaryOperations[ip] as Map
+        Long startedAt = operation?.startedAt as Long
+        String operationId = operation?.operationId?.toString()
+        if (startedAt == null || startedAt < cutoff || (operationId && !tableSummaryRefreshData.containsKey(operationId))) {
+            markTableSummaryRefreshState(ip, 'failed', 'Refresh was interrupted and will be retried')
+            summaryOperations.remove(ipKey)
+        }
+    }
+    if (summaryOperations) { atomicState.tableSummaryRefreshOperations = summaryOperations }
+    else { atomicState.remove('tableSummaryRefreshOperations') }
 
     Map activeOperations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
     ['scriptVerificationPending', 'provisioningCompletionPending'].each { String key ->
@@ -13954,11 +14406,10 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
     }
 
     // Throttle BLE table SSR updates to avoid exceeding hub event rate limits.
-    // At most once per 10 seconds — BLE advertisements arrive frequently — and only
-    // while a page session is plausibly open (the event triggers a full table re-render
-    // server-side; firing it 24/7 was ~8,600 wasted hub events per day).
+    // Discovery state is persisted by processBleReport before this event is sent,
+    // so a later SSR always sees newly discovered devices.
     Long nowMs = nowHelper()
-    if (nowMs < blePageActiveUntil && nowMs - lastBleTableSSR > 10000L) {
+    if (nowMs - lastBleTableSSR > 10000L) {
         lastBleTableSSR = nowMs
         sendEventHelper([name: 'bleTable', value: 'update'])
     }
@@ -14885,7 +15336,7 @@ void checkBlePresence() {
         }
     }
 
-    if (anyChanged && nowHelper() < blePageActiveUntil) {
+    if (anyChanged) {
         sendEventHelper([name: 'bleTable', value: 'presence'])
     }
     reconcileBlePresenceSchedule()
@@ -15271,8 +15722,6 @@ private void saveBleGatewayState(String ip, Boolean enabled) {
  * @return HTML string with SSR wrapper, CSS, and table markup
  */
 private String displayBleDeviceTable() {
-    // Mark the page session active so BLE-advertisement SSR updates fire (see handleBleRelay)
-    blePageActiveUntil = now() + BLE_PAGE_ACTIVE_MS
     String tableMarkup = renderBleTableMarkup()
     return "<span class='ssr-app-state-${getAppIdHelper()}-bleTable' id='ble-table'>" +
         "<div id='ble-table-wrapper'>${tableMarkup}</div></span>"
@@ -15292,18 +15741,17 @@ void fireBleTableSSR() {
  * @return HTML table markup string
  */
 private String renderBleTableMarkup() {
-    Map discoveredBle = state.discoveredBleDevices ?: [:]
+    Map discoveredBle = new LinkedHashMap((state.discoveredBleDevices ?: [:]) as Map)
     Map bleProvisioningOperations = new LinkedHashMap((state.bleProvisioningOperations ?: [:]) as Map)
     if (discoveredBle.size() == 0) {
         return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
     }
 
-    // Filter to known devices only, merge volatile cache, and refresh cached display fields.
-    // Stale entries (stored before model map updates) get their friendlyModel/driverName refreshed here.
+    // Filter to known devices only and merge volatile display fields. Rendering
+    // must not persist repairs or mutate provisioning state.
     List<Map> deviceList = []
-    Boolean stateChanged = false
     discoveredBle.each { String macKey, bleVal ->
-        Map entry = bleVal as Map
+        Map entry = new LinkedHashMap((bleVal ?: [:]) as Map)
         Integer entryModelId = entry.modelId != null ? entry.modelId as Integer : null
         String entryModel = (entry.model ?: '') as String
         Map<String, String> driverInfo = resolveBleDriverInfo(entryModelId, entryModel)
@@ -15319,7 +15767,8 @@ private String renderBleTableMarkup() {
             if (volatileData.lastGateway != null) { entry.lastGateway = volatileData.lastGateway }
         }
 
-        // Refresh cached display fields from resolved driver info
+        // Refresh display fields locally for entries created before the driver map
+        // was expanded; lifecycle maintenance owns any durable repair.
         if (driverInfo) {
             if (entry.friendlyModel != driverInfo.friendlyModel ||
                 entry.driverName != driverInfo.driverName ||
@@ -15327,13 +15776,10 @@ private String renderBleTableMarkup() {
                 entry.friendlyModel = driverInfo.friendlyModel
                 entry.driverName = driverInfo.driverName
                 if (driverInfo.modelCode) { entry.modelCode = driverInfo.modelCode }
-                discoveredBle[macKey] = entry
-                stateChanged = true
             }
         }
         deviceList.add(entry)
     }
-    if (stateChanged) { state.discoveredBleDevices = discoveredBle }
 
     if (deviceList.size() == 0) {
         return "<p style='color:#9E9E9E'>No BLE devices discovered. Enable BLE gateway mode on WiFi devices (via the BLE GW column in the table above) to start receiving BLE advertisements.</p>"
@@ -15371,9 +15817,6 @@ private String renderBleTableMarkup() {
         Long lastSeen = entry.lastSeen as Long ?: 0L
         String gateway = entry.lastGateway ?: '—'
         Boolean isCreated = entry.isCreated ?: false
-        if (isCreated && bleProvisioningOperations.remove(mac) != null) {
-            logTrace("BLE table cleared completed creation marker for ${mac}")
-        }
         Boolean isProvisioning = !isCreated && bleProvisioningOperations[mac] != null
 
         // Device name column — names/models derive from BLE advertisements (network-controlled), escape them
@@ -15455,9 +15898,6 @@ private String renderBleTableMarkup() {
         str.append("</tr>")
     }
 
-    if (state.bleProvisioningOperations != bleProvisioningOperations) {
-        state.bleProvisioningOperations = bleProvisioningOperations
-    }
     str.append("</tbody></table></div>")
     return str.toString()
 }
