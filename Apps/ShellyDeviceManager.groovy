@@ -123,6 +123,19 @@
 @Field static ConcurrentHashMap<String, Map> deviceStatusCacheVolatile =
     new java.util.concurrent.ConcurrentHashMap<String, Map>()
 
+// Durable UI cache patches are coalesced in memory and flushed once per
+// batch. This keeps asynchronous callbacks from cloning and persisting the
+// complete deviceStatusCache independently for every field transition.
+@Field static ConcurrentHashMap<String, Map> pendingDeviceStatusCacheEntries =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, Map> pendingDiscoveredShellyEntries =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, String> pendingDeviceStatusCacheEvents =
+    new java.util.concurrent.ConcurrentHashMap<String, String>()
+@Field static volatile boolean deviceStatusCacheFlushScheduled = false
+@Field static final Object DEVICE_STATUS_CACHE_FLUSH_LOCK = new Object()
+@Field static volatile Map durableStateWriteMetrics = [:]
+
 /** Per-IP locks prevent overlapping synchronous refreshes from querying one device twice. */
 @Field static ConcurrentHashMap<String, Object> deviceStatusQueryLocks =
     new java.util.concurrent.ConcurrentHashMap<String, Object>()
@@ -2010,6 +2023,124 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
     ]
 }
 
+/** Returns the newest durable cache entry, including an unflushed patch. */
+private Map currentDeviceStatusCacheEntry(String ip, Map fallback = null) {
+    Map pending = pendingDeviceStatusCacheEntries.get(ip) as Map
+    if (pending != null) { return new LinkedHashMap(pending) }
+    Map cached = (atomicState.deviceStatusCache ?: [:])[ip] as Map
+    if (cached != null) { return new LinkedHashMap(cached) }
+    return fallback ? new LinkedHashMap(fallback) : null
+}
+
+private Map currentDiscoveredShellyEntry(String ip) {
+    Map pending = pendingDiscoveredShellyEntries.get(ip) as Map
+    if (pending != null) { return new LinkedHashMap(pending) }
+    Map discovered = (atomicState.discoveredShellys ?: [:])[ip] as Map
+    return discovered != null ? new LinkedHashMap(discovered) : null
+}
+
+/** Queues one complete per-device cache entry for the next durable flush. */
+private void queueDeviceStatusCacheWrite(String ip, Map entry, String eventValue = null) {
+    if (!ip || !entry) { return }
+    Boolean schedule = false
+    synchronized (DEVICE_STATUS_CACHE_FLUSH_LOCK) {
+        pendingDeviceStatusCacheEntries.put(ip, new LinkedHashMap(entry))
+        if (eventValue) { pendingDeviceStatusCacheEvents.put(ip, eventValue) }
+        if (!deviceStatusCacheFlushScheduled) {
+            deviceStatusCacheFlushScheduled = true
+            schedule = true
+        }
+    }
+    if (schedule) {
+        runInMillisHelper(100L, 'flushPendingDeviceStatusCache', [overwrite: false])
+    }
+}
+
+/** Queues one discovered-device identity record for the same durable flush. */
+private void queueDiscoveredShellyWrite(String ip, Map entry, String eventValue = null) {
+    if (!ip || !entry) { return }
+    Boolean schedule = false
+    synchronized (DEVICE_STATUS_CACHE_FLUSH_LOCK) {
+        pendingDiscoveredShellyEntries.put(ip, new LinkedHashMap(entry))
+        if (eventValue) { pendingDeviceStatusCacheEvents.put(ip, eventValue) }
+        if (!deviceStatusCacheFlushScheduled) {
+            deviceStatusCacheFlushScheduled = true
+            schedule = true
+        }
+    }
+    if (schedule) {
+        runInMillisHelper(100L, 'flushPendingDeviceStatusCache', [overwrite: false])
+    }
+}
+
+/** Records volatile write metrics without adding another atomicState write. */
+private void recordDurableStateWrite(String mapName, Boolean changed, Integer patchCount = 0) {
+    if (!mapName) { return }
+    Map metrics = new LinkedHashMap(durableStateWriteMetrics ?: [:])
+    Map entry = new LinkedHashMap((metrics[mapName] ?: [:]) as Map)
+    entry.attempts = ((entry.attempts ?: 0) as Integer) + 1
+    if (changed) { entry.changed = ((entry.changed ?: 0) as Integer) + 1 }
+    if (patchCount > 0) { entry.patches = ((entry.patches ?: 0) as Integer) + patchCount }
+    metrics[mapName] = entry
+    durableStateWriteMetrics = metrics
+}
+
+/** Flushes all pending status-cache entries in one outer-map write. */
+void flushPendingDeviceStatusCache() {
+    Map pending = [:]
+    Map pendingDiscovered = [:]
+    Map events = [:]
+    synchronized (DEVICE_STATUS_CACHE_FLUSH_LOCK) {
+        deviceStatusCacheFlushScheduled = false
+        pendingDeviceStatusCacheEntries.each { String ip, Map entry -> pending[ip] = new LinkedHashMap(entry) }
+        pendingDiscoveredShellyEntries.each { String ip, Map entry -> pendingDiscovered[ip] = new LinkedHashMap(entry) }
+        pendingDeviceStatusCacheEvents.each { String ip, String eventValue -> events[ip] = eventValue }
+        pendingDeviceStatusCacheEntries.clear()
+        pendingDiscoveredShellyEntries.clear()
+        pendingDeviceStatusCacheEvents.clear()
+    }
+    if (!pending && !pendingDiscovered) { return }
+
+    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+    Boolean changed = false
+    pending.each { String ip, Map entry ->
+        if (cache[ip] != entry) {
+            cache[ip] = entry
+            changed = true
+        }
+    }
+    if (changed) {
+        atomicState.deviceStatusCache = cache
+        recordDurableStateWrite('deviceStatusCache', true, pending.size())
+    } else {
+        recordDurableStateWrite('deviceStatusCache', false, pending.size())
+    }
+    Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+    Boolean discoveredChanged = false
+    pendingDiscovered.each { String ip, Map entry ->
+        if (discovered[ip] != entry) {
+            discovered[ip] = entry
+            discoveredChanged = true
+        }
+    }
+    if (discoveredChanged) {
+        atomicState.discoveredShellys = discovered
+        recordDurableStateWrite('discoveredShellys', true, pendingDiscovered.size())
+    } else if (pendingDiscovered) {
+        recordDurableStateWrite('discoveredShellys', false, pendingDiscovered.size())
+    }
+    if (events) {
+        sendEventHelper([name: 'configTable', value: 'deviceStatusCacheBatch'])
+    }
+
+    synchronized (DEVICE_STATUS_CACHE_FLUSH_LOCK) {
+        if ((pendingDeviceStatusCacheEntries || pendingDiscoveredShellyEntries) && !deviceStatusCacheFlushScheduled) {
+            deviceStatusCacheFlushScheduled = true
+            runInMillisHelper(100L, 'flushPendingDeviceStatusCache', [overwrite: false])
+        }
+    }
+}
+
 /**
  * Updates the cached provisioning indicator for a device and asks the UI to
  * refresh. This is intentionally cache-backed so the spinner remains visible
@@ -2020,8 +2151,7 @@ private Map buildMinimalCacheEntry(String ip, Map info) {
  */
 private void setProvisioningStatus(String ip, String status) {
     if (!ip) { return }
-    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-    Map entry = cache[ip] as Map
+    Map entry = currentDeviceStatusCacheEntry(ip)
     if (!entry) {
         Map discovered = (atomicState.discoveredShellys ?: [:])[ip] as Map
         entry = buildMinimalCacheEntry(ip, discovered ?: [:])
@@ -2034,9 +2164,7 @@ private void setProvisioningStatus(String ip, String status) {
     } else {
         entry.remove('provisioningStartedAt')
     }
-    cache[ip] = entry
-    atomicState.deviceStatusCache = cache
-    sendEventHelper([name: 'configTable', value: 'provisioning'])
+    queueDeviceStatusCacheWrite(ip, entry, 'provisioning')
 }
 
 /** Returns true when an asynchronous provisioning operation owns this IP. */
@@ -2664,13 +2792,12 @@ private void updateTableSummaryOperation(String ip, String operationId, String s
 }
 
 private void markTableSummaryRefreshState(String ip, String refreshState, String error = null) {
-    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-    Map entry = new LinkedHashMap((cache[ip] ?: buildMinimalCacheEntry(ip, (atomicState.discoveredShellys ?: [:])[ip] as Map ?: [:])) as Map)
+    Map entry = currentDeviceStatusCacheEntry(ip,
+        buildMinimalCacheEntry(ip, (atomicState.discoveredShellys ?: [:])[ip] as Map ?: [:]))
     entry.summaryRefreshState = refreshState
     entry.summaryRefreshError = error
     entry.lastRefreshAttempt = now()
-    cache[ip] = entry
-    atomicState.deviceStatusCache = cache
+    queueDeviceStatusCacheWrite(ip, entry, 'summary')
 }
 
 private Map tableSummaryResponseJson(AsyncResponse response) {
@@ -2773,9 +2900,8 @@ private void finishTableSummaryStage(String ip, String operationId) {
 private void completeDeviceSummaryRefresh(String ip, String operationId, Boolean success, String error = null) {
     if (!isCurrentTableSummaryOperation(ip, operationId)) { return }
     Map refreshData = tableSummaryRefreshData[operationId] as Map ?: [:]
-    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
     Map info = (atomicState.discoveredShellys ?: [:])[ip] as Map ?: [:]
-    Map entry = new LinkedHashMap((cache[ip] ?: buildMinimalCacheEntry(ip, info)) as Map)
+    Map entry = currentDeviceStatusCacheEntry(ip, buildMinimalCacheEntry(ip, info))
     if (refreshData.reachable != null) { entry.isReachable = refreshData.reachable }
     if (refreshData.scriptCounts) {
         entry.requiredScriptCount = refreshData.scriptCounts.required
@@ -2796,8 +2922,7 @@ private void completeDeviceSummaryRefresh(String ip, String operationId, Boolean
     entry.summaryRefreshError = success ? null : (error ?: 'Refresh failed')
     entry.lastRefreshAttempt = now()
     if (success) { entry.lastRefreshed = now() }
-    cache[ip] = entry
-    atomicState.deviceStatusCache = cache
+    queueDeviceStatusCacheWrite(ip, entry, "summary:${ip}")
 
     Map operations = new LinkedHashMap((atomicState.tableSummaryRefreshOperations ?: [:]) as Map)
     operations.remove(ip)
@@ -2806,7 +2931,7 @@ private void completeDeviceSummaryRefresh(String ip, String operationId, Boolean
     tableSummaryRefreshOperations.remove(ip)
     tableSummaryRefreshData.remove(operationId)
     tableSummaryRefreshInFlight.remove(ip)
-    sendEventHelper([name: 'configTable', value: "summary:${ip}"])
+    flushPendingDeviceStatusCache()
     scheduleNextTableSummaryRefresh()
 }
 
@@ -3069,8 +3194,7 @@ void tableSummaryWebhooksCallback(AsyncResponse response, Map data = null) {
 private Map buildDeviceStatusCacheEntry(String ip) {
     Map discoveredShellys = atomicState.discoveredShellys ?: [:]
     Map info = discoveredShellys[ip] as Map
-    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-    Map entry = cache[ip] as Map ?: buildMinimalCacheEntry(ip, info ?: [:])
+    Map entry = currentDeviceStatusCacheEntry(ip, buildMinimalCacheEntry(ip, info ?: [:]))
 
     // Update basic info from discovery
     if (info) {
@@ -3195,9 +3319,9 @@ private Map buildDeviceStatusCacheEntry(String ip) {
 
     entry.lastRefreshed = now()
 
-    // Persist to state
-    cache[ip] = entry
-    atomicState.deviceStatusCache = cache
+    // Persist through the coalesced cache writer. Callers that need the
+    // durable value before an SSR can flush the pending batch explicitly.
+    queueDeviceStatusCacheWrite(ip, entry)
     return entry
 }
 
@@ -4174,14 +4298,12 @@ void finalizeScriptInstallation(Map data) {
     // Update cache directly with known script status — no HTTP round-trip needed
     // since we know exactly what was installed, enabled, and started
     List<String> scriptQueue = data.scriptQueue as List<String>
-    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-    Map entry = cache[ipAddress] as Map
+    Map entry = currentDeviceStatusCacheEntry(ipAddress)
     if (entry) {
         entry.requiredScriptCount = scriptQueue.size()
         entry.installedScriptCount = installed
         entry.activeScriptCount = installed
-        cache[ipAddress] = entry
-        atomicState.deviceStatusCache = cache
+        queueDeviceStatusCacheWrite(ipAddress, entry)
     }
 
     // The final upload callback tells us what commands succeeded, but the
@@ -4200,7 +4322,8 @@ void finalizeScriptInstallation(Map data) {
         scheduleProvisioningCompletionCheck(ipAddress, operationId)
     }
 
-    // Fire SSR update event directly — this IS the completion event, no timer needed
+    // Flush before the completion event so the browser reads the new counts.
+    flushPendingDeviceStatusCache()
     sendEventHelper([name: 'configTable', value: 'update'])
 }
 
@@ -4242,15 +4365,14 @@ void verifyScriptInstallation(Map data) {
         }
     }
 
-    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-    Map entry = cache[ipAddress] as Map
+    Map entry = currentDeviceStatusCacheEntry(ipAddress)
     if (entry) {
         entry.requiredScriptCount = requiredNames.size()
         entry.installedScriptCount = installed
         entry.activeScriptCount = active
-        cache[ipAddress] = entry
-        atomicState.deviceStatusCache = cache
+        queueDeviceStatusCacheWrite(ipAddress, entry)
     }
+    flushPendingDeviceStatusCache()
     sendEventHelper([name: 'configTable', value: 'scriptVerificationAfter'])
 
     Boolean complete = installed >= requiredNames.size() && active >= requiredNames.size()
@@ -4303,6 +4425,7 @@ void verifyProvisioningCompletion(Map data) {
 
     sendEventHelper([name: 'configTable', value: 'provisioningFinalCheckBefore'])
     Map entry = buildDeviceStatusCacheEntry(ipAddress)
+    flushPendingDeviceStatusCache()
     sendEventHelper([name: 'configTable', value: 'provisioningFinalCheckAfter'])
 
     Integer requiredScripts = entry?.requiredScriptCount as Integer
@@ -7136,6 +7259,7 @@ private String stripJsExtension(String filename) {
  * buttons and scheduled callbacks, never by app initialization.
  */
 void initialize(Boolean performMaintenance = false, Boolean registerStartupSubscription = true) {
+    flushPendingDeviceStatusCache()
     // Do not carry transient lookup results across app initialization or updates.
     deviceStatusCacheVolatile.clear()
     tableSummaryRefreshQueue.clear()
@@ -7999,6 +8123,9 @@ void discoveryShellyReachabilityCallback(response, Map data) {
  * Uses bare {@code sendEvent()} to trigger the SSR callback in {@link #processServerSideRender}.
  */
 void sendFoundShellyEvents() {
+    // Discovery identity merges must not overwrite a pending status/provisioning
+    // patch with an older outer-map snapshot.
+    flushPendingDeviceStatusCache()
     Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
     Map discoveredShellys = atomicState.discoveredShellys ?: [:]
     Boolean cacheChanged = false
@@ -8393,8 +8520,12 @@ void watchdogProcessResults() {
         }
 
         // Build hostname→MAC lookup from discoveredShellys (authoritative MAC from /shelly probe)
+        Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+        Map statusCache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+        Boolean discoveredChanged = false
+        Boolean statusCacheChanged = false
         Map<String, String> hostnameToMac = [:]
-        (atomicState.discoveredShellys as Map)?.each { String ip, Object val ->
+        discovered.each { String ip, Object val ->
             Map entry = val as Map
             String name = stripMdnsDomainSuffix(entry.name?.toString() ?: '')
             String entryMac = entry.mac?.toString()
@@ -8429,14 +8560,20 @@ void watchdogProcessResults() {
                 child.updateDataValue('ipAddress', ip4)
                 updatedCount++
 
-                // Also update discoveredShellys if the old IP is a key
-                if (atomicState.discoveredShellys?.containsKey(currentIp)) {
-                    Map discovered = new LinkedHashMap((atomicState.discoveredShellys as Map))
+                // Defer discovered/cache map persistence until all watchdog
+                // entries have been processed.
+                if (discovered.containsKey(currentIp)) {
                     Map deviceEntry = discovered.remove(currentIp) as Map
                     deviceEntry.ipAddress = ip4
                     deviceEntry.ts = now()
                     discovered[ip4] = deviceEntry
-                    atomicState.discoveredShellys = discovered
+                    discoveredChanged = true
+                }
+                if (statusCache.containsKey(currentIp)) {
+                    Map cacheEntry = new LinkedHashMap(statusCache.remove(currentIp) as Map)
+                    cacheEntry.ip = ip4
+                    statusCache[ip4] = cacheEntry
+                    statusCacheChanged = true
                 }
             }
         }
@@ -8460,20 +8597,35 @@ void watchdogProcessResults() {
                 child.updateDataValue('ipAddress', shIp)
                 updatedCount++
 
-                // Also update discoveredShellys if the old IP is a key
-                if (atomicState.discoveredShellys?.containsKey(currentIp)) {
-                    Map discovered = new LinkedHashMap((atomicState.discoveredShellys as Map))
+                // Defer discovered/cache map persistence until all watchdog
+                // entries have been processed.
+                if (discovered.containsKey(currentIp)) {
                     Map deviceEntry = discovered.remove(currentIp) as Map
                     deviceEntry.ipAddress = shIp
                     deviceEntry.ts = now()
                     discovered[shIp] = deviceEntry
-                    atomicState.discoveredShellys = discovered
+                    discoveredChanged = true
+                }
+                if (statusCache.containsKey(currentIp)) {
+                    Map cacheEntry = new LinkedHashMap(statusCache.remove(currentIp) as Map)
+                    cacheEntry.ip = shIp
+                    statusCache[shIp] = cacheEntry
+                    statusCacheChanged = true
                 }
             }
         }
 
+        if (discoveredChanged) {
+            atomicState.discoveredShellys = discovered
+            recordDurableStateWrite('discoveredShellys', true, updatedCount)
+        }
+        if (statusCacheChanged) {
+            atomicState.deviceStatusCache = statusCache
+            recordDurableStateWrite('deviceStatusCache', true, updatedCount)
+        }
         if (updatedCount > 0) {
             logInfo("watchdogProcessResults: updated ${updatedCount} device IP(s)")
+            sendEventHelper([name: 'configTable', value: 'watchdog'])
         } else {
             logTrace('watchdogProcessResults: all device IPs are current')
         }
@@ -10257,15 +10409,13 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
         device.ts = now()
         atomicState.discoveredShellys[ipKey] = device
 
-        // Update the cache entry
-    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-        if (cache.containsKey(ip)) {
-            Map cacheEntry = cache[ip] as Map
+        // Update the cache entry through the coalesced status-cache writer.
+        Map cacheEntry = currentDeviceStatusCacheEntry(ip)
+        if (cacheEntry) {
             if (device.mac) { cacheEntry.mac = device.mac.toString() }
             if (device.model) { cacheEntry.model = device.model.toString() }
             cacheEntry.isBatteryDevice = device.isBatteryDevice ?: false
-            cache[ip] = cacheEntry
-        atomicState.deviceStatusCache = cache
+            queueDeviceStatusCacheWrite(ip, cacheEntry)
         }
 
         appendLog('info', "Gen 1 device info from ${ip}: ${device.model} (${typeCode}), mac=${device.mac ?: 'n/a'}, fw=${device.ver ?: 'n/a'}")
@@ -17359,9 +17509,8 @@ private void updateDeviceAuthMetadata(String uri, Boolean enabled, String scheme
   String ip = authDeviceIp(uri)
   if (!ip) { return }
   String normalizedError = error ? error.toString().take(120) : null
-  Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
-  Map device = discovered[ip] instanceof Map ? new LinkedHashMap(discovered[ip] as Map) : null
-  Map existingCache = (atomicState.deviceStatusCache ?: [:])[ip] as Map
+  Map device = currentDiscoveredShellyEntry(ip)
+  Map existingCache = currentDeviceStatusCacheEntry(ip)
   Boolean deviceChanged = device != null &&
       (device.auth_en != enabled || device.authScheme?.toString() != scheme ||
        device.authStatus?.toString() != status || device.authLastError?.toString() != normalizedError)
@@ -17375,19 +17524,16 @@ private void updateDeviceAuthMetadata(String uri, Boolean enabled, String scheme
     if (status) { device.authStatus = status }
     if (normalizedError) { device.authLastError = normalizedError } else { device.remove('authLastError') }
     device.authUpdatedAt = now()
-    discovered[ip] = device
-    atomicState.discoveredShellys = discovered
+    queueDiscoveredShellyWrite(ip, device, "auth:${ip}")
   }
 
-  Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
-  Map entry = cache[ip] instanceof Map ? new LinkedHashMap(cache[ip] as Map) : null
+  Map entry = existingCache ? new LinkedHashMap(existingCache) : null
   if (entry) {
     entry.auth_en = enabled
     if (scheme) { entry.authScheme = scheme }
     if (status) { entry.authStatus = status }
     if (normalizedError) { entry.authLastError = normalizedError } else { entry.remove('authLastError') }
-    cache[ip] = entry
-    atomicState.deviceStatusCache = cache
+    queueDeviceStatusCacheWrite(ip, entry, "auth:${ip}")
   }
 
   try {
@@ -17399,7 +17545,6 @@ private void updateDeviceAuthMetadata(String uri, Boolean enabled, String scheme
   } catch (Exception ignored) {
     // Auth state must still be persisted if a child is being created/deleted.
   }
-  sendEventHelper([name: 'configTable', value: "auth:${ip}"])
 }
 
 /** Applies authoritative auth_en data from Shelly.GetDeviceInfo. */
