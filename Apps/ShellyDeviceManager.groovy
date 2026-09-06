@@ -131,6 +131,34 @@
 @Field static ConcurrentHashMap<String, Object> deviceConfigurationSyncLocks =
     new java.util.concurrent.ConcurrentHashMap<String, Object>()
 
+// Per-IP request coordination. Device-local RPCs share one logical lane per
+// endpoint while different endpoints remain concurrent. The queue and active
+// records are volatile; callback data carries the request token, and lifecycle
+// recovery clears abandoned records after the normal transient-operation TTL.
+@Field static ConcurrentHashMap<String, Object> deviceRequestCoordinatorLocks =
+    new java.util.concurrent.ConcurrentHashMap<String, Object>()
+@Field static ConcurrentHashMap<String, Map> deviceRequestInFlight =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, List<Map>> deviceRequestQueues =
+    new java.util.concurrent.ConcurrentHashMap<String, List<Map>>()
+@Field static ConcurrentHashMap<String, Map> deviceRequestHealth =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, Boolean> deviceRequestDispatchScheduled =
+    new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+@Field static volatile long deviceRequestSequence = 0L
+@Field static final Object DEVICE_REQUEST_SEQUENCE_LOCK = new Object()
+// BLE relay RPCs can legitimately take 60 seconds; recovery must not release
+// those leases early and create a second request for the same gateway.
+@Field static final Long DEVICE_REQUEST_TIMEOUT_GRACE_MS = 120000L
+@Field static final Integer DEVICE_REQUEST_MAX_QUEUE = 50
+@Field static final Integer DEVICE_REQUEST_USER_PRIORITY = 100
+@Field static final Integer DEVICE_REQUEST_EXPLICIT_PRIORITY = 80
+@Field static final Integer DEVICE_REQUEST_NORMAL_PRIORITY = 50
+@Field static final Integer DEVICE_REQUEST_BACKGROUND_PRIORITY = 10
+@Field static final Long DEVICE_REQUEST_MIN_RETRY_MS = 1000L
+@Field static final Long DEVICE_REQUEST_MAX_RETRY_MS = 120000L
+@Field static final Long DEVICE_REQUEST_MIN_INTERVAL_MS = 100L
+
 /** In-memory parent-command queues, keyed by IP/method/component. */
 @Field static ConcurrentHashMap<String, List<Map>> parentCommandQueues =
     new java.util.concurrent.ConcurrentHashMap<String, List<Map>>()
@@ -2690,10 +2718,15 @@ private void startDeviceSummaryRefresh(String ip, Boolean force = false) {
     try {
         if (isGen1DeviceByIp(ip)) {
             updateTableSummaryOperation(ip, operationId, 'gen1Status')
-            asynchttpGetHelper('tableSummaryGen1Callback',
-                               [uri: "http://${ip}/shelly", contentType: 'application/json',
-                                requestContentType: 'application/json'],
-                               [summaryIp: ip, summaryOperationId: operationId])
+            enqueueDeviceRequest([
+                kind: 'get', requestId: nextDeviceRequestId(), ip: ip,
+                params: [uri: "http://${ip}/shelly", contentType: 'application/json',
+                         requestContentType: 'application/json'],
+                callbackMethod: 'tableSummaryGen1Callback',
+                callbackData: [summaryIp: ip, summaryOperationId: operationId],
+                source: 'tableSummaryGen1', priority: DEVICE_REQUEST_BACKGROUND_PRIORITY,
+                fingerprint: "http://${ip}/shelly", enqueuedAt: now()
+            ])
             return
         }
         updateTableSummaryOperation(ip, operationId, 'status')
@@ -7036,6 +7069,8 @@ private Map fetchComponentDriverJson() {
  * @return true if the device responds, false otherwise
  */
 private Boolean isDeviceReachable(String ipAddress) {
+    Map admission = acquireDeviceSyncRequest(ipAddress, 'reachability', DEVICE_REQUEST_EXPLICIT_PRIORITY)
+    if (admission == null) { return false }
     try {
         Map params = [
             uri: "http://${ipAddress}/rpc",
@@ -7048,8 +7083,10 @@ private Boolean isDeviceReachable(String ipAddress) {
         httpPostHelper(params) { resp ->
             if (resp.getStatus() == 200) { reachable = true }
         }
+        releaseDeviceSyncRequest(ipAddress, admission, reachable, reachable ? null : 'unreachable')
         return reachable
     } catch (Exception ex) {
+        releaseDeviceSyncRequest(ipAddress, admission, false, ex.message ?: ex.toString())
         return false
     }
 }
@@ -7062,11 +7099,7 @@ private Boolean isDeviceReachable(String ipAddress) {
  */
 private Boolean isGen1DeviceReachable(String ipAddress) {
     try {
-        Boolean reachable = false
-        httpGetHelper([uri: "http://${ipAddress}/shelly", timeout: 2, contentType: 'application/json']) { resp ->
-            if (resp?.status == 200) { reachable = true }
-        }
-        return reachable
+        return coordinatedDeviceGet("http://${ipAddress}/shelly", 2, 'reachability') != null
     } catch (Exception ex) {
         return false
     }
@@ -7114,6 +7147,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     if (!atomicState.discoveredShellys) { atomicState.discoveredShellys = [:] }
     if (atomicState.discoveryRunning == null) { atomicState.discoveryRunning = false }
     ensureDeviceStatusCache()
+    recoverDeviceRequestCoordinator()
     recoverStaleTransientState()
 
     // Capability discovery is no longer scheduled by ordinary discovery. Clear
@@ -7449,6 +7483,37 @@ private void recoverStaleTransientState() {
         state.remove('pendingDisplayLevel')
     }
     compactPersistedDiscoveryState()
+}
+
+/**
+ * Releases only abandoned in-memory request leases. A late callback carries
+ * the old token and therefore cannot complete a newer request for the same IP.
+ */
+private void recoverDeviceRequestCoordinator() {
+    Long cutoff = now() - DEVICE_REQUEST_TIMEOUT_GRACE_MS
+    deviceRequestInFlight.keySet().toList().each { String ip ->
+        Object lock = deviceRequestLock(ip)
+        Boolean recovered = false
+        synchronized (lock) {
+            Map active = deviceRequestInFlight.get(ip) as Map
+            if (active?.startedAt != null && (active.startedAt as Long) < cutoff) {
+                deviceRequestInFlight.remove(ip)
+                recovered = true
+            }
+        }
+        if (recovered) {
+            logWarn("Recovered abandoned device request for ${ip}")
+            recordDeviceRequestResult(ip, false, 'request lease expired')
+            scheduleDeviceRequestDispatch(ip)
+        }
+    }
+    deviceRequestQueues.keySet().toList().each { String ip ->
+        Object lock = deviceRequestLock(ip)
+        synchronized (lock) {
+            List<Map> queue = deviceRequestQueues.get(ip) as List<Map>
+            if (!queue) { deviceRequestQueues.remove(ip) }
+        }
+    }
 }
 
 /** Records volatile discovery counters without adding more durable app state. */
@@ -8579,7 +8644,13 @@ void scanNextIpAddress() {
             contentType: 'application/json',
             ignoreSSLIssues: true
         ]
-        asynchttpGetHelper('ipScanCallback', params, [targetIp: targetIp])
+        enqueueDeviceRequest([
+            kind: 'get', requestId: nextDeviceRequestId(), ip: targetIp,
+            params: params, callbackMethod: 'ipScanCallback',
+            callbackData: [targetIp: targetIp], source: 'scan',
+            priority: DEVICE_REQUEST_BACKGROUND_PRIORITY,
+            fingerprint: "${params.uri}", enqueuedAt: now()
+        ])
     } catch (Exception e) {
         releaseDiscoveryHttpRequest("ipScan:${targetIp}")
         logTrace("scanNextIpAddress: exception probing ${targetIp}: ${e.message}")
@@ -8605,7 +8676,7 @@ void ipScanCallback(response, Map data) {
     Map results = new LinkedHashMap(ipScanResultsVolatile ?: [:])
 
     // Check for HTTP errors or non-200 status
-    if (response.hasError() || response.getStatus() != 200) {
+    if (!response || response.hasError() || response.getStatus() != 200) {
         results[targetIp] = [scannedAt: now(), result: 'timeout']
         ipScanResultsVolatile = results
         return
@@ -8758,11 +8829,7 @@ void manualDiscoverDevice(String rawInput) {
 
     Map shellyData = null
     try {
-        httpGetHelper([uri: "http://${addr}/shelly", timeout: 5, contentType: 'application/json']) { resp ->
-            if (resp?.status == 200 && resp.data) {
-                shellyData = resp.data as Map
-            }
-        }
+        shellyData = coordinatedDeviceGet("http://${addr}/shelly", 5, 'manual discovery')
     } catch (Exception e) {
         appendLog('error', "Manual discovery: failed to reach ${addr} — ${e.message}")
         return
@@ -8802,6 +8869,24 @@ void manualDiscoverDevice(String rawInput) {
  * @return The parsed JSON response map, or null on failure
  */
 private Map sendGen1Get(String ipAddress, String path, Map queryParams = [:], Boolean suppressErrors = false) {
+    String source = path?.startsWith('settings') ? 'provisioning' : 'gen1 status'
+    Map admission = acquireDeviceSyncRequest(ipAddress, source, deviceRequestPriority(source))
+    if (admission == null) { return null }
+    if (!admission.coordinated) {
+        return sendGen1GetTransport(ipAddress, path, queryParams, suppressErrors)
+    }
+    try {
+        Map result = sendGen1GetTransport(ipAddress, path, queryParams, suppressErrors)
+        releaseDeviceSyncRequest(ipAddress, admission, result != null,
+                                 result == null ? 'empty response' : null)
+        return result
+    } catch (Exception ex) {
+        releaseDeviceSyncRequest(ipAddress, admission, false, ex.message ?: ex.toString())
+        throw ex
+    }
+}
+
+private Map sendGen1GetTransport(String ipAddress, String path, Map queryParams = [:], Boolean suppressErrors = false) {
     String queryString = queryParams.collect { k, v -> "${k}=${URLEncoder.encode(v.toString(), 'UTF-8')}" }.join('&')
     String uri = "http://${ipAddress}/${path}"
     if (queryString) { uri += "?${queryString}" }
@@ -9838,9 +9923,7 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
     if (!device.gen || (device.gen?.toString() == '1' && !device.mac)) {
         Map shellyProbe = null
         try {
-            httpGetHelper([uri: "http://${ip}/shelly", timeout: 5, contentType: 'application/json']) { resp ->
-                if (resp?.status == 200 && resp.data) { shellyProbe = resp.data as Map }
-            }
+            shellyProbe = coordinatedDeviceGet("http://${ip}/shelly", 5, 'device create')
         } catch (Exception e) {
             logDebug("fetchAndStoreDeviceInfo: /shelly probe failed for ${ip}: ${e.message}")
         }
@@ -10093,12 +10176,7 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
 
     try {
         // Step 1: /shelly — device identity (always unauthenticated)
-        Map shellyInfo = null
-        httpGetHelper([uri: "http://${ip}/shelly", timeout: 5, contentType: 'application/json']) { resp ->
-            if (resp?.status == 200 && resp.data) {
-                shellyInfo = resp.data as Map
-            }
-        }
+        Map shellyInfo = coordinatedDeviceGet("http://${ip}/shelly", 5, 'device create')
 
         if (!shellyInfo) {
             logDebug("fetchGen1DeviceInfo: no response from ${ip}")
@@ -11400,11 +11478,16 @@ private Boolean installDriver(String sourceCode) {
 
             // Post-installation verification: confirm the driver actually exists on the hub
             if (shouldVerify) {
-                if (waitForHubDriverRegistration(driverName)) {
+                if (fetchHubitatDriverIdByName(driverName) != null) {
                     logInfo("✓ Driver verified on hub after installation: ${driverName}")
                     success = true
                 } else {
-                    logError("✗ Driver '${driverName}' was not registered after the verification window; it may have a compilation error")
+                    // /driver/save can return before the driver index is updated.
+                    // Schedule follow-up checks rather than blocking this app
+                    // execution while Hubitat compiles/registers the driver.
+                    logInfo("Driver '${driverName}' accepted; scheduling non-blocking registration verification")
+                    runInHelper(1L, 'verifyHubDriverRegistration', [data: [driverName: driverName, attempt: 1], overwrite: false])
+                    success = true
                 }
             }
         }
@@ -11417,20 +11500,22 @@ private Boolean installDriver(String sourceCode) {
 }
 
 /**
- * Waits briefly for Hubitat to register a newly saved driver. /driver/save can
- * redirect before the driver is visible from /device/drivers, especially when
- * several discovery callbacks are installing drivers at the same time.
+ * Verifies a newly saved driver without blocking the app execution thread.
+ * /driver/save can redirect before the driver is visible from /device/drivers,
+ * especially when several discovery callbacks are installing drivers at once.
  */
-private Boolean waitForHubDriverRegistration(String driverName) {
-    Integer maxChecks = 4
-    for (Integer attempt = 1; attempt <= maxChecks; attempt++) {
-        if (fetchHubitatDriverIdByName(driverName) != null) { return true }
-        if (attempt < maxChecks) {
-            logDebug("Waiting for Hubitat to register '${driverName}' (check ${attempt}/${maxChecks})")
-            pauseExecution(1000)
-        }
+void verifyHubDriverRegistration(Map data = null) {
+    String driverName = data?.driverName?.toString()
+    Integer attempt = (data?.attempt ?: 1) as Integer
+    if (!driverName) { return }
+    if (fetchHubitatDriverIdByName(driverName) != null) {
+        logInfo("✓ Driver verified on hub after installation: ${driverName}")
+    } else if (attempt < 4) {
+        logDebug("Driver '${driverName}' is not visible yet (check ${attempt}/4); rescheduling verification")
+        runInHelper(1L, 'verifyHubDriverRegistration', [data: [driverName: driverName, attempt: attempt + 1], overwrite: false])
+    } else {
+        logError("✗ Driver '${driverName}' was not registered after the non-blocking verification window; it may have a compilation error")
     }
-    return false
 }
 
 /**
@@ -14118,8 +14203,191 @@ String pm1GetStatus() {
 // ╚══════════════════════════════════════════════════════════════╝
 /* #region HTTP Methods */
 // MARK: HTTP Methods
-@CompileStatic
+/**
+ * Returns the endpoint key used by the in-memory request coordinator. Local
+ * Hubitat URLs are deliberately excluded: they are not Shelly device lanes.
+ */
+private String deviceRequestIp(String uri) {
+  String ip = parseDeviceAddress(uri)
+  if (!ip || ip == '127.0.0.1' || ip == 'localhost') { return null }
+  return ip
+}
+
+private Object deviceRequestLock(String ip) {
+  if (!ip) { return null }
+  Object existing = deviceRequestCoordinatorLocks.get(ip)
+  if (existing != null) { return existing }
+  Object created = new Object()
+  Object prior = deviceRequestCoordinatorLocks.putIfAbsent(ip, created)
+  return prior ?: created
+}
+
+private Long nextDeviceRequestId() {
+  synchronized (DEVICE_REQUEST_SEQUENCE_LOCK) {
+    deviceRequestSequence++
+    return deviceRequestSequence
+  }
+}
+
+private Integer deviceRequestPriority(String source = null, Map metadata = null) {
+  if (metadata?.requestPriority != null) { return metadata.requestPriority as Integer }
+  String value = source?.toString()?.toLowerCase() ?: ''
+  if (value.contains('user') || value.contains('provision') || value.contains('create') ||
+      value.contains('reinitialize') || value.contains('command')) {
+    return DEVICE_REQUEST_USER_PRIORITY
+  }
+  if (value.contains('manual') || value.contains('explicit') || value.contains('refresh')) {
+    return DEVICE_REQUEST_EXPLICIT_PRIORITY
+  }
+  if (value.contains('summary') || value.contains('watchdog') || value.contains('scan')) {
+    return DEVICE_REQUEST_BACKGROUND_PRIORITY
+  }
+  return DEVICE_REQUEST_NORMAL_PRIORITY
+}
+
+private Map deviceRequestHealthRecord(String ip) {
+  Map existing = deviceRequestHealth.get(ip) as Map
+  if (existing != null) { return existing }
+  Map created = [consecutiveFailures: 0, retryAfter: 0L, lastRequestAt: 0L,
+                 lastResult: null, lastSuccessAt: 0L, lastFailureAt: 0L,
+                 lastError: null]
+  Map prior = deviceRequestHealth.putIfAbsent(ip, created) as Map
+  return prior ?: created
+}
+
+private void recordDeviceRequestResult(String ip, Boolean success, String error = null) {
+  if (!ip) { return }
+  Map health = deviceRequestHealthRecord(ip)
+  synchronized (health) {
+    health.lastRequestAt = now()
+    health.lastResult = success == true ? 'success' : 'failure'
+    if (success == true) {
+      health.consecutiveFailures = 0
+      health.retryAfter = 0L
+      health.lastSuccessAt = now()
+      health.lastError = null
+      return
+    }
+    Integer failures = ((health.consecutiveFailures ?: 0) as Integer) + 1
+    Long exponent = Math.min(failures - 1, 7) as Long
+    Long delay = Math.min(DEVICE_REQUEST_MAX_RETRY_MS, DEVICE_REQUEST_MIN_RETRY_MS * (1L << exponent))
+    health.consecutiveFailures = failures
+    health.retryAfter = now() + delay
+    health.lastFailureAt = now()
+    health.lastError = error?.toString()?.take(160)
+  }
+}
+
+private Boolean deviceRequestBackoffActive(String ip, Integer priority) {
+  if (!ip || priority >= DEVICE_REQUEST_EXPLICIT_PRIORITY) { return false }
+  Map health = deviceRequestHealth.get(ip) as Map
+  return health?.retryAfter != null && (health.retryAfter as Long) > now()
+}
+
+private void scheduleDeviceRequestDispatch(String ip, Long delayMs = 0L) {
+  if (!ip) { return }
+  Object lock = deviceRequestLock(ip)
+  Boolean schedule = false
+  synchronized (lock) {
+    if (!deviceRequestDispatchScheduled.containsKey(ip)) {
+      deviceRequestDispatchScheduled.put(ip, true)
+      schedule = true
+    }
+  }
+  if (schedule) {
+    runInMillisHelper(Math.max(0L, delayMs), 'dispatchDeviceRequest', [data: [ip: ip], overwrite: false])
+  }
+}
+
+private void completeDeviceRequest(String ip, Long requestId, Boolean success, String error = null) {
+  if (!ip || requestId == null) { return }
+  Object lock = deviceRequestLock(ip)
+  Boolean completed = false
+  synchronized (lock) {
+    Map active = deviceRequestInFlight.get(ip) as Map
+    if (active?.requestId != requestId) { return }
+    deviceRequestInFlight.remove(ip)
+    completed = true
+  }
+  if (completed) {
+    recordDeviceRequestResult(ip, success, error)
+    scheduleDeviceRequestDispatch(ip)
+  }
+}
+
+private Map acquireDeviceSyncRequest(String ip, String source = null, Integer priority = null) {
+  if (!ip) { return [coordinated: false] }
+  Object lock = deviceRequestLock(ip)
+  synchronized (lock) {
+    if (deviceRequestInFlight.get(ip) != null) {
+      logTrace("Request coordinator busy for ${ip}; skipping ${source ?: 'synchronous'} request")
+      return null
+    }
+    Integer effectivePriority = priority ?: deviceRequestPriority(source)
+    Map record = [requestId: nextDeviceRequestId(), ip: ip, mode: 'sync',
+                  source: source ?: 'synchronous', priority: effectivePriority, startedAt: now()]
+    deviceRequestInFlight.put(ip, record)
+    return [coordinated: true, record: record]
+  }
+}
+
+private void releaseDeviceSyncRequest(String ip, Map admission, Boolean success, String error = null) {
+  if (!admission?.coordinated || admission?.reentrant) { return }
+  Map record = admission.record as Map
+  completeDeviceRequest(ip, record?.requestId as Long, success, error)
+}
+
+/** Performs a short, unauthenticated device GET under the same per-IP lane. */
+private Map coordinatedDeviceGet(String uri, Integer timeout = 5, String source = 'device get') {
+  String targetUri = uri?.toString()
+  String ip = deviceRequestIp(targetUri)
+  Map admission = acquireDeviceSyncRequest(ip, source, deviceRequestPriority(source))
+  if (admission == null) { return null }
+  if (!admission.coordinated) {
+    Map directResponse = [status: null, data: null]
+    httpGetHelper([uri: targetUri, timeout: timeout, contentType: 'application/json']) { response ->
+      directResponse.status = response?.status
+      directResponse.data = response?.data
+    }
+    return directResponse.status == 200 ? directResponse.data as Map : null
+  }
+  Map result = [status: null, data: null]
+  try {
+    httpGetHelper([uri: targetUri, timeout: timeout, contentType: 'application/json']) { response ->
+      result.status = response?.status
+      result.data = response?.data
+    }
+    Boolean success = result.status == 200 && result.data != null
+    releaseDeviceSyncRequest(ip, admission, success, success ? null : "HTTP ${result.status ?: 'request'}")
+    return success ? result.data as Map : null
+  } catch (Exception ex) {
+    releaseDeviceSyncRequest(ip, admission, false, ex.message ?: ex.toString())
+    throw ex
+  }
+}
+
+/**
+ * Shared synchronous admission point. Callers retain the old blocking API,
+ * while requests to different Shelly endpoints remain independent.
+ */
 LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
+  String targetUri = (uri ? uri : getBaseUriRpc()).toString()
+  String ip = deviceRequestIp(targetUri)
+  Map admission = acquireDeviceSyncRequest(ip, 'synchronous')
+  if (admission == null) { return null }
+  if (!admission.coordinated) { return postCommandSyncTransport(command, targetUri) }
+  try {
+    LinkedHashMap result = postCommandSyncTransport(command, targetUri)
+    releaseDeviceSyncRequest(ip, admission, result != null, result == null ? 'empty response' : null)
+    return result
+  } catch (Exception ex) {
+    releaseDeviceSyncRequest(ip, admission, false, ex.message ?: ex.toString())
+    throw ex
+  }
+}
+
+@CompileStatic
+private LinkedHashMap postCommandSyncTransport(LinkedHashMap command, String uri = null) {
   String targetUri = (uri ? uri : getBaseUriRpc()).toString()
   LinkedHashMap requestCommand
   Map<String, Object> params = new LinkedHashMap<String, Object>()
@@ -14195,9 +14463,167 @@ void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '', S
   else { postCommandAsync(command, callbackMethod, uri) }
 }
 
-@CompileStatic
+private void enqueueDeviceRequest(Map request) {
+  String ip = request?.ip?.toString()
+  if (!ip) {
+    if (request?.kind == 'rpc') {
+      postCommandAsyncTransport(request)
+    } else {
+      asynchttpGetHelper(request.callbackMethod?.toString(), request.params as Map, request.callbackData as Map)
+    }
+    return
+  }
+  Object lock = deviceRequestLock(ip)
+  Boolean dispatchNow = false
+  synchronized (lock) {
+    List<Map> queue = deviceRequestQueues.get(ip) as List<Map>
+    if (queue == null) {
+      queue = []
+      deviceRequestQueues.put(ip, queue)
+    }
+    // Exact duplicate summary requests are safe to coalesce because the
+    // durable summary operation token makes the callback idempotent. Other
+    // callbacks are retained so user-visible completions are never dropped.
+    Map duplicate = queue.find { Map queued ->
+      queued.kind == request.kind && queued.fingerprint == request.fingerprint &&
+      queued.callbackMethod == request.callbackMethod &&
+      request.source?.toString()?.contains('summary') && queued.source?.toString()?.contains('summary') &&
+      queued.callbackData?.summaryOperationId == request.callbackData?.summaryOperationId
+    } as Map
+    if (duplicate != null) {
+      logTrace("Request coordinator coalesced duplicate ${request.source ?: request.kind} request for ${ip}")
+      return
+    }
+    if (queue.size() >= DEVICE_REQUEST_MAX_QUEUE) {
+      Map background = queue.find { Map queued ->
+        (queued.priority as Integer) < DEVICE_REQUEST_EXPLICIT_PRIORITY
+      } as Map
+      if ((request.priority as Integer) >= DEVICE_REQUEST_EXPLICIT_PRIORITY && background != null) {
+        queue.remove(background)
+        logWarn("Request coordinator queue full for ${ip}; evicting background work for ${request.source ?: request.kind}")
+      } else {
+        logWarn("Request coordinator queue full for ${ip}; dropping ${request.source ?: request.kind} request")
+        return
+      }
+    }
+    queue.add(request)
+    queue.sort { Map left, Map right ->
+      Integer priorityCompare = (right.priority as Integer) <=> (left.priority as Integer)
+      priorityCompare != 0 ? priorityCompare : ((left.enqueuedAt as Long) <=> (right.enqueuedAt as Long))
+    }
+    if (deviceRequestInFlight.get(ip) == null) { dispatchNow = true }
+  }
+  if (dispatchNow) { scheduleDeviceRequestDispatch(ip) }
+}
+
+/** Starts the next request for one endpoint after the prior callback releases it. */
+void dispatchDeviceRequest(Map data = null) {
+  String ip = data?.ip?.toString()
+  if (!ip) { return }
+  Object lock = deviceRequestLock(ip)
+  Map request = null
+  Long retryDelay = null
+  synchronized (lock) {
+    deviceRequestDispatchScheduled.remove(ip)
+    if (deviceRequestInFlight.get(ip) != null) { return }
+    List<Map> queue = deviceRequestQueues.get(ip) as List<Map>
+    if (!queue) {
+      deviceRequestQueues.remove(ip)
+      return
+    }
+    Map candidate = queue[0] as Map
+    if (deviceRequestBackoffActive(ip, candidate.priority as Integer)) {
+      Map health = deviceRequestHealth.get(ip) as Map
+      retryDelay = Math.max(100L, ((health.retryAfter as Long) - now()))
+    } else {
+      Map health = deviceRequestHealth.get(ip) as Map
+      Long lastRequestAt = health?.lastRequestAt as Long
+      Long elapsed = lastRequestAt ? now() - lastRequestAt : DEVICE_REQUEST_MIN_INTERVAL_MS
+      if (lastRequestAt && elapsed < DEVICE_REQUEST_MIN_INTERVAL_MS) {
+        retryDelay = DEVICE_REQUEST_MIN_INTERVAL_MS - elapsed
+      }
+    }
+    if (retryDelay == null) {
+      request = queue.remove(0) as Map
+      deviceRequestInFlight.put(ip, [requestId: request.requestId, ip: ip, mode: 'async',
+                                     source: request.source, priority: request.priority,
+                                     fingerprint: request.fingerprint, startedAt: now()])
+      if (!queue) { deviceRequestQueues.remove(ip) }
+    }
+  }
+  if (retryDelay != null) {
+    scheduleDeviceRequestDispatch(ip, retryDelay)
+    return
+  }
+  if (!request) { return }
+  try {
+    if (request.kind == 'get') {
+      Map callbackData = new LinkedHashMap(request.callbackData ?: [:])
+      callbackData.coordinatorRequestId = request.requestId
+      callbackData.coordinatorRequestIp = ip
+      callbackData.coordinatorCallbackMethod = request.callbackMethod
+      asynchttpGetHelper('deviceRequestGetCallback', request.params as Map, callbackData)
+    } else if (request.kind == 'post') {
+      Map callbackData = new LinkedHashMap(request.callbackData ?: [:])
+      callbackData.coordinatorRequestId = request.requestId
+      callbackData.coordinatorRequestIp = ip
+      callbackData.coordinatorCallbackMethod = request.callbackMethod
+      asynchttpPostHelper('deviceRequestPostCallback', request.params as Map, callbackData)
+    } else {
+      postCommandAsyncTransport(request)
+    }
+  } catch (Exception ex) {
+    logWarn("Request coordinator could not start ${request.source ?: request.kind} request for ${ip}: ${ex.message ?: ex.toString()}")
+    completeDeviceRequest(ip, request.requestId as Long, false, ex.message ?: ex.toString())
+    try {
+      if (request.callbackMethod) { "${request.callbackMethod}"(null, request.callbackData as Map) }
+    } catch (Exception callbackException) {
+      logTrace("Request coordinator failure callback for ${ip} failed: ${callbackException.message}")
+    }
+  }
+}
+
+/** Completes a coordinated non-RPC GET and forwards the original callback. */
+void deviceRequestGetCallback(response, Map data = null) {
+  String ip = data?.coordinatorRequestIp?.toString()
+  String callbackMethod = data?.coordinatorCallbackMethod?.toString()
+  try {
+    if (callbackMethod) { "${callbackMethod}"(response, data) }
+  } finally {
+    Boolean success = response?.status == 200 && response?.hasError() != true
+    completeDeviceRequest(ip, data?.coordinatorRequestId as Long, success,
+                          success ? null : "HTTP ${response?.status ?: 'request'}")
+  }
+}
+
+/** Completes a coordinated non-RPC POST and forwards the original callback. */
+void deviceRequestPostCallback(response, Map data = null) {
+  String ip = data?.coordinatorRequestIp?.toString()
+  String callbackMethod = data?.coordinatorCallbackMethod?.toString()
+  try {
+    if (callbackMethod) { "${callbackMethod}"(response, data) }
+  } finally {
+    Boolean success = response?.status == 200 && response?.hasError() != true
+    completeDeviceRequest(ip, data?.coordinatorRequestId as Long, success,
+                          success ? null : "HTTP ${response?.status ?: 'request'}")
+  }
+}
+
 void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null, Map callbackData = null) {
   String targetUri = (uri ?: getBaseUriRpc()).toString()
+  String ip = deviceRequestIp(targetUri)
+  String source = callbackData?.requestSource?.toString() ?: callbackMethod ?: 'asynchronous'
+  Map request = [kind: 'rpc', requestId: nextDeviceRequestId(), ip: ip, targetUri: targetUri,
+                 command: new LinkedHashMap(command ?: [:]), callbackMethod: callbackMethod,
+                 callbackData: new LinkedHashMap(callbackData ?: [:]), source: source,
+                 priority: deviceRequestPriority(source, callbackData),
+                 fingerprint: "${targetUri}|${command ?: [:]}", enqueuedAt: now()]
+  enqueueDeviceRequest(request)
+}
+
+private void postCommandAsyncTransport(Map request) {
+  String targetUri = request.targetUri.toString()
+  LinkedHashMap command = request.command as LinkedHashMap
   LinkedHashMap requestCommand = prepareRpcCommand(command, targetUri)
   Map<String, Object> params = new LinkedHashMap<String, Object>()
   params.put('uri', targetUri)
@@ -14207,8 +14633,13 @@ void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String 
   Boolean usedAuth = requestCommand.auth instanceof Map && requestCommand.auth.size() > 0
   if(shouldLogOverall('trace')) { logTrace("postCommandAsync sending ${requestCommand.method} to ${targetUri} (auth=${usedAuth})") }
   Map asyncData = [params:params, command:new LinkedHashMap(command ?: [:]), attempt:1,
-                   requestUsedAuth:usedAuth, callbackMethod:callbackMethod]
-  if (callbackData) { asyncData.putAll(callbackData) }
+                   requestUsedAuth:usedAuth, callbackMethod:request.callbackMethod,
+                   coordinatorRequestId:request.requestId, coordinatorRequestIp:request.ip]
+  if (request.callbackData) { asyncData.putAll(request.callbackData as Map) }
+  // Coordinator fields are authoritative and cannot be overwritten by a
+  // callback's application data map.
+  asyncData.coordinatorRequestId = request.requestId
+  asyncData.coordinatorRequestIp = request.ip
   asynchttpPostHelper('postCommandAsyncCallback', params, asyncData)
 }
 
@@ -14267,9 +14698,16 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
     }
     logError("Auth failed for ${authDeviceIp(targetUri)}. Check the device password.")
   }
-  if(followOnCallback != null && followOnCallback != '') {
-    logTrace("Follow On Callback: ${followOnCallback}")
-    "${followOnCallback}"(response, data)
+  try {
+    if(followOnCallback != null && followOnCallback != '') {
+      logTrace("Follow On Callback: ${followOnCallback}")
+      "${followOnCallback}"(response, data)
+    }
+  } finally {
+    Boolean success = response?.status == 200 && response?.hasError() != true
+    completeDeviceRequest(data?.coordinatorRequestIp?.toString() ?: deviceRequestIp(targetUri),
+                          data?.coordinatorRequestId as Long, success,
+                          success ? null : "HTTP ${response?.status ?: 'request'}")
   }
 }
 
@@ -14296,18 +14734,38 @@ LinkedHashMap postSync(LinkedHashMap command) {
   return postCommandSync(command, getBaseUriRpc())
 }
 
-@CompileStatic
 void jsonAsyncGet(String callbackMethod, Map params, Map data) {
   params.put('contentType', 'application/json')
   params.put('requestContentType', 'application/json')
-  asynchttpGetHelper(callbackMethod, params, data)
+  String uri = params?.uri?.toString()
+  String ip = deviceRequestIp(uri)
+  if (!ip) {
+    asynchttpGetHelper(callbackMethod, params, data)
+    return
+  }
+  enqueueDeviceRequest([
+      kind: 'get', requestId: nextDeviceRequestId(), ip: ip, params: params,
+      callbackMethod: callbackMethod, callbackData: new LinkedHashMap(data ?: [:]),
+      source: callbackMethod ?: 'device GET', priority: deviceRequestPriority(callbackMethod, data),
+      fingerprint: uri, enqueuedAt: now()
+  ])
 }
 
-@CompileStatic
 void jsonAsyncPost(String callbackMethod, Map params, Map data) {
   params.put('contentType', 'application/json')
   params.put('requestContentType', 'application/json')
-  asynchttpPostHelper(callbackMethod, params, data)
+  String uri = params?.uri?.toString()
+  String ip = deviceRequestIp(uri)
+  if (!ip) {
+    asynchttpPostHelper(callbackMethod, params, data)
+    return
+  }
+  enqueueDeviceRequest([
+      kind: 'post', requestId: nextDeviceRequestId(), ip: ip, params: params,
+      callbackMethod: callbackMethod, callbackData: new LinkedHashMap(data ?: [:]),
+      source: callbackMethod ?: 'device POST', priority: deviceRequestPriority(callbackMethod, data),
+      fingerprint: "${uri}|${params.body ?: [:]}", enqueuedAt: now()
+  ])
 }
 
 LinkedHashMap jsonSyncGet(Map params) {
@@ -14359,6 +14817,7 @@ void sendShellyJsonCommand(String command, Map json, String callbackMethod = 'sh
 
 @CompileStatic
 void shellyCommandCallback(AsyncResponse response, Map data = null) {
+  if (!response) { return }
   if(!responseIsValid(response)) {return}
   logJson(response.getJson() as LinkedHashMap)
 }
@@ -22582,7 +23041,13 @@ private void drainCommandQueue(String dni) {
                     httpParams.put('headers', authHeaders as Object)
                 }
             }
-            asynchttpGetHelper('commandQueueDrainCallback', httpParams, callbackData)
+            enqueueDeviceRequest([
+                kind: 'get', requestId: nextDeviceRequestId(), ip: ipAddress,
+                params: httpParams, callbackMethod: 'commandQueueDrainCallback',
+                callbackData: callbackData, source: 'command queue',
+                priority: DEVICE_REQUEST_USER_PRIORITY,
+                fingerprint: uri, enqueuedAt: now()
+            ])
             break
 
         case 'gen2_rpc':
