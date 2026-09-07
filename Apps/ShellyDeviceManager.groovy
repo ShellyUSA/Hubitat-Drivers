@@ -65,8 +65,21 @@
     new java.util.concurrent.ConcurrentHashMap<String, Map>()
 @Field static ConcurrentHashMap<String, Map> tableSummaryRefreshData =
     new java.util.concurrent.ConcurrentHashMap<String, Map>()
-@Field static volatile long lastDiscoveryTableSSR = 0L
-@Field static volatile boolean discoveryTableSSRPending = false
+// All configuration-table SSR requests pass through one debounced funnel.
+// These fields are volatile because they coordinate only the current app
+// runtime; durable discovery/status state is committed before a request is
+// queued.
+@Field static final Long CONFIG_TABLE_SSR_DEBOUNCE_MS = 250L
+@Field static final Long CONFIG_TABLE_SSR_USER_MAX_DELAY_MS = 200L
+@Field static final Long CONFIG_TABLE_PAGE_LEASE_MS = 600000L
+@Field static final Object CONFIG_TABLE_SSR_LOCK = new Object()
+@Field static volatile boolean configTableSSRFlushScheduled = false
+@Field static volatile long configTableSSRFirstPendingAt = 0L
+@Field static volatile long configTablePageLeaseUntil = 0L
+@Field static ConcurrentHashMap<String, Boolean> configTableSSRChangedIps =
+    new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+@Field static ConcurrentHashMap<String, Boolean> configTableSSRReasons =
+    new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static volatile Map discoveryPerformanceMetrics = [:]
 
 // Persistent operation records older than this are treated as abandoned on
@@ -230,7 +243,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.89"
+@Field static final String APP_VERSION = "1.0.90"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -610,6 +623,7 @@ preferences {
 Map mainPage() {
     // Page construction is intentionally read-only. Discovery, migrations,
     // cleanup, and pending actions run from lifecycle/button callbacks.
+    noteConfigTablePageActivity()
 
     Integer remainingSecs = getRemainingDiscoverySeconds()
     Boolean discoveryActive = atomicState.discoveryRunning == true && remainingSecs > 0
@@ -864,14 +878,14 @@ void appButtonHandler(String buttonName) {
     if (buttonName.startsWith('cancelProvisioning|')) {
         String targetIp = buttonName.minus('cancelProvisioning|')
         cancelProvisioningOperation(targetIp)
-        runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('cancelProvisioning', [targetIp], true)
         return
     }
 
     if (buttonName.startsWith('cancelBleGateway|')) {
         String targetIp = buttonName.minus('cancelBleGateway|')
         cancelBleGatewayOperation(targetIp)
-        runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('cancelBleGateway', [targetIp], true)
         return
     }
 
@@ -926,7 +940,7 @@ void appButtonHandler(String buttonName) {
             removeDeviceByIp(targetIp)
             buildDeviceStatusCacheEntry(targetIp)
             releaseUserAction(targetIp)
-            runInMillisHelper(500L, 'fireConfigTableSSR')
+            requestConfigTableSSR('removeDevice', [targetIp], true)
         }
     }
 
@@ -967,7 +981,7 @@ void appButtonHandler(String buttonName) {
         installGen1ActionUrls(targetIp)
         buildDeviceStatusCacheEntry(targetIp)
         releaseUserAction(targetIp)
-        runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('installActionUrls', [targetIp], true)
     }
 
     if (buttonName.startsWith('reinitDev|')) {
@@ -1216,7 +1230,7 @@ void runDeviceCreate(Map data) {
         }
         buildDeviceStatusCacheEntry(ipAddress)
         reconcileWatchdogSchedule()
-        runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('deviceCreateComplete', [ipAddress], true)
     }
 }
 
@@ -2240,7 +2254,7 @@ void flushPendingDeviceStatusCache() {
         recordDurableStateWrite('discoveredShellys', false, pendingDiscovered.size())
     }
     if (events) {
-        sendEventHelper([name: 'configTable', value: 'deviceStatusCacheBatch'])
+        requestConfigTableSSR('deviceStatusCache', (pending.keySet() + pendingDiscovered.keySet()), false)
     }
 
     synchronized (DEVICE_STATUS_CACHE_FLUSH_LOCK) {
@@ -2297,7 +2311,7 @@ private Boolean claimUserAction(String ip, String action) {
     atomicState.actionRequestSubmitted = true
     atomicState.actionRequestSubmittedAt = now()
     runInHelper(65L, 'recoverStaleTransientState', [overwrite: false])
-    sendEventHelper([name: 'configTable', value: 'actionStarted'])
+    requestConfigTableSSR('actionStarted', ip ? [ip] : null, true)
     return true
 }
 
@@ -2306,7 +2320,7 @@ private void releaseUserAction(String ip) {
     Map lock = (atomicState.userActionLock ?: [:]) as Map
     if (ip && lock.ip?.toString() != ip) { return }
     atomicState.userActionLock = [:]
-    sendEventHelper([name: 'configTable', value: 'actionComplete'])
+    requestConfigTableSSR('actionComplete', ip ? [ip] : null, true)
 }
 
 /**
@@ -2430,7 +2444,7 @@ private void finishProvisioningOperation(String ip, String operationId) {
     // active. Compact them as soon as the operation has completed rather than
     // waiting for the next app initialization.
     compactPersistedDiscoveryState()
-    sendEventHelper([name: 'configTable', value: 'provisioningComplete'])
+    requestConfigTableSSR('provisioningComplete', ip ? [ip] : null, true)
 }
 
 /**
@@ -3641,7 +3655,7 @@ void refreshHubDeviceDnis() {
         Map previous = new LinkedHashMap((atomicState.hubDniCache ?: [:]) as Map)
         if (dnis != null) {
             atomicState.hubDniCache = [dnis: dnis.toList(), refreshedAt: now(), failures: 0]
-        sendEventHelper([name: 'configTable', value: 'hubDniCacheRefreshed'])
+            requestConfigTableSSR('hubDniCacheRefreshed', null, false)
             return
         }
 
@@ -3685,7 +3699,7 @@ void runDeviceReinitialize(Map data) {
         releaseUserAction(ipAddress)
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: device unavailable')
         buildDeviceStatusCacheEntry(ipAddress)
-        runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('reinitUnavailable', [ipAddress], true)
         return
     }
     try {
@@ -3703,21 +3717,21 @@ void runDeviceReinitialize(Map data) {
         if (hasProvisioningOperation(ipAddress)) {
             logDebug("Reinit queued asynchronous provisioning for ${ipAddress}; deferring completion cleanup")
             appendLog('info', "Reinit queued asynchronous provisioning for ${ipAddress}")
-            runInMillisHelper(500L, 'fireConfigTableSSR')
+            requestConfigTableSSR('reinitQueued', [ipAddress], true)
             return
         }
 
         setProvisioningStatus(ipAddress, null)
         releaseUserAction(ipAddress)
         buildDeviceStatusCacheEntry(ipAddress)
-            runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('reinitComplete', [ipAddress], true)
     } catch (Exception ex) {
         logError("Reinit failed for ${ipAddress}: ${ex.message}")
         appendLog('error', "Reinit failed for ${ipAddress}: ${ex.message}")
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: reinitialization failed')
         releaseUserAction(ipAddress)
         buildDeviceStatusCacheEntry(ipAddress)
-            runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('reinitFailed', [ipAddress], true)
     }
 }
 
@@ -4486,7 +4500,7 @@ void finalizeScriptInstallation(Map data) {
 
     // Flush before the completion event so the browser reads the new counts.
     flushPendingDeviceStatusCache()
-    sendEventHelper([name: 'configTable', value: 'update'])
+    requestConfigTableSSR('scriptInstallComplete', ipAddress ? [ipAddress] : null, true)
 }
 
 /** Schedules the post-install script verification sequence. */
@@ -4496,7 +4510,7 @@ private void scheduleScriptInstallationVerification(String ipAddress, List<Strin
     pending[ipAddress] = operationId
     atomicState.scriptVerificationPending = pending
     setProvisioningStatus(ipAddress, 'Verifying scripts…')
-    sendEventHelper([name: 'configTable', value: 'scriptVerification'])
+    requestConfigTableSSR('scriptVerification', [ipAddress], true)
     runInHelper(5L, 'verifyScriptInstallation', [data: [ipAddress: ipAddress, scriptQueue: scriptQueue, operationId: operationId, attempt: 1], overwrite: false])
 }
 
@@ -4512,7 +4526,7 @@ void verifyScriptInstallation(Map data) {
     if (!ipAddress || !scriptQueue || !isCurrentProvisioningOperation(ipAddress, operationId)) { return }
 
     // Let the browser render the in-progress state before the RPC begins.
-    sendEventHelper([name: 'configTable', value: 'scriptVerificationBefore'])
+    requestConfigTableSSR('scriptVerificationBefore', [ipAddress], true)
     List<Map> installedScripts = listDeviceScripts(ipAddress)
     Set<String> requiredNames = scriptQueue.collect { stripJsExtension(it) } as Set<String>
     Integer installed = 0
@@ -4535,7 +4549,7 @@ void verifyScriptInstallation(Map data) {
         queueDeviceStatusCacheWrite(ipAddress, entry)
     }
     flushPendingDeviceStatusCache()
-    sendEventHelper([name: 'configTable', value: 'scriptVerificationAfter'])
+    requestConfigTableSSR('scriptVerificationAfter', [ipAddress], true)
 
     Boolean complete = installed >= requiredNames.size() && active >= requiredNames.size()
     if (complete || attempt >= 3) {
@@ -4551,7 +4565,7 @@ void verifyScriptInstallation(Map data) {
         } else if (atomicState.provisioningCompletionPending?.get(ipAddress)?.toString() != operationId) {
             scheduleProvisioningCompletionCheck(ipAddress, operationId)
         }
-        sendEventHelper([name: 'configTable', value: 'scriptVerificationComplete'])
+        requestConfigTableSSR('scriptVerificationComplete', [ipAddress], true)
         return
     }
 
@@ -4570,7 +4584,7 @@ private void scheduleProvisioningCompletionCheck(String ipAddress, String operat
     pending[ipAddress] = operationId
     atomicState.provisioningCompletionPending = pending
     setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
-    sendEventHelper([name: 'configTable', value: 'provisioningBeforeFinalCheck'])
+    requestConfigTableSSR('provisioningBeforeFinalCheck', [ipAddress], true)
     runInMillisHelper(500L, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: 1], overwrite: false])
 }
 
@@ -4585,10 +4599,10 @@ void verifyProvisioningCompletion(Map data) {
     Integer attempt = (data?.attempt ?: 1) as Integer
     if (!ipAddress || !isCurrentProvisioningOperation(ipAddress, operationId)) { return }
 
-    sendEventHelper([name: 'configTable', value: 'provisioningFinalCheckBefore'])
+    requestConfigTableSSR('provisioningFinalCheckBefore', [ipAddress], true)
     Map entry = buildDeviceStatusCacheEntry(ipAddress)
     flushPendingDeviceStatusCache()
-    sendEventHelper([name: 'configTable', value: 'provisioningFinalCheckAfter'])
+    requestConfigTableSSR('provisioningFinalCheckAfter', [ipAddress], true)
 
     Integer requiredScripts = entry?.requiredScriptCount as Integer
     Integer installedScripts = entry?.installedScriptCount as Integer
@@ -4610,7 +4624,7 @@ void verifyProvisioningCompletion(Map data) {
     if (attempt >= 4) {
         logWarn("Provisioning final check remains incomplete: scripts ${installedScripts}/${requiredScripts} installed, ${activeScripts}/${requiredScripts} active and webhooks ${createdWebhooks}/${requiredWebhooks} created, ${enabledWebhooks}/${requiredWebhooks} enabled on ${ipAddress}")
         setProvisioningStatus(ipAddress, 'Provisioning incomplete: awaiting device confirmation')
-        sendEventHelper([name: 'configTable', value: 'provisioningIncomplete'])
+        requestConfigTableSSR('provisioningIncomplete', [ipAddress], true)
         return
     }
 
@@ -6548,14 +6562,79 @@ private String renderWebhookStatusHtml(def device, String ip, List<Map> required
     return sb.toString().trim()
 }
 
+/** Marks the configuration page as recently rendered without persisting state. */
+private void noteConfigTablePageActivity() {
+    configTablePageLeaseUntil = now() + CONFIG_TABLE_PAGE_LEASE_MS
+}
+
 /**
- * Fires a deferred SSR config table update event.
- * Called via {@code runInMillis(500, 'fireConfigTableSSR')} from button handlers
- * to ensure state is persisted before the SSR callback reads it.
- * Using bare {@code sendEvent()} triggers the SSR callback in {@link #processServerSideRender}.
+ * Queues one configuration-table refresh request. All producers use this
+ * funnel so discovery, provisioning, summary, and watchdog callbacks can
+ * share one SSR event instead of rendering the full table independently.
  */
+private void requestConfigTableSSR(String source = 'unknown', Collection changedIps = null,
+                                   Boolean userVisible = false) {
+    if (userVisible) { noteConfigTablePageActivity() }
+    Boolean schedule = false
+    synchronized (CONFIG_TABLE_SSR_LOCK) {
+        if (configTableSSRFirstPendingAt == 0L) { configTableSSRFirstPendingAt = now() }
+        if (source) { configTableSSRReasons.put(source, true) }
+        (changedIps ?: []).each { Object value ->
+            String ip = value?.toString()
+            if (ip) { configTableSSRChangedIps.put(ip, true) }
+        }
+        if (!configTableSSRFlushScheduled) {
+            configTableSSRFlushScheduled = true
+            schedule = true
+        }
+    }
+    if (schedule) {
+        Long delay = userVisible ? CONFIG_TABLE_SSR_USER_MAX_DELAY_MS : CONFIG_TABLE_SSR_DEBOUNCE_MS
+        runInMillisHelper(delay, 'flushConfigTableSSR', [overwrite: false])
+    }
+}
+
+/** Flushes one coalesced config-table request when the page is active. */
+void flushConfigTableSSR() {
+    Set<String> changedIps = [] as Set<String>
+    Set<String> reasons = [] as Set<String>
+    Long firstPendingAt = 0L
+    synchronized (CONFIG_TABLE_SSR_LOCK) {
+        configTableSSRFlushScheduled = false
+        changedIps.addAll(configTableSSRChangedIps.keySet())
+        reasons.addAll(configTableSSRReasons.keySet())
+        firstPendingAt = configTableSSRFirstPendingAt
+        configTableSSRChangedIps.clear()
+        configTableSSRReasons.clear()
+        configTableSSRFirstPendingAt = 0L
+    }
+    if (!reasons && !changedIps) { return }
+
+    if (configTablePageLeaseUntil <= now()) {
+        recordPerformanceMetric('configTableSSRSkippedInactive')
+        return
+    }
+
+    recordPerformanceMetric('configTableSSR')
+    if (changedIps) { recordPerformanceMetric('configTableSSRDirtyIps', changedIps.size()) }
+    if (reasons) { recordPerformanceMetric('configTableSSRCoalescedSources', reasons.size()) }
+    if (firstPendingAt > 0L) {
+        Long delay = Math.max(0L, now() - firstPendingAt)
+        Map metrics = new LinkedHashMap(discoveryPerformanceMetrics ?: [:])
+        metrics.configTableSSRMaxDelayMs = Math.max((metrics.configTableSSRMaxDelayMs ?: 0L) as Long, delay)
+        discoveryPerformanceMetrics = metrics
+    }
+    sendEventHelper([name: 'configTable', value: 'coalesced'])
+}
+
+/** Compatibility entry point for callbacks scheduled by older app versions. */
+void flushDiscoveryTableSSR() {
+    flushConfigTableSSR()
+}
+
+/** Compatibility entry point for callbacks scheduled by older app versions. */
 void fireConfigTableSSR() {
-    sendEventHelper([name: 'configTable', value: 'update'])
+    requestConfigTableSSR('deferredAction', null, true)
 }
 
 /**
@@ -6569,6 +6648,7 @@ void fireConfigTableSSR() {
  */
 String processServerSideRender(Map event) {
     // logDebug("processServerSideRender called: ${event}")
+    noteConfigTablePageActivity()
 
     String elementId = event.elementId ?: ''
     String eventName = event.name ?: ''
@@ -7839,7 +7919,8 @@ void emitPerformanceDiagnosticSummary() {
         "summaryCacheHits=${metrics.summaryStatusCacheHits ?: 0}, " +
         "summaryCacheMisses=${metrics.summaryStatusCacheMisses ?: 0}, " +
         "volatileObservations=${deviceStatusVolatile.size()}, " +
-        "queuedDeviceRequests=${queuedRequests}, tableSSR=${metrics.tableSSR ?: 0}")
+        "queuedDeviceRequests=${queuedRequests}, configTableSSR=${metrics.configTableSSR ?: 0}, " +
+        "ssrSkippedInactive=${metrics.configTableSSRSkippedInactive ?: 0}")
     if (shouldLogOverall('debug')) {
         runInHelper(60L, 'emitPerformanceDiagnosticSummary', [overwrite: true])
     }
@@ -7862,7 +7943,8 @@ void startDiscovery(Boolean resetFound = false) {
     discoveryPerformanceMetrics = [startedAt: now(), mdnsPasses: 0, helperPasses: 0,
                                    identityStateWrites: 0, deviceHttpRequests: 0,
                                    summaryStatusCacheHits: 0, summaryStatusCacheMisses: 0,
-                                   tableSSR: 0, maxPendingAsync: 0]
+                                   configTableSSR: 0, configTableSSRSkippedInactive: 0,
+                                   maxPendingAsync: 0]
 
     logDebug("startDiscovery: starting discovery for ${getDiscoveryDurationSeconds()} seconds")
 
@@ -8018,7 +8100,7 @@ void stopDiscovery() {
             "stateWrites=${metrics.identityStateWrites ?: 0}, " +
             "summaryCacheHits=${metrics.summaryStatusCacheHits ?: 0}, " +
             "summaryCacheMisses=${metrics.summaryStatusCacheMisses ?: 0}, " +
-            "tableSSR=${metrics.tableSSR ?: 0}, " +
+            "configTableSSR=${metrics.configTableSSR ?: 0}, " +
             "durableWrites=[${durableStateWriteMetricSummary()}]")
     }
 
@@ -8322,10 +8404,8 @@ void discoveryShellyReachabilityCallback(response, Map data) {
 }
 
 /**
- * Fires an SSR event to update the device configuration table on the main page.
- * Merges newly discovered devices into the existing cache without destroying entries
- * that already have detailed status data (script/webhook counts from RPC queries).
- * Uses bare {@code sendEvent()} to trigger the SSR callback in {@link #processServerSideRender}.
+ * Merges newly discovered devices into the existing cache without destroying
+ * detailed status data, then submits one coalesced table-refresh request.
  */
 void sendFoundShellyEvents() {
     // Discovery identity merges must not overwrite a pending status/provisioning
@@ -8334,64 +8414,56 @@ void sendFoundShellyEvents() {
     Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
     Map discoveredShellys = atomicState.discoveredShellys ?: [:]
     Boolean cacheChanged = false
+    Set<String> changedIps = [] as Set<String>
     discoveredShellys.each { ipKey, info ->
         String ip = ipKey.toString()
         Map infoMap = info as Map
+        Boolean entryChanged = false
         if (!cache.containsKey(ip)) {
             cache[ip] = buildMinimalCacheEntry(ip, infoMap)
             cacheChanged = true
+            entryChanged = true
         } else {
             // Update existing cache entries with enriched data from async fetches
             Map existing = cache[ip] as Map
             if (infoMap.mac && (!existing.mac || existing.mac == '')) {
                 existing.mac = infoMap.mac.toString()
                 cacheChanged = true
+                entryChanged = true
             }
             if (infoMap.model && (!existing.model || existing.model == 'Unknown')) {
                 existing.model = infoMap.model.toString()
                 cacheChanged = true
+                entryChanged = true
             }
             if (infoMap.isBatteryDevice == true && existing.isBatteryDevice != true) {
                 existing.isBatteryDevice = true
                 cacheChanged = true
+                entryChanged = true
             }
             if (infoMap.batteryDetermined == true) {
-                if (existing.batteryDetermined != true) { cacheChanged = true }
+                if (existing.batteryDetermined != true) { cacheChanged = true; entryChanged = true }
                 existing.batteryDetermined = true
             }
             if (infoMap.shellyHelperOnline != null) {
-                if (existing.shellyHelperOnline != infoMap.shellyHelperOnline) { cacheChanged = true }
+                if (existing.shellyHelperOnline != infoMap.shellyHelperOnline) { cacheChanged = true; entryChanged = true }
                 existing.shellyHelperOnline = infoMap.shellyHelperOnline
             }
             if (infoMap.fwUpdateAvailable != null) {
-                if (existing.fwUpdateAvailable != infoMap.fwUpdateAvailable) { cacheChanged = true }
+                if (existing.fwUpdateAvailable != infoMap.fwUpdateAvailable) { cacheChanged = true; entryChanged = true }
                 existing.fwUpdateAvailable = infoMap.fwUpdateAvailable
             }
             cache[ip] = existing
         }
+        if (entryChanged) { changedIps.add(ip) }
     }
     if (cacheChanged) {
         atomicState.deviceStatusCache = cache
         recordDurableStateWrite('deviceStatusCache', true)
     }
-    Long nowMs = now()
-    if ((nowMs - lastDiscoveryTableSSR) < 250L) {
-        if (!discoveryTableSSRPending) {
-            discoveryTableSSRPending = true
-            runInMillisHelper(300L, 'flushDiscoveryTableSSR')
-        }
-        return
+    if (cacheChanged || changedIps) {
+        requestConfigTableSSR('discoveryMerge', changedIps, false)
     }
-    lastDiscoveryTableSSR = nowMs
-    recordDiscoveryMetric('tableSSR')
-    sendEventHelper([name: 'configTable', value: 'discovery'])
-}
-
-void flushDiscoveryTableSSR() {
-    discoveryTableSSRPending = false
-    lastDiscoveryTableSSR = now()
-    recordDiscoveryMetric('tableSSR')
-    sendEventHelper([name: 'configTable', value: 'discovery'])
 }
 
 /**
@@ -8834,7 +8906,7 @@ void watchdogProcessResults() {
         }
         if (updatedCount > 0) {
             logInfo("watchdogProcessResults: updated ${updatedCount} device IP(s)")
-            sendEventHelper([name: 'configTable', value: 'watchdog'])
+            requestConfigTableSSR('watchdog', null, false)
         } else {
             logTrace('watchdogProcessResults: all device IPs are current')
         }
@@ -16261,7 +16333,7 @@ private void toggleBleGateway(String ip) {
         // UI can briefly show the old enabled icon after the spinner vanishes.
         buildDeviceStatusCacheEntry(ip)
         clearBleGatewayProgress(ip)
-        runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('bleGatewayDisabled', [ip], true)
     } else {
         // enableBleGateway is async — gateway list update happens in enableBleGatewayComplete
         enableBleGateway(ip)
@@ -16279,7 +16351,7 @@ void runBleGatewayToggle(Map data) {
         appendLog('error', "BLE gateway toggle failed on ${ip}: ${ex.message}")
         clearBleGatewayProgress(ip)
         buildDeviceStatusCacheEntry(ip)
-        runInMillisHelper(500L, 'fireConfigTableSSR')
+        requestConfigTableSSR('bleGatewayFailed', [ip], true)
     }
 }
 
@@ -16289,7 +16361,7 @@ private void setBleGatewayProgress(String ip, String status) {
     Map progress = new LinkedHashMap((atomicState.bleGatewayProgress ?: [:]) as Map)
     progress[ip] = status
     atomicState.bleGatewayProgress = progress
-    sendEventHelper([name: 'configTable', value: 'bleGatewayProgress'])
+    requestConfigTableSSR('bleGatewayProgress', [ip], true)
 }
 
 private void clearBleGatewayProgress(String ip) {
@@ -16298,7 +16370,7 @@ private void clearBleGatewayProgress(String ip) {
     progress.remove(ip)
     atomicState.bleGatewayProgress = progress
     releaseUserAction(ip)
-    sendEventHelper([name: 'configTable', value: 'bleGatewayProgressComplete'])
+    requestConfigTableSSR('bleGatewayProgressComplete', [ip], true)
 }
 
 /**
@@ -16425,7 +16497,7 @@ void enableBleGatewayComplete(Map data) {
     // icon while buildDeviceStatusCacheEntry() is still doing its RPC reads.
     buildDeviceStatusCacheEntry(ip)
     clearBleGatewayProgress(ip)
-    runInMillisHelper(500L, 'fireConfigTableSSR')
+    requestConfigTableSSR('bleGatewayEnabled', [ip], true)
 }
 
 /**
@@ -16442,7 +16514,7 @@ void enableBleGatewayError(Map data) {
 
     // Refresh config table to reflect failed state
     buildDeviceStatusCacheEntry(ip)
-    runInMillisHelper(500L, 'fireConfigTableSSR')
+    requestConfigTableSSR('bleGatewayEnableFailed', [ip], true)
 }
 
 /**
