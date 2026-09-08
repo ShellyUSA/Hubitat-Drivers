@@ -57,6 +57,7 @@
 @Field static final Long DEVICE_CAPABILITY_CACHE_TTL_MS = 43200000L // 12 hours
 @Field static final Integer DEVICE_CAPABILITY_CACHE_VERSION = 1
 @Field static final Long DEVICE_TABLE_SUMMARY_TTL_MS = 43200000L // 12 hours
+@Field static final Long UNCREATED_DISCOVERY_TTL_MS = 86400000L // 24 hours
 @Field static java.util.concurrent.ConcurrentLinkedQueue<String> tableSummaryRefreshQueue =
     new java.util.concurrent.ConcurrentLinkedQueue<String>()
 @Field static volatile boolean tableSummaryRefreshScheduled = false
@@ -84,6 +85,7 @@
 @Field static ConcurrentHashMap<String, Boolean> configTableSSRReasons =
     new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static volatile Map discoveryPerformanceMetrics = [:]
+@Field static final Object PERFORMANCE_METRICS_LOCK = new Object()
 
 // Persistent operation records older than this are treated as abandoned on
 // the next lifecycle/page load. Normal device provisioning completes well
@@ -181,6 +183,10 @@
     new java.util.concurrent.ConcurrentHashMap<String, List<Map>>()
 @Field static ConcurrentHashMap<String, Map> deviceRequestHealth =
     new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, Map> deviceRequestMetricsByIp =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
+@Field static ConcurrentHashMap<String, Map> deviceRequestMetricsBySource =
+    new java.util.concurrent.ConcurrentHashMap<String, Map>()
 @Field static ConcurrentHashMap<String, Boolean> deviceRequestDispatchScheduled =
     new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 @Field static volatile long deviceRequestSequence = 0L
@@ -253,7 +259,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.92"
+@Field static final String APP_VERSION = "1.0.93"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -633,6 +639,7 @@ preferences {
 Map mainPage() {
     // Page construction is intentionally read-only. Discovery, migrations,
     // cleanup, and pending actions run from lifecycle/button callbacks.
+    recordPerformanceMetric('pageLoads')
     noteConfigTablePageActivity()
 
     Integer remainingSecs = getRemainingDiscoverySeconds()
@@ -1975,6 +1982,19 @@ private void clearCompletedProvisioningState() {
     flushPendingDeviceStatusCache()
 }
 
+/** Returns true when an uncreated discovery row has exceeded its retention window. */
+private Boolean isStaleUncreatedDiscoveryEntry(String ip, Map discoveryEntry, Map cacheEntry) {
+    if (!ip || hasProvisioningOperation(ip) || tableSummaryRefreshInFlight.containsKey(ip)) { return false }
+    Object rawLastSeen = discoveryEntry?.lastSeenAt ?: discoveryEntry?.ts ?: cacheEntry?.lastRefreshed
+    if (rawLastSeen == null) { return false }
+    try {
+        Long lastSeenAt = rawLastSeen as Long
+        return (now() - lastSeenAt) >= UNCREATED_DISCOVERY_TTL_MS
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
 /**
  * Builds a unified list of devices from discovered Shellys and created child devices.
  * Reads status from the device status cache for each entry.
@@ -2008,6 +2028,10 @@ private List<Map> buildDeviceList() {
     discoveredShellys.each { ipKey, info ->
         String ip = ipKey.toString()
         processedIps.add(ip)
+        if (!childByIp.containsKey(ip) &&
+            isStaleUncreatedDiscoveryEntry(ip, info as Map, cache[ip] as Map)) {
+            return
+        }
         Map cached = cache[ip] as Map
         Map entry = cached ? new LinkedHashMap(cached) : buildMinimalCacheEntry(ip, info as Map)
         entry = mergeVolatileDeviceStatus(ip, entry)
@@ -2104,6 +2128,11 @@ private List<Map> buildDeviceList() {
     cache.each { Object ipKey, Object value ->
         String ip = ipKey.toString()
         if (processedIps.contains(ip) || !(value instanceof Map)) { return }
+        if (!childByIp.containsKey(ip) &&
+            isStaleUncreatedDiscoveryEntry(ip, null, value as Map)) {
+            processedIps.add(ip)
+            return
+        }
         Map cached = new LinkedHashMap(value as Map)
         cached.ip = cached.ip ?: ip
         cached.shellyName = cached.shellyName ?: "Shelly ${ip}"
@@ -2310,6 +2339,8 @@ private void queueDiscoveredShellyWrite(String ip, Map entry, String eventValue 
 /** Records volatile write metrics without adding another atomicState write. */
 private void recordDurableStateWrite(String mapName, Boolean changed, Integer patchCount = 0) {
     if (!mapName) { return }
+    recordPerformanceMetric('stateMapWriteAttempts')
+    if (changed) { recordPerformanceMetric('stateMapWritesChanged') }
     Map metrics = new LinkedHashMap(durableStateWriteMetrics ?: [:])
     Map entry = new LinkedHashMap((metrics[mapName] ?: [:]) as Map)
     entry.attempts = ((entry.attempts ?: 0) as Integer) + 1
@@ -3682,7 +3713,7 @@ private void rebuildBleChildIndex() {
         }
 
         Map deviceConfigs = (atomicStateValueHelper('deviceConfigs') ?: [:]) as Map
-        Map discoveredBle = (state.discoveredBleDevices ?: [:]) as Map
+        Map discoveredBle = (stateValueHelper('discoveredBleDevices') ?: [:]) as Map
         bleChildIndex.clear()
 
         deviceConfigs.each { Object rawKey, Object rawConfig ->
@@ -3690,7 +3721,7 @@ private void rebuildBleChildIndex() {
             if (config?.isBleDevice != true) { return }
             String key = bleChildKey(rawKey)
             ChildDeviceWrapper child = childrenByDni[key]
-            if (child) { bleChildIndex[key] = child }
+            if (child) { bleChildIndex.put(key, child) }
         }
 
         // Include legacy/partially migrated BLE children when their discovery
@@ -3701,7 +3732,7 @@ private void rebuildBleChildIndex() {
             String key = bleChildKey(rawKey)
             if (!key || bleChildIndex.containsKey(key)) { return }
             ChildDeviceWrapper child = childrenByDni[key]
-            if (child) { bleChildIndex[key] = child }
+            if (child) { bleChildIndex.put(key, child) }
         }
 
         bleChildIndexBuiltAt = nowMs
@@ -4458,9 +4489,37 @@ void installNextScript(Map data) {
         // Verify uploaded code length matches expected (catch truncation early)
         Integer expectedLen = data.expectedCodeLength as Integer
         if (expectedLen != null && expectedLen > 0) {
-            LinkedHashMap getCodeCmd = scriptGetCodeCommand(scriptId, 0, 1)
-            LinkedHashMap codeResult = postCommandSync(getCodeCmd, uri)
-            Integer uploadedLen = codeResult?.result?.len as Integer
+            Integer uploadedLen = data.uploadedCodeLength as Integer
+            LinkedHashMap codeResult = null
+            if (uploadedLen == null) {
+                LinkedHashMap getCodeCmd = scriptGetCodeCommand(scriptId, 0, 1)
+                codeResult = postCommandSync(getCodeCmd, uri)
+                if (codeResult == null) {
+                    Integer verificationRetryCount = (data.verificationRetryCount ?: 0) as Integer
+                    Integer[] verificationRetryDelays = [250, 500, 1000, 2000, 3000, 5000]
+                    if (verificationRetryCount < verificationRetryDelays.length) {
+                        Integer delay = verificationRetryDelays[verificationRetryCount]
+                        logTrace("Deferring script verification for '${scriptName}' by ${delay}ms because the device request lane is busy")
+                        runInMillisHelper(delay as Long, 'scriptInstallStepComplete', [data: data + [verificationRetryCount: verificationRetryCount + 1], overwrite: false])
+                        return
+                    }
+                } else {
+                    uploadedLen = scriptCodeLengthFromGetCodeResponse(codeResult)
+                }
+            }
+            if (uploadedLen == null) {
+                logWarn("Script '${scriptName}' upload length could not be verified")
+                if (retryCount < 1) {
+                    logInfo("Retrying upload of '${scriptName}' (attempt ${retryCount + 1})...")
+                    appendLog('warn', "Retrying unverifiable upload of ${scriptName}")
+                    retryScriptUpload(data)
+                    return
+                }
+                logError("Script '${scriptName}' remains unverifiable after retry")
+                appendLog('error', "Could not verify ${scriptName} after upload")
+                installNextScript(data + [queueIndex: queueIndex + 1])
+                return
+            }
             if (uploadedLen != null && uploadedLen != expectedLen) {
                 logWarn("Script '${scriptName}' appears truncated: uploaded ${uploadedLen}B, expected ${expectedLen}B")
                 if (retryCount < 1) {
@@ -6804,9 +6863,7 @@ void flushConfigTableSSR() {
     if (reasons) { recordPerformanceMetric('configTableSSRCoalescedSources', reasons.size()) }
     if (firstPendingAt > 0L) {
         Long delay = Math.max(0L, now() - firstPendingAt)
-        Map metrics = new LinkedHashMap(discoveryPerformanceMetrics ?: [:])
-        metrics.configTableSSRMaxDelayMs = Math.max((metrics.configTableSSRMaxDelayMs ?: 0L) as Long, delay)
-        discoveryPerformanceMetrics = metrics
+        recordPerformanceMetricMax('configTableSSRMaxDelayMs', delay)
     }
     sendEventHelper([name: 'configTable', value: 'coalesced'])
 }
@@ -7700,6 +7757,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     if (!atomicState.discoveredShellys) { atomicState.discoveredShellys = [:] }
     if (atomicState.discoveryRunning == null) { atomicState.discoveryRunning = false }
     ensureDeviceStatusCache()
+    pruneStaleUncreatedDiscoveryEntries()
     recoverDeviceRequestCoordinator()
     recoverStaleTransientState()
 
@@ -7846,6 +7904,82 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     reconcileBleSchedules()
     runInHelper(60L, 'emitPerformanceDiagnosticSummary', [overwrite: true])
     state.settingsLifecycleSnapshot = buildSettingsLifecycleSnapshot()
+}
+
+/**
+ * Removes uncreated LAN discovery rows that have not been observed recently.
+ * Installed child devices are retained even when mDNS is quiet or the device
+ * is offline. ShellyHelper can retain offline records, so only an affirmative
+ * live/helper observation updates lastSeenAt.
+ */
+private void pruneStaleUncreatedDiscoveryEntries() {
+    flushPendingDeviceStatusCache()
+
+    Long currentTime = now()
+    Long cutoff = currentTime - UNCREATED_DISCOVERY_TTL_MS
+    Map discovered = new LinkedHashMap((atomicState.discoveredShellys ?: [:]) as Map)
+    Map cache = new LinkedHashMap((atomicState.deviceStatusCache ?: [:]) as Map)
+    if (discovered.isEmpty()) { return }
+
+    Set<String> childIps = [] as Set<String>
+    (getCachedDirectChildDevices() ?: []).each { child ->
+        String childIp = child?.getDataValue('ipAddress')?.toString()
+        if (childIp) { childIps.add(childIp) }
+    }
+
+    List<String> staleIps = []
+    Map<String, Map> timestampUpdates = [:]
+    discovered.each { Object rawIp, Object rawEntry ->
+        if (!(rawEntry instanceof Map)) { return }
+        String ip = rawIp.toString()
+        if (childIps.contains(ip) || hasProvisioningOperation(ip) ||
+            tableSummaryRefreshInFlight.containsKey(ip)) {
+            return
+        }
+
+        Map entry = rawEntry as Map
+        Map cached = cache[ip] as Map
+        Object rawLastSeen = entry.lastSeenAt ?: entry.ts ?: cached?.lastRefreshed
+        Long lastSeenAt = null
+        if (rawLastSeen != null) {
+            try { lastSeenAt = rawLastSeen as Long } catch (Exception ignored) {}
+        }
+
+        // Legacy entries may have had their old timestamp compacted away. Give
+        // them one clean 24-hour grace period while migrating to lastSeenAt.
+        if (lastSeenAt == null) {
+            Map migrated = new LinkedHashMap(entry)
+            migrated.lastSeenAt = currentTime
+            timestampUpdates[ip] = migrated
+        } else if (lastSeenAt < cutoff) {
+            staleIps.add(ip)
+        }
+    }
+
+    timestampUpdates.each { String ip, Map entry -> discovered[ip] = entry }
+    staleIps.each { String ip ->
+        discovered.remove(ip)
+        cache.remove(ip)
+        pendingDiscoveredShellyEntries.remove(ip)
+        pendingDeviceStatusCacheEntries.remove(ip)
+        pendingDeviceStatusCacheEvents.remove(ip)
+        deviceStatusCacheVolatile.remove(ip)
+        deviceStatusVolatile.remove(ip)
+        tableSummaryRefreshQueue.remove(ip)
+        foundDevices.remove(ip)
+    }
+
+    Boolean discoveredChanged = !timestampUpdates.isEmpty() || !staleIps.isEmpty()
+    Boolean cacheChanged = !staleIps.isEmpty()
+    if (discoveredChanged) {
+        atomicState.discoveredShellys = discovered
+        recordDurableStateWrite('discoveredShellys', true, timestampUpdates.size() + staleIps.size())
+    }
+    if (cacheChanged) {
+        atomicState.deviceStatusCache = cache
+        recordDurableStateWrite('deviceStatusCache', true, staleIps.size())
+        logInfo("Pruned ${staleIps.size()} stale uncreated discovery row(s) after 24 hours")
+    }
 }
 
 /** Removes large device responses left by older discovery versions. */
@@ -8046,9 +8180,53 @@ private void recoverDeviceRequestCoordinator() {
 /** Records volatile performance counters without adding more durable state. */
 private void recordPerformanceMetric(String name, Integer amount = 1) {
     if (!name) { return }
-    Map metrics = new LinkedHashMap(discoveryPerformanceMetrics ?: [:])
-    metrics[name] = ((metrics[name] ?: 0) as Integer) + (amount ?: 1)
-    discoveryPerformanceMetrics = metrics
+    synchronized (PERFORMANCE_METRICS_LOCK) {
+        Map metrics = discoveryPerformanceMetrics ?: [:]
+        metrics[name] = ((metrics[name] ?: 0) as Integer) + (amount ?: 1)
+        discoveryPerformanceMetrics = metrics
+    }
+}
+
+/** Records a long-valued performance counter without persisting it to state. */
+private void recordPerformanceMetricValue(String name, Long amount) {
+    if (!name || amount == null) { return }
+    synchronized (PERFORMANCE_METRICS_LOCK) {
+        Map metrics = discoveryPerformanceMetrics ?: [:]
+        metrics[name] = ((metrics[name] ?: 0L) as Long) + amount
+        discoveryPerformanceMetrics = metrics
+    }
+}
+
+/** Records a maximum observed value for a performance metric. */
+private void recordPerformanceMetricMax(String name, Long value) {
+    if (!name || value == null) { return }
+    synchronized (PERFORMANCE_METRICS_LOCK) {
+        Map metrics = discoveryPerformanceMetrics ?: [:]
+        Long prior = metrics[name] != null ? metrics[name] as Long : null
+        metrics[name] = prior == null ? value : Math.max(prior, value)
+        discoveryPerformanceMetrics = metrics
+    }
+}
+
+/** Records a latency sample and a small distribution for queue/request timing. */
+private void recordPerformanceLatency(String prefix, Long elapsedMs) {
+    if (!prefix || elapsedMs == null) { return }
+    Long elapsed = Math.max(0L, elapsedMs)
+    recordPerformanceMetric("${prefix}Samples")
+    recordPerformanceMetricValue("${prefix}TotalMs", elapsed)
+    recordPerformanceMetricMax("${prefix}MaxMs", elapsed)
+    String bucket = elapsed < 100L ? 'lt100' :
+        (elapsed < 500L ? '100to499' :
+        (elapsed < 1000L ? '500to999' :
+        (elapsed < 5000L ? '1000to4999' : 'gte5000')))
+    recordPerformanceMetric("${prefix}Bucket_${bucket}")
+}
+
+/** Returns a stable snapshot for diagnostic logging. */
+private Map performanceMetricSnapshot() {
+    synchronized (PERFORMANCE_METRICS_LOCK) {
+        return new LinkedHashMap(discoveryPerformanceMetrics ?: [:])
+    }
 }
 
 /** Records discovery counters only while an explicit discovery session runs. */
@@ -8067,16 +8245,61 @@ private String durableStateWriteMetricSummary() {
     }.join(' | ')
 }
 
+/** Formats one latency distribution for the periodic diagnostic line. */
+private String performanceLatencySummary(Map metrics, String prefix) {
+    Long samples = (metrics["${prefix}Samples"] ?: 0L) as Long
+    Long totalMs = (metrics["${prefix}TotalMs"] ?: 0L) as Long
+    Long averageMs = samples > 0L ? (totalMs / samples) as Long : 0L
+    Long maxMs = (metrics["${prefix}MaxMs"] ?: 0L) as Long
+    Integer lt100 = (metrics["${prefix}Bucket_lt100"] ?: 0) as Integer
+    Integer from100 = (metrics["${prefix}Bucket_100to499"] ?: 0) as Integer
+    Integer from500 = (metrics["${prefix}Bucket_500to999"] ?: 0) as Integer
+    Integer from1000 = (metrics["${prefix}Bucket_1000to4999"] ?: 0) as Integer
+    Integer from5000 = (metrics["${prefix}Bucket_gte5000"] ?: 0) as Integer
+    return "samples=${samples},avgMs=${averageMs},maxMs=${maxMs}," +
+        "buckets=<100:${lt100},100-499:${from100},500-999:${from500}," +
+        "1000-4999:${from1000},>=5000:${from5000}>"
+}
+
+/** Summarizes coordinator health without logging endpoint addresses or payloads. */
+private String deviceRequestCoordinatorSummary() {
+    Integer queued = deviceRequestQueues.values().collect { List queue -> queue?.size() ?: 0 }.sum() ?: 0
+    Integer maxQueue = deviceRequestQueues.values().collect { List queue -> queue?.size() ?: 0 }.max() ?: 0
+    Integer backoff = deviceRequestHealth.values().count { Map health ->
+        health?.retryAfter != null && (health.retryAfter as Long) > now()
+    }
+    Set lanes = [] as Set
+    lanes.addAll(deviceRequestQueues.keySet())
+    lanes.addAll(deviceRequestInFlight.keySet())
+    return "active=${deviceRequestInFlight.size()},queued=${queued},lanes=${lanes.size()}," +
+        "backoff=${backoff},maxQueue=${maxQueue}," +
+        "maxObservedQueue=${(performanceMetricSnapshot().coordinatorMaxQueueDepth ?: 0)}"
+}
+
 /** Emits compact diagnostics on a non-blocking interval while debugging. */
 void emitPerformanceDiagnosticSummary() {
     if (!shouldLogOverall('debug')) { return }
-    Map metrics = discoveryPerformanceMetrics ?: [:]
-    Integer queuedRequests = deviceRequestQueues.values().collect { List queue -> queue?.size() ?: 0 }.sum() ?: 0
+    Map metrics = performanceMetricSnapshot()
     logDebug("Performance summary: durableWrites=[${durableStateWriteMetricSummary()}], " +
+        "pageLoads=${metrics.pageLoads ?: 0},discoveryStarts=${metrics.discoveryStarts ?: 0}," +
+        "rpcAsync=${metrics.rpcAsyncSubmitted ?: 0},rpcSync=${metrics.rpcSyncSubmitted ?: 0}," +
+        "httpAsyncGet=${metrics.httpAsyncGetSubmitted ?: 0},httpAsyncPost=${metrics.httpAsyncPostSubmitted ?: 0}," +
+        "stateWrites=${metrics.stateMapWriteAttempts ?: 0}/${metrics.stateMapWritesChanged ?: 0}," +
+        "stateHelpers=${metrics.stateHelperWrites ?: 0}/${metrics.stateHelperRemoves ?: 0}," +
         "summaryCacheHits=${metrics.summaryStatusCacheHits ?: 0}, " +
         "summaryCacheMisses=${metrics.summaryStatusCacheMisses ?: 0}, " +
         "volatileObservations=${deviceStatusVolatile.size()}, " +
-        "queuedDeviceRequests=${queuedRequests}, configTableSSR=${metrics.configTableSSR ?: 0}, " +
+        "coordinator=[${deviceRequestCoordinatorSummary()}], " +
+        "coalesced=${metrics.coordinatorDuplicatesCoalesced ?: 0}," +
+        "drops=${metrics.coordinatorQueueDrops ?: 0}," +
+        "timeouts=${metrics.deviceRequestTimeouts ?: 0}," +
+        "bySourceLatency=[${requestDimensionSummary(deviceRequestMetricsBySource, 'latency')}]," +
+        "bySourceQueue=[${requestDimensionSummary(deviceRequestMetricsBySource, 'queue')}]," +
+        "byIpLatency=[${requestDimensionSummary(deviceRequestMetricsByIp, 'latency')}]," +
+        "byIpQueue=[${requestDimensionSummary(deviceRequestMetricsByIp, 'queue')}]," +
+        "queueWait=[${performanceLatencySummary(metrics, 'deviceRequestQueueWait')}]," +
+        "requestLatency=[${performanceLatencySummary(metrics, 'deviceRequestLatency')}]," +
+        "configTableSSR=${metrics.configTableSSR ?: 0}, " +
         "ssrSkippedInactive=${metrics.configTableSSRSkippedInactive ?: 0}")
     if (shouldLogOverall('debug')) {
         runInHelper(60L, 'emitPerformanceDiagnosticSummary', [overwrite: true])
@@ -8093,15 +8316,25 @@ void emitPerformanceDiagnosticSummary() {
 void startDiscovery(Boolean resetFound = false) {
     if (resetFound) {
         atomicState.discoveredShellys = [:]
+    } else {
+        pruneStaleUncreatedDiscoveryEntries()
     }
 
     atomicState.discoveryRunning = true
     atomicState.discoveryEndTime = now() + (getDiscoveryDurationSeconds() * 1000L)
-    discoveryPerformanceMetrics = [startedAt: now(), mdnsPasses: 0, helperPasses: 0,
-                                   identityStateWrites: 0, deviceHttpRequests: 0,
-                                   summaryStatusCacheHits: 0, summaryStatusCacheMisses: 0,
-                                   configTableSSR: 0, configTableSSRSkippedInactive: 0,
-                                   maxPendingAsync: 0]
+    Integer pageLoads = (performanceMetricSnapshot().pageLoads ?: 0) as Integer
+    synchronized (PERFORMANCE_METRICS_LOCK) {
+        discoveryPerformanceMetrics = [startedAt: now(), pageLoads: pageLoads,
+                                       mdnsPasses: 0, helperPasses: 0,
+                                       identityStateWrites: 0, deviceHttpRequests: 0,
+                                       summaryStatusCacheHits: 0, summaryStatusCacheMisses: 0,
+                                       configTableSSR: 0, configTableSSRSkippedInactive: 0,
+                                       maxPendingAsync: 0]
+    }
+    deviceRequestMetricsByIp.clear()
+    deviceRequestMetricsBySource.clear()
+    recordPerformanceMetric('discoveryStarts')
+    recordPerformanceMetric('explicitScanStarts')
 
     logDebug("startDiscovery: starting discovery for ${getDiscoveryDurationSeconds()} seconds")
 
@@ -8243,6 +8476,8 @@ void stopDiscovery() {
 
     // Stop IP subnet scan if running
     stopIpSubnetScan()
+
+    pruneStaleUncreatedDiscoveryEntries()
 
     // Device summary RPCs run only after identity discovery has stopped.
     runInMillisHelper(500L, 'queueStaleTableSummaryRefreshes')
@@ -8396,7 +8631,7 @@ void processMdnsDiscovery() {
                     gen: gen,
                     deviceApp: deviceApp,
                     ver: ver,
-                    ts: now()
+                    lastSeenAt: now()
                 ]
 
                 // Gen1 devices advertise under _http._tcp with no gen/app TXT records.
@@ -8522,12 +8757,8 @@ private Boolean tryAcquireDiscoveryHttpRequest(String requestKey) {
     inFlight[requestKey] = now()
     atomicState.discoveryHttpInFlight = inFlight
     recordDiscoveryMetric('deviceHttpRequests')
-    Map metrics = new LinkedHashMap(discoveryPerformanceMetrics ?: [:])
     Integer currentPending = inFlight.size()
-    if (currentPending > ((metrics.maxPendingAsync ?: 0) as Integer)) {
-        metrics.maxPendingAsync = currentPending
-        discoveryPerformanceMetrics = metrics
-    }
+    recordPerformanceMetricMax('maxPendingAsync', currentPending as Long)
     return true
 }
 
@@ -8671,6 +8902,13 @@ void processShellyHelperDiscovery() {
             Map existingEntry = isNewToState ? null : (discovered[key] as Map)
             String previousIdentity = discoveryIdentityFingerprint(existingEntry)
 
+            // ShellyHelper may retain a known-offline record after a device is
+            // unplugged. Do not resurrect an expired uncreated row from that
+            // stale record; mDNS or a later live helper result can rediscover it.
+            if (isNewToState && entry.onlineCheckDone == true && entry.online != true) {
+                continue
+            }
+
             if (isNewToState && !alreadyLogged) {
                 logDebug("Found NEW Shelly (ShellyHelper): ${deviceName} at ${ip4} (gen=${gen}, mac=${mac})")
                 foundDevices.put(key, true)
@@ -8680,9 +8918,18 @@ void processShellyHelperDiscovery() {
                 name: deviceName,
                 ipAddress: ip4,
                 port: 80,
-                gen: gen,
-                ts: now()
+                gen: gen
             ]
+
+            // ShellyHelper can retain offline records. Only an affirmative live
+            // result counts as a new observation for uncreated-row expiry.
+            if (entry.onlineCheckDone == true && entry.online == true) {
+                deviceEntry.lastSeenAt = now()
+            } else if (existingEntry?.lastSeenAt != null) {
+                deviceEntry.lastSeenAt = existingEntry.lastSeenAt
+            } else if (existingEntry?.ts != null) {
+                deviceEntry.lastSeenAt = existingEntry.ts
+            }
 
             // Set MAC if available from ShellyHelper (unlike mDNS which doesn't provide it)
             if (mac) { deviceEntry.mac = mac }
@@ -9003,7 +9250,7 @@ void watchdogProcessResults() {
                 if (discovered.containsKey(currentIp)) {
                     Map deviceEntry = discovered.remove(currentIp) as Map
                     deviceEntry.ipAddress = ip4
-                    deviceEntry.ts = now()
+                    deviceEntry.lastSeenAt = now()
                     discovered[ip4] = deviceEntry
                     discoveredChanged = true
                 }
@@ -9040,7 +9287,7 @@ void watchdogProcessResults() {
                 if (discovered.containsKey(currentIp)) {
                     Map deviceEntry = discovered.remove(currentIp) as Map
                     deviceEntry.ipAddress = shIp
-                    deviceEntry.ts = now()
+                    deviceEntry.lastSeenAt = now()
                     discovered[shIp] = deviceEntry
                     discoveredChanged = true
                 }
@@ -9317,7 +9564,7 @@ void registerIpScanDiscovery(String ip, Map shellyData) {
         name: "Shelly ${ip}",
         ipAddress: ip,
         port: 80,
-        ts: now()
+        lastSeenAt: now()
     ]
 
     if (shellyData.gen) {
@@ -10632,7 +10879,7 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         ['auth_en', 'authScheme', 'authStatus', 'authLastError', 'authUpdatedAt'].each { String field ->
             if (authMetadata?.containsKey(field)) { device[field] = authMetadata[field] }
         }
-        device.ts = now()
+        device.lastSeenAt = now()
         markCapabilityCacheComplete(ipKey, device)
 
         // Do not mutate a nested atomicState map in place. During provisioning,
@@ -10844,7 +11091,7 @@ private Boolean fetchGen1DeviceInfo(String ipKey, Map device) {
         ['auth_en', 'authScheme', 'authStatus', 'authLastError', 'authUpdatedAt'].each { String field ->
             if (authMetadata?.containsKey(field)) { device[field] = authMetadata[field] }
         }
-        device.ts = now()
+        device.lastSeenAt = now()
         atomicState.discoveredShellys[ipKey] = device
 
         // Update the cache entry through the coalesced status-cache writer.
@@ -13595,6 +13842,30 @@ void uploadScriptChunk(Map data) {
         return
     }
 
+    // The per-device request coordinator returns null when another request
+    // currently owns the lane. That is not a successful PutCode operation:
+    // advancing the offset here silently drops a script chunk and can leave
+    // valid JavaScript looking like a runtime reference error on start.
+    if (result == null) {
+        Integer coordinatorRetryCount = (data.coordinatorRetryCount ?: 0) as Integer
+        Integer[] coordinatorRetryDelays = [250, 500, 1000, 2000, 3000, 5000, 5000, 5000]
+        if (coordinatorRetryCount < coordinatorRetryDelays.length) {
+            Integer delay = coordinatorRetryDelays[coordinatorRetryCount]
+            logTrace("Deferring script upload chunk ${chunkNum} for ${delay}ms because the device request lane is busy")
+            runInMillisHelper(delay as Long, 'uploadScriptChunk', [data: data + [coordinatorRetryCount: coordinatorRetryCount + 1], overwrite: false])
+            return
+        }
+        String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): device request lane remained busy"
+        logError(errMsg)
+        atomicState.remove(codeStateKey)
+        forgetProvisioningUploadKey(completionData.ipAddress as String, codeStateKey)
+        forgetBleGatewayUploadKey(completionData.ip as String, codeStateKey)
+        if (errorCallback) {
+            "${errorCallback}"(completionData + [error: errMsg])
+        }
+        return
+    }
+
     if (result?.error) {
         String errMsg = "Script upload failed on chunk ${chunkNum} (offset ${offset}): ${result.error}"
         logError(errMsg)
@@ -13629,9 +13900,23 @@ void uploadScriptChunk(Map data) {
         forgetProvisioningUploadKey(completionData.ipAddress as String, codeStateKey)
         forgetBleGatewayUploadKey(completionData.ip as String, codeStateKey)
         if (completionCallback) {
-            "${completionCallback}"(completionData)
+            Map finalCompletionData = new LinkedHashMap(completionData)
+            Integer uploadedCodeLength = result?.result?.len as Integer
+            if (uploadedCodeLength != null) {
+                finalCompletionData.uploadedCodeLength = uploadedCodeLength
+            }
+            "${completionCallback}"(finalCompletionData)
         }
     }
+}
+
+/** Returns the uploaded byte count from a Script.GetCode response. */
+private Integer scriptCodeLengthFromGetCodeResponse(LinkedHashMap response) {
+    Map result = response?.result as Map
+    if (result?.len != null) { return result.len as Integer }
+    if (result?.data == null || result?.left == null) { return null }
+    Integer dataBytes = result.data.toString().getBytes('UTF-8').length
+    return dataBytes + (result.left as Integer)
 }
 
 /**
@@ -14825,6 +15110,58 @@ private Integer deviceRequestPriority(String source = null, Map metadata = null)
   return DEVICE_REQUEST_NORMAL_PRIORITY
 }
 
+/** Records bounded request dimensions without persisting endpoint data. */
+private void recordRequestDimension(ConcurrentHashMap<String, Map> dimensions, String key,
+                                    String metric, Long amount = 1L) {
+  if (!key || !metric || amount == null) { return }
+  Map entry = dimensions.get(key)
+  if (entry == null) {
+    if (dimensions.size() >= 128) { return }
+    Map created = [:]
+    Map prior = dimensions.putIfAbsent(key, created) as Map
+    entry = prior ?: created
+  }
+  synchronized (entry) {
+    if (metric.endsWith('MaxMs')) {
+      entry[metric] = Math.max((entry[metric] ?: 0L) as Long, amount)
+    } else {
+      entry[metric] = ((entry[metric] ?: 0L) as Long) + amount
+    }
+  }
+}
+
+/** Returns compact top dimensions for the periodic coordinator diagnostic. */
+private String requestDimensionSummary(ConcurrentHashMap<String, Map> dimensions, String valueKey) {
+  List<Map> ranked = dimensions.collect { String key, Map entry ->
+    Long requests = (entry["${valueKey}Requests"] ?: 0L) as Long
+    Long totalMs = (entry["${valueKey}TotalMs"] ?: 0L) as Long
+    Long averageMs = requests > 0L ? (totalMs / requests) as Long : 0L
+    [key: key, requests: requests, averageMs: averageMs,
+     maxMs: (entry["${valueKey}MaxMs"] ?: 0L) as Long]
+  }.sort { Map left, Map right -> right.requests <=> left.requests }.take(8)
+  List<String> values = ranked.collect { Map entry ->
+    "${entry.key}:n=${entry.requests},avgMs=${entry.averageMs},maxMs=${entry.maxMs}"
+  }
+  return values ? values.join('|') : 'none'
+}
+
+/** Records one request latency in both endpoint and source dimensions. */
+private void recordRequestTimingDimensions(String ip, String source, String timingType, Long elapsedMs) {
+  if (elapsedMs == null) { return }
+  String sourceKey = source ?: 'unknown'
+  [
+      [map: deviceRequestMetricsByIp, key: ip],
+      [map: deviceRequestMetricsBySource, key: sourceKey]
+  ].each { Map dimension ->
+    ConcurrentHashMap<String, Map> metrics = dimension.map as ConcurrentHashMap<String, Map>
+    String key = dimension.key as String
+    if (!key) { return }
+    recordRequestDimension(metrics, key, "${timingType}Requests", 1L)
+    recordRequestDimension(metrics, key, "${timingType}TotalMs", Math.max(0L, elapsedMs))
+    recordRequestDimension(metrics, key, "${timingType}MaxMs", Math.max(0L, elapsedMs))
+  }
+}
+
 private Map deviceRequestHealthRecord(String ip) {
   Map existing = deviceRequestHealth.get(ip) as Map
   if (existing != null) { return existing }
@@ -14883,13 +15220,29 @@ private void completeDeviceRequest(String ip, Long requestId, Boolean success, S
   if (!ip || requestId == null) { return }
   Object lock = deviceRequestLock(ip)
   Boolean completed = false
+  Map completedRecord = null
+  Long completedAt = now()
   synchronized (lock) {
     Map active = deviceRequestInFlight.get(ip) as Map
     if (active?.requestId != requestId) { return }
     deviceRequestInFlight.remove(ip)
+    completedRecord = new LinkedHashMap(active)
     completed = true
   }
   if (completed) {
+    recordPerformanceMetric('coordinatorCompleted')
+    if (success == true) { recordPerformanceMetric('coordinatorSucceeded') }
+    else { recordPerformanceMetric('coordinatorFailed') }
+    Long startedAt = completedRecord?.startedAt as Long
+    if (startedAt != null) {
+      Long latency = completedAt - startedAt
+      recordPerformanceLatency('deviceRequestLatency', latency)
+      recordRequestTimingDimensions(ip, completedRecord?.source?.toString(), 'latency', latency)
+    }
+    String errorText = error?.toString()?.toLowerCase() ?: ''
+    if (errorText.contains('timeout') || errorText.contains('408')) {
+      recordPerformanceMetric('deviceRequestTimeouts')
+    }
     recordDeviceRequestResult(ip, success, error)
     scheduleDeviceRequestDispatch(ip)
   }
@@ -14901,12 +15254,14 @@ private Map acquireDeviceSyncRequest(String ip, String source = null, Integer pr
   synchronized (lock) {
     if (deviceRequestInFlight.get(ip) != null) {
       logTrace("Request coordinator busy for ${ip}; skipping ${source ?: 'synchronous'} request")
+      recordPerformanceMetric('coordinatorSyncBusySkips')
       return null
     }
     Integer effectivePriority = priority ?: deviceRequestPriority(source)
     Map record = [requestId: nextDeviceRequestId(), ip: ip, mode: 'sync',
                   source: source ?: 'synchronous', priority: effectivePriority, startedAt: now()]
     deviceRequestInFlight.put(ip, record)
+    recordPerformanceMetric('coordinatorSyncAdmitted')
     return [coordinated: true, record: record]
   }
 }
@@ -14920,6 +15275,7 @@ private void releaseDeviceSyncRequest(String ip, Map admission, Boolean success,
 /** Performs a short, unauthenticated device GET under the same per-IP lane. */
 private Map coordinatedDeviceGet(String uri, Integer timeout = 5, String source = 'device get') {
   String targetUri = uri?.toString()
+  recordPerformanceMetric('httpSyncGetSubmitted')
   String ip = deviceRequestIp(targetUri)
   Map admission = acquireDeviceSyncRequest(ip, source, deviceRequestPriority(source))
   if (admission == null) { return null }
@@ -14952,6 +15308,7 @@ private Map coordinatedDeviceGet(String uri, Integer timeout = 5, String source 
  */
 LinkedHashMap postCommandSync(LinkedHashMap command, String uri = null) {
   String targetUri = (uri ? uri : getBaseUriRpc()).toString()
+  recordPerformanceMetric('rpcSyncSubmitted')
   String ip = deviceRequestIp(targetUri)
   Map admission = acquireDeviceSyncRequest(ip, 'synchronous')
   if (admission == null) { return null }
@@ -15046,6 +15403,7 @@ void parentPostCommandAsync(LinkedHashMap command, String callbackMethod = '', S
 private void enqueueDeviceRequest(Map request) {
   String ip = request?.ip?.toString()
   if (!ip) {
+    recordPerformanceMetric('coordinatorUncoordinatedRequests')
     if (request?.kind == 'rpc') {
       postCommandAsyncTransport(request)
     } else {
@@ -15053,6 +15411,7 @@ private void enqueueDeviceRequest(Map request) {
     }
     return
   }
+  recordPerformanceMetric('coordinatorEnqueued')
   Object lock = deviceRequestLock(ip)
   Boolean dispatchNow = false
   synchronized (lock) {
@@ -15072,6 +15431,7 @@ private void enqueueDeviceRequest(Map request) {
     } as Map
     if (duplicate != null) {
       logTrace("Request coordinator coalesced duplicate ${request.source ?: request.kind} request for ${ip}")
+      recordPerformanceMetric('coordinatorDuplicatesCoalesced')
       return
     }
     if (queue.size() >= DEVICE_REQUEST_MAX_QUEUE) {
@@ -15080,8 +15440,10 @@ private void enqueueDeviceRequest(Map request) {
       } as Map
       if ((request.priority as Integer) >= DEVICE_REQUEST_EXPLICIT_PRIORITY && background != null) {
         queue.remove(background)
+        recordPerformanceMetric('coordinatorQueueEvictions')
         logWarn("Request coordinator queue full for ${ip}; evicting background work for ${request.source ?: request.kind}")
       } else {
+        recordPerformanceMetric('coordinatorQueueDrops')
         logWarn("Request coordinator queue full for ${ip}; dropping ${request.source ?: request.kind} request")
         return
       }
@@ -15091,6 +15453,7 @@ private void enqueueDeviceRequest(Map request) {
       Integer priorityCompare = (right.priority as Integer) <=> (left.priority as Integer)
       priorityCompare != 0 ? priorityCompare : ((left.enqueuedAt as Long) <=> (right.enqueuedAt as Long))
     }
+    recordPerformanceMetricMax('coordinatorMaxQueueDepth', queue.size() as Long)
     if (deviceRequestInFlight.get(ip) == null) { dispatchNow = true }
   }
   if (dispatchNow) { scheduleDeviceRequestDispatch(ip) }
@@ -15101,8 +15464,8 @@ void dispatchDeviceRequest(Map data = null) {
   String ip = data?.ip?.toString()
   if (!ip) { return }
   Object lock = deviceRequestLock(ip)
-  Map request = null
-  Long retryDelay = null
+    Map request = null
+    Long retryDelay = null
   synchronized (lock) {
     deviceRequestDispatchScheduled.remove(ip)
     if (deviceRequestInFlight.get(ip) != null) { return }
@@ -15115,6 +15478,7 @@ void dispatchDeviceRequest(Map data = null) {
     if (deviceRequestBackoffActive(ip, candidate.priority as Integer)) {
       Map health = deviceRequestHealth.get(ip) as Map
       retryDelay = Math.max(100L, ((health.retryAfter as Long) - now()))
+      recordPerformanceMetric('coordinatorBackoffDeferrals')
     } else {
       Map health = deviceRequestHealth.get(ip) as Map
       Long lastRequestAt = health?.lastRequestAt as Long
@@ -15128,6 +15492,13 @@ void dispatchDeviceRequest(Map data = null) {
       deviceRequestInFlight.put(ip, [requestId: request.requestId, ip: ip, mode: 'async',
                                      source: request.source, priority: request.priority,
                                      fingerprint: request.fingerprint, startedAt: now()])
+      recordPerformanceMetric('coordinatorDispatched')
+      Long enqueuedAt = request.enqueuedAt as Long
+      if (enqueuedAt != null) {
+        Long queueWait = now() - enqueuedAt
+        recordPerformanceLatency('deviceRequestQueueWait', queueWait)
+        recordRequestTimingDimensions(ip, request.source?.toString(), 'queue', queueWait)
+      }
       if (!queue) { deviceRequestQueues.remove(ip) }
     }
   }
@@ -15191,6 +15562,7 @@ void deviceRequestPostCallback(response, Map data = null) {
 
 void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String uri = null, Map callbackData = null) {
   String targetUri = (uri ?: getBaseUriRpc()).toString()
+  recordPerformanceMetric('rpcAsyncSubmitted')
   String ip = deviceRequestIp(targetUri)
   String source = callbackData?.requestSource?.toString() ?: callbackMethod ?: 'asynchronous'
   Map request = [kind: 'rpc', requestId: nextDeviceRequestId(), ip: ip, targetUri: targetUri,
@@ -15202,6 +15574,7 @@ void postCommandAsync(LinkedHashMap command, String callbackMethod = '', String 
 }
 
 private void postCommandAsyncTransport(Map request) {
+  recordPerformanceMetric('rpcTransportAttempts')
   String targetUri = request.targetUri.toString()
   LinkedHashMap command = request.command as LinkedHashMap
   LinkedHashMap requestCommand = prepareRpcCommand(command, targetUri)
@@ -15245,6 +15618,7 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
         retryData.params = retryParams
         retryData.requestUsedAuth = true
         retryData.attempt = 2
+        recordPerformanceMetric('rpcAuthRetries')
         asynchttpPostHelper('postCommandAsyncCallback', retryParams, retryData)
         return
       } catch (Exception retryException) {
@@ -15267,6 +15641,7 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
           retryData.params = retryParams
           retryData.requestUsedAuth = true
           retryData.attempt = 3
+          recordPerformanceMetric('rpcAuthCompatibilityRetries')
           logTrace("Async RPC auth compatibility retry for ${targetUri}: using dummy_method:dummy_uri hash with nonceType=String, nc=${requestCommand.auth?.nc}, responseLength=${requestCommand.auth?.response?.toString()?.length()}")
           asynchttpPostHelper('postCommandAsyncCallback', retryParams, retryData)
           return
@@ -15315,6 +15690,7 @@ LinkedHashMap postSync(LinkedHashMap command) {
 }
 
 void jsonAsyncGet(String callbackMethod, Map params, Map data) {
+  recordPerformanceMetric('httpAsyncGetSubmitted')
   params.put('contentType', 'application/json')
   params.put('requestContentType', 'application/json')
   String uri = params?.uri?.toString()
@@ -15332,6 +15708,7 @@ void jsonAsyncGet(String callbackMethod, Map params, Map data) {
 }
 
 void jsonAsyncPost(String callbackMethod, Map params, Map data) {
+  recordPerformanceMetric('httpAsyncPostSubmitted')
   params.put('contentType', 'application/json')
   params.put('requestContentType', 'application/json')
   String uri = params?.uri?.toString()
@@ -18347,15 +18724,27 @@ private String childGetDataValueHelper(Object child, String name) {
 /** Dynamic state accessors used by statically compiled runtime code. */
 private Object stateValueHelper(String key) { return state[key] }
 
-private void setStateValueHelper(String key, Object value) { state[key] = value }
+private void setStateValueHelper(String key, Object value) {
+    recordPerformanceMetric('stateHelperWrites')
+    state[key] = value
+}
 
-private void removeStateValueHelper(String key) { state.remove(key) }
+private void removeStateValueHelper(String key) {
+    recordPerformanceMetric('stateHelperRemoves')
+    state.remove(key)
+}
 
 private Object atomicStateValueHelper(String key) { return atomicState[key] }
 
-private void setAtomicStateValueHelper(String key, Object value) { atomicState[key] = value }
+private void setAtomicStateValueHelper(String key, Object value) {
+    recordPerformanceMetric('stateHelperWrites')
+    atomicState[key] = value
+}
 
-private void removeAtomicStateValueHelper(String key) { atomicState.remove(key) }
+private void removeAtomicStateValueHelper(String key) {
+    recordPerformanceMetric('stateHelperRemoves')
+    atomicState.remove(key)
+}
 
 /** Dynamic app/settings adapters. */
 private LinkedHashMap appSettingsHelper() { return (settings ?: [:]) as LinkedHashMap }
@@ -22230,7 +22619,7 @@ void componentNotifyIpChanged(DeviceWrapper childDevice, String oldIp, String ne
         Map discovered = new LinkedHashMap((atomicState.discoveredShellys as Map))
         Map deviceEntry = discovered.remove(oldIp) as Map
         deviceEntry.ipAddress = newIp
-        deviceEntry.ts = now()
+        deviceEntry.lastSeenAt = now()
         if (discovered.containsKey(newIp)) {
             logWarn("componentNotifyIpChanged: new IP ${newIp} already exists in discoveredShellys — overwriting")
         }
