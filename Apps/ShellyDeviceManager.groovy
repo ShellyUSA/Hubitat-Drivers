@@ -4,6 +4,9 @@
 // different Shelly nonce lifetimes at the same time.
 @Field static ConcurrentHashMap<String, Object> authSessionLocks = new java.util.concurrent.ConcurrentHashMap<String, Object>()
 @Field static ConcurrentHashMap<String, Long> authFailureRetryNotBefore = new java.util.concurrent.ConcurrentHashMap<String, Long>()
+// Volatile password fingerprint used only to detect an in-process password
+// change. The raw password is never copied into lifecycle state.
+@Field static volatile String devicePasswordFingerprintVolatile = null
 @Field static final Long AUTH_FAILURE_COOLDOWN_MS = 300000L
 @Field static final String AUTH_FAILURE_PREFIX = 'SHELLY_AUTH_'
 @Field static ConcurrentHashMap<String, Boolean> foundDevices = new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
@@ -243,7 +246,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.90"
+@Field static final String APP_VERSION = "1.0.91"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -1643,37 +1646,137 @@ private void pruneUnknownBleDevices() {
     if (changed) { state.discoveredBleDevices = discoveredBle }
 }
 
+/** Returns the small set of settings that can affect app lifecycle work. */
+private Map buildSettingsLifecycleSnapshot() {
+    return [
+        enableWatchdog: settings?.enableWatchdog != false,
+        rebuildOnUpdate: settings?.rebuildOnUpdate != false,
+        driverUpdateTime: settings?.driverUpdateTime?.toString() ?: '',
+        enableAutoUpdate: settings?.enableAutoUpdate != false,
+        appUpdateTime: settings?.appUpdateTime?.toString() ?: '',
+        logLevel: (settings?.logLevel ?: state.logLevel ?: 'debug').toString(),
+        displayLogLevel: (settings?.displayLogLevel ?: state.displayLogLevel ?: settings?.logLevel ?: 'debug').toString(),
+        bleLogLevel: (settings?.bleLogLevel ?: 'info').toString()
+    ]
+}
+
+/** Returns true when a particular lifecycle setting changed. */
+private Boolean lifecycleSettingChanged(Map previous, Map current, String key) {
+    return previous?.get(key) != current?.get(key)
+}
+
+/** Updates the in-memory password fingerprint and reports whether it changed. */
+private Boolean devicePasswordChanged() {
+    String password = settings?.devicePassword?.toString() ?: ''
+    String fingerprint = password ? sha256(password) : ''
+    Boolean changed = devicePasswordFingerprintVolatile != null &&
+        devicePasswordFingerprintVolatile != fingerprint
+    devicePasswordFingerprintVolatile = fingerprint
+    return changed
+}
+
+/** Reconciles only the scheduled job affected by a driver update setting. */
+private void reconcileDriverAutoUpdateSchedule() {
+    if (settings?.rebuildOnUpdate != false) {
+        int driverHour = 3
+        int driverMinute = 0
+        if (settings?.driverUpdateTime) {
+            Date driverTime = toDateTime(settings.driverUpdateTime as String)
+            driverHour = driverTime.format('H') as int
+            driverMinute = driverTime.format('m') as int
+        }
+        scheduleHelper("0 ${driverMinute} ${driverHour} ? * *", 'scheduledDriverUpdate')
+        logDebug("Driver auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', driverHour, driverMinute))} daily")
+    } else {
+        unscheduleHelper('scheduledDriverUpdate')
+    }
+}
+
+/** Reconciles only the scheduled job affected by an app update setting. */
+private void reconcileAppAutoUpdateSchedule() {
+    if (settings?.enableAutoUpdate != false) {
+        int appHour = 3
+        int appMinute = 0
+        if (settings?.appUpdateTime) {
+            Date appTime = toDateTime(settings.appUpdateTime as String)
+            appHour = appTime.format('H') as int
+            appMinute = appTime.format('m') as int
+        }
+        scheduleHelper("0 ${appMinute} ${appHour} ? * *", 'checkForAppUpdate')
+        logDebug("App auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', appHour, appMinute))} daily")
+    } else {
+        unscheduleHelper('checkForAppUpdate')
+    }
+}
+
+/** Reconciles BLE timers without touching subscriptions or unrelated schedules. */
+private void reconcileBleSchedules() {
+    unscheduleHelper('checkBlePresence')
+    unscheduleHelper('bleDiscoveryCheckpoint')
+    blePresenceScheduled = false
+    bleCheckpointScheduled = false
+    reconcileBlePresenceSchedule()
+    ensureBleDiscoveryCheckpointScheduled()
+}
+
+/** Applies only the lifecycle work required by changed settings. */
+private void reconcileChangedSettings(Map previous, Map current) {
+    if (lifecycleSettingChanged(previous, current, 'enableWatchdog')) {
+        reconcileWatchdogSchedule()
+    }
+    if (lifecycleSettingChanged(previous, current, 'rebuildOnUpdate') ||
+            lifecycleSettingChanged(previous, current, 'driverUpdateTime')) {
+        reconcileDriverAutoUpdateSchedule()
+    }
+    if (lifecycleSettingChanged(previous, current, 'enableAutoUpdate') ||
+            lifecycleSettingChanged(previous, current, 'appUpdateTime')) {
+        reconcileAppAutoUpdateSchedule()
+    }
+}
+
 /**
  * Called when the app settings are updated.
- * Detects logging level changes, prunes displayed logs accordingly,
- * updates state with new settings, and reinitializes the app.
+ * Reconciles only the subscriptions, schedules, and caches affected by the
+ * changed settings. Active discovery, mDNS listeners, and unrelated timers
+ * remain intact while a preference is edited.
  */
 void updated() {
     reconcilePageStateAfterUpdate()
 
-    // Detect logging-level changes and prune displayed logs immediately
-    String oldDisplay = state.displayLogLevel
-    String oldOverall = state.logLevel
+    Map previousSnapshot = new LinkedHashMap((state.settingsLifecycleSnapshot ?: [:]) as Map)
+    Map currentSnapshot = buildSettingsLifecycleSnapshot()
 
-    String newOverall = settings?.logLevel ?: (oldOverall ?: 'debug')
-    String newDisplay = settings?.displayLogLevel ?: newOverall
-
+    // Detect logging-level changes and prune displayed logs immediately.
+    String oldDisplay = previousSnapshot.displayLogLevel?.toString() ?: state.displayLogLevel?.toString()
+    String oldOverall = previousSnapshot.logLevel?.toString() ?: state.logLevel?.toString()
+    String newOverall = currentSnapshot.logLevel?.toString() ?: (oldOverall ?: 'debug')
+    String newDisplay = currentSnapshot.displayLogLevel?.toString() ?: newOverall
     if (oldDisplay != newDisplay || oldOverall != newOverall) {
         pruneDisplayedLogs(newDisplay)
     }
-
     state.displayLogLevel = newDisplay
     state.logLevel = newOverall
 
-    // A changed password invalidates every cached digest session. Sessions are
-    // endpoint-scoped, so this also safely handles a manager that controls a
-    // mix of authenticated and unauthenticated devices.
-    resetAuthenticationSessions()
+    // A missing snapshot is the one-time migration path for existing installs.
+    // A version change still receives the existing maintenance/recovery pass;
+    // ordinary setting edits use only the targeted reconciliation above.
+    Boolean needsMaintenance = previousSnapshot.isEmpty() ||
+        (state.lastAutoconfVersion != null && state.lastAutoconfVersion.toString() != getAppVersion())
+    // A changed password invalidates every cached digest session. The raw
+    // password is intentionally not persisted in the lifecycle snapshot.
+    if (devicePasswordChanged() || needsMaintenance) {
+        resetAuthenticationSessions()
+    }
+    if (needsMaintenance) {
+        initialize(true)
+        startMdnsDiscovery(true)
+    } else {
+        reconcileChangedSettings(previousSnapshot, currentSnapshot)
+    }
 
-    unsubscribeHelper()
-    unscheduleAllHelper()
-    initialize(true)
-    startMdnsDiscovery(true)
+    // Rebuild after reconciliation so one-time migrations performed by the
+    // page callback are reflected in the persisted baseline.
+    state.settingsLifecycleSnapshot = buildSettingsLifecycleSnapshot()
 }
 
 /**
@@ -7589,6 +7692,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     String configuredDisplayLogLevel = settings?.displayLogLevel ?: configuredLogLevel
     if (state.logLevel != configuredLogLevel) { state.logLevel = configuredLogLevel }
     if (state.displayLogLevel != configuredDisplayLogLevel) { state.displayLogLevel = configuredDisplayLogLevel }
+    devicePasswordChanged()
 
     // mDNS listeners must be registered on system startup per Hubitat docs.
     // Avoid re-registering this subscription while handling systemStart itself.
@@ -7649,46 +7753,17 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     // Schedule the watchdog only when there are installed LAN devices to monitor.
     reconcileWatchdogSchedule()
 
-    // Schedule daily driver auto-update at configured time (default 3AM)
-    if (settings?.rebuildOnUpdate != false) {
-        int driverHour = 3
-        int driverMinute = 0
-        if (settings?.driverUpdateTime) {
-            Date driverTime = toDateTime(settings.driverUpdateTime as String)
-            driverHour = driverTime.format('H') as int
-            driverMinute = driverTime.format('m') as int
-        }
-        scheduleHelper("0 ${driverMinute} ${driverHour} ? * *", 'scheduledDriverUpdate')
-        logDebug("Driver auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', driverHour, driverMinute))} daily")
-    } else {
-        unscheduleHelper('scheduledDriverUpdate')
-    }
-
-    // Schedule daily app auto-update check at configured time (default 3AM)
-    if (settings?.enableAutoUpdate != false) {
-        int appHour = 3
-        int appMinute = 0
-        if (settings?.appUpdateTime) {
-            Date appTime = toDateTime(settings.appUpdateTime as String)
-            appHour = appTime.format('H') as int
-            appMinute = appTime.format('m') as int
-        }
-        scheduleHelper("0 ${appMinute} ${appHour} ? * *", 'checkForAppUpdate')
-        logDebug("App auto-update scheduled for ${formatTimeForDisplay(String.format('%02d:%02d', appHour, appMinute))} daily")
-    } else {
-        unscheduleHelper('checkForAppUpdate')
-    }
+    // Reconcile configured timers during initialization. Ordinary settings
+    // updates call these helpers selectively through reconcileChangedSettings.
+    reconcileDriverAutoUpdateSchedule()
+    reconcileAppAutoUpdateSchedule()
 
     // BLE presence and persistence are separate jobs. Presence is scheduled
     // only for created children with presence enabled; persistence starts only
     // when an active gateway or volatile data needs a checkpoint.
-    unscheduleHelper('checkBlePresence')
-    unscheduleHelper('bleDiscoveryCheckpoint')
-    blePresenceScheduled = false
-    bleCheckpointScheduled = false
-    reconcileBlePresenceSchedule()
-    ensureBleDiscoveryCheckpointScheduled()
+    reconcileBleSchedules()
     runInHelper(60L, 'emitPerformanceDiagnosticSummary', [overwrite: true])
+    state.settingsLifecycleSnapshot = buildSettingsLifecycleSnapshot()
 }
 
 /** Removes large device responses left by older discovery versions. */
@@ -23463,7 +23538,7 @@ private void drainCommandQueue(String dni) {
                 params: httpParams, callbackMethod: 'commandQueueDrainCallback',
                 callbackData: callbackData, source: 'command queue',
                 priority: DEVICE_REQUEST_USER_PRIORITY,
-                fingerprint: uri, enqueuedAt: now()
+                fingerprint: uri, enqueuedAt: nowHelper()
             ])
             break
 
