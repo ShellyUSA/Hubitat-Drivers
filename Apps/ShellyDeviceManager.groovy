@@ -212,6 +212,13 @@
 @Field static final Object DIRECT_CHILD_CACHE_LOCK = new Object()
 @Field static final long DIRECT_CHILD_CACHE_TTL_MS = 2000L
 
+/** Short-lived MAC-to-BLE-child index used by advertisement and presence paths. */
+@Field static ConcurrentHashMap<String, Object> bleChildIndex =
+    new java.util.concurrent.ConcurrentHashMap<String, Object>()
+@Field static volatile long bleChildIndexBuiltAt = 0L
+@Field static final Object BLE_CHILD_INDEX_LOCK = new Object()
+@Field static final long BLE_CHILD_INDEX_TTL_MS = 5000L
+
 /** Short-lived component index used by webhook/status hot paths. */
 @Field static ConcurrentHashMap<String, Map> componentChildIndexCache =
     new java.util.concurrent.ConcurrentHashMap<String, Map>()
@@ -246,7 +253,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.91"
+@Field static final String APP_VERSION = "1.0.92"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -3640,6 +3647,79 @@ private List<ChildDeviceWrapper> getCachedDirectChildDevices() {
     }
 }
 
+/** Normalizes BLE MAC/DNI keys without changing their separator format. */
+@CompileStatic
+private static String bleChildKey(Object value) {
+    return value?.toString()?.trim()?.toUpperCase()
+}
+
+/** Clears the short-lived BLE child index after app-child changes. */
+private void invalidateBleChildIndex() {
+    synchronized (BLE_CHILD_INDEX_LOCK) {
+        bleChildIndex.clear()
+        bleChildIndexBuiltAt = 0L
+    }
+}
+
+/** Rebuilds the BLE child index from durable device configuration once per TTL. */
+@CompileStatic
+private void rebuildBleChildIndex() {
+    Long nowMs = nowHelper()
+    if (bleChildIndexBuiltAt > 0L && (nowMs - bleChildIndexBuiltAt) < BLE_CHILD_INDEX_TTL_MS) {
+        return
+    }
+
+    synchronized (BLE_CHILD_INDEX_LOCK) {
+        nowMs = nowHelper()
+        if (bleChildIndexBuiltAt > 0L && (nowMs - bleChildIndexBuiltAt) < BLE_CHILD_INDEX_TTL_MS) {
+            return
+        }
+
+        Map<String, ChildDeviceWrapper> childrenByDni = new LinkedHashMap<String, ChildDeviceWrapper>()
+        getCachedDirectChildDevices().each { ChildDeviceWrapper child ->
+            String key = bleChildKey(deviceNetworkIdHelper(child))
+            if (key) { childrenByDni[key] = child }
+        }
+
+        Map deviceConfigs = (atomicStateValueHelper('deviceConfigs') ?: [:]) as Map
+        Map discoveredBle = (state.discoveredBleDevices ?: [:]) as Map
+        bleChildIndex.clear()
+
+        deviceConfigs.each { Object rawKey, Object rawConfig ->
+            Map config = rawConfig as Map
+            if (config?.isBleDevice != true) { return }
+            String key = bleChildKey(rawKey)
+            ChildDeviceWrapper child = childrenByDni[key]
+            if (child) { bleChildIndex[key] = child }
+        }
+
+        // Include legacy/partially migrated BLE children when their discovery
+        // record still marks them as created but deviceConfigs is incomplete.
+        discoveredBle.each { Object rawKey, Object rawEntry ->
+            Map entry = rawEntry as Map
+            if (entry?.isCreated != true) { return }
+            String key = bleChildKey(rawKey)
+            if (!key || bleChildIndex.containsKey(key)) { return }
+            ChildDeviceWrapper child = childrenByDni[key]
+            if (child) { bleChildIndex[key] = child }
+        }
+
+        bleChildIndexBuiltAt = nowMs
+    }
+}
+
+/** Returns a cached BLE child and avoids a Hubitat lookup on each advertisement. */
+@CompileStatic
+private Object getCachedBleChild(String mac) {
+    String key = bleChildKey(mac)
+    if (!key) { return null }
+    rebuildBleChildIndex()
+
+    Object child = bleChildIndex.get(key)
+    if (child != null) { return child }
+    return null
+}
+
 /** Forces the next direct-child lookup to read the current app children. */
 private void invalidateDirectChildDeviceCache() {
     synchronized (DIRECT_CHILD_CACHE_LOCK) {
@@ -3647,6 +3727,7 @@ private void invalidateDirectChildDeviceCache() {
         directChildDeviceCacheTime = 0L
     }
     componentChildIndexCache.clear()
+    invalidateBleChildIndex()
 }
 
 /**
@@ -7686,6 +7767,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
             bleLastContact.put(key, config.lastBleContact as Long)
         }
     }
+    rebuildBleChildIndex()
 
     // Ensure state mirrors current settings for logging
     String configuredLogLevel = settings?.logLevel ?: (state.logLevel ?: 'debug')
@@ -15424,8 +15506,9 @@ private void processBleReport(String gatewayName, Map bleData) {
     }
     // pidResult == 0: new PID — full processing continues below
 
-    // Single child lookup — passed to both functions to avoid double getChildDevice() call
-    Object child = getChildDeviceHelper(mac)
+    // Resolve through the short-lived MAC index so each advertisement avoids a
+    // Hubitat getChildDevice() call. The same child is passed to both paths.
+    Object child = getCachedBleChild(mac)
 
     // Update discovery state (volatile fields go to @Field cache, structural to state)
     updateBleDiscoveryState(mac, model, modelId, rssi, gatewayName, bleData, child)
@@ -15787,6 +15870,7 @@ private void createBleDevice(String mac) {
         bleInfo.hubDeviceLabel = existing.label ?: existing.displayName
         discoveredBle[macKey] = bleInfo
         state.discoveredBleDevices = discoveredBle
+        bleChildIndex.put(bleChildKey(macKey), existing)
         ensureBleDiscoveryCheckpointScheduled()
         reconcileBlePresenceSchedule()
         return
@@ -15813,6 +15897,7 @@ private void createBleDevice(String mac) {
     try {
         def childDevice = addChildDeviceHelper('ShellyDeviceManager', driverNameWithVersion, mac, deviceProps)
         invalidateDirectChildDeviceCache()
+        bleChildIndex.put(bleChildKey(macKey), childDevice)
         bleLogInfo("Created BLE device: ${deviceLabel} using driver ${driverNameWithVersion}")
         appendLog('info', "Created BLE device: ${deviceLabel}")
 
@@ -15860,6 +15945,7 @@ private void removeBleDevice(String mac) {
 
     try {
         deleteChildDeviceHelper(mac)
+        invalidateDirectChildDeviceCache()
         bleLogInfo("Removed BLE device: ${mac}")
         appendLog('info', "Removed BLE device: ${mac}")
 
@@ -16207,7 +16293,7 @@ private Long getNextBlePresenceDelaySeconds() {
     deviceConfigs.each { String key, Object configVal ->
         Map config = configVal as Map
         if (config?.isBleDevice != true) { return }
-        ChildDeviceWrapper child = getChildDeviceHelper(key.toString())
+        ChildDeviceWrapper child = getCachedBleChild(key.toString()) as ChildDeviceWrapper
         if (!isBlePresenceEligible(child)) { return }
 
         Long lastContact = bleLastContact.get(key) ?: (config.lastBleContact as Long ?: 0L)
@@ -16270,7 +16356,7 @@ void checkBlePresence() {
         Long lastContact = bleLastContact.get(key) ?: (config.lastBleContact as Long ?: 0L)
         if (lastContact == 0L) { return }
 
-        ChildDeviceWrapper child = getChildDeviceHelper(key.toString())
+        ChildDeviceWrapper child = getCachedBleChild(key.toString()) as ChildDeviceWrapper
         if (!child) { return }
 
         if (!isBlePresenceEligible(child)) { return }
