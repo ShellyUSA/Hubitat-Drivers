@@ -1,5 +1,6 @@
 // ==========================================
 // Hubitat BLE Helper
+// Memory revision: 2026-09-08
 // ==========================================
 // Runs on a Shelly Gen2+ device to relay
 // BLE advertisements from Shelly BLU devices
@@ -20,133 +21,53 @@ let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 // === BTHome v2 Constants ===
 let BTHOME_SVC_ID = "fcd2";
 
-// BTHome data type sizes: 0=uint8, 1=int8, 2=uint16, 3=int16, 4=uint24, 5=int24
-let DT_U8 = 0;
-let DT_I8 = 1;
-let DT_U16 = 2;
-let DT_I16 = 3;
-let DT_U24 = 4;
-let DT_I24 = 5;
-let DT_U32 = 6;
+// Fixed byte widths for IDs 0x00..0x60; 0 means unknown/variable length.
+// A string replaces 78 nested definition arrays, including unused field names.
+let BTHOME_SIZES =
+  "1122332221332221" + // 0x00..0x0F
+  "1122211111111111" + // 0x10..0x1F
+  "1111111111111111" + // 0x20..0x2F
+  "0000000000102242" + // 0x30..0x3F
+  "2232221222234444" + // 0x40..0x4F
+  "4220042000000000" + // 0x50..0x5F
+  "1"; // 0x60..0x60
+let MAX_SERVICE_DATA = 255;
+let MAX_MODEL_NAME = 32;
 
-// BTHome object ID definitions: [name, dataType, factor]
-// factor is applied as multiplication to raw value (0 = no factor)
-// Names prefixed with "_" are decoded for correct byte-skipping but
-// filtered out before sending to Hubitat (not currently used).
-let BTH = {};
-// --- Sensor data ---
-BTH[0x00] = ["pid", DT_U8, 0];
-BTH[0x01] = ["battery", DT_U8, 0];
-BTH[0x02] = ["temperature", DT_I16, 0.01];
-BTH[0x03] = ["humidity", DT_U16, 0.01];
-BTH[0x04] = ["_pressure", DT_U24, 0.01];
-BTH[0x05] = ["illuminance", DT_U24, 0.01];
-BTH[0x06] = ["_massKg", DT_U16, 0.01];
-BTH[0x07] = ["_massLb", DT_U16, 0.01];
-BTH[0x08] = ["_dewpoint", DT_I16, 0.01];
-BTH[0x09] = ["_count8", DT_U8, 0];
-BTH[0x0A] = ["_energy24", DT_U24, 0.001];
-BTH[0x0B] = ["_power24", DT_U24, 0.01];
-BTH[0x0C] = ["_voltage16", DT_U16, 0.001];
-BTH[0x0D] = ["_pm25", DT_U16, 0];
-BTH[0x0E] = ["_pm10", DT_U16, 0];
-// --- Binary sensors ---
-BTH[0x0F] = ["_genericBool", DT_U8, 0];
-BTH[0x10] = ["_powerState", DT_U8, 0];
-BTH[0x11] = ["_opening", DT_U8, 0];
-BTH[0x12] = ["_co2", DT_U16, 0];
-BTH[0x13] = ["_tvoc", DT_U16, 0];
-BTH[0x14] = ["_moisture16", DT_U16, 0.01];
-BTH[0x15] = ["_batteryState", DT_U8, 0];
-BTH[0x16] = ["_batteryCharging", DT_U8, 0];
-BTH[0x17] = ["_carbonMonoxide", DT_U8, 0];
-BTH[0x18] = ["_cold", DT_U8, 0];
-BTH[0x19] = ["_connectivity", DT_U8, 0];
-BTH[0x1A] = ["_door", DT_U8, 0];
-BTH[0x1B] = ["_garageDoor", DT_U8, 0];
-BTH[0x1C] = ["_gasState", DT_U8, 0];
-BTH[0x1D] = ["_heat", DT_U8, 0];
-BTH[0x1E] = ["_light", DT_U8, 0];
-BTH[0x1F] = ["_lock", DT_U8, 0];
-BTH[0x20] = ["_moistureState", DT_U8, 0];
-BTH[0x21] = ["motion", DT_U8, 0];
-BTH[0x22] = ["_moving", DT_U8, 0];
-BTH[0x23] = ["_occupancy", DT_U8, 0];
-BTH[0x24] = ["_plug", DT_U8, 0];
-BTH[0x25] = ["_presence", DT_U8, 0];
-BTH[0x26] = ["_problem", DT_U8, 0];
-BTH[0x27] = ["_running", DT_U8, 0];
-BTH[0x28] = ["_safety", DT_U8, 0];
-BTH[0x29] = ["_smoke", DT_U8, 0];
-BTH[0x2A] = ["_sound", DT_U8, 0];
-BTH[0x2B] = ["_tamper", DT_U8, 0];
-BTH[0x2C] = ["_vibration", DT_U8, 0];
-BTH[0x2D] = ["window", DT_U8, 0];
-BTH[0x2E] = ["humidity", DT_U8, 0];
-BTH[0x2F] = ["_moisture8", DT_U8, 0];
-// --- Events ---
-BTH[0x3A] = ["button", DT_U8, 0];
-BTH[0x3C] = ["dimmer", DT_U16, 0];
-BTH[0x3D] = ["_count16", DT_U16, 0];
-BTH[0x3E] = ["_count32", DT_U32, 0];
-BTH[0x3F] = ["rotation", DT_I16, 0.1];
-// --- Extended sensors ---
-BTH[0x40] = ["distanceMm", DT_U16, 0];
-BTH[0x41] = ["_distM", DT_U16, 0.1];
-BTH[0x42] = ["_duration", DT_U24, 0.001];
-BTH[0x43] = ["_current16", DT_U16, 0.001];
-BTH[0x44] = ["_speed", DT_U16, 0.01];
-BTH[0x45] = ["temperature", DT_I16, 0.1];
-BTH[0x46] = ["_uvIndex", DT_U8, 0.1];
-BTH[0x47] = ["_volume16d1", DT_U16, 0.1];
-BTH[0x48] = ["_volume16", DT_U16, 0];
-BTH[0x49] = ["_volumeFlowRate", DT_U16, 0.001];
-BTH[0x4A] = ["_voltage16d1", DT_U16, 0.1];
-BTH[0x4B] = ["_gas24", DT_U24, 0.001];
-BTH[0x4C] = ["_gas32", DT_U32, 0.001];
-BTH[0x4D] = ["_energy32", DT_U32, 0.001];
-BTH[0x4E] = ["_volume32", DT_U32, 0.001];
-BTH[0x4F] = ["_water32", DT_U32, 0.001];
-BTH[0x50] = ["_timestamp", DT_U32, 0];
-BTH[0x51] = ["_acceleration", DT_U16, 0.001];
-BTH[0x52] = ["_gyroscope", DT_U16, 0.001];
-// 0x53 (text) and 0x54 (raw) are variable-length - cannot be decoded here
-BTH[0x55] = ["_volumeStorage", DT_U32, 0.001];
-BTH[0x56] = ["_conductivity", DT_U16, 0];
-BTH[0x60] = ["channel", DT_U8, 0];
-// --- Device info ---
-BTH[0xF0] = ["device_type_id", DT_U16, 0];
-BTH[0xF1] = ["_fwVersion32", DT_U32, 0];
-BTH[0xF2] = ["_fwVersion24", DT_U24, 0];
+function normalizeMac(raw) {
+  if (typeof raw !== "string") return null;
+  let normalized = "";
+  for (let i = 0; i < raw.length; i++) {
+    let ch = raw.charAt(i);
+    if (ch !== ":") normalized = normalized + ch;
+  }
+  return normalized.toUpperCase();
+}
 
 // === Internal state ===
-// Per-MAC last packet ID for deduplication
-let lastPids = {};
-// Per-MAC cached model identification (survives button-only advertisements)
-let knownModels = {};
+// Per-MAC packet/model state is bounded because random BLE addresses can rotate.
+let deviceCache = {};
+let deviceCacheKeys = [];
+let MAX_CACHED_DEVICES = 32;
+let DEVICE_CACHE_TTL_MS = 30 * 60 * 1000;
 
 // === Concurrency control ===
-let MAX_INFLIGHT = 3;        // Max concurrent HTTP.POST calls (leave 2 slots for KVS, etc.)
-let inflight = 0;            // Currently in-flight HTTP.POST count
-let pendingBatch = [];       // Overflow reports accumulated while at capacity
-let MAX_PENDING = 32;        // Bound memory if Hubitat is unavailable
-let drainTimerHandle = null;
-let DRAIN_INTERVAL = 5000;   // Safety drain interval (ms)
+let httpInFlight = false;    // Exactly one HTTP.POST may be active at a time
+let HTTP_TIMEOUT_SECONDS = 10;
+let pendingBatch = [];      // Serialized reports, never advertisement/decoder objects
+let pendingBytes = 0;
+let MAX_PENDING = 8;
+let MAX_PENDING_BYTES = 2048;
+let MAX_REPORT_BYTES = 768;
+let MAX_POST_BYTES = 1024;   // Includes envelope and commas
 let droppedReports = 0;
 
-// HTTP response handler - decrements inflight and flushes pending batch
+// Only completion of the native RPC frees the slot. A JS watchdog cannot
+// cancel HTTP.POST and must never authorize an overlapping request.
 function onHTTPResponse(result, error_code, error_message) {
-  inflight--;
-  if (inflight < 0) inflight = 0;
-  if (error_code !== 0) {
-    print("BLE HTTP error:", error_code, error_message);
-  }
-  // Flush accumulated overflow batch now that a slot is open
-  if (pendingBatch.length > 0 && inflight < MAX_INFLIGHT) {
-    let batch = pendingBatch;
-    pendingBatch = [];
-    doHttpPost(batch);
-  }
+  httpInFlight = false;
+  if (error_code !== 0) print("BLE HTTP error:", error_code, error_message);
+  // The drain timer sends after this callback and its response have unwound.
 }
 
 // === KVS URL Lookup (same pattern as switchstatus.js) ===
@@ -194,108 +115,63 @@ function fetchRemoteUrlFromKVS() {
 }
 
 // === BTHome v2 Decoder ===
-function getByteSize(type) {
-  if (type === DT_U8 || type === DT_I8) return 1;
-  if (type === DT_U16 || type === DT_I16) return 2;
-  if (type === DT_U24 || type === DT_I24) return 3;
-  if (type === DT_U32) return 4;
-  return 255;
-}
-
-function utoi(num, bitsz) {
-  let mask = 1 << (bitsz - 1);
-  return num & mask ? num - (1 << bitsz) : num;
-}
-
-function getUInt8(buffer) {
-  return buffer.at(0);
-}
-
-function getInt8(buffer) {
-  return utoi(getUInt8(buffer), 8);
-}
-
-function getUInt16LE(buffer) {
-  return 0xffff & ((buffer.at(1) << 8) | buffer.at(0));
-}
-
-function getInt16LE(buffer) {
-  return utoi(getUInt16LE(buffer), 16);
-}
-
-function getUInt24LE(buffer) {
-  return (
-    0x00ffffff & ((buffer.at(2) << 16) | (buffer.at(1) << 8) | buffer.at(0))
-  );
-}
-
-function getInt24LE(buffer) {
-  return utoi(getUInt24LE(buffer), 24);
-}
-
-function getUInt32LE(buffer) {
-  return (
-    ((buffer.at(3) << 24) | (buffer.at(2) << 16) | (buffer.at(1) << 8) | buffer.at(0)) >>> 0
-  );
-}
-
-function getBufValue(type, buffer) {
-  if (buffer.length < getByteSize(type)) return null;
-  if (type === DT_U8) return getUInt8(buffer);
-  if (type === DT_I8) return getInt8(buffer);
-  if (type === DT_U16) return getUInt16LE(buffer);
-  if (type === DT_I16) return getInt16LE(buffer);
-  if (type === DT_U24) return getUInt24LE(buffer);
-  if (type === DT_I24) return getInt24LE(buffer);
-  if (type === DT_U32) return getUInt32LE(buffer);
+function bthomeFieldName(objId) {
+  if (objId === 0x00) return "pid";
+  if (objId === 0x01) return "battery";
+  if (objId === 0x02 || objId === 0x45) return "temperature";
+  if (objId === 0x03 || objId === 0x2E) return "humidity";
+  if (objId === 0x05) return "illuminance";
+  if (objId === 0x21) return "motion";
+  if (objId === 0x2D) return "window";
+  if (objId === 0x3A) return "button";
+  if (objId === 0x3C) return "dimmer";
+  if (objId === 0x3F) return "rotation";
+  if (objId === 0x40) return "distanceMm";
+  if (objId === 0x60) return "channel";
+  if (objId === 0xF0) return "device_type_id";
   return null;
 }
 
-/**
- * Decode BTHome v2 service data buffer into a result object.
- * Handles repeated object IDs (e.g., multiple buttons) by collecting into arrays.
- */
-function decodeBTHome(buffer) {
-  if (typeof buffer !== "string" || buffer.length === 0) return null;
-
-  let dib = buffer.at(0);
-  let encrypted = dib & 0x1 ? true : false;
-  let version = dib >> 5;
-  if (version !== 2) return null;
-  if (encrypted) return null;
-
-  buffer = buffer.slice(1);
-  let result = {};
-
-  while (buffer.length > 0) {
-    let objId = buffer.at(0);
-    let def = BTH[objId];
-    if (typeof def === "undefined") {
-      print("BTHome: unknown obj ID 0x" + objId.toString(16) + ", stopping decode");
-      break;
-    }
-
-    buffer = buffer.slice(1);
-    let raw = getBufValue(def[1], buffer);
-    if (raw === null) break;
-
-    let value = def[2] !== 0 ? raw * def[2] : raw;
-    let name = def[0];
-
-    // Handle repeated fields (multi-button devices)
-    if (typeof result[name] === "undefined") {
-      result[name] = value;
-    } else {
-      if (typeof result[name] === "object" && result[name].length !== undefined) {
-        result[name].push(value);
-      } else {
-        result[name] = [result[name], value];
-      }
-    }
-
-    buffer = buffer.slice(getByteSize(def[1]));
+function addDecodedValue(result, name, value) {
+  if (!name || typeof value === "undefined" || value === null) return;
+  if (typeof result[name] === "undefined") {
+    result[name] = value;
+  } else if (typeof result[name] === "object" && result[name].length !== undefined) {
+    result[name].push(value);
+  } else {
+    result[name] = [result[name], value];
   }
+}
 
+// Decode only forwarded fields directly into one object. The native parser
+// materializes an array of rich objects even for fields we discard.
+function decodeBTHome(buffer) {
+  if (typeof buffer !== "string" || buffer.length === 0 ||
+      buffer.length > MAX_SERVICE_DATA || (buffer.at(0) & 0xE1) !== 0x40) return null;
+  let result = {};
+  let position = 1;
+  while (position < buffer.length) {
+    let id = buffer.at(position++);
+    let size = id < BTHOME_SIZES.length ? BTHOME_SIZES.at(id) - 48 : 0;
+    if (id === 0xF0) size = 2;
+    if (id === 0xF1) size = 4;
+    if (id === 0xF2) size = 3;
+    // Unknown or truncated objects terminate decoding, as in the legacy path.
+    if (size === 0 || position + size > buffer.length) break;
+    let name = bthomeFieldName(id);
+    if (name !== null) {
+      let value = buffer.at(position);
+      if (size >= 2) value = value | (buffer.at(position + 1) << 8);
+      if (size === 3) value = value | (buffer.at(position + 2) << 16);
+      if (id === 0x02 || id === 0x45 || id === 0x3F) {
+        if (value & 0x8000) value = value - 65536;
+      }
+      if (id === 0x02 || id === 0x03 || id === 0x05) value = value * 0.01;
+      if (id === 0x45 || id === 0x3F) value = value * 0.1;
+      addDecodedValue(result, name, value);
+    }
+    position = position + size;
+  }
   return result;
 }
 
@@ -338,183 +214,236 @@ function getShellyModelId(advData) {
   return -1;
 }
 
-// === Dedup: check if pid is new for this MAC ===
-function isNewPid(mac, pid) {
-  if (typeof lastPids[mac] === "undefined") {
-    lastPids[mac] = pid;
-    return true;
+// === Bounded device cache ===
+function getNowMs() {
+  if (typeof Shelly.getUptimeMs === "function") return Shelly.getUptimeMs();
+  return Date.now();
+}
+
+function removeDeviceCacheKey(mac) {
+  for (let i = 0; i < deviceCacheKeys.length; i++) {
+    if (deviceCacheKeys[i] === mac) {
+      for (let j = i + 1; j < deviceCacheKeys.length; j++) {
+        deviceCacheKeys[j - 1] = deviceCacheKeys[j];
+      }
+      deviceCacheKeys.length = deviceCacheKeys.length - 1;
+      return;
+    }
   }
-  if (lastPids[mac] === pid) return false;
-  lastPids[mac] = pid;
+}
+
+function pruneDeviceCache(now) {
+  let writeIndex = 0;
+  for (let i = 0; i < deviceCacheKeys.length; i++) {
+    let mac = deviceCacheKeys[i];
+    let entry = deviceCache[mac];
+    if (entry && now - entry.lastSeen <= DEVICE_CACHE_TTL_MS) {
+      deviceCacheKeys[writeIndex] = mac;
+      writeIndex++;
+    } else {
+      delete deviceCache[mac];
+    }
+  }
+  deviceCacheKeys.length = writeIndex;
+}
+
+function getDeviceCacheEntry(mac, now, create) {
+  let entry = deviceCache[mac];
+  if (entry && now - entry.lastSeen > DEVICE_CACHE_TTL_MS) {
+    delete deviceCache[mac];
+    removeDeviceCacheKey(mac);
+    entry = undefined;
+  }
+
+  if (!entry && create) {
+    pruneDeviceCache(now);
+    if (deviceCacheKeys.length >= MAX_CACHED_DEVICES) {
+      let oldestIndex = 0;
+      let oldestSeen = deviceCache[deviceCacheKeys[0]].lastSeen;
+      for (let i = 1; i < deviceCacheKeys.length; i++) {
+        let candidate = deviceCache[deviceCacheKeys[i]];
+        if (candidate.lastSeen < oldestSeen) {
+          oldestIndex = i;
+          oldestSeen = candidate.lastSeen;
+        }
+      }
+      let oldestMac = deviceCacheKeys[oldestIndex];
+      delete deviceCache[oldestMac];
+      deviceCacheKeys[oldestIndex] = deviceCacheKeys[deviceCacheKeys.length - 1];
+      deviceCacheKeys.length = deviceCacheKeys.length - 1;
+    }
+    entry = { hasPid: false, pid: -1, modelId: -1, modelStr: "", lastSeen: now };
+    deviceCache[mac] = entry;
+    deviceCacheKeys.push(mac);
+  }
+
+  if (entry) entry.lastSeen = now;
+  return entry;
+}
+
+// === Dedup: check if pid is new for this MAC ===
+function isNewPid(mac, pid, now) {
+  let entry = getDeviceCacheEntry(mac, now, true);
+  if (entry.hasPid && entry.pid === pid) return false;
+  entry.pid = pid;
+  entry.hasPid = true;
   return true;
 }
 
 // === HTTP POST with concurrency control ===
-
-/**
- * Send BLE reports via HTTP.POST wrapped in an envelope object.
- * Format: {"dst":"ble","messages":[...reports...]}
- * The gateway driver routes on dst; the app unpacks the messages list.
- */
-function doHttpPost(batch) {
-  inflight++;
-  let url = REMOTE_URL + "/webhook/ble/0";
-  let envelope = { dst: "ble", messages: batch };
-  let body = JSON.stringify(envelope);
-  Shelly.call(
-    "HTTP.POST",
-    { url: url, body: body, content_type: "application/json" },
-    onHTTPResponse,
-  );
-  print("BLE send (" + batch.length + "):", url);
+function dropOldestPendingReport() {
+  pendingBytes = pendingBytes - pendingBatch[0].length;
+  for (let i = 1; i < pendingBatch.length; i++) {
+    pendingBatch[i - 1] = pendingBatch[i];
+  }
+  pendingBatch.pop();
 }
 
-/**
- * Safety drain: resets stuck inflight counter and flushes pending batch.
- * Runs on a repeating timer to recover from lost HTTP callbacks.
- */
-function safetyDrain() {
-  if (pendingBatch.length > 0 && inflight >= MAX_INFLIGHT) {
-    // Callbacks for the reset calls may still arrive later; the inflight < 0
-    // guard in onHTTPResponse clamps them to 0 so no negative state accumulates.
-    print("BLE safety drain: resetting stuck inflight=" + inflight);
-    inflight = 0;
+// Called only by one repeating timer, outside BLE and HTTP callback stacks.
+function drainPendingBatch() {
+  if (httpInFlight || pendingBatch.length === 0) return;
+  let body = '{"dst":"ble","messages":[';
+  let count = 0;
+  while (pendingBatch.length > 0 &&
+         body.length + pendingBatch[0].length + 3 <= MAX_POST_BYTES) {
+    if (count > 0) body = body + ",";
+    body = body + pendingBatch[0];
+    dropOldestPendingReport();
+    count++;
   }
-  if (pendingBatch.length > 0 && inflight < MAX_INFLIGHT) {
-    let batch = pendingBatch;
-    pendingBatch = [];
-    doHttpPost(batch);
+  body = body + "]}";
+  httpInFlight = true;
+  try {
+    Shelly.call("HTTP.POST", {
+      url: REMOTE_URL + "/webhook/ble/0",
+      body: body,
+      content_type: "application/json",
+      timeout: HTTP_TIMEOUT_SECONDS,
+    }, onHTTPResponse);
+  } catch (e) {
+    httpInFlight = false;
+    print("BLE HTTP request failed:", e);
   }
 }
 
-/**
- * Starts the repeating safety drain timer (idempotent).
- */
-function startDrainTimer() {
-  if (drainTimerHandle !== null) return;
-  drainTimerHandle = Timer.set(DRAIN_INTERVAL, true, safetyDrain);
-}
-
-/**
- * Queues or immediately sends a BLE report.
- * If an HTTP slot is available, sends immediately as [report].
- * Otherwise, accumulates into pendingBatch for the next available slot.
- */
+// Count AND byte bounds protect against large repeated fields or local names.
+// Preserve FIFO button events; under sustained overload, discard oldest first.
 function sendBleReport(data) {
-  if (inflight < MAX_INFLIGHT) {
-    doHttpPost([data]);
-  } else {
-    if (pendingBatch.length >= MAX_PENDING) {
-      pendingBatch.shift();
-      droppedReports++;
-      print("BLE queue full; dropping oldest report (dropped=" + droppedReports + ")");
-    }
-    pendingBatch.push(data);
-    print(
-      "BLE queued (pending=" + pendingBatch.length + " inflight=" + inflight + ")",
-    );
+  let report = JSON.stringify(data);
+  if (report.length > MAX_REPORT_BYTES) {
+    droppedReports++;
+    return;
   }
+  while (pendingBatch.length >= MAX_PENDING ||
+         pendingBytes + report.length > MAX_PENDING_BYTES) {
+    dropOldestPendingReport();
+    droppedReports++;
+  }
+  pendingBatch.push(report);
+  pendingBytes = pendingBytes + report.length;
 }
 
 // === BLE Scanner Callback ===
 function BLEScanCallback(event, result) {
-  if (event === BLE.Scanner.SCAN_START) {
-    print("BLE scanner started");
-    return;
-  }
-  if (event === BLE.Scanner.SCAN_STOP) {
-    print("BLE scanner stopped");
-    return;
-  }
-  if (event !== BLE.Scanner.SCAN_RESULT || !result) return;
-  // Must have BTHome v2 service data
-  if (
-    typeof result.service_data === "undefined" ||
-    typeof result.service_data[BTHOME_SVC_ID] === "undefined"
-  ) {
-    return;
-  }
-
-  let decoded = decodeBTHome(result.service_data[BTHOME_SVC_ID]);
-  if (decoded === null || typeof decoded === "undefined") return;
-  // Get MAC address (uppercase, no colons)
-  let mac = result.addr;
-  if (typeof mac === "string") {
-    mac = mac.toUpperCase();
-    // Remove colons if present (e.g., "AA:BB:CC:DD:EE:FF" -> "AABBCCDDEEFF")
-    mac = mac.split(":").join("");
-  } else {
-    return;
-  }
-
-  // Dedup by pid per MAC
-  let pid = typeof decoded.pid !== "undefined" ? decoded.pid : -1;
-  if (!isNewPid(mac, pid)) return;
-
-  // Build report with all decoded fields (dst is on the envelope, not each message)
-  let body = {
-    cid: 0,
-    pid: pid,
-    mac: mac,
-  };
-
-  // === Model identification (priority: mfData > BTHome device_type_id > local_name > cache) ===
-  let modelId = -1;
-  let modelStr = "";
-
-  // Layer 1: Manufacturer data (most reliable)
-  let hasAdvData = typeof result.advData === "string" && result.advData.length > 0;
-  if (hasAdvData) {
-    modelId = getShellyModelId(result.advData);
-  }
-
-  // Layer 2: BTHome device_type_id
-  let hasDTID = typeof decoded.device_type_id !== "undefined";
-  if (modelId < 0 && hasDTID) {
-    modelId = decoded.device_type_id;
-  }
-
-  // Layer 3: local_name (available with active scanning)
-  if (typeof result.local_name === "string" && result.local_name.length > 0) {
-    modelStr = result.local_name;
-  }
-
-  // Layer 4: Cache - reuse identification from a previous advertisement for this MAC
-  // Some devices (e.g., RC Button 4) only include identification in some advertisements
-  if (modelId < 0 && !modelStr && typeof knownModels[mac] !== "undefined") {
-    let cached = knownModels[mac];
-    modelId = cached.id;
-    modelStr = cached.str;
-  }
-
-  // Update cache when identification is found
-  if (modelId >= 0 || modelStr) {
-    knownModels[mac] = { id: modelId, str: modelStr };
-  }
-
-  // Send numeric model ID if found
-  if (modelId >= 0) {
-    body.modelId = modelId;
-  }
-
-  // Send string model if found
-  if (modelStr) {
-    body.model = modelStr;
-  }
-
-  // Add RSSI
-  if (typeof result.rssi === "number") {
-    body.rssi = result.rssi;
-  }
-
-  // Copy decoded BTHome fields (skip metadata and _-prefixed internal fields)
-  for (let key in decoded) {
-    if (key !== "pid" && key !== "device_type_id" && key.indexOf("_") !== 0) {
-      body[key] = decoded[key];
+  try {
+    if (event === BLE.Scanner.SCAN_START) {
+      print("BLE scanner started");
+      return;
     }
-  }
+    if (event === BLE.Scanner.SCAN_STOP) {
+      print("BLE scanner stopped");
+      return;
+    }
+    if (event !== BLE.Scanner.SCAN_RESULT || !result) return;
+    // Must have BTHome v2 service data
+    if (
+      !result.service_data ||
+      typeof result.service_data[BTHOME_SVC_ID] === "undefined"
+    ) {
+      return;
+    }
 
-  sendBleReport(body);
+    let serviceData = result.service_data[BTHOME_SVC_ID];
+    if (typeof serviceData !== "string" || serviceData.length === 0 ||
+        serviceData.length > MAX_SERVICE_DATA || (serviceData.at(0) & 0xE1) !== 0x40) return;
+    // Get MAC address (uppercase, no colons)
+    let mac = normalizeMac(result.addr);
+    if (mac === null) return;
+
+    let now = getNowMs();
+    // BTHome puts PID (object 0x00) first. Drop repeated broadcasts before
+    // allocating a decoded object, arrays, or manufacturer data.
+    let cacheEntry = getDeviceCacheEntry(mac, now, false);
+    if (serviceData.length >= 3 && serviceData.at(1) === 0x00 &&
+        cacheEntry && cacheEntry.hasPid && cacheEntry.pid === serviceData.at(2)) return;
+    let decoded = decodeBTHome(serviceData);
+    if (decoded === null) return;
+    let pid = typeof decoded.pid === "number" ? decoded.pid : -1;
+    // PID is optional: missing PID must not suppress all future sensor updates.
+    if (pid >= 0 && !isNewPid(mac, pid, now)) return;
+
+    // Reuse the decoded object instead of copying every field into a second one.
+    let body = decoded;
+    body.cid = 0;
+    body.pid = pid;
+    body.mac = mac;
+
+    // === Model identification (priority: mfData > BTHome device_type_id > cache) ===
+    let modelId = -1;
+    let modelStr = "";
+
+    // Layer 1: Manufacturer data (most reliable)
+    let hasAdvData = typeof result.advData === "string" && result.advData.length > 0;
+    if (hasAdvData) {
+      modelId = getShellyModelId(result.advData);
+    }
+
+    // Layer 2: BTHome device_type_id
+    let hasDTID = typeof decoded.device_type_id !== "undefined";
+    if (modelId < 0 && hasDTID) {
+      modelId = decoded.device_type_id;
+    }
+
+    // Passive scanning does not guarantee a local_name. Preserve it when a
+    // scan manager or another scan request provides one.
+    if (typeof result.local_name === "string" && result.local_name.length > 0) {
+      modelStr = result.local_name.slice(0, MAX_MODEL_NAME);
+    }
+
+    // Layer 3: bounded cache - reuse identification from a previous advertisement
+    // Some devices only include identification in some advertisements.
+    cacheEntry = getDeviceCacheEntry(mac, now, true);
+    if (modelId < 0 && !modelStr && cacheEntry) {
+      modelId = cacheEntry.modelId;
+      modelStr = cacheEntry.modelStr;
+    }
+
+    // Update the bounded cache when identification is found.
+    if (cacheEntry && (modelId >= 0 || modelStr)) {
+      cacheEntry.modelId = modelId;
+      cacheEntry.modelStr = modelStr;
+    }
+
+    // Send numeric model ID if found
+    if (modelId >= 0) {
+      body.modelId = modelId;
+    }
+
+    // Send string model if found
+    if (modelStr) {
+      body.model = modelStr;
+    }
+
+    // Add RSSI
+    if (typeof result.rssi === "number") {
+      body.rssi = result.rssi;
+    }
+
+    delete body.device_type_id;
+    sendBleReport(body);
+  } catch (e) {
+    print("BLE scan callback error:", e);
+  }
 }
 
 // === Initialization ===
@@ -528,18 +457,37 @@ function init() {
     " scannerRunning=" + BLE.Scanner.isRunning());
 
   // Every script must submit its own request to the enhanced scan manager.
-  // Do not skip start() merely because another client is already scanning.
+  // Filter to unencrypted BTHome v2 advertisements before they reach the JS
+  // callback. Passive, duty-cycled scanning avoids scan-response allocations.
   let started = null;
   if (typeof BLE.Scanner.start === "function") {
-    started = BLE.Scanner.start({
+    let scanOptions = {
       duration_ms: BLE.Scanner.INFINITE_SCAN,
-      active: true,
-    });
+      active: false,
+      interval_ms: 1000,
+      window_ms: 50,
+      filters: [
+        {
+          serviceData: {
+            service: BTHOME_SVC_ID,
+            dataPrefix: "\x40",
+            mask: "\xE1",
+          },
+        },
+      ],
+    };
+    started = BLE.Scanner.start(scanOptions);
+    if (!started) {
+      // Keep a safe passive fallback for firmware that exposes start() but
+      // predates serviceData filters.
+      delete scanOptions.filters;
+      started = BLE.Scanner.start(scanOptions);
+    }
   } else if (typeof BLE.Scanner.Start === "function") {
     // Compatibility fallback for older Gen2 firmware.
     started = BLE.Scanner.Start({
       duration_ms: BLE.Scanner.INFINITE_SCAN,
-      active: true,
+      active: false,
     });
   }
   if (!started && !BLE.Scanner.isRunning()) {
@@ -556,7 +504,7 @@ function init() {
     print("Error: BLE scanner subscription API unavailable");
     return;
   }
-  startDrainTimer();
+  Timer.set(100, true, drainPendingBatch);
 }
 
 // Initialize hub URL from KVS
@@ -566,5 +514,5 @@ fetchRemoteUrlFromKVS();
 init();
 
 print(
-  "Hubitat BLE Helper started: url=" + REMOTE_URL + " maxInflight=" + MAX_INFLIGHT,
+  "Hubitat BLE Helper started: url=" + REMOTE_URL + " maxInflight=1",
 );
