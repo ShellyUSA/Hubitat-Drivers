@@ -259,7 +259,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.93"
+@Field static final String APP_VERSION = "1.0.95"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -1089,8 +1089,9 @@ void appButtonHandler(String buttonName) {
  * and creates a child device.
  *
  * @param ipKey The IP address key of the device to create
+ * @param provisioningOperationId The operation token that owns this create
  */
-private void createShellyDevice(String ipKey) {
+private void createShellyDevice(String ipKey, String provisioningOperationId = null) {
     logInfo("Creating device for ${ipKey}")
     setProvisioningStatus(ipKey, 'Creating device…')
 
@@ -1199,12 +1200,12 @@ private void createShellyDevice(String ipKey) {
     // Branch: multi-component devices use parent-child architecture
     Boolean needsParentChild = deviceInfo.needsParentChild ?: false
     if (needsParentChild) {
-        createMultiComponentDevice(ipKey, deviceInfo, driverName)
+        createMultiComponentDevice(ipKey, deviceInfo, driverName, provisioningOperationId)
         return
     }
 
     // Monolithic device creation (single-component path)
-    createMonolithicDevice(ipKey, deviceInfo, driverName)
+    createMonolithicDevice(ipKey, deviceInfo, driverName, provisioningOperationId)
 }
 
 /** Runs device creation after the UI has had a chance to render progress. */
@@ -1219,7 +1220,7 @@ void runDeviceCreate(Map data) {
     }
     Boolean retryScheduled = false
     try {
-        createShellyDevice(ipAddress)
+        createShellyDevice(ipAddress, operationId)
 
         // Sleepy Gen2 devices can miss the first status read while waking.
         // Keep the provisioning operation alive and retry the complete create
@@ -1242,10 +1243,18 @@ void runDeviceCreate(Map data) {
     } finally {
         // Successful creation normally hands ownership to a script/webhook
         // operation. If it did not, clear this create operation now.
-        if (!retryScheduled && isCurrentProvisioningOperation(ipAddress, operationId)) {
+        if (!retryScheduled && isCurrentProvisioningOperation(ipAddress, operationId) &&
+                !hasActiveProvisioningPipeline(ipAddress, operationId)) {
             finishProvisioningOperation(ipAddress, operationId)
         }
-        buildDeviceStatusCacheEntry(ipAddress)
+        // Once device creation has handed off to asynchronous script/webhook
+        // provisioning, do not perform another full cache rebuild here. That
+        // read can overlap the completion verifier and write an older map that
+        // still contains provisioningStatus after the verifier has cleared it.
+        // The provisioning pipeline owns cache updates until it finishes.
+        if (!hasProvisioningOperation(ipAddress)) {
+            buildDeviceStatusCacheEntry(ipAddress)
+        }
         reconcileWatchdogSchedule()
         requestConfigTableSSR('deviceCreateComplete', [ipAddress], true)
     }
@@ -1258,8 +1267,10 @@ void runDeviceCreate(Map data) {
  * @param ipKey The device IP address
  * @param deviceInfo The discovered device information
  * @param driverName The generated driver name
+ * @param provisioningOperationId The operation token that owns provisioning
  */
-private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverName) {
+private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverName,
+                                    String provisioningOperationId = null) {
     // Create device network ID (DNI) - use MAC address if available, otherwise IP
     String dni = deviceInfo.mac ?: "shelly-${ipKey.replaceAll('\\.', '-')}"
 
@@ -1353,7 +1364,7 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
         // Install scripts and webhooks on the Shelly device
         // The create path already performed the full capability fetch above;
         // reuse it while provisioning instead of querying the device again.
-        reinitializeDevice(ipKey, false)
+        reinitializeDevice(ipKey, false, provisioningOperationId)
 
         logInfo("════════════════════════════════════════════════════════════")
         logInfo("  ✓ DEVICE CREATION COMPLETE: ${deviceLabel}")
@@ -1375,8 +1386,10 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
  * @param ipKey The device IP address
  * @param deviceInfo The discovered device information
  * @param parentDriverName The generated parent driver name
+ * @param provisioningOperationId The operation token that owns provisioning
  */
-private void createMultiComponentDevice(String ipKey, Map deviceInfo, String parentDriverName) {
+private void createMultiComponentDevice(String ipKey, Map deviceInfo, String parentDriverName,
+                                        String provisioningOperationId = null) {
     String mac = deviceInfo.mac ?: "shelly-${ipKey.replaceAll('\\.', '-')}"
     String parentDni = mac
     String baseLabel = deviceInfo.name ?: "Shelly ${ipKey}"
@@ -1498,7 +1511,7 @@ private void createMultiComponentDevice(String ipKey, Map deviceInfo, String par
         // Install scripts and webhooks on the Shelly device
         // The create path already performed the full capability fetch above;
         // reuse it while provisioning instead of querying the device again.
-        reinitializeDevice(ipKey, false)
+        reinitializeDevice(ipKey, false, provisioningOperationId)
 
         logInfo("════════════════════════════════════════════════════════════")
         logInfo("  ✓ DEVICE CREATION COMPLETE: ${baseLabel}")
@@ -2437,6 +2450,17 @@ private Boolean hasProvisioningOperation(String ip) {
     return ip && (atomicState.provisioningOperations ?: [:])[ip] != null
 }
 
+/** Returns true when the operation has handed work to a delayed pipeline. */
+private Boolean hasActiveProvisioningPipeline(String ip, String operationId) {
+    if (!isCurrentProvisioningOperation(ip, operationId)) { return false }
+    Map scriptPending = (atomicState.scriptVerificationPending ?: [:]) as Map
+    Map completionPending = (atomicState.provisioningCompletionPending ?: [:]) as Map
+    Map uploadKeys = (atomicState.provisioningUploadKeys ?: [:]) as Map
+    return scriptPending[ip]?.toString() == operationId ||
+        completionPending[ip]?.toString() == operationId ||
+        ((uploadKeys[ip] ?: []) as List).size() > 0
+}
+
 /** Returns true when the current app session has an active user action. */
 private Boolean isAnyDeviceActionActive() {
     return ((atomicState.userActionLock ?: [:]) as Map).values().any { Object value -> value }
@@ -2481,6 +2505,28 @@ private String beginProvisioningOperation(String ip, String status) {
 
 private Boolean isCurrentProvisioningOperation(String ip, String operationId) {
     return ip && operationId && (atomicState.provisioningOperations ?: [:])[ip]?.toString() == operationId
+}
+
+/** Removes the durable metadata owned by one provisioning operation. */
+private Boolean clearProvisioningOperationMetadata(String ip, String operationId) {
+    if (!isCurrentProvisioningOperation(ip, operationId)) { return false }
+
+    Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
+    operations.remove(ip)
+    atomicState.provisioningOperations = operations
+
+    Map pendingScripts = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
+    pendingScripts.remove(ip)
+    atomicState.scriptVerificationPending = pendingScripts
+
+    Map pendingCompletion = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
+    pendingCompletion.remove(ip)
+    atomicState.provisioningCompletionPending = pendingCompletion
+
+    Map installationSnapshots = new LinkedHashMap((atomicState.installationCapabilitySnapshots ?: [:]) as Map)
+    installationSnapshots.remove(ip)
+    atomicState.installationCapabilitySnapshots = installationSnapshots
+    return true
 }
 
 /**
@@ -2566,26 +2612,62 @@ private void forgetBleGatewayUploadKey(String ip, String key) {
 
 /** Clears progress only when the active operation has verified completion. */
 private void finishProvisioningOperation(String ip, String operationId) {
-    if (!isCurrentProvisioningOperation(ip, operationId)) { return }
-    Map operations = new LinkedHashMap((atomicState.provisioningOperations ?: [:]) as Map)
-    operations.remove(ip)
-    atomicState.provisioningOperations = operations
-    Map pendingScripts = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
-    pendingScripts.remove(ip)
-    atomicState.scriptVerificationPending = pendingScripts
-    Map pendingCompletion = new LinkedHashMap((atomicState.provisioningCompletionPending ?: [:]) as Map)
-    pendingCompletion.remove(ip)
-    atomicState.provisioningCompletionPending = pendingCompletion
-    Map installationSnapshots = new LinkedHashMap((atomicState.installationCapabilitySnapshots ?: [:]) as Map)
-    installationSnapshots.remove(ip)
-    atomicState.installationCapabilitySnapshots = installationSnapshots
+    if (!clearProvisioningOperationMetadata(ip, operationId)) { return }
+
+    logInfo("Provisioning verified complete for ${ip}; clearing progress state")
     setProvisioningStatus(ip, null)
     releaseUserAction(ip)
+    // Commit the cleared status before emitting the SSR event. The final
+    // cache read is queued immediately before this method, so leaving the
+    // null-status patch to a later timer can make the browser render one more
+    // stale spinner.
+    try {
+        flushPendingDeviceStatusCache()
+    } catch (Exception ex) {
+        logError("Could not flush completed provisioning state for ${ip}: ${ex.message}")
+    }
     // Raw capability/status payloads are useful only while the operation is
     // active. Compact them as soon as the operation has completed rather than
     // waiting for the next app initialization.
-    compactPersistedDiscoveryState()
+    try {
+        compactPersistedDiscoveryState()
+    } catch (Exception ex) {
+        logWarn("Could not compact completed provisioning state for ${ip}: ${ex.message}")
+    }
     requestConfigTableSSR('provisioningComplete', ip ? [ip] : null, true)
+}
+
+/** Marks a terminal provisioning failure without leaving the action locked. */
+private void failProvisioningOperation(String ip, String operationId, String status) {
+    if (!clearProvisioningOperationMetadata(ip, operationId)) { return }
+    setProvisioningStatus(ip, status ?: 'Provisioning incomplete')
+    releaseUserAction(ip)
+    try {
+        flushPendingDeviceStatusCache()
+    } catch (Exception ex) {
+        logError("Could not flush failed provisioning state for ${ip}: ${ex.message}")
+    }
+    requestConfigTableSSR('provisioningIncomplete', ip ? [ip] : null, true)
+}
+
+/** Returns true only when all displayed provisioning counts are verified. */
+private Boolean hasVerifiedProvisioningCounts(Map entry) {
+    if (!entry || entry.isCreated != true) { return false }
+
+    Integer requiredScripts = entry.requiredScriptCount as Integer
+    Integer installedScripts = entry.installedScriptCount as Integer
+    Integer activeScripts = entry.activeScriptCount as Integer
+    Integer requiredWebhooks = entry.requiredWebhookCount as Integer
+    Integer createdWebhooks = entry.createdWebhookCount as Integer
+    Integer enabledWebhooks = entry.enabledWebhookCount as Integer
+
+    Boolean scriptsComplete = requiredScripts != null &&
+        (requiredScripts < 0 || (installedScripts != null && activeScripts != null &&
+            installedScripts >= requiredScripts && activeScripts >= requiredScripts))
+    Boolean webhooksComplete = requiredWebhooks != null &&
+        (requiredWebhooks < 0 || (createdWebhooks != null && enabledWebhooks != null &&
+            createdWebhooks >= requiredWebhooks && enabledWebhooks >= requiredWebhooks))
+    return scriptsComplete && webhooksComplete
 }
 
 /**
@@ -2607,7 +2689,23 @@ private String buildDeviceRow(Map entry) {
 
     // Column 1: Action button (provisioning progress, create, remove, or conflict)
     String provisioningStatus = entry.provisioningStatus?.toString()
-    if (provisioningStatus) {
+    Boolean verifiedProvisioningCounts = hasVerifiedProvisioningCounts(entry)
+    Boolean terminalProvisioningFailure = provisioningStatus?.startsWith('Provisioning incomplete:')
+    if (provisioningStatus && verifiedProvisioningCounts) {
+        // A lost completion callback can leave only the UI marker behind. Do
+        // not show an endless spinner when the durable counts already prove
+        // that provisioning finished; the cancel action remains available to
+        // clear that stale marker on older app versions.
+        String completeIcon = "<iconify-icon icon='material-symbols:check-circle' style='font-size:20px;color:#4CAF50'></iconify-icon>"
+        String cancelIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:16px'></iconify-icon>"
+        String clearBtn = buttonLink("cancelProvisioning|${ip}", cancelIcon, '#F44336', '16px')
+        str.append("<td title='Provisioning counts are complete; clear stale progress state'>${completeIcon} ${clearBtn}</td>")
+    } else if (provisioningStatus && terminalProvisioningFailure) {
+        String errorIcon = "<iconify-icon icon='material-symbols:error-outline' style='font-size:20px;color:#F44336'></iconify-icon>"
+        String cancelIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:16px'></iconify-icon>"
+        String clearBtn = buttonLink("cancelProvisioning|${ip}", cancelIcon, '#F44336', '16px')
+        str.append("<td title='${escapeHtml(provisioningStatus)}'>${errorIcon} ${clearBtn}</td>")
+    } else if (provisioningStatus) {
         String progressIcon = "<iconify-icon icon='material-symbols:progress-activity' style='font-size:20px;animation:shellyProvisioningSpin 1s linear infinite'></iconify-icon>"
         String cancelIcon = "<iconify-icon icon='material-symbols:cancel' style='font-size:16px'></iconify-icon>"
         String cancelBtn = buttonLink("cancelProvisioning|${ip}", cancelIcon, '#F44336', '16px')
@@ -4749,6 +4847,7 @@ void finalizeScriptInstallation(Map data) {
 /** Schedules the post-install script verification sequence. */
 private void scheduleScriptInstallationVerification(String ipAddress, List<String> scriptQueue, String operationId) {
     if (!ipAddress || !scriptQueue) { return }
+    if (!isCurrentProvisioningOperation(ipAddress, operationId)) { return }
     Map pending = new LinkedHashMap((atomicState.scriptVerificationPending ?: [:]) as Map)
     pending[ipAddress] = operationId
     atomicState.scriptVerificationPending = pending
@@ -4771,6 +4870,10 @@ void verifyScriptInstallation(Map data) {
     // Let the browser render the in-progress state before the RPC begins.
     requestConfigTableSSR('scriptVerificationBefore', [ipAddress], true)
     List<Map> installedScripts = listDeviceScripts(ipAddress)
+    // The final completion check can finish while this delayed Script.List
+    // request is in flight. Never let that late read restore a spinner or
+    // overwrite the completed counts.
+    if (!isCurrentProvisioningOperation(ipAddress, operationId)) { return }
     Set<String> requiredNames = scriptQueue.collect { stripJsExtension(it) } as Set<String>
     Integer installed = 0
     Integer active = 0
@@ -4842,6 +4945,7 @@ void verifyProvisioningCompletion(Map data) {
     Integer attempt = (data?.attempt ?: 1) as Integer
     if (!ipAddress || !isCurrentProvisioningOperation(ipAddress, operationId)) { return }
 
+    try {
     requestConfigTableSSR('provisioningFinalCheckBefore', [ipAddress], true)
     Map entry = buildDeviceStatusCacheEntry(ipAddress)
     flushPendingDeviceStatusCache()
@@ -4857,6 +4961,10 @@ void verifyProvisioningCompletion(Map data) {
         (installedScripts != null && activeScripts != null && installedScripts >= requiredScripts && activeScripts >= requiredScripts)
     Boolean webhooksComplete = requiredWebhooks == null ||
         (createdWebhooks != null && enabledWebhooks != null && createdWebhooks >= requiredWebhooks && enabledWebhooks >= requiredWebhooks)
+    logDebug("Provisioning final check for " + ipAddress + ": scripts " + installedScripts + "/" +
+        requiredScripts + " installed, " + activeScripts + "/" + requiredScripts +
+        " active; webhooks " + createdWebhooks + "/" + requiredWebhooks +
+        " created, " + enabledWebhooks + "/" + requiredWebhooks + " enabled")
     // This fresh Script.List/Webhook.List read is authoritative; do not make a
     // completed row wait for the delayed script-verification timer as well.
     if (scriptsComplete && webhooksComplete) {
@@ -4866,8 +4974,7 @@ void verifyProvisioningCompletion(Map data) {
 
     if (attempt >= 4) {
         logWarn("Provisioning final check remains incomplete: scripts ${installedScripts}/${requiredScripts} installed, ${activeScripts}/${requiredScripts} active and webhooks ${createdWebhooks}/${requiredWebhooks} created, ${enabledWebhooks}/${requiredWebhooks} enabled on ${ipAddress}")
-        setProvisioningStatus(ipAddress, 'Provisioning incomplete: awaiting device confirmation')
-        requestConfigTableSSR('provisioningIncomplete', [ipAddress], true)
+        failProvisioningOperation(ipAddress, operationId, 'Provisioning incomplete: awaiting device confirmation')
         return
     }
 
@@ -4877,6 +4984,20 @@ void verifyProvisioningCompletion(Map data) {
     Integer delay = delays[Math.min(attempt - 1, delays.length - 1)]
     setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
     runInHelper(delay as Long, 'verifyProvisioningCompletion', [data: [ipAddress: ipAddress, operationId: operationId, attempt: attempt + 1], overwrite: false])
+    } catch (Exception ex) {
+        logError("Provisioning final check failed for " + ipAddress + ": " + ex.message)
+        appendLog('error', "Provisioning final check failed for " + ipAddress)
+        if (attempt >= 4 && isCurrentProvisioningOperation(ipAddress, operationId)) {
+            failProvisioningOperation(ipAddress, operationId, 'Provisioning incomplete: final verification failed')
+            return
+        }
+        if (!isCurrentProvisioningOperation(ipAddress, operationId)) { return }
+        Integer[] retryDelays = [5, 10, 15]
+        Integer retryDelay = retryDelays[Math.min(Math.max(attempt - 1, 0), retryDelays.length - 1)]
+        setProvisioningStatus(ipAddress, 'Finalizing provisioning…')
+        runInHelper(retryDelay as Long, 'verifyProvisioningCompletion',
+            [data: [ipAddress: ipAddress, operationId: operationId, attempt: attempt + 1], overwrite: false])
+    }
 }
 
 /**
