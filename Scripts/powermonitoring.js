@@ -13,15 +13,20 @@
 // ==========================================
 
 // === USER CONFIGURATION ===
-let POWERMONITOR_SCRIPT_VERSION = "2.1.2";
+let POWERMONITOR_SCRIPT_VERSION = "2.3.0";
 let DEFAULT_REPORT_INTERVAL = 60; // Fallback if KVS lookup fails
 let REPORT_INTERVAL = DEFAULT_REPORT_INTERVAL;
 let REPORT_INTERVAL_KVS_KEY = "hubitat_sdm_pm_ri"; // KVS key for dynamic report interval (seconds)
 let SETTINGS_REFRESH_INTERVAL_SECS = 900; // Refresh KVS settings at most every 15 minutes
 let STATUS_POLL_INTERVAL_SECS = 900; // GetStatus is a fallback, not the normal sampling path
 let STATUS_POLL_RETRY_SECS = 120; // Retry sooner after a failed startup/status poll
-let REPORT_REQUEST_TIMEOUT_MS = 15000;
-let MAX_PENDING_REPORTS = 16;
+let REPORT_REQUEST_TIMEOUT_SECS = 10;
+let REPORT_DRAIN_DELAY_MS = 100;
+let SETTINGS_ADVANCE_DELAY_MS = 10;
+let MAX_PENDING_REPORTS = 8;
+let MAX_PENDING_BYTES = 2048;
+let MAX_REPORT_BYTES = 768;
+let MAX_COMPONENT_ID = 7; // Supported component IDs are 0..7; reject unexpected keys
 let MAX_TRACKED_COMPONENTS = 16;
 
 // Hubitat KVS configuration
@@ -61,13 +66,21 @@ let statusPollInFlight = false;
 let settingsRefreshInFlight = false;
 let settingsRefreshIndex = 0;
 let settingsRefreshCallback = null;
+let settingsAdvanceTimerHandle = null;
 let settingsCyclesRemaining = 0;
 let statusPollCyclesRemaining = 0;
 let statusEventsSinceReport = false;
 let reportQueue = [];
+let reportQueueBytes = 0;
 let reportInFlight = false;
 let reportInFlightToken = 0;
-let reportInFlightTimer = null;
+let reportInFlightData = null; // The accumulator only; never the report/payload object
+let reportInFlightBytes = 0;
+let reportDrainTimerHandle = null;
+let REPORT_PREFIXES = ["switch", "pm1", "cover", "em", "em1"];
+let PHASES = ["a", "b", "c"];
+let statusHandlerHandle = null;
+let powerMonitorStarted = false;
 
 // P0 diagnostics. These are intentionally scalar counters only; no device
 // status or HTTP response bodies are retained.
@@ -85,7 +98,9 @@ function printDiagnostics(reason) {
       ": version=" + POWERMONITOR_SCRIPT_VERSION +
       " components=" + compKeys.length +
       " queue=" + reportQueue.length +
+      " queueBytes=" + reportQueueBytes +
       " reportInFlight=" + (reportInFlight ? 1 : 0) +
+      " reportInFlightBytes=" + reportInFlightBytes +
       " statusInFlight=" + (statusPollInFlight ? 1 : 0) +
       " settingsInFlight=" + (settingsRefreshInFlight ? 1 : 0) +
       " statusPolls=" + totalStatusPolls +
@@ -108,10 +123,16 @@ function noteStatusData() {
 function dequeueReport() {
   if (reportQueue.length === 0) return null;
   let report = reportQueue[0];
-  for (let i = 1; i < reportQueue.length; i++) {
+  let lastIndex = reportQueue.length - 1;
+  for (let i = 1; i <= lastIndex; i++) {
     reportQueue[i - 1] = reportQueue[i];
   }
-  reportQueue.length = reportQueue.length - 1;
+  // Clear the stale tail reference before shrinking the array. This makes the
+  // release explicit on the small mJS heap rather than relying on truncation.
+  reportQueue[lastIndex] = null;
+  reportQueue.length = lastIndex;
+  reportQueueBytes -= report.bytes || 0;
+  if (reportQueueBytes < 0) reportQueueBytes = 0;
   return report;
 }
 
@@ -130,36 +151,55 @@ function buildRemoteUrlFromRaw(raw) {
   return HUBITAT_PROTO + s + ":" + HUBITAT_PORT;
 }
 
+// Continue the serialized KVS chain only after the current callback frame has
+// returned. This avoids retaining one response while the next RPC is created.
+function scheduleSettingsAdvance() {
+  if (settingsAdvanceTimerHandle !== null) return;
+  settingsAdvanceTimerHandle = Timer.set(SETTINGS_ADVANCE_DELAY_MS, false, advanceSettingsRefresh);
+}
+
+function advanceSettingsRefresh() {
+  settingsAdvanceTimerHandle = null;
+  fetchNextReportSetting();
+}
+
+function onRemoteUrlFetched(res, err, msg) {
+  if (err !== 0 || res === undefined || res === null) {
+    print("KVS.Get did not return a value; using REMOTE_URL=" + REMOTE_URL);
+    res = null;
+    msg = null;
+    scheduleSettingsAdvance();
+    return;
+  }
+  // attempt to extract value from common response shapes
+  let ipVal = null;
+  if (typeof res.value === "string") ipVal = res.value;
+  else if (res.result && typeof res.result.value === "string") ipVal = res.result.value;
+  else if (typeof res === "string") ipVal = res;
+  if (ipVal) {
+    REMOTE_URL = buildRemoteUrlFromRaw(ipVal);
+    print("KVS hubitat_sdm_ip found; REMOTE_URL set to " + REMOTE_URL);
+  } else {
+    print("KVS hubitat_sdm_ip empty; using REMOTE_URL=" + REMOTE_URL);
+  }
+  // Do not let the native callback retain the response object or string.
+  ipVal = null;
+  res = null;
+  msg = null;
+  scheduleSettingsAdvance();
+}
+
 // Try to read hub IP from Shelly KVS; on success replace REMOTE_URL. Graceful
-// no-ops if KVS isn't available. The callback lets startup and periodic
-// settings refreshes serialize this request with the other KVS reads.
-function fetchRemoteUrlFromKVS(cb) {
+// no-ops if KVS isn't available. The named callback avoids allocating a new
+// closure on every periodic refresh.
+function fetchRemoteUrlFromKVS() {
   if (typeof Shelly.call !== "function") {
     print("Shelly.call() not available; using REMOTE_URL=" + REMOTE_URL);
-    if (typeof cb === "function") cb();
+    scheduleSettingsAdvance();
     return;
   }
   try {
-    Shelly.call("KVS.Get", { key: HUBITAT_KVS_KEY }, function (res, err, msg) {
-      if (err !== 0 || res === undefined || res === null) {
-        print("KVS.Get did not return a value; using REMOTE_URL=" + REMOTE_URL);
-        if (typeof cb === "function") cb();
-        return;
-      }
-      // attempt to extract value from common response shapes
-      let ipVal = null;
-      if (typeof res.value === "string") ipVal = res.value;
-      else if (res.result && typeof res.result.value === "string")
-        ipVal = res.result.value;
-      else if (typeof res === "string") ipVal = res;
-      if (ipVal) {
-        REMOTE_URL = buildRemoteUrlFromRaw(ipVal);
-        print("KVS hubitat_sdm_ip found; REMOTE_URL set to " + REMOTE_URL);
-      } else {
-        print("KVS hubitat_sdm_ip empty; using REMOTE_URL=" + REMOTE_URL);
-      }
-      if (typeof cb === "function") cb();
-    });
+    Shelly.call("KVS.Get", { key: HUBITAT_KVS_KEY }, onRemoteUrlFetched);
   } catch (e) {
     print(
       "KVS.Get invocation failed; using REMOTE_URL=" +
@@ -168,30 +208,35 @@ function fetchRemoteUrlFromKVS(cb) {
         e +
         ")",
     );
-    if (typeof cb === "function") cb();
+    scheduleSettingsAdvance();
   }
 }
 
 // Read a non-negative numeric KVS value. Missing or malformed values leave the
 // corresponding in-memory default unchanged.
-function fetchNumberFromKVS(key, cb) {
+function onNumberFromKVSResponse(res, err, msg) {
+  let value = null;
+  let raw = null;
+  if (err === 0 && res) {
+    if (typeof res.value === "string" || typeof res.value === "number") raw = res.value;
+    else if (res.result && res.result.value !== undefined) raw = res.result.value;
+    if (raw !== null) {
+      let parsed = parseFloat(raw);
+      if (parsed === parsed && parsed !== Infinity && parsed !== -Infinity && parsed >= 0) value = parsed;
+    }
+  }
+  raw = null;
+  res = null;
+  msg = null;
+  onReportSettingFetched(value);
+}
+
+function fetchNumberFromKVS(key) {
   try {
-    Shelly.call("KVS.Get", { key: key }, function (res, err, msg) {
-      let value = null;
-      if (err === 0 && res) {
-        let raw = null;
-        if (typeof res.value === "string" || typeof res.value === "number") raw = res.value;
-        else if (res.result && res.result.value !== undefined) raw = res.result.value;
-        if (raw !== null) {
-          let parsed = parseFloat(raw);
-          if (!isNaN(parsed) && parsed >= 0) value = parsed;
-        }
-      }
-      if (typeof cb === "function") cb(value);
-    });
+    Shelly.call("KVS.Get", { key: key }, onNumberFromKVSResponse);
   } catch (e) {
     print("KVS numeric setting fetch failed for " + key + ": " + e);
-    if (typeof cb === "function") cb(null);
+    onReportSettingFetched(null);
   }
 }
 
@@ -238,7 +283,7 @@ function finishSettingsRefresh() {
 function onReportSettingFetched(value) {
   let setting = REPORT_SETTINGS[settingsRefreshIndex - 1];
   if (setting) applyReportSetting(setting[1], value);
-  fetchNextReportSetting();
+  scheduleSettingsAdvance();
 }
 
 // Fetch KVS settings serially. Six concurrent KVS.Get calls were a startup
@@ -250,7 +295,7 @@ function fetchNextReportSetting() {
   }
   let setting = REPORT_SETTINGS[settingsRefreshIndex];
   settingsRefreshIndex++;
-  fetchNumberFromKVS(setting[0], onReportSettingFetched);
+  fetchNumberFromKVS(setting[0]);
 }
 
 // Refresh all reporting settings at most once per configured refresh window.
@@ -269,7 +314,7 @@ function fetchReportSettingsFromKVS(cb, force) {
   }
   settingsRefreshInFlight = true;
   settingsRefreshIndex = 0;
-  fetchRemoteUrlFromKVS(fetchNextReportSetting);
+  fetchRemoteUrlFromKVS();
 }
 
 // Schedule the next one-shot report timer using the current REPORT_INTERVAL
@@ -281,25 +326,23 @@ function scheduleNextReport() {
 // Use bounded sum/count accumulators instead of retaining every sample.
 // This is important on multi-channel devices where status events can arrive
 // frequently and the Shelly JavaScript heap is shared by all scripts.
-function newSample() { return { sum: 0, count: 0 }; }
-function addSample(sample, value) {
-  sample.sum += value;
-  sample.count++;
+function addMetric(data, prefix, value) {
+  data[prefix + "Sum"] += value;
+  data[prefix + "Count"]++;
 }
-function average(sample) {
-  return sample.count === 0 ? null : sample.sum / sample.count;
+function averageMetric(data, prefix) {
+  let count = data[prefix + "Count"];
+  return count === 0 ? null : data[prefix + "Sum"] / count;
 }
-function resetSample(sample) {
-  sample.sum = 0;
-  sample.count = 0;
+function resetMetric(data, prefix) {
+  data[prefix + "Sum"] = 0;
+  data[prefix + "Count"] = 0;
 }
 
 function newPowerData() {
   return {
-    vs: newSample(),
-    cs: newSample(),
-    ps: newSample(),
-    fs: newSample(),
+    vSum: 0, vCount: 0, cSum: 0, cCount: 0,
+    pSum: 0, pCount: 0, fSum: 0, fCount: 0,
     e: null,
     lastV: null,
     lastC: null,
@@ -346,94 +389,136 @@ function getOrCreateComp(key, type, id) {
   return c;
 }
 
-// Status handler: collect power data from status change events
-function onStatus(ev) {
-  let d = ev.delta;
-  if (d === undefined || d === null) return;
+function hasNumber(value) {
+  return typeof value === "number" && value === value && value !== Infinity && value !== -Infinity;
+}
 
-  let comp = ev.component;
-  if (comp === undefined || comp === null) return;
+function normalizeComponentId(value) {
+  if (!hasNumber(value) || Math.floor(value) !== value || value < 0 || value > MAX_COMPONENT_ID) return null;
+  return value;
+}
 
-  let colonIdx = comp.indexOf(":");
-  let type = colonIdx >= 0 ? comp.substring(0, colonIdx) : comp;
-  let id = ev.id !== undefined ? ev.id : 0;
+function parseComponentIdText(text) {
+  if (typeof text !== "string" || text.length === 0) return null;
+  let parsed = parseInt(text, 10);
+  if ("" + parsed !== text) return null;
+  return normalizeComponentId(parsed);
+}
 
-  // emdata: energy counters for 3-phase em components
-  if (type === "emdata") {
-    let emKey = "em:" + JSON.stringify(id);
-    let entry = getOrCreateComp(emKey, "em", id);
-    if (!entry) return;
-    if (typeof d.a_total_act_energy === "number") entry.a.e = d.a_total_act_energy;
-    if (typeof d.b_total_act_energy === "number") entry.b.e = d.b_total_act_energy;
-    if (typeof d.c_total_act_energy === "number") entry.c.e = d.c_total_act_energy;
-    noteStatusData();
-    return;
-  }
+function isSupportedStatusType(type) {
+  return type === "switch" || type === "pm1" || type === "cover" ||
+    type === "em" || type === "em1" || type === "emdata" || type === "em1data";
+}
 
-  // em1data: energy counter for single-phase em1 components
-  if (type === "em1data") {
-    let em1Key = "em1:" + JSON.stringify(id);
-    let entry = getOrCreateComp(em1Key, "em1", id);
-    if (!entry) return;
-    if (typeof d.total_act_energy === "number") entry.e = d.total_act_energy;
-    noteStatusData();
-    return;
-  }
+function hasSinglePowerData(d) {
+  return hasNumber(d.voltage) || hasNumber(d.current) || hasNumber(d.apower) ||
+    hasNumber(d.freq) || (d.aenergy && hasNumber(d.aenergy.total));
+}
 
-  // em: 3-phase energy meter (a_voltage, a_current, a_act_power, a_freq, etc.)
+function hasEmPowerData(d) {
+  return hasNumber(d.a_voltage) || hasNumber(d.a_current) || hasNumber(d.a_act_power) || hasNumber(d.a_freq) ||
+    hasNumber(d.b_voltage) || hasNumber(d.b_current) || hasNumber(d.b_act_power) || hasNumber(d.b_freq) ||
+    hasNumber(d.c_voltage) || hasNumber(d.c_current) || hasNumber(d.c_act_power) || hasNumber(d.c_freq);
+}
+
+function pushPowerComponentStatus(type, key, id, d, isSeed) {
+  if (!d || typeof d !== "object") return false;
+  let entry = null;
+  let accepted = false;
+
   if (type === "em") {
-    let entry = getOrCreateComp(comp, "em", id);
-    if (!entry) return;
-    let phases = ["a", "b", "c"];
+    if (!hasEmPowerData(d)) return false;
+    entry = getOrCreateComp(key, "em", id);
+    if (!entry) return false;
+    let phases = PHASES;
     for (let i = 0; i < phases.length; i++) {
       let p = phases[i];
       let ph = entry[p];
-      if (typeof d[p + "_voltage"] === "number") addSample(ph.vs, d[p + "_voltage"]);
-      if (typeof d[p + "_current"] === "number") addSample(ph.cs, d[p + "_current"]);
-      if (typeof d[p + "_act_power"] === "number") addSample(ph.ps, d[p + "_act_power"]);
-      if (typeof d[p + "_freq"] === "number") addSample(ph.fs, d[p + "_freq"]);
+      if (hasNumber(d[p + "_voltage"])) { addMetric(ph, "v", d[p + "_voltage"]); if (isSeed) ph.lastV = d[p + "_voltage"]; accepted = true; }
+      if (hasNumber(d[p + "_current"])) { addMetric(ph, "c", d[p + "_current"]); if (isSeed) ph.lastC = d[p + "_current"]; accepted = true; }
+      if (hasNumber(d[p + "_act_power"])) { addMetric(ph, "p", d[p + "_act_power"]); if (isSeed) ph.lastP = d[p + "_act_power"]; accepted = true; }
+      if (hasNumber(d[p + "_freq"])) { addMetric(ph, "f", d[p + "_freq"]); if (isSeed) ph.lastF = d[p + "_freq"]; accepted = true; }
     }
-    noteStatusData();
-    return;
+    return accepted;
   }
 
-  // em1: single-phase energy meter (voltage, current, act_power, freq)
   if (type === "em1") {
-    let entry = getOrCreateComp(comp, "em1", id);
-    if (!entry) return;
-    if (typeof d.voltage === "number") addSample(entry.vs, d.voltage);
-    if (typeof d.current === "number") addSample(entry.cs, d.current);
-    if (typeof d.act_power === "number") addSample(entry.ps, d.act_power);
-    if (typeof d.freq === "number") addSample(entry.fs, d.freq);
-    noteStatusData();
-    return;
+    if (!hasNumber(d.voltage) && !hasNumber(d.current) && !hasNumber(d.act_power) && !hasNumber(d.freq)) return false;
+    entry = getOrCreateComp(key, "em1", id);
+    if (!entry) return false;
+    if (hasNumber(d.voltage)) { addMetric(entry, "v", d.voltage); if (isSeed) entry.lastV = d.voltage; accepted = true; }
+    if (hasNumber(d.current)) { addMetric(entry, "c", d.current); if (isSeed) entry.lastC = d.current; accepted = true; }
+    if (hasNumber(d.act_power)) { addMetric(entry, "p", d.act_power); if (isSeed) entry.lastP = d.act_power; accepted = true; }
+    if (hasNumber(d.freq)) { addMetric(entry, "f", d.freq); if (isSeed) entry.lastF = d.freq; accepted = true; }
+    return accepted;
   }
 
-  // pm1, switch, cover: single-phase power monitoring (voltage, current, apower, freq)
-  if (type !== "switch" && type !== "pm1" && type !== "cover") return;
+  if (!hasSinglePowerData(d)) return false;
+  entry = getOrCreateComp(key, type, id);
+  if (!entry) return false;
+  if (hasNumber(d.voltage)) { addMetric(entry, "v", d.voltage); if (isSeed) entry.lastV = d.voltage; accepted = true; }
+  if (hasNumber(d.current)) { addMetric(entry, "c", d.current); if (isSeed) entry.lastC = d.current; accepted = true; }
+  if (hasNumber(d.apower)) { addMetric(entry, "p", d.apower); if (isSeed) entry.lastP = d.apower; accepted = true; }
+  if (hasNumber(d.freq)) { addMetric(entry, "f", d.freq); if (isSeed) entry.lastF = d.freq; accepted = true; }
+  if (d.aenergy && hasNumber(d.aenergy.total)) { entry.e = d.aenergy.total; accepted = true; }
+  return accepted;
+}
 
-  let entry = getOrCreateComp(comp, type, id);
-  if (!entry) return;
-  if (typeof d.voltage === "number") addSample(entry.vs, d.voltage);
-  if (typeof d.current === "number") addSample(entry.cs, d.current);
-  if (typeof d.apower === "number") addSample(entry.ps, d.apower);
-  if (typeof d.freq === "number") addSample(entry.fs, d.freq);
-  if (d.aenergy !== undefined && d.aenergy !== null) {
-    if (typeof d.aenergy.total === "number") {
-      entry.e = d.aenergy.total;
-    }
+function pushEnergyStatus(type, id, d) {
+  if (!d || typeof d !== "object") return false;
+  if (type === "emdata") {
+    if (!hasNumber(d.a_total_act_energy) && !hasNumber(d.b_total_act_energy) && !hasNumber(d.c_total_act_energy)) return false;
+    let entry = getOrCreateComp("em:" + id, "em", id);
+    if (!entry) return false;
+    if (hasNumber(d.a_total_act_energy)) entry.a.e = d.a_total_act_energy;
+    if (hasNumber(d.b_total_act_energy)) entry.b.e = d.b_total_act_energy;
+    if (hasNumber(d.c_total_act_energy)) entry.c.e = d.c_total_act_energy;
+    return true;
   }
-  noteStatusData();
+  if (type === "em1data") {
+    if (!hasNumber(d.total_act_energy)) return false;
+    let entry = getOrCreateComp("em1:" + id, "em1", id);
+    if (!entry) return false;
+    entry.e = d.total_act_energy;
+    return true;
+  }
+  return false;
+}
+
+// Status handler: collect power data from status change events. Only validated
+// numeric fields are copied; the event object itself is never retained.
+function onStatus(ev) {
+  if (!ev || typeof ev.component !== "string") return;
+  let d = ev.delta;
+  if (!d || typeof d !== "object") return;
+
+  let comp = ev.component;
+  let colonIdx = comp.indexOf(":");
+  let type = colonIdx >= 0 ? comp.substring(0, colonIdx) : comp;
+  if (!isSupportedStatusType(type)) return;
+
+  let rawId = ev.id;
+  if (rawId === undefined || rawId === null) {
+    rawId = colonIdx >= 0 ? parseComponentIdText(comp.substring(colonIdx + 1)) : 0;
+    if (rawId === null) return;
+  }
+  let id = normalizeComponentId(rawId);
+  if (id === null) return;
+
+  let accepted = false;
+  if (type === "emdata" || type === "em1data") accepted = pushEnergyStatus(type, id, d);
+  else accepted = pushPowerComponentStatus(type, type + ":" + id, id, d, false);
+  if (accepted) noteStatusData();
 }
 
 // Build a small report object with normalized power monitoring params.
 // The object is queued and sent by drainReportQueue(), which limits the device
 // to one outbound HTTP request at a time.
 function sendPostReport(compId, compType, phase, data) {
-  let v = roundV(average(data.vs));
-  let cur = roundC(average(data.cs));
-  let p = roundP(average(data.ps));
-  let f = roundF(average(data.fs));
+  let v = roundV(averageMetric(data, "v"));
+  let cur = roundC(averageMetric(data, "c"));
+  let p = roundP(averageMetric(data, "p"));
+  let f = roundF(averageMetric(data, "f"));
   let e = roundE(data.e);
 
   // Fall back to last-known values when no deltas were received
@@ -472,79 +557,95 @@ function sendPostReport(compId, compType, phase, data) {
   if (f !== null) { data.lastF = f; data.sentF = f; }
   if (e !== null) data.sentE = e;
 
-  let reportKey = compType + ":" + JSON.stringify(compId) + (phase ? ":" + phase : "");
+  let reportKey = compType + ":" + compId + (phase ? ":" + phase : "");
   for (let i = 0; i < reportQueue.length; i++) {
     if (reportQueue[i].key === reportKey) {
-      reportQueue[i] = { key: reportKey, compId: compId, compType: compType, phase: phase, body: body, data: data };
+      let serialized = JSON.stringify(body);
+      body = null;
+      if (serialized.length > MAX_REPORT_BYTES) { markReportUnsent(reportQueue[i]); droppedReports++; return; }
+      let oldReport = reportQueue[i];
+      reportQueueBytes += serialized.length - (oldReport.bytes || 0);
+      reportQueue[i] = { key: reportKey, compId: compId, compType: compType, phase: phase, body: serialized, bytes: serialized.length, data: data };
+      releaseReport(oldReport);
       replacedQueuedReports++;
       return;
     }
   }
 
-  if (reportQueue.length >= MAX_PENDING_REPORTS) {
+  let serializedBody = JSON.stringify(body);
+  body = null;
+  if (serializedBody.length > MAX_REPORT_BYTES) { markDataUnsent(data); droppedReports++; return; }
+  while (reportQueue.length >= MAX_PENDING_REPORTS || reportQueueBytes + serializedBody.length > MAX_PENDING_BYTES) {
     let dropped = dequeueReport();
-    if (dropped && dropped.data) {
-      dropped.data.sentV = null;
-      dropped.data.sentC = null;
-      dropped.data.sentP = null;
-      dropped.data.sentF = null;
-      dropped.data.sentE = null;
-    }
+    if (!dropped) break;
+    markReportUnsent(dropped);
+    releaseReport(dropped);
     droppedReports++;
-    print("Power report queue full; dropping oldest report");
   }
-  reportQueue.push({ key: reportKey, compId: compId, compType: compType, phase: phase, body: body, data: data });
+  reportQueue.push({ key: reportKey, compId: compId, compType: compType, phase: phase, body: serializedBody, bytes: serializedBody.length, data: data });
+  reportQueueBytes += serializedBody.length;
+}
+
+function markDataUnsent(data) {
+  if (!data) return;
+  data.sentV = null;
+  data.sentC = null;
+  data.sentP = null;
+  data.sentF = null;
+  data.sentE = null;
 }
 
 function markReportUnsent(report) {
-  if (!report || !report.data) return;
-  report.data.sentV = null;
-  report.data.sentC = null;
-  report.data.sentP = null;
-  report.data.sentF = null;
-  report.data.sentE = null;
+  if (report) markDataUnsent(report.data);
 }
 
-function onReportResponse(token, report, result, error_code, error_message) {
-  if (!reportInFlight || token !== reportInFlightToken) {
-    print("Ignoring late power report callback");
-    return;
-  }
-  if (reportInFlightTimer !== null) Timer.clear(reportInFlightTimer);
-  reportInFlightTimer = null;
-  reportInFlight = false;
-
-  if (error_code !== 0) {
-    failedReports++;
-    markReportUnsent(report);
-    print("Power report HTTP error:", error_code, error_message);
-  } else {
-    totalReportsSent++;
-    print("Power report sent:", report.key);
-  }
-  // Do not keep the request payload or accumulator reachable through the
-  // callback after this request has completed.
+function releaseReport(report) {
+  if (!report) return;
+  report.key = null;
+  report.compId = null;
+  report.compType = null;
+  report.phase = null;
   report.body = null;
+  report.bytes = 0;
   report.data = null;
+}
+
+function scheduleReportDrain() {
+  if (reportDrainTimerHandle !== null) return;
+  reportDrainTimerHandle = Timer.set(REPORT_DRAIN_DELAY_MS, false, drainReportQueueAfterResponse);
+}
+
+function drainReportQueueAfterResponse() {
+  reportDrainTimerHandle = null;
   drainReportQueue();
 }
 
-function onReportTimeout(token, report) {
-  if (!reportInFlight || token !== reportInFlightToken) return;
-  reportInFlightTimer = null;
-  reportInFlight = false;
-  failedReports++;
-  markReportUnsent(report);
-  report.body = null;
-  report.data = null;
-  for (let i = 0; i < reportQueue.length; i++) {
-    markReportUnsent(reportQueue[i]);
-    reportQueue[i].body = null;
-    reportQueue[i].data = null;
+function onReportResponse(result, error_code, error_message, token) {
+  if (!reportInFlight || token !== reportInFlightToken) {
+    print("Ignoring late power report callback");
+    result = null;
+    error_message = null;
+    return;
   }
-  reportQueue = [];
-  print("Power report timed out; abandoning pending reports until the next cycle");
-  finishReportCycle();
+  let data = reportInFlightData;
+  reportInFlight = false;
+  reportInFlightData = null;
+  reportInFlightBytes = 0;
+
+  if (error_code !== 0) {
+    failedReports++;
+    markDataUnsent(data);
+    print("Power report HTTP error:", error_code, error_message);
+  } else {
+    totalReportsSent++;
+  }
+  // Release callback arguments before the next request is created. In
+  // particular, do not let a native callback registry retain the response or
+  // a report object through the next drain operation.
+  data = null;
+  result = null;
+  error_message = null;
+  scheduleReportDrain();
 }
 
 // Send one report at a time. The request body is created only immediately
@@ -557,99 +658,97 @@ function drainReportQueue() {
   }
 
   let report = dequeueReport();
+  let reportData = report.data;
+  let reportBody = report.body;
+  let reportBytes = report.bytes || 0;
   reportInFlight = true;
   let token = reportInFlightToken + 1;
   reportInFlightToken = token;
-  let url = REMOTE_URL + "/webhook/powermon/" + JSON.stringify(report.compId);
+  let url = REMOTE_URL + "/webhook/powermon/" + report.compId;
+  reportInFlightData = reportData;
+  reportInFlightBytes = reportBytes;
+  releaseReport(report);
+  report = null;
   try {
-    reportInFlightTimer = Timer.set(REPORT_REQUEST_TIMEOUT_MS, false, function () {
-      onReportTimeout(token, report);
-    });
-    // The serialized body is copied into the RPC request; clear the object
-    // immediately so the in-flight callback retains only scalar metadata.
-    let body = JSON.stringify(report.body);
-    report.body = null;
     Shelly.call(
       "HTTP.POST",
-      { url: url, body: body, content_type: "application/json" },
-      function (result, error_code, error_message) {
-        onReportResponse(token, report, result, error_code, error_message);
-      },
+      { url: url, body: reportBody, content_type: "application/json", timeout: REPORT_REQUEST_TIMEOUT_SECS },
+      onReportResponse,
+      token,
     );
-    print("Power report queued:", report.key);
   } catch (e) {
-    onReportResponse(token, report, null, -1, e);
+    reportBody = null;
+    url = null;
+    reportData = null;
+    onReportResponse(null, -1, e, token);
+    return;
   }
+  reportBody = null;
+  url = null;
+  reportData = null;
+  token = null;
 }
 
 // Push fresh status readings into bounded accumulators for averaging.
 // Unlike seedFromStatus(), does NOT set lastV/lastC/etc. -- those are
 // updated by sendPostReport() after computing the cycle average.
 function pushStatusReadings(res, seed) {
+  if (!res || typeof res !== "object") return;
   let isSeed = seed === true;
-  let prefixes = ["switch", "pm1", "cover", "em", "em1"];
+  let prefixes = REPORT_PREFIXES;
   for (let p = 0; p < prefixes.length; p++) {
-    for (let id = 0; id < 8; id++) {
-      let key = prefixes[p] + ":" + JSON.stringify(id);
-      let s = res[key];
-      if (!s) continue;
-
-      if (prefixes[p] === "em") {
-        let entry = getOrCreateComp(key, "em", id);
-        if (!entry) continue;
-        let phases = ["a", "b", "c"];
-        for (let j = 0; j < phases.length; j++) {
-          let ph = entry[phases[j]];
-          let vKey = phases[j] + "_voltage";
-          let cKey = phases[j] + "_current";
-          let pKey = phases[j] + "_act_power";
-          let fKey = phases[j] + "_freq";
-          if (typeof s[vKey] === "number") { addSample(ph.vs, s[vKey]); if (isSeed) ph.lastV = s[vKey]; }
-          if (typeof s[cKey] === "number") { addSample(ph.cs, s[cKey]); if (isSeed) ph.lastC = s[cKey]; }
-          if (typeof s[pKey] === "number") { addSample(ph.ps, s[pKey]); if (isSeed) ph.lastP = s[pKey]; }
-          if (typeof s[fKey] === "number") { addSample(ph.fs, s[fKey]); if (isSeed) ph.lastF = s[fKey]; }
-        }
-      } else if (prefixes[p] === "em1") {
-        let entry = getOrCreateComp(key, "em1", id);
-        if (!entry) continue;
-        if (typeof s.voltage === "number") { addSample(entry.vs, s.voltage); if (isSeed) entry.lastV = s.voltage; }
-        if (typeof s.current === "number") { addSample(entry.cs, s.current); if (isSeed) entry.lastC = s.current; }
-        if (typeof s.act_power === "number") { addSample(entry.ps, s.act_power); if (isSeed) entry.lastP = s.act_power; }
-        if (typeof s.freq === "number") { addSample(entry.fs, s.freq); if (isSeed) entry.lastF = s.freq; }
-      } else {
-        let entry = getOrCreateComp(key, prefixes[p], id);
-        if (!entry) continue;
-        if (typeof s.voltage === "number") { addSample(entry.vs, s.voltage); if (isSeed) entry.lastV = s.voltage; }
-        if (typeof s.current === "number") { addSample(entry.cs, s.current); if (isSeed) entry.lastC = s.current; }
-        if (typeof s.apower === "number") { addSample(entry.ps, s.apower); if (isSeed) entry.lastP = s.apower; }
-        if (typeof s.freq === "number") { addSample(entry.fs, s.freq); if (isSeed) entry.lastF = s.freq; }
-        if (s.aenergy && typeof s.aenergy.total === "number") {
-          entry.e = s.aenergy.total;
-        }
-      }
+    for (let id = 0; id <= MAX_COMPONENT_ID; id++) {
+      let key = prefixes[p] + ":" + id;
+      pushPowerComponentStatus(prefixes[p], key, id, res[key], isSeed);
     }
   }
 
   // Update energy counters from emdata/em1data
-  for (let id = 0; id < 8; id++) {
-    let emdKey = "emdata:" + JSON.stringify(id);
-    let emd = res[emdKey];
-    if (emd) {
-      let emKey = "em:" + JSON.stringify(id);
-      let entry = getOrCreateComp(emKey, "em", id);
-      if (entry) {
-        if (typeof emd.a_total_act_energy === "number") entry.a.e = emd.a_total_act_energy;
-        if (typeof emd.b_total_act_energy === "number") entry.b.e = emd.b_total_act_energy;
-        if (typeof emd.c_total_act_energy === "number") entry.c.e = emd.c_total_act_energy;
-      }
+  for (let id = 0; id <= MAX_COMPONENT_ID; id++) {
+    pushEnergyStatus("emdata", id, res["emdata:" + id]);
+    pushEnergyStatus("em1data", id, res["em1data:" + id]);
+  }
+  res = null;
+}
+
+function pushSingleStatusReading(key, status, seed) {
+  if (typeof key !== "string" || !status || typeof status !== "object") return;
+  let colonIdx = key.indexOf(":");
+  if (colonIdx < 0) return;
+  let type = key.substring(0, colonIdx);
+  if (!isSupportedStatusType(type)) return;
+  let id = parseComponentIdText(key.substring(colonIdx + 1));
+  if (id === null) return;
+  if (type === "emdata" || type === "em1data") pushEnergyStatus(type, id, status);
+  else pushPowerComponentStatus(type, type + ":" + id, id, status, seed === true);
+}
+
+function readComponentStatus(key, seed) {
+  let status = Shelly.getComponentStatus(key);
+  if (status) pushSingleStatusReading(key, status, seed);
+  status = null;
+}
+
+function seedFromKnownComponentStatuses() {
+  for (let p = 0; p < REPORT_PREFIXES.length; p++) {
+    for (let id = 0; id <= MAX_COMPONENT_ID; id++) {
+      readComponentStatus(REPORT_PREFIXES[p] + ":" + id, true);
     }
-    let em1dKey = "em1data:" + JSON.stringify(id);
-    let em1d = res[em1dKey];
-    if (em1d) {
-      let em1Key = "em1:" + JSON.stringify(id);
-      let entry = getOrCreateComp(em1Key, "em1", id);
-      if (entry && typeof em1d.total_act_energy === "number") entry.e = em1d.total_act_energy;
-    }
+  }
+  for (let id = 0; id <= MAX_COMPONENT_ID; id++) {
+    readComponentStatus("emdata:" + id, true);
+    readComponentStatus("em1data:" + id, true);
+  }
+}
+
+function collectTrackedComponentStatuses() {
+  for (let i = 0; i < compKeys.length; i++) {
+    let key = compKeys[i];
+    readComponentStatus(key, false);
+    let sepKey = null;
+    if (key.indexOf("em:") === 0) sepKey = "emdata:" + key.substring(3);
+    else if (key.indexOf("em1:") === 0) sepKey = "em1data:" + key.substring(4);
+    if (sepKey) readComponentStatus(sepKey, false);
   }
 }
 
@@ -659,21 +758,21 @@ function sendAllReports() {
     let entry = comps[compKeys[i]];
 
     if (entry.type === "em") {
-      let phases = ["a", "b", "c"];
+      let phases = PHASES;
       for (let j = 0; j < phases.length; j++) {
         let ph = entry[phases[j]];
         sendPostReport(entry.id, "em", phases[j], ph);
-        resetSample(ph.vs);
-        resetSample(ph.cs);
-        resetSample(ph.ps);
-        resetSample(ph.fs);
+        resetMetric(ph, "v");
+        resetMetric(ph, "c");
+        resetMetric(ph, "p");
+        resetMetric(ph, "f");
       }
     } else {
       sendPostReport(entry.id, entry.type, null, entry);
-      resetSample(entry.vs);
-      resetSample(entry.cs);
-      resetSample(entry.ps);
-      resetSample(entry.fs);
+      resetMetric(entry, "v");
+      resetMetric(entry, "c");
+      resetMetric(entry, "p");
+      resetMetric(entry, "f");
     }
   }
 }
@@ -710,17 +809,33 @@ function onReportStatusResponse(result, error_code, error_message) {
     setStatusPollDelay(STATUS_POLL_RETRY_SECS);
     print("GetStatus error:", error_code, error_message);
   }
+  // The full status object can be large on devices with many components. Drop
+  // callback references before creating any report payloads.
+  result = null;
+  error_message = null;
   completeReportWithCurrentSamples();
 }
 
 function startReportStatusPoll() {
   statusPollInFlight = true;
   totalStatusPolls++;
+  let pollFailed = false;
   try {
-    Shelly.call("Shelly.GetStatus", {}, onReportStatusResponse);
+    if (typeof Shelly.getComponentStatus !== "function") {
+      Shelly.call("Shelly.GetStatus", {}, onReportStatusResponse);
+      return;
+    }
+    // Read only tracked power components; avoid materializing full device status.
+    collectTrackedComponentStatuses();
   } catch (e) {
-    onReportStatusResponse(null, -1, e);
+    pollFailed = true;
+    failedStatusPolls++;
+    setStatusPollDelay(STATUS_POLL_RETRY_SECS);
+    print("Component status poll failed: " + e);
   }
+  statusPollInFlight = false;
+  if (!pollFailed) setStatusPollDelay(STATUS_POLL_INTERVAL_SECS);
+  completeReportWithCurrentSamples();
 }
 
 // Timer callback: use status events for normal sampling and poll only as a
@@ -750,53 +865,69 @@ function sendReport() {
   startReportStatusPoll();
 }
 
-// Seed accumulators with the one startup Shelly.GetStatus request. Subsequent
-// status reads are handled by onReportStatusResponse and are intentionally
-// infrequent fallback polls.
-function seedFromStatus(cb) {
+function finishStartup() {
+  printDiagnostics("startup");
+  print(
+    "Power monitor started: version=" + POWERMONITOR_SCRIPT_VERSION +
+      " interval=" + JSON.stringify(REPORT_INTERVAL) +
+      "s statusPoll=" + JSON.stringify(STATUS_POLL_INTERVAL_SECS) +
+      "s maxPending=" + JSON.stringify(MAX_PENDING_REPORTS),
+  );
+  scheduleNextReport();
+}
+
+function onSeedStatusResponse(result, error_code, error_message) {
+  if (error_code !== 0 || !result) {
+    failedStatusPolls++;
+    setStatusPollDelay(STATUS_POLL_RETRY_SECS);
+    print("seedFromStatus: GetStatus failed:", error_code, error_message);
+  } else {
+    try {
+      pushStatusReadings(result, true);
+      setStatusPollDelay(STATUS_POLL_INTERVAL_SECS);
+    } catch (e) {
+      failedStatusPolls++;
+      setStatusPollDelay(STATUS_POLL_RETRY_SECS);
+      print("seedFromStatus: response processing failed: " + e);
+    }
+  }
+  result = null;
+  error_message = null;
+  finishStartup();
+}
+
+// Seed accumulators with one startup status read. When the synchronous API is
+// available, query only the known component keys so a large full-device status
+// object is never materialized. Older firmware uses Shelly.GetStatus instead.
+function seedFromStatus() {
   totalStatusPolls++;
   try {
-    Shelly.call("Shelly.GetStatus", {}, function (result, error_code, error_message) {
-      if (error_code !== 0 || !result) {
-        failedStatusPolls++;
-        setStatusPollDelay(STATUS_POLL_RETRY_SECS);
-        print("seedFromStatus: GetStatus failed:", error_code, error_message);
-      } else {
-        try {
-          pushStatusReadings(result, true);
-          setStatusPollDelay(STATUS_POLL_INTERVAL_SECS);
-        } catch (e) {
-          failedStatusPolls++;
-          setStatusPollDelay(STATUS_POLL_RETRY_SECS);
-          print("seedFromStatus: response processing failed: " + e);
-        }
-      }
-      if (typeof cb === "function") cb();
-    });
+    if (typeof Shelly.getComponentStatus === "function") {
+      seedFromKnownComponentStatuses();
+      setStatusPollDelay(STATUS_POLL_INTERVAL_SECS);
+      finishStartup();
+      return;
+    }
+    Shelly.call("Shelly.GetStatus", {}, onSeedStatusResponse);
   } catch (e) {
     failedStatusPolls++;
     setStatusPollDelay(STATUS_POLL_RETRY_SECS);
     print("seedFromStatus: GetStatus invocation failed: " + e);
-    if (typeof cb === "function") cb();
+    finishStartup();
   }
 }
 
+function startSeedAfterSettings() {
+  seedFromStatus();
+}
+
 function startPowerMonitor() {
-  Shelly.addStatusHandler(onStatus);
+  if (powerMonitorStarted) return;
+  powerMonitorStarted = true;
+  statusHandlerHandle = Shelly.addStatusHandler(onStatus);
   // Startup work is deliberately serialized: URL, settings, then one status
   // seed. This prevents the old burst of seven concurrent RPC calls.
-  fetchReportSettingsFromKVS(function () {
-    seedFromStatus(function () {
-      printDiagnostics("startup");
-      print(
-        "Power monitor started: version=" + POWERMONITOR_SCRIPT_VERSION +
-          " interval=" + JSON.stringify(REPORT_INTERVAL) +
-          "s statusPoll=" + JSON.stringify(STATUS_POLL_INTERVAL_SECS) +
-          "s maxPending=" + JSON.stringify(MAX_PENDING_REPORTS),
-      );
-      scheduleNextReport();
-    }, true);
-  }, true);
+  fetchReportSettingsFromKVS(startSeedAfterSettings, true);
 }
 
 startPowerMonitor();
