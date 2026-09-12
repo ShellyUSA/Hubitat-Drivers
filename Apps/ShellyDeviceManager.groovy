@@ -259,7 +259,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.95"
+@Field static final String APP_VERSION = "1.0.97"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -508,6 +508,8 @@
 @Field static final List<String> MANAGED_SCRIPT_NAMES = [
     'switchstatus',
     'powermonitoring',
+    'powermonitoring_pm',
+    'powermonitoring_em',
     'coverstatus',
     'lightstatus',
     'HubitatBLEHelper',
@@ -4404,6 +4406,23 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
     // Build the script queue as a list of file names
     List<String> scriptQueue = requiredScripts.toList()
 
+    // A device must run exactly one power-monitoring collector. The split
+    // collectors use different script slots, so an older generic collector
+    // would otherwise remain active beside the selected PM/EM script.
+    String selectedPowerScript = scriptQueue.find { String name ->
+        String baseName = stripJsExtension(name)
+        baseName == 'powermonitoring_pm' || baseName == 'powermonitoring_em'
+    }
+    if (selectedPowerScript) {
+        String selectedPowerName = stripJsExtension(selectedPowerScript)
+        if (!removeStalePowerMonitoringScripts(ipAddress, device.displayName.toString(), installedScripts, selectedPowerName)) {
+            logError("Cannot install ${selectedPowerScript} on ${ipAddress}: an older power-monitoring script could not be removed")
+            appendLog('error', "Could not remove the old power-monitoring script from ${device.displayName}")
+            failProvisioningOperation(ipAddress, operationId, 'Provisioning incomplete: old power script remains')
+            return
+        }
+    }
+
     Map context = [
         ipAddress: ipAddress,
         deviceDisplayName: device.displayName.toString(),
@@ -4421,10 +4440,51 @@ private void installRequiredScriptsForIp(String ipAddress, Boolean reconcileActi
     installNextScript(context)
 }
 
+/** Removes every managed power collector except the one being installed. */
+private Boolean removeStalePowerMonitoringScripts(String ipAddress, String deviceName,
+                                                   List<Map> installedScripts, String selectedName) {
+    Set<String> powerScriptNames = ['powermonitoring', 'powermonitoring_pm', 'powermonitoring_em'] as Set<String>
+    String uri = "http://${ipAddress}/rpc"
+    Boolean success = true
+
+    installedScripts.each { Map script ->
+        String name = stripJsExtension((script.name ?: '').toString())
+        Integer scriptId = script.id as Integer
+        if (!powerScriptNames.contains(name) || name == selectedName) { return }
+        if (scriptId == null) {
+            logWarn("Cannot remove stale power-monitoring script '${name}' from ${deviceName}: missing script id")
+            success = false
+            return
+        }
+        try {
+            if (script.running as Boolean) {
+                LinkedHashMap stopResult = postCommandSync(scriptStopCommand(scriptId), uri)
+                if (stopResult?.error) {
+                    logWarn("Could not stop stale power-monitoring script '${name}' (id: ${scriptId}) on ${ipAddress}: ${stopResult.error}")
+                    success = false
+                    return
+                }
+            }
+            LinkedHashMap deleteResult = postCommandSync(scriptDeleteCommand(scriptId), uri)
+            if (deleteResult?.error) {
+                logWarn("Could not remove stale power-monitoring script '${name}' (id: ${scriptId}) on ${ipAddress}: ${deleteResult.error}")
+                success = false
+            } else {
+                logInfo("Removed stale power-monitoring script '${name}' (id: ${scriptId}) from ${deviceName}")
+            }
+        } catch (Exception ex) {
+            logWarn("Could not remove stale power-monitoring script '${name}' from ${deviceName}: ${ex.message}")
+            success = false
+        }
+    }
+    return success
+}
+
 /**
  * Processes the next script in the installation queue.
- * Downloads script code from GitHub, deletes/recreates any existing managed
- * script with the same name, then starts an async chunk upload. When the queue
+ * Downloads script code from GitHub, reuses an existing managed script slot when
+ * possible, then starts an async chunk upload. Reusing the slot preserves the
+ * script's Script.storage values across source updates and restarts. When the queue
  * is exhausted, calls
  * {@link #finalizeScriptInstallation}.
  *
@@ -4466,10 +4526,8 @@ void installNextScript(Map data) {
         return
     }
 
-    // Check if script already exists on device. Reinit intentionally deletes
-    // and recreates an existing managed script instead of reusing its slot.
-    // This guarantees that stale script metadata/code is removed before the
-    // newly downloaded source is uploaded.
+    // Check if script already exists on device. Stop it before replacing the
+    // source, but retain the script slot so Script.storage survives updates.
     Map existingScript = installedScripts.find { (it.name ?: '') == scriptName }
     Boolean isUpdate = (existingScript != null)
 
@@ -4481,8 +4539,8 @@ void installNextScript(Map data) {
                 throw new IllegalStateException("Existing script '${scriptName}' has no valid id")
             }
 
-            logInfo("Replacing script '${scriptName}' (id: ${existingScriptId}) on ${ipAddress}...")
-            appendLog('info', "Replacing ${scriptName} on ${deviceDisplayName}...")
+            logInfo("Updating script '${scriptName}' in place (id: ${existingScriptId}) on ${ipAddress}...")
+            appendLog('info', "Updating ${scriptName} on ${deviceDisplayName}...")
 
             LinkedHashMap stopCmd = scriptStopCommand(existingScriptId)
             LinkedHashMap stopResult = postCommandSync(stopCmd, uri)
@@ -4490,31 +4548,21 @@ void installNextScript(Map data) {
                 throw new IllegalStateException("Script.Stop failed for '${scriptName}': ${stopResult.error}")
             }
 
-            LinkedHashMap deleteCmd = scriptDeleteCommand(existingScriptId)
-            LinkedHashMap deleteResult = postCommandSync(deleteCmd, uri)
-            if (deleteResult?.error) {
-                throw new IllegalStateException("Script.Delete failed for '${scriptName}': ${deleteResult.error}")
-            }
-            logInfo("Removed existing script '${scriptName}' (id: ${existingScriptId}) from ${ipAddress}")
+            scriptId = existingScriptId
         } else {
             logInfo("Installing script '${scriptName}' on ${ipAddress}...")
             appendLog('info', "Installing ${scriptName} on ${deviceDisplayName}...")
+            LinkedHashMap createCmd = scriptCreateCommand(scriptName)
+            LinkedHashMap createResult = postCommandSync(createCmd, uri)
+            if (createResult == null || createResult.error) {
+                throw new IllegalStateException("Script.Create failed for '${scriptName}': ${createResult?.error ?: 'no response'}")
+            }
+            scriptId = ((createResult?.result as Map)?.id ?: createResult?.id) as Integer
+            if (scriptId == null) {
+                throw new IllegalStateException("Script.Create returned no id for '${scriptName}'")
+            }
+            logInfo("Created script '${scriptName}' (id: ${scriptId}) on ${ipAddress}")
         }
-
-        // Always create a fresh script slot. For updates this follows the
-        // successful stop/delete sequence above; for new scripts this is the
-        // initial create operation.
-        LinkedHashMap createCmd = scriptCreateCommand(scriptName)
-        LinkedHashMap createResult = postCommandSync(createCmd, uri)
-        if (createResult == null || createResult.error) {
-            throw new IllegalStateException("Script.Create failed for '${scriptName}': ${createResult?.error ?: 'no response'}")
-        }
-        scriptId = ((createResult?.result as Map)?.id ?: createResult?.id) as Integer
-
-        if (scriptId == null) {
-            throw new IllegalStateException("Script.Create returned no id for '${scriptName}'")
-        }
-        logInfo("Created fresh script '${scriptName}' (id: ${scriptId}) on ${ipAddress}")
 
         // Persist script code in atomicState so scheduled chunks can retrieve it.
         String codeStateKey = "scriptUpload_${scriptId}_${now()}".toString()
@@ -5972,7 +6020,7 @@ private List<Map> getGen1SensorActionUrls(String typeCode) {
  * managed by Hubitat ('hubitat_sdm_' or legacy 'hubitat.' prefix) that are
  * not in the required actions list.
  * This cleans up webhooks from old configurations (e.g., power monitoring
- * webhooks when the device now uses powermonitoring.js script).
+ * webhooks when the device now uses a power-monitoring collector script).
  *
  * @param ipAddress The IP address of the Shelly device
  * @param device The Hubitat device object for logging
@@ -7375,12 +7423,12 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
         }
     }
 
-    // Check if device uses powermonitoring.js script (if so, don't create power webhooks)
+    // Check if device uses a power-monitoring collector (if so, don't create power webhooks)
     Set<String> requiredScripts = suppliedRequiredScripts != null ? suppliedRequiredScripts : getRequiredScriptsForDevice(device)
     Boolean usesPowerScript = requiredScripts.any { it.toLowerCase().contains('powermonitoring') }
     Boolean usesPresenceScript = deviceComponentTypes.contains('presencezone')
     if (usesPowerScript) {
-        logDebug("Device uses powermonitoring.js script - will skip power webhook events")
+        logDebug("Device uses a power-monitoring collector - will skip power webhook events")
     }
     if (usesPresenceScript) {
         logDebug("Device uses presencestatus.js script - will skip presence/illuminance webhook events")
@@ -7426,9 +7474,9 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
                 return
             }
 
-            // Filter 2: Skip power monitoring events if device uses powermonitoring.js script
+            // Filter 2: Skip power monitoring events if a collector script is active
             if (usesPowerScript && (event.contains('active_power_change') || event.contains('active_power_measurement'))) {
-                logDebug("Skipping power event '${event}' - device uses powermonitoring.js script")
+                logDebug("Skipping power event '${event}' - power-monitoring collector is active")
                 return
             }
 
@@ -7548,7 +7596,8 @@ private Set<String> getExpectedScriptNamesForStatus(def device, String ipAddress
  * power monitoring fields to include PM-related capability scripts.
  *
  * @param device The child device to check
- * @return Set of required script filenames (e.g., ["switchstatus.js", "powermonitoring.js"])
+ * @return Set of required script filenames, including the PM or EM monitor
+ * script matching the device's detected meter components.
  */
 Set<String> getRequiredScriptsForDevice(def device) {
     String ip = device.getDataValue('ipAddress')
@@ -7577,11 +7626,14 @@ Set<String> getRequiredScriptsForDevice(def device) {
 private Set<String> getRequiredScriptsForDeviceStatus(def device, String ip, Map deviceStatus, List<Map> capabilities) {
     Set<String> requiredScripts = [] as Set
     if (!deviceStatus || !capabilities) { return requiredScripts }
+    Boolean hasEmMonitor = false
+    Boolean hasPmMonitor = false
 
     // Walk status keys to find components and detect power monitoring
     deviceStatus.each { k, v ->
         String key = k.toString().toLowerCase()
         String baseType = key.contains(':') ? key.split(':')[0] : key
+        if (baseType in ['em', 'em1', 'emdata', 'em1data']) { hasEmMonitor = true }
 
         // Find matching capability by shellyComponent field
         Map capability = capabilities.find { cap -> cap.shellyComponent == baseType }
@@ -7604,8 +7656,18 @@ private Set<String> getRequiredScriptsForDeviceStatus(def device, String ip, Map
                         requiredScripts.addAll(pmCap.requiredScripts as List<String>)
                     }
                 }
+                hasPmMonitor = true
             }
         }
+    }
+
+    requiredScripts.remove('powermonitoring.js')
+    requiredScripts.remove('powermonitoring_pm.js')
+    requiredScripts.remove('powermonitoring_em.js')
+    if (hasEmMonitor) {
+        requiredScripts << 'powermonitoring_em.js'
+    } else if (hasPmMonitor) {
+        requiredScripts << 'powermonitoring_pm.js'
     }
 
     // BLE gateway is app-managed too. Include it in the normal provisioning
