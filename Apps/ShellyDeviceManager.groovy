@@ -259,7 +259,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.97"
+@Field static final String APP_VERSION = "1.0.98"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -14286,10 +14286,61 @@ void componentWriteKvsToDevice(def parentDevice, String key, Object value) {
     String uri = "http://${ipAddress}/rpc"
     LinkedHashMap command = kvsSetCommand(key, value)
     LinkedHashMap response = postCommandSync(command, uri)
-    if (response?.error) {
-        logError("Failed to write KVS key '${key}' on ${ipAddress}: ${response.error}")
+    if (response == null || response.error) {
+        logError("Failed to write KVS key '${key}' on ${ipAddress}: ${response?.error ?: 'no response'}")
     } else {
         logDebug("Successfully wrote KVS '${key}'=${value} on ${ipAddress}")
+        // All PM/EM preference writers send the six settings in order, with
+        // the frequency threshold last. Restart only after that final write so
+        // the collector always reloads a complete configuration.
+        if (key == 'hubitat_sdm_pm_th_f') {
+            restartPowerMonitoringScripts(ipAddress)
+        }
+    }
+}
+
+/**
+ * Restarts active power-monitoring collectors after their KVS preferences are
+ * committed. The existing script slot is retained, so Script.storage survives
+ * the restart and the collector reloads the new KVS values at startup.
+ */
+private void restartPowerMonitoringScripts(String ipAddress) {
+    List<Map> installedScripts = listDeviceScripts(ipAddress)
+    if (installedScripts == null) {
+        logWarn("Could not check power-monitoring scripts for restart on ${ipAddress}")
+        return
+    }
+
+    String uri = "http://${ipAddress}/rpc"
+    Set<String> collectorNames = ['powermonitoring', 'powermonitoring_pm', 'powermonitoring_em'] as Set<String>
+    List<Map> activeCollectors = installedScripts.findAll { Map script ->
+        String name = stripJsExtension((script.name ?: '').toString())
+        collectorNames.contains(name) && (script.running as Boolean)
+    }
+
+    activeCollectors.each { Map script ->
+        String name = stripJsExtension((script.name ?: '').toString())
+        Integer scriptId = script.id as Integer
+        if (scriptId == null) {
+            logWarn("Cannot restart power-monitoring script '${name}' on ${ipAddress}: missing script id")
+            return
+        }
+        try {
+            logInfo("Restarting power-monitoring script '${name}' (id: ${scriptId}) on ${ipAddress} after preference update")
+            LinkedHashMap stopResult = postCommandSync(scriptStopCommand(scriptId), uri)
+            if (stopResult == null || stopResult.error) {
+                logWarn("Script.Stop failed for '${name}' on ${ipAddress}: ${stopResult?.error ?: 'no response'}")
+                return
+            }
+            LinkedHashMap startResult = postCommandSync(scriptStartCommand(scriptId), uri)
+            if (startResult == null || startResult.error) {
+                logWarn("Script.Start failed for '${name}' on ${ipAddress}: ${startResult?.error ?: 'no response'}")
+                return
+            }
+            logInfo("Restarted power-monitoring script '${name}' on ${ipAddress}; new KVS preferences will be loaded")
+        } catch (Exception ex) {
+            logWarn("Could not restart power-monitoring script '${name}' on ${ipAddress}: ${ex.message}")
+        }
     }
 }
 
