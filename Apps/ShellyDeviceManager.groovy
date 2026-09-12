@@ -7889,6 +7889,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     unscheduleHelper('processInstalledDeviceReachability')
     unscheduleHelper('discoveryReachabilityCallback')
     unscheduleHelper('discoveryShellyReachabilityCallback')
+    unscheduleHelper('emitPerformanceDiagnosticSummary')
     atomicState.remove('asyncFetchQueue')
 
     // IP subnet scan state reset
@@ -8023,7 +8024,6 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     // only for created children with presence enabled; persistence starts only
     // when an active gateway or volatile data needs a checkpoint.
     reconcileBleSchedules()
-    runInHelper(60L, 'emitPerformanceDiagnosticSummary', [overwrite: true])
     state.settingsLifecycleSnapshot = buildSettingsLifecycleSnapshot()
 }
 
@@ -8397,34 +8397,9 @@ private String deviceRequestCoordinatorSummary() {
         "maxObservedQueue=${(performanceMetricSnapshot().coordinatorMaxQueueDepth ?: 0)}"
 }
 
-/** Emits compact diagnostics on a non-blocking interval while debugging. */
+/** Consumes callbacks scheduled by versions that emitted performance reports. */
 void emitPerformanceDiagnosticSummary() {
-    if (!shouldLogOverall('debug')) { return }
-    Map metrics = performanceMetricSnapshot()
-    logDebug("Performance summary: durableWrites=[${durableStateWriteMetricSummary()}], " +
-        "pageLoads=${metrics.pageLoads ?: 0},discoveryStarts=${metrics.discoveryStarts ?: 0}," +
-        "rpcAsync=${metrics.rpcAsyncSubmitted ?: 0},rpcSync=${metrics.rpcSyncSubmitted ?: 0}," +
-        "httpAsyncGet=${metrics.httpAsyncGetSubmitted ?: 0},httpAsyncPost=${metrics.httpAsyncPostSubmitted ?: 0}," +
-        "stateWrites=${metrics.stateMapWriteAttempts ?: 0}/${metrics.stateMapWritesChanged ?: 0}," +
-        "stateHelpers=${metrics.stateHelperWrites ?: 0}/${metrics.stateHelperRemoves ?: 0}," +
-        "summaryCacheHits=${metrics.summaryStatusCacheHits ?: 0}, " +
-        "summaryCacheMisses=${metrics.summaryStatusCacheMisses ?: 0}, " +
-        "volatileObservations=${deviceStatusVolatile.size()}, " +
-        "coordinator=[${deviceRequestCoordinatorSummary()}], " +
-        "coalesced=${metrics.coordinatorDuplicatesCoalesced ?: 0}," +
-        "drops=${metrics.coordinatorQueueDrops ?: 0}," +
-        "timeouts=${metrics.deviceRequestTimeouts ?: 0}," +
-        "bySourceLatency=[${requestDimensionSummary(deviceRequestMetricsBySource, 'latency')}]," +
-        "bySourceQueue=[${requestDimensionSummary(deviceRequestMetricsBySource, 'queue')}]," +
-        "byIpLatency=[${requestDimensionSummary(deviceRequestMetricsByIp, 'latency')}]," +
-        "byIpQueue=[${requestDimensionSummary(deviceRequestMetricsByIp, 'queue')}]," +
-        "queueWait=[${performanceLatencySummary(metrics, 'deviceRequestQueueWait')}]," +
-        "requestLatency=[${performanceLatencySummary(metrics, 'deviceRequestLatency')}]," +
-        "configTableSSR=${metrics.configTableSSR ?: 0}, " +
-        "ssrSkippedInactive=${metrics.configTableSSRSkippedInactive ?: 0}")
-    if (shouldLogOverall('debug')) {
-        runInHelper(60L, 'emitPerformanceDiagnosticSummary', [overwrite: true])
-    }
+    unscheduleHelper('emitPerformanceDiagnosticSummary')
 }
 
 /**
@@ -8474,7 +8449,6 @@ void startDiscovery(Boolean resetFound = false) {
     unscheduleHelper('scanNextIpAddress')
     ipScanRunningVolatile = false
     runInHelper(getDiscoveryDurationSeconds() as Long, 'stopDiscovery')
-    runInHelper(60L, 'emitPerformanceDiagnosticSummary', [overwrite: true])
     runInHelper(5L, 'updateDiscoveryTimer')
     // Give the hub 10 seconds after listener registration to collect mDNS responses
     runInHelper(10L, 'processMdnsDiscovery')
@@ -8602,20 +8576,6 @@ void stopDiscovery() {
 
     // Device summary RPCs run only after identity discovery has stopped.
     runInMillisHelper(500L, 'queueStaleTableSummaryRefreshes')
-
-    Map metrics = discoveryPerformanceMetrics ?: [:]
-    Long startedAt = metrics.startedAt as Long
-    if (startedAt != null) {
-        logInfo("Discovery performance: elapsed=${(now() - startedAt) / 1000}s " +
-            "mDNS=${metrics.mdnsPasses ?: 0}, helper=${metrics.helperPasses ?: 0}, " +
-            "deviceHttp=${metrics.deviceHttpRequests ?: 0}, " +
-            "maxPendingAsync=${metrics.maxPendingAsync ?: 0}, " +
-            "stateWrites=${metrics.identityStateWrites ?: 0}, " +
-            "summaryCacheHits=${metrics.summaryStatusCacheHits ?: 0}, " +
-            "summaryCacheMisses=${metrics.summaryStatusCacheMisses ?: 0}, " +
-            "configTableSSR=${metrics.configTableSSR ?: 0}, " +
-            "durableWrites=[${durableStateWriteMetricSummary()}]")
-    }
 
     // Do NOT unregister mDNS listeners - keep them active so data accumulates
     logTrace('Discovery stopped (mDNS listeners remain active)')
@@ -22518,6 +22478,7 @@ void componentParse(Object parentDevice, String description) {
         if (msg?.status != null) { return }
 
         if (msg?.body) {
+            logTrace("componentParse: incoming POST body=${msg.body}")
             handlePostWebhook(parentDni, msg)
         } else {
             handleGetWebhook(parentDni, msg)
@@ -22539,12 +22500,16 @@ private void handlePostWebhook(String parentDni, Map msg) {
     try {
         Map json = slurper.parseText(msg.body.toString()) as Map
         String dst = json?.dst?.toString()
+        logTrace("componentParse: parsed POST JSON=${msg.body}")
         if (!dst) { logDebug('componentParse: POST webhook has no dst in body'); return }
 
         Map params = [:]
         json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
 
         logDebug("componentParse: POST webhook dst=${dst}, cid=${params.cid}")
+        if (dst == 'powermon') {
+            logTrace("componentParse: power-monitor params=${params}")
+        }
         processWebhookParams(parentDni, params)
     } catch (Exception e) {
         logDebug("componentParse: POST webhook parse error: ${e.message}")
