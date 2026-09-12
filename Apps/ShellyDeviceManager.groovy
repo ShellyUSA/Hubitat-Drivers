@@ -4071,7 +4071,16 @@ void reinitializeDevice(String ipAddress, Boolean refreshCapabilities = true, St
     // An explicit reinit must rediscover the physical device. Creation passes
     // false because it has already completed the full capability fetch and can
     // reuse that result for provisioning.
+    Map knownDevice = atomicState.discoveredShellys?.get(ipAddress) as Map
+    Integer rpcPort = (knownDevice?.port ?: 80) as Integer
+    String rpcUri = rpcPort == 80 ? "http://${ipAddress}/rpc" : "http://${ipAddress}:${rpcPort}/rpc"
     if (refreshCapabilities) {
+        // A user-requested reinit is an explicit recovery attempt. Clear only
+        // this endpoint's in-memory digest session/cooldown so a previous bad
+        // password or stale nonce cannot block the fresh GetDeviceInfo probe
+        // from being followed by the authenticated discovery calls.
+        clearAuthSession(rpcUri)
+        logDebug("Reset authentication session for ${ipAddress} before user reinit")
         invalidateCapabilityCache(ipAddress, 'user reinit')
     }
 
@@ -4082,7 +4091,11 @@ void reinitializeDevice(String ipAddress, Boolean refreshCapabilities = true, St
     // or the install path does not already have a fresh capability cache.
     Map cachedDevice = atomicState.discoveredShellys?.get(ipAddress) as Map
     if (refreshCapabilities || !hasFreshCapabilityCache(cachedDevice)) {
-        fetchAndStoreDeviceInfo(ipAddress)
+        Boolean fetched = fetchAndStoreDeviceInfo(ipAddress)
+        if (!fetched && deviceAuthBlocked(ipAddress)) {
+            String authStatus = knownDeviceAuthValue(ipAddress, 'authStatus')?.toString() ?: 'required'
+            throw authFailure('PROVISIONING_BLOCKED', rpcUri, "authentication status: ${authStatus}")
+        }
     } else {
         logDebug("reinitializeDevice: reusing fresh capability cache for ${ipAddress}")
     }
@@ -15557,7 +15570,9 @@ private LinkedHashMap postCommandSyncTransport(LinkedHashMap command, String uri
       throw authFailure('CHALLENGE_INVALID', targetUri)
     }
     try {
-      requestCommand = prepareRpcCommand(command, targetUri)
+      // GetDeviceInfo is normally exempt from auth, but if a firmware build
+      // challenges it, the retry must include the captured digest session.
+      requestCommand = prepareRpcCommand(command, targetUri, true)
       params.put('body', requestCommand)
       Map retryResponse = httpPostResponseHelper(params)
       if ((retryResponse.get('status') as Integer) == 200) {
@@ -15568,7 +15583,35 @@ private LinkedHashMap postCommandSyncTransport(LinkedHashMap command, String uri
     } catch(HttpResponseException ex2) {
       Integer retryStatus = httpResponseExceptionStatusHelper(ex2)
       if (retryStatus == 401) {
-        markAuthFailure(targetUri, 'invalid_credentials', 'Second authenticated request returned 401')
+        // Some Gen4 firmware accepts the RPC auth object only with the
+        // transport-independent dummy_method:dummy_uri HA2 calculation.
+        // The first authenticated attempt used the HTTP POST:/rpc form from
+        // the current HTTP documentation; retry once using the RPC form
+        // before reporting bad credentials.
+        String retryAuthHeader = digestHeaderHelper(ex2.getResponse())
+        if (retryAuthHeader) { captureDigestChallenge(targetUri, retryAuthHeader) }
+        Map session = authMaps[authSessionKey(targetUri)] as Map
+        if (session?.nonceMode?.toString() == 'modern' &&
+            session?.httpHa2Mode?.toString() != 'dummy') {
+          session.httpHa2Mode = 'dummy'
+          session.nextNc = 1
+          authMaps[authSessionKey(targetUri)] = session as LinkedHashMap
+          try {
+            requestCommand = prepareRpcCommand(command, targetUri, true)
+            params.put('body', requestCommand)
+            logTrace("RPC auth compatibility retry for ${targetUri}: using dummy_method:dummy_uri HA2")
+            Map compatibilityResponse = httpPostResponseHelper(params)
+            if ((compatibilityResponse.get('status') as Integer) == 200) {
+              markAuthRequestSuccess(targetUri, true)
+              return compatibilityResponse.get('data') as LinkedHashMap
+            }
+            return compatibilityResponse.get('data') as LinkedHashMap
+          } catch(HttpResponseException ex3) {
+            Integer compatibilityStatus = httpResponseExceptionStatusHelper(ex3)
+            if (compatibilityStatus != 401) { throw ex3 }
+          }
+        }
+        markAuthFailure(targetUri, 'invalid_credentials', 'Authenticated request returned 401')
         logError("Auth failed for ${authDeviceIp(targetUri)} (401). Double check the device password.")
         throw authFailure('INVALID_CREDENTIALS', targetUri)
       }
@@ -15805,7 +15848,7 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
       markAuthFailure(targetUri, 'challenge_invalid', 'Digest challenge was missing realm or nonce')
     } else if (data?.attempt == 1) {
       try {
-        LinkedHashMap requestCommand = prepareRpcCommand(data?.command as LinkedHashMap, targetUri)
+        LinkedHashMap requestCommand = prepareRpcCommand(data?.command as LinkedHashMap, targetUri, true)
         Map retryParams = new LinkedHashMap(data.params as Map)
         retryParams.body = requestCommand
         Map retryData = new LinkedHashMap(data ?: [:])
@@ -15820,6 +15863,9 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
       }
     } else {
       Map session = authMaps[authSessionKey(targetUri)] as Map
+      String compatibilityAuthHeader = digestHeaderFromResponseHelper(response)
+      if (compatibilityAuthHeader) { captureDigestChallenge(targetUri, compatibilityAuthHeader) }
+      session = authMaps[authSessionKey(targetUri)] as Map
       if (data?.attempt == 2 && session?.nonceMode?.toString() == 'modern' &&
           session?.httpHa2Mode?.toString() != 'dummy') {
         // A few Gen4 firmware builds emit an opaque nonce but verify the RPC
@@ -15828,7 +15874,7 @@ void postCommandAsyncCallback(AsyncResponse response, Map data = null) {
         session.nextNc = 1
         authMaps[authSessionKey(targetUri)] = session as LinkedHashMap
         try {
-          LinkedHashMap requestCommand = prepareRpcCommand(data?.command as LinkedHashMap, targetUri)
+          LinkedHashMap requestCommand = prepareRpcCommand(data?.command as LinkedHashMap, targetUri, true)
           Map retryParams = new LinkedHashMap(data.params as Map)
           retryParams.body = requestCommand
           Map retryData = new LinkedHashMap(data ?: [:])
@@ -18415,12 +18461,12 @@ private Boolean authCooldownActive(String uri) {
   return retryNotBefore != null && now() < retryNotBefore
 }
 
-private LinkedHashMap prepareRpcCommand(LinkedHashMap command, String uri) {
+private LinkedHashMap prepareRpcCommand(LinkedHashMap command, String uri, Boolean forceAuth = false) {
   LinkedHashMap prepared = new LinkedHashMap(command ?: [:])
   // Discard stale/manual auth objects from older code paths. The only valid
   // credential source is the session belonging to this request's endpoint.
   prepared.remove('auth')
-  if (isAuthExemptRpcCommand(prepared)) { return prepared }
+  if (!forceAuth && isAuthExemptRpcCommand(prepared)) { return prepared }
   if (authCooldownActive(uri)) {
     throw new IllegalStateException("${AUTH_FAILURE_PREFIX}COOLDOWN: authentication retry is paused for ${authDeviceIp(uri)}")
   }
