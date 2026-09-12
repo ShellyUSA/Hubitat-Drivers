@@ -54,13 +54,95 @@ let DEVICE_CACHE_TTL_MS = 30 * 60 * 1000;
 // === Concurrency control ===
 let httpInFlight = false;    // Exactly one HTTP.POST may be active at a time
 let HTTP_TIMEOUT_SECONDS = 10;
-let pendingBatch = [];      // Serialized reports, never advertisement/decoder objects
-let pendingBytes = 0;
+// Each pending report occupies one storage item, so no queue blob is rebuilt
+// or split across values. The queue remains bounded by the item count below.
+let BLE_QUEUE_KEY_PREFIX = "bleq";
+let BLE_QUEUE_HEAD_KEY = "bleqh";
+let BLE_QUEUE_COUNT_KEY = "bleqc";
 let MAX_PENDING = 8;
-let MAX_PENDING_BYTES = 2048;
+let MAX_PENDING_BYTES = 1024;
 let MAX_REPORT_BYTES = 768;
 let MAX_POST_BYTES = 1024;   // Includes envelope and commas
 let droppedReports = 0;
+
+function queueStorageAvailable() {
+  return typeof Script !== "undefined" && Script.storage &&
+    typeof Script.storage.getItem === "function" &&
+    typeof Script.storage.setItem === "function" &&
+    typeof Script.storage.removeItem === "function";
+}
+
+function pendingReportCount() {
+  if (!queueStorageAvailable()) return 0;
+  let rawCount = Script.storage.getItem(BLE_QUEUE_COUNT_KEY);
+  if (rawCount !== null) {
+    let count = parseInt(rawCount, 10);
+    return count >= 0 && count <= MAX_PENDING ? count : 0;
+  }
+  // Migrate the previous contiguous bleq0..bleqN layout once.
+  let count = 0;
+  for (let i = 0; i < MAX_PENDING; i++) {
+    if (Script.storage.getItem(BLE_QUEUE_KEY_PREFIX + i) === null) break;
+    count++;
+  }
+  writeQueueMeta(0, count);
+  return count;
+}
+
+function pendingQueueHead() {
+  if (!queueStorageAvailable()) return 0;
+  let rawHead = Script.storage.getItem(BLE_QUEUE_HEAD_KEY);
+  let head = rawHead === null ? 0 : parseInt(rawHead, 10);
+  return head >= 0 && head < MAX_PENDING ? head : 0;
+}
+
+function writeQueueMeta(head, count) {
+  if (!queueStorageAvailable()) return false;
+  try {
+    Script.storage.setItem(BLE_QUEUE_HEAD_KEY, String(head));
+    Script.storage.setItem(BLE_QUEUE_COUNT_KEY, String(count));
+    return true;
+  } catch (e) {
+    print("BLE pending queue metadata failed: " + e);
+    return false;
+  }
+}
+
+function pendingReportBytes() {
+  if (!queueStorageAvailable()) return 0;
+  let head = pendingQueueHead();
+  let count = pendingReportCount();
+  let bytes = 0;
+  for (let i = 0; i < count; i++) {
+    let slot = (head + i) % MAX_PENDING;
+    let report = Script.storage.getItem(BLE_QUEUE_KEY_PREFIX + slot);
+    if (report === null) continue;
+    bytes = bytes + report.length;
+  }
+  return bytes;
+}
+
+function dropOldestPendingReport() {
+  if (!queueStorageAvailable()) return false;
+  let count = pendingReportCount();
+  if (count === 0) return false;
+  let head = pendingQueueHead();
+  try {
+    Script.storage.removeItem(BLE_QUEUE_KEY_PREFIX + head);
+    return writeQueueMeta((head + 1) % MAX_PENDING, count - 1);
+  } catch (e) {
+    print("BLE pending queue storage failed: " + e);
+    return false;
+  }
+}
+
+function readPendingReport(index) {
+  if (!queueStorageAvailable() || index < 0 || index >= MAX_PENDING) return null;
+  let count = pendingReportCount();
+  if (index >= count) return null;
+  let slot = (pendingQueueHead() + index) % MAX_PENDING;
+  return Script.storage.getItem(BLE_QUEUE_KEY_PREFIX + slot);
+}
 
 // Only completion of the native RPC frees the slot. A JS watchdog cannot
 // cancel HTTP.POST and must never authorize an overlapping request.
@@ -291,26 +373,25 @@ function isNewPid(mac, pid, now) {
 }
 
 // === HTTP POST with concurrency control ===
-function dropOldestPendingReport() {
-  pendingBytes = pendingBytes - pendingBatch[0].length;
-  for (let i = 1; i < pendingBatch.length; i++) {
-    pendingBatch[i - 1] = pendingBatch[i];
-  }
-  pendingBatch.pop();
-}
-
 // Called only by one repeating timer, outside BLE and HTTP callback stacks.
 function drainPendingBatch() {
-  if (httpInFlight || pendingBatch.length === 0) return;
+  if (httpInFlight) return;
+  if (pendingReportCount() === 0) return;
   let body = '{"dst":"ble","messages":[';
   let count = 0;
-  while (pendingBatch.length > 0 &&
-         body.length + pendingBatch[0].length + 3 <= MAX_POST_BYTES) {
+  while (count < MAX_PENDING) {
+    let report = readPendingReport(count);
+    if (report === null || body.length + report.length + 3 > MAX_POST_BYTES) break;
     if (count > 0) body = body + ",";
-    body = body + pendingBatch[0];
-    dropOldestPendingReport();
+    body = body + report;
     count++;
   }
+  let head = pendingQueueHead();
+  let queued = pendingReportCount();
+  for (let i = 0; i < count; i++) {
+    Script.storage.removeItem(BLE_QUEUE_KEY_PREFIX + ((head + i) % MAX_PENDING));
+  }
+  writeQueueMeta((head + count) % MAX_PENDING, queued - count);
   body = body + "]}";
   httpInFlight = true;
   try {
@@ -334,13 +415,25 @@ function sendBleReport(data) {
     droppedReports++;
     return;
   }
-  while (pendingBatch.length >= MAX_PENDING ||
-         pendingBytes + report.length > MAX_PENDING_BYTES) {
-    dropOldestPendingReport();
+  if (!queueStorageAvailable()) {
+    print("BLE report dropped: Script.storage unavailable");
+    droppedReports++;
+    return;
+  }
+  while (pendingReportCount() >= MAX_PENDING ||
+         pendingReportBytes() + report.length > MAX_PENDING_BYTES) {
+    if (pendingReportCount() === 0) break;
+    if (!dropOldestPendingReport()) break;
     droppedReports++;
   }
-  pendingBatch.push(report);
-  pendingBytes = pendingBytes + report.length;
+  let slot = (pendingQueueHead() + pendingReportCount()) % MAX_PENDING;
+  try {
+    Script.storage.setItem(BLE_QUEUE_KEY_PREFIX + slot, report);
+    writeQueueMeta(pendingQueueHead(), pendingReportCount() + 1);
+  } catch (e) {
+    droppedReports++;
+    print("BLE report dropped: pending queue storage failed: " + e);
+  }
 }
 
 // === BLE Scanner Callback ===

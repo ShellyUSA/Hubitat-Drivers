@@ -16,6 +16,7 @@ function runtime(code = source, legacy = false) {
   let scan;
   let options;
   let fail = false;
+  const storage = new Map();
   const scanner = {
     SCAN_START: 0, SCAN_STOP: 1, SCAN_RESULT: 2, INFINITE_SCAN: -1,
     isRunning: () => true,
@@ -32,6 +33,11 @@ function runtime(code = source, legacy = false) {
       clear: id => { timers[id - 1] = null; },
     },
     BLE: { Scanner: scanner, GAP: { parseManufacturerDataByVendor: data => data } },
+    Script: { storage: {
+      getItem: key => storage.has(key) ? storage.get(key) : null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: key => storage.delete(key),
+    } },
     Shelly: {
       getUptimeMs: () => now,
       getComponentConfig: () => ({ rpc: { enable: true } }),
@@ -124,9 +130,9 @@ for (let i = 0; i < 10000; i++) {
 assert.equal(r.calls.length, 1, "No overlapping requests, even without callback");
 assert.equal(r.evaluate("deviceCacheKeys.length"), 32);
 assert.equal(r.evaluate("Object.keys(deviceCache).length"), 32);
-assert.equal(r.evaluate("pendingBatch.length"), 8);
-assert.ok(r.evaluate("pendingBytes <= MAX_PENDING_BYTES"));
-assert.ok(r.evaluate("pendingBatch.every(function(x) { return typeof x === 'string'; })"));
+assert.equal(r.evaluate("pendingReportCount()"), 8);
+assert.ok(r.evaluate("pendingReportBytes() <= MAX_PENDING_BYTES"));
+assert.ok(r.evaluate("typeof readPendingReport(0) === 'string'"));
 assert.ok(r.evaluate("droppedReports > 0"));
 assert.ok(r.logs.length < 10, "Overload must not log once per dropped packet");
 r.complete(0, -104);
@@ -139,12 +145,12 @@ assert.equal(JSON.parse(r.calls[1].params.body).dst, "ble");
 // Byte-bound queue, multi-POST FIFO draining, oversize drop, RPC throw recovery.
 const q = runtime();
 for (let i = 0; i < 8; i++) q.ctx.sendBleReport({ pid: i, model: "x".repeat(650) });
-assert.ok(q.evaluate("pendingBatch.length < MAX_PENDING"));
-assert.ok(q.evaluate("pendingBytes <= MAX_PENDING_BYTES"));
+assert.ok(q.evaluate("pendingReportCount() < MAX_PENDING"));
+assert.ok(q.evaluate("pendingReportBytes() <= MAX_PENDING_BYTES"));
 q.ctx.sendBleReport({ model: "x".repeat(800) });
-const expected = JSON.parse(q.evaluate("JSON.stringify(pendingBatch.map(JSON.parse))")).map(x => x.pid);
+const expected = JSON.parse(q.evaluate("(function(){var a=[]; for(var i=0;i<MAX_PENDING;i++){var x=readPendingReport(i); if(x===null) break; a.push(JSON.parse(x));} return JSON.stringify(a);})()")).map(x => x.pid);
 const received = [];
-while (q.evaluate("pendingBatch.length")) {
+while (q.evaluate("pendingReportCount()")) {
   q.tick();
   const index = q.calls.length - 1;
   assert.ok(Buffer.byteLength(q.calls[index].params.body) <= 1024);
@@ -152,7 +158,7 @@ while (q.evaluate("pendingBatch.length")) {
   q.complete(index);
 }
 assert.deepEqual(received, expected);
-assert.equal(q.evaluate("pendingBytes"), 0);
+assert.equal(q.evaluate("pendingReportBytes()"), 0);
 q.fail(true);
 q.ctx.sendBleReport({ pid: 9 });
 q.tick();
@@ -170,9 +176,9 @@ c.scan(bytes(0x40, 1, 99));
 c.scan(bytes(0x40, 1, 98));
 c.advance(30 * 60 * 1000 + 1);
 c.scan(bytes(0x44, 0, 0, 0x3a, 3));
-assert.equal(c.evaluate("pendingBatch.length"), 5);
-assert.equal(JSON.parse(c.evaluate("pendingBatch[1]")).modelId, 2);
-assert.equal(JSON.parse(c.evaluate("pendingBatch[4]")).modelId, undefined);
+assert.equal(c.evaluate("pendingReportCount()"), 5);
+assert.equal(JSON.parse(c.evaluate("readPendingReport(1)")).modelId, 2);
+assert.equal(JSON.parse(c.evaluate("readPendingReport(4)")).modelId, undefined);
 assert.equal(c.options.active, false);
 c.tick();
 assert.equal(c.calls.length, 1);
