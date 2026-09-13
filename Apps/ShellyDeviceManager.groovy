@@ -63,6 +63,9 @@
 @Field static volatile boolean tableSummaryRefreshScheduled = false
 @Field static ConcurrentHashMap<String, Boolean> tableSummaryRefreshInFlight =
     new java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+@Field static ConcurrentHashMap<String, Long> tableSummaryRefreshInFlightAt =
+    new java.util.concurrent.ConcurrentHashMap<String, Long>()
+@Field static final Long TABLE_SUMMARY_REFRESH_TIMEOUT_MS = 900000L // 15 minutes
 // Durable operation metadata lets delayed callbacks prove that they still
 // belong to the current per-device refresh before touching the shared cache.
 @Field static ConcurrentHashMap<String, Map> tableSummaryRefreshOperations =
@@ -2779,7 +2782,11 @@ private String buildDeviceRow(Map entry) {
 
     // Column 3: IP
     String safeIp = escapeHtml(ip)
-    String ipLink = "<a href='http://${safeIp}' target='_blank' rel='noopener noreferrer' title='Open ${safeIp}'>${safeIp}</a>"
+    String deviceGen = entry.deviceGen?.toString() ?: (isGen1 ? '1' : '2')
+    Boolean authLoginRequired = !isGen1 && ['2', '3', '4'].contains(deviceGen) &&
+        authValueEnabled(entry.auth_en)
+    String deviceWebPath = authLoginRequired ? '/#/login' : ''
+    String ipLink = "<a href='http://${safeIp}${deviceWebPath}' target='_blank' rel='noopener noreferrer' title='Open ${safeIp}'>${safeIp}</a>"
     str.append("<td>${ipLink}</td>")
 
     // Columns 4-7: Script and webhook status
@@ -3054,10 +3061,76 @@ private Boolean isDeviceTableSummaryStale(Map entry) {
     return refreshedAt == null || (now() - refreshedAt) >= DEVICE_TABLE_SUMMARY_TTL_MS
 }
 
+/** Returns true when a provisioning record is old enough to be abandoned. */
+private Boolean isStaleProvisioningOperation(String ip) {
+    String operationId = (atomicState.provisioningOperations ?: [:])[ip]?.toString()
+    if (!operationId || !(operationId ==~ /^\d+-.*/)) { return false }
+    try {
+        Long startedAt = operationId.substring(0, operationId.indexOf('-')) as Long
+        return now() - startedAt >= TRANSIENT_OPERATION_TTL_MS
+    } catch (Exception ignored) {
+        return false
+    }
+}
+
+/** Returns the oldest timestamp associated with a table summary operation. */
+private Long tableSummaryRefreshStartedAt(String ip) {
+    List<Long> timestamps = []
+    Long inFlightAt = tableSummaryRefreshInFlightAt.get(ip)
+    if (inFlightAt != null) { timestamps.add(inFlightAt) }
+    Map operation = tableSummaryRefreshOperations.get(ip) as Map
+    if (!operation) { operation = (atomicState.tableSummaryRefreshOperations ?: [:])[ip] as Map }
+    Long operationStartedAt = operation?.startedAt as Long
+    if (operationStartedAt != null) { timestamps.add(operationStartedAt) }
+    return timestamps ? timestamps.min() : null
+}
+
+/** Clears one abandoned summary operation without touching device identity. */
+private Boolean recoverStaleTableSummaryRefresh(String ip) {
+    if (!ip) { return false }
+    Boolean hasInFlight = tableSummaryRefreshInFlight.containsKey(ip)
+    Map durableOperation = (atomicState.tableSummaryRefreshOperations ?: [:])[ip] as Map
+    if (!hasInFlight && !tableSummaryRefreshOperations.containsKey(ip) && !durableOperation) { return false }
+
+    Long startedAt = tableSummaryRefreshStartedAt(ip)
+    if (startedAt != null && now() - startedAt < TABLE_SUMMARY_REFRESH_TIMEOUT_MS) { return false }
+
+    String operationId = (tableSummaryRefreshOperations.get(ip) as Map)?.operationId?.toString() ?:
+        durableOperation?.operationId?.toString()
+    if (operationId && isCurrentTableSummaryOperation(ip, operationId)) {
+        logWarn("Recovering abandoned table summary refresh for ${ip}")
+        completeDeviceSummaryRefresh(ip, operationId, false, 'Refresh was interrupted and will be retried')
+        return true
+    }
+
+    logWarn("Clearing abandoned table summary refresh state for ${ip}")
+    markTableSummaryRefreshState(ip, 'failed', 'Refresh was interrupted and will be retried')
+    Map operations = new LinkedHashMap((atomicState.tableSummaryRefreshOperations ?: [:]) as Map)
+    operations.remove(ip)
+    if (operations) { atomicState.tableSummaryRefreshOperations = operations }
+    else { atomicState.remove('tableSummaryRefreshOperations') }
+    tableSummaryRefreshOperations.remove(ip)
+    if (operationId) { tableSummaryRefreshData.remove(operationId) }
+    tableSummaryRefreshInFlight.remove(ip)
+    tableSummaryRefreshInFlightAt.remove(ip)
+    return true
+}
+
 /** Queues a single device summary refresh without blocking table rendering. */
 private void queueDeviceSummaryRefresh(String ip, Boolean force = false) {
     if (!ip) { return }
-    if (hasProvisioningOperation(ip) || tableSummaryRefreshInFlight.containsKey(ip)) {
+    if (hasProvisioningOperation(ip) && isStaleProvisioningOperation(ip)) {
+        logWarn("Recovering abandoned provisioning operation for ${ip} before table summary refresh")
+        cancelProvisioningOperation(ip)
+    }
+    Boolean summaryRefreshActive = tableSummaryRefreshInFlight.containsKey(ip) ||
+        tableSummaryRefreshOperations.containsKey(ip) ||
+        (atomicState.tableSummaryRefreshOperations ?: [:])[ip] != null
+    if (summaryRefreshActive && !recoverStaleTableSummaryRefresh(ip)) {
+        logWarn("Ignoring table summary refresh for ${ip}: another operation or refresh is already in progress")
+        return
+    }
+    if (hasProvisioningOperation(ip)) {
         logWarn("Ignoring table summary refresh for ${ip}: another operation or refresh is already in progress")
         return
     }
@@ -3122,6 +3195,7 @@ void runNextTableSummaryRefresh() {
         scheduleNextTableSummaryRefresh()
         return
     }
+    tableSummaryRefreshInFlightAt.put(ip, now())
     runInMillisHelper(1L, 'runDeviceSummaryRefresh', [data: [ip: ip, force: false]])
 }
 
@@ -3132,6 +3206,7 @@ void runDeviceSummaryRefresh(Map data) {
     if (atomicState.discoveryRunning == true || hasProvisioningOperation(ip)) {
         logWarn("Deferring table summary refresh for ${ip}: discovery or another operation is active")
         tableSummaryRefreshInFlight.remove(ip)
+        tableSummaryRefreshInFlightAt.remove(ip)
         if (!tableSummaryRefreshQueue.contains(ip)) { tableSummaryRefreshQueue.add(ip) }
         scheduleNextTableSummaryRefresh()
         return
@@ -3219,6 +3294,7 @@ private void startDeviceSummaryRefresh(String ip, Boolean force = false) {
     if (!ip) { return }
     if (atomicState.discoveryRunning == true || hasProvisioningOperation(ip)) {
         tableSummaryRefreshInFlight.remove(ip)
+        tableSummaryRefreshInFlightAt.remove(ip)
         if (!tableSummaryRefreshQueue.contains(ip)) { tableSummaryRefreshQueue.add(ip) }
         scheduleNextTableSummaryRefresh()
         return
@@ -3339,6 +3415,7 @@ private void completeDeviceSummaryRefresh(String ip, String operationId, Boolean
     tableSummaryRefreshOperations.remove(ip)
     tableSummaryRefreshData.remove(operationId)
     tableSummaryRefreshInFlight.remove(ip)
+    tableSummaryRefreshInFlightAt.remove(ip)
     flushPendingDeviceStatusCache()
     scheduleNextTableSummaryRefresh()
 }
@@ -7946,6 +8023,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     deviceStatusCacheVolatile.clear()
     tableSummaryRefreshQueue.clear()
     tableSummaryRefreshInFlight.clear()
+    tableSummaryRefreshInFlightAt.clear()
     tableSummaryRefreshOperations.clear()
     tableSummaryRefreshData.clear()
     invalidateDirectChildDeviceCache()
@@ -26027,7 +26105,7 @@ void reinitializeDevice(def parentDevice) {
 }
 
 // ╔══════════════════════════════════════════════════════════════╗
-// ║  END Parent Driver Support Methods                            ║
+// ║  END Parent Driver Support Methods                           ║
 // ╚══════════════════════════════════════════════════════════════╝
 
 /**
