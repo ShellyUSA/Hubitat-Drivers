@@ -266,6 +266,9 @@
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
+
+// Wall Display firmware derives webhook ids from Unix seconds; space creations apart.
+@Field static final Long WEBHOOK_CREATE_SPACING_MS = 1100L
 @Field static final String GITHUB_BRANCH = 'master'
 
 // Model-specific driver overrides for Gen 1 devices that need dedicated drivers
@@ -5289,6 +5292,8 @@ private void installRequiredActionsForIp(String ipAddress, String operationId = 
     String baseUrl = "http://${hubIp}:39501"
     String uri = "http://${ipAddress}/rpc"
     Integer installed = 0
+    Boolean spaceCreates = requiresWebhookCreateSpacing(device)
+    Set<String> createdHookIds = existingHooks.collect { Map h -> h.id?.toString() }.findAll { it } as Set<String>
 
     requiredActions.each { Map action ->
         String event = action.event as String
@@ -5335,10 +5340,16 @@ private void installRequiredActionsForIp(String ipAddress, String operationId = 
 
         logInfo("Creating webhook '${name}' for ${event} cid=${cid} -> ${hookUrl}")
         appendLog('info', "Creating webhook ${name} on ${device.displayName}")
+        if (spaceCreates) { pauseExecution(WEBHOOK_CREATE_SPACING_MS) }
         LinkedHashMap createCmd = webhookCreateCommand(cid, event, name, [hookUrl])
         LinkedHashMap result = postCommandSync(createCmd, uri)
 
         if (result?.result?.id != null) {
+            String newId = result.result.id.toString()
+            if (createdHookIds.contains(newId)) {
+                logWarn("Webhook id ${newId} reused by firmware for '${name}' — an earlier webhook was overwritten")
+            }
+            createdHookIds.add(newId)
             logInfo("Webhook '${name}' created (id: ${result.result.id})")
             installed++
         } else {
@@ -7356,19 +7367,33 @@ private Map<Integer, String> getInputTypes(String ipAddress, List<Integer> input
  *
  * @param event The webhook event name (e.g., "input.button_push")
  * @param inputType The input type (e.g., "button", "switch", "analog")
+ * @param supportedEvents Webhook events the firmware supports (null if unknown)
  * @return true if the event is applicable to this input type
  */
 @CompileStatic
-private Boolean isInputEventApplicable(String event, String inputType) {
+private Boolean isInputEventApplicable(String event, String inputType, List<String> supportedEvents = null) {
     if (!event.startsWith('input.')) { return true }
+
+    // Touch gestures (Wall Display) do not depend on the input's configured type
+    if (event.contains('touch_')) { return true }
+
+    // Disabled inputs never report events
+    if (inputType == 'disabled') { return false }
 
     // Button events require button-type inputs
     if (event.contains('button_')) {
         return inputType == 'button'
     }
 
-    // Toggle events require switch-type inputs
+    // Toggle events require switch-type inputs. Exception: firmware without any
+    // input.button_* webhook events (Shelly Wall Display) reports every physical
+    // press of a button-type input as input.toggle_on — the driver classifies
+    // push/double/hold from those raw presses.
     if (event.contains('toggle_')) {
+        if (inputType == 'button') {
+            Boolean noButtonEvents = supportedEvents != null && !supportedEvents.any { it.startsWith('input.button_') }
+            return noButtonEvents && event == 'input.toggle_on'
+        }
         return inputType == 'switch'
     }
 
@@ -7383,6 +7408,52 @@ private Boolean isInputEventApplicable(String event, String inputType) {
     }
 
     return true
+}
+
+/**
+ * Checks whether a dotted status path ("component:id.field") exists in a device
+ * status map and points to a non-null value.
+ *
+ * @param deviceStatus Device status map (component keys to status maps)
+ * @param path Path such as "devicepower:0.battery"
+ * @return true if every segment of the path is present
+ */
+@CompileStatic
+private static Boolean statusPathExists(Map deviceStatus, String path) {
+    if (!deviceStatus || !path) { return false }
+    List<String> parts = path.tokenize('.')
+    Object node = deviceStatus[parts[0]]
+    for (int i = 1; i < parts.size(); i++) {
+        if (!(node instanceof Map)) { return false }
+        node = ((Map) node)[parts[i]]
+    }
+    return node != null
+}
+
+/**
+ * Detects sensor components the firmware lists but cannot read
+ * (status carries "Sensor driver missing from firmware").
+ *
+ * @param componentStatus Status map of one component
+ * @return true if the sensor has no hardware/driver behind it
+ */
+@CompileStatic
+private static Boolean isSensorMissingFromFirmware(Object componentStatus) {
+    if (!(componentStatus instanceof Map)) { return false }
+    Object errors = ((Map) componentStatus).errors
+    return errors instanceof List && ((List) errors).any { Object e -> e?.toString() == 'Sensor driver missing from firmware' }
+}
+
+/**
+ * Shelly Wall Display firmware assigns webhook ids from the current Unix time in
+ * seconds, so webhooks created within the same second overwrite each other.
+ *
+ * @param device The child device
+ * @return true if creations must be spaced at least one second apart
+ */
+private Boolean requiresWebhookCreateSpacing(def device) {
+    String model = (device.getDataValue('shellyModel') ?: '').toUpperCase()
+    return model.startsWith('SAWD')
 }
 
 /**
@@ -7537,9 +7608,16 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
     List<String> supplementalParts = []
     if (webhookDefs.supplementalTokenGroups) {
         (webhookDefs.supplementalTokenGroups as Map).each { String groupName, Map group ->
-            if (deviceComponentTypes.contains(group.requiredComponent as String)) {
-                supplementalParts.add(group.urlParams as String)
+            if (!deviceComponentTypes.contains(group.requiredComponent as String)) { return }
+            // e.g. "devicepower:0.battery": mains-powered devices (Wall Display) expose
+            // devicepower:0 without a battery; the firmware then sends the ${...}
+            // template unexpanded, which breaks the request on the hub.
+            String statusPath = group.requiredStatusPath as String
+            if (statusPath && !statusPathExists(deviceStatus, statusPath)) {
+                logDebug("Skipping supplemental '${groupName}' tokens: ${statusPath} not present")
+                return
             }
+            supplementalParts.add(group.urlParams as String)
         }
     }
 
@@ -7564,6 +7642,19 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
                 return
             }
 
+            // Filter 1b: Event restricted to specific component ids (e.g. Wall Display
+            // touch gestures are reported on input:0 only)
+            if (eventDef.cids instanceof List && !((eventDef.cids as List).collect { it as Integer }).contains(cid)) {
+                return
+            }
+
+            // Filter 1c: Sensor component present in status but not backed by hardware
+            // (Wall Display XL/X2i report "Sensor driver missing from firmware")
+            if (isSensorMissingFromFirmware(v)) {
+                logDebug("Skipping '${event}' for ${key}: sensor missing from firmware")
+                return
+            }
+
             // Filter 2: Skip power monitoring events if a collector script is active
             if (usesPowerScript && (event.contains('active_power_change') || event.contains('active_power_measurement'))) {
                 logDebug("Skipping power event '${event}' - power-monitoring collector is active")
@@ -7579,7 +7670,7 @@ private List<Map> buildActionsFromWebhookDefs(Map webhookDefs, Map deviceStatus,
             // Filter 4: For input events, check if the event is applicable to this input's type
             if (shellyComponent == 'input' && inputTypes.containsKey(cid)) {
                 String inputType = inputTypes[cid]
-                if (!isInputEventApplicable(event, inputType)) {
+                if (!isInputEventApplicable(event, inputType, supportedEvents)) {
                     logDebug("Skipping input event '${event}' for input ${cid} (type: ${inputType})")
                     return
                 }
