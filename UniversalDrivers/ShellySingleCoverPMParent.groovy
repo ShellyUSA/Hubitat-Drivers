@@ -19,6 +19,8 @@ metadata {
     //Attributes: windowShade - ENUM ["opening", "partially open", "closed", "open", "closing", "unknown"]
     //            position - NUMBER, unit:%
     //Commands: open(), close(), setPosition(position)
+    capability 'Switch'
+    capability 'SwitchLevel'
 
     capability 'Initialize'
     //Commands: initialize()
@@ -224,6 +226,10 @@ void refresh() {
   parent?.parentRefresh(device)
 }
 
+void on() { open() }
+void off() { close() }
+void setLevel(BigDecimal level, BigDecimal duration = null) { setPosition(level) }
+
 /**
  * Triggers device reinitialization via the parent app.
  * Used when the device needs to be reconfigured (e.g., profile change, webhook reinstall).
@@ -333,6 +339,13 @@ private void handlePostWebhook(Map msg) {
     Map json = new groovy.json.JsonSlurper().parseText(msg.body) as Map
     String dst = json?.dst?.toString()
     if (!dst) { logTrace('POST webhook: no dst in body'); return }
+
+    // covermon carries nested result/cover maps. Preserve their structure so
+    // parseCovermon can read numeric values and component state correctly.
+    if (dst == 'covermon') {
+      routeScriptNotification(dst, json)
+      return
+    }
 
     Map params = [:]
     json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }
@@ -653,6 +666,7 @@ void distributeStatus(Map status) {
 void open() {
   logDebug('open() called')
   parent?.parentSendCommand(device, 'Cover.Open', [id: 0])
+  runIn(2, 'refresh')
 }
 
 /**
@@ -662,6 +676,7 @@ void open() {
 void close() {
   logDebug('close() called')
   parent?.parentSendCommand(device, 'Cover.Close', [id: 0])
+  runIn(2, 'refresh')
 }
 
 /**
@@ -673,6 +688,7 @@ void close() {
 void setPosition(BigDecimal position) {
   logDebug("setPosition(${position}) called")
   parent?.parentSendCommand(device, 'Cover.GoToPosition', [id: 0, pos: position as Integer])
+  runIn(2, 'refresh')
 }
 
 /**
@@ -749,10 +765,11 @@ void parseCovermon(Map json) {
           }
 
           // Update position attribute
-          if (value.current_pos != null) {
-            Integer position = value.current_pos as Integer
+          Integer position = validCoverPosition(value.current_pos)
+          if (position != null) {
             sendEvent(name: 'position', value: position, unit: '%',
               descriptionText: "Position is ${position}%")
+            updateDimmerState(position)
             logDebug("Cover ${coverId} position: ${position}%")
           }
 
@@ -793,6 +810,20 @@ void parseCovermon(Map json) {
   } catch (Exception e) {
     logError("parseCovermon exception: ${e.message}")
   }
+}
+
+@CompileStatic
+private Integer validCoverPosition(Object raw) {
+  if (raw == null) { return null }
+  try {
+    Integer position = raw.toString().toBigDecimal().intValue()
+    return (position >= 0 && position <= 100) ? position : null
+  } catch (Exception ignored) { return null }
+}
+
+private void updateDimmerState(Integer position) {
+  sendEvent(name: 'level', value: position, unit: '%')
+  sendEvent(name: 'switch', value: position == 0 ? 'off' : 'on')
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

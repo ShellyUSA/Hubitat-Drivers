@@ -19,6 +19,8 @@ metadata {
     //Attributes: windowShade - ENUM ["opening", "partially open", "closed", "open", "closing", "unknown"]
     //            position - NUMBER, unit:%
     //Commands: open(), close(), setPosition(position)
+    capability 'Switch'
+    capability 'SwitchLevel'
 
     capability 'Initialize'
     //Commands: initialize()
@@ -134,6 +136,10 @@ void refresh() {
   logDebug('refresh() called')
   parent?.componentRefresh(device)
 }
+
+void on() { open() }
+void off() { close() }
+void setLevel(BigDecimal level, BigDecimal duration = null) { setPosition(level) }
 
 /**
  * Triggers device reinitialization via the parent app.
@@ -326,6 +332,7 @@ private void routeActionUrlCallback(Map params) {
 void open() {
   logDebug('open() called')
   parent?.componentOpen(device)
+  runIn(2, 'refresh')
 }
 
 /**
@@ -335,6 +342,7 @@ void open() {
 void close() {
   logDebug('close() called')
   parent?.componentClose(device)
+  runIn(2, 'refresh')
 }
 
 /**
@@ -346,6 +354,7 @@ void close() {
 void setPosition(BigDecimal position) {
   logDebug("setPosition(${position}) called")
   parent?.componentSetPosition(device, position as Integer)
+  runIn(2, 'refresh')
 }
 
 /**
@@ -405,9 +414,10 @@ void distributeStatus(Map status) {
     }
 
     // Position
-    if (data.current_pos != null) {
-      Integer position = data.current_pos as Integer
+    Integer position = validCoverPosition(data.current_pos)
+    if (position != null) {
       sendEvent(name: 'position', value: position, unit: '%', descriptionText: "Position is ${position}%")
+      updateDimmerState(position)
       logDebug("Cover position: ${position}%")
     }
 
@@ -426,6 +436,18 @@ void distributeStatus(Map status) {
       sendEvent(name: 'energy', value: energyKwh, unit: 'kWh')
     }
   }
+
+  // Some Gen 1 models expose supply voltage at the device level instead of
+  // on the roller component. Use it only when the component did not report a
+  // more specific voltage value.
+  Boolean coverVoltageReported = status.any { k, v ->
+    k.toString().startsWith('cover:') && v instanceof Map && (v as Map).voltage != null
+  }
+  if (!coverVoltageReported && status.deviceVoltage != null) {
+    BigDecimal voltage = status.deviceVoltage as BigDecimal
+    sendEvent(name: 'voltage', value: voltage, unit: 'V',
+      descriptionText: "Voltage is ${voltage}V")
+  }
 }
 
 /**
@@ -437,8 +459,8 @@ void distributeStatus(Map status) {
 @CompileStatic
 private String mapCoverState(String coverState) {
   switch (coverState) {
-    case 'open': return 'open'
-    case 'close': return 'closed'
+    case 'open': return 'opening'
+    case 'close': return 'closing'
     case 'closed': return 'closed'
     case 'stop': return 'partially open'
     case 'stopped': return 'partially open'
@@ -446,6 +468,20 @@ private String mapCoverState(String coverState) {
     case 'closing': return 'closing'
     default: return 'unknown'
   }
+}
+
+@CompileStatic
+private Integer validCoverPosition(Object raw) {
+  if (raw == null) { return null }
+  try {
+    Integer position = raw.toString().toBigDecimal().intValue()
+    return (position >= 0 && position <= 100) ? position : null
+  } catch (Exception ignored) { return null }
+}
+
+private void updateDimmerState(Integer position) {
+  sendEvent(name: 'level', value: position, unit: '%')
+  sendEvent(name: 'switch', value: position == 0 ? 'off' : 'on')
 }
 
 // ╔══════════════════════════════════════════════════════════════╗

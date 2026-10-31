@@ -1223,6 +1223,7 @@ void runDeviceCreate(Map data) {
         logDebug("Ignoring stale/cancelled device creation callback for ${ipAddress}")
         return
     }
+    Integer maxAttempts = 3
     Boolean retryScheduled = false
     try {
         createShellyDevice(ipAddress, operationId)
@@ -1230,7 +1231,7 @@ void runDeviceCreate(Map data) {
         // Sleepy Gen2 devices can miss the first status read while waking.
         // Keep the provisioning operation alive and retry the complete create
         // path while the device is still expected to be reachable.
-        if (!findChildDeviceByIp(ipAddress) && !deviceAuthBlocked(ipAddress) && attempt < 3 &&
+        if (!findChildDeviceByIp(ipAddress) && !deviceAuthBlocked(ipAddress) && attempt < maxAttempts &&
                 isCurrentProvisioningOperation(ipAddress, operationId)) {
             Integer delayMs = attempt * 1500
             logWarn("Device creation did not produce a Hubitat child for ${ipAddress}; retrying in ${delayMs}ms (attempt ${attempt + 1}/3)")
@@ -1242,22 +1243,43 @@ void runDeviceCreate(Map data) {
                 attempt: attempt + 1
             ], overwrite: false])
         }
+        if (!findChildDeviceByIp(ipAddress) && attempt >= maxAttempts &&
+                isCurrentProvisioningOperation(ipAddress, operationId)) {
+            logError("Device creation failed for ${ipAddress} after ${maxAttempts} attempts; no Hubitat child was created")
+            appendLog('error', "Provisioning incomplete for ${ipAddress}: no device was created after ${maxAttempts} attempts")
+        }
     } catch (Exception ex) {
         logError("Device creation failed for ${ipAddress}: ${ex.message}")
         appendLog('error', "Device creation failed for ${ipAddress}: ${ex.message}")
     } finally {
-        // Successful creation normally hands ownership to a script/webhook
-        // operation. If it did not, clear this create operation now.
-        if (!retryScheduled && isCurrentProvisioningOperation(ipAddress, operationId) &&
-                !hasActiveProvisioningPipeline(ipAddress, operationId)) {
+        // Keep an asynchronous script/webhook pipeline in control until its
+        // verifier finishes. A create callback is successful only if a Hubitat
+        // child exists; exhausted retries must remain visibly incomplete.
+        Boolean canFinalize = !retryScheduled &&
+            isCurrentProvisioningOperation(ipAddress, operationId) &&
+            !hasActiveProvisioningPipeline(ipAddress, operationId)
+        Boolean childCreated = findChildDeviceByIp(ipAddress) != null
+        Boolean completedByThisCallback = canFinalize && childCreated
+        Boolean failedByThisCallback = canFinalize && !childCreated
+        if (completedByThisCallback) {
             finishProvisioningOperation(ipAddress, operationId)
+        } else if (failedByThisCallback) {
+            String failureStatus = deviceAuthBlocked(ipAddress) ?
+                'Provisioning incomplete: authentication required' :
+                "Provisioning incomplete: device creation failed on attempt ${attempt}"
+            failProvisioningOperation(ipAddress, operationId,
+                failureStatus)
         }
         // Once device creation has handed off to asynchronous script/webhook
         // provisioning, do not perform another full cache rebuild here. That
         // read can overlap the completion verifier and write an older map that
         // still contains provisioningStatus after the verifier has cleared it.
         // The provisioning pipeline owns cache updates until it finishes.
-        if (!hasProvisioningOperation(ipAddress)) {
+        // Only rebuild here when this callback itself completed the operation;
+        // checking hasProvisioningOperation() after the fact is racy because a
+        // verifier callback can clear the operation while this callback is
+        // still unwinding.
+        if (completedByThisCallback) {
             buildDeviceStatusCacheEntry(ipAddress)
         }
         reconcileWatchdogSchedule()
@@ -11017,6 +11039,11 @@ private Boolean fetchAndStoreDeviceInfo(String ipKey) {
         logDebug("fetchAndStoreDeviceInfo: Gen 1 device at ${ip}, using REST API")
         appendLog('debug', "Getting Gen 1 device info from ${ip}")
         if (fetchGen1DeviceInfo(ipKey, device)) {
+            // Classification publishes a copied discovery record. Reload it so
+            // this older local map cannot erase the selected driver metadata.
+            device = new LinkedHashMap(
+                (atomicState.discoveredShellys[ipKey] ?: device) as Map
+            )
             markCapabilityCacheComplete(ipKey, device)
             atomicState.discoveredShellys[ipKey] = device
             sendFoundShellyEvents()
@@ -16990,6 +17017,12 @@ private Long getNextBlePresenceDelaySeconds() {
         if (config?.isBleDevice != true) { return }
         ChildDeviceWrapper child = getCachedBleChild(key.toString()) as ChildDeviceWrapper
         if (!isBlePresenceEligible(child)) { return }
+
+        // Once a device has timed out, its last contact deadline remains in
+        // the past until the next advertisement arrives. Do not schedule a
+        // one-second retry loop for a device already marked not present; the
+        // next BLE advertisement will mark it present and re-arm this timer.
+        if (deviceCurrentValueHelper(child, 'presence')?.toString() == 'not present') { return }
 
         Long lastContact = bleLastContact.get(key) ?: (config.lastBleContact as Long ?: 0L)
         if (!lastContact) { return }
