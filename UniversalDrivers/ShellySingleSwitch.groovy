@@ -43,6 +43,7 @@ preferences {
  */
 void installed() {
   logDebug("installed() called")
+  initialize()
 }
 
 /**
@@ -51,7 +52,26 @@ void installed() {
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
+  initialize()
   relaySwitchSettings()
+}
+
+/** Creates the read-only Hubitat input child for a detached physical switch. */
+void initialize() {
+  String ids = device.getDataValue('detachedInputIds') ?: ''
+  ids.split(',').collect { it.trim() }.findAll { it }.each { String inputId ->
+    String childDni = "${device.deviceNetworkId}-input-switch-${inputId}"
+    if (getChildDevice(childDni)) { return }
+    try {
+      def child = addChildDevice('ShellyDeviceManager', 'Shelly Autoconf Input Switch', childDni,
+        [name: 'Shelly Autoconf Input Switch', label: "${device.displayName} Input ${inputId}"])
+      child.updateDataValue('inputId', inputId)
+      child.updateDataValue('componentType', 'input')
+      logInfo("Created physical input child ${childDni}")
+    } catch (Exception e) {
+      logError("Could not create physical input child ${childDni}: ${e.message}")
+    }
+  }
 }
 
 /**
@@ -268,23 +288,18 @@ private void routeWebhookParams(Map params) {
       }
       break
 
-    // New discrete input toggle webhooks — state is encoded in the dst name
+    // Input toggles describe the physical input, not the relay output.
     case 'input_toggle_on':
-      sendEvent(name: 'switch', value: 'on', descriptionText: 'Switch turned on (input toggle)')
-      logInfo('Switch state changed to: on (input toggle)')
+      updatePhysicalInput(params, 'on')
       break
     case 'input_toggle_off':
-      sendEvent(name: 'switch', value: 'off', descriptionText: 'Switch turned off (input toggle)')
-      logInfo('Switch state changed to: off (input toggle)')
+      updatePhysicalInput(params, 'off')
       break
 
     // Legacy combined input toggle webhook — state is in params.state
     case 'input_toggle':
-      if (params.state != null) {
-        String switchState = params.state == 'true' ? 'on' : 'off'
-        sendEvent(name: 'switch', value: switchState,
-          descriptionText: "Switch turned ${switchState} (input toggle)")
-        logInfo("Switch state changed to: ${switchState} (input toggle)")
+      if (params.state?.toString() in ['true', 'false']) {
+        updatePhysicalInput(params, params.state.toString() == 'true' ? 'on' : 'off')
       }
       break
 
@@ -296,6 +311,23 @@ private void routeWebhookParams(Map params) {
 
     default:
       logDebug("routeWebhookParams: unhandled dst=${params.dst}")
+  }
+}
+
+/** Routes input state to its child while keeping the relay's switch attribute untouched. */
+private void updatePhysicalInput(Map params, String value) {
+  String inputId = params.cid?.toString() ?: '0'
+  String childDni = "${device.deviceNetworkId}-input-switch-${inputId}"
+  def child = getChildDevice(childDni)
+  if (!child) {
+    initialize()
+    child = getChildDevice(childDni)
+  }
+  if (child) {
+    child.sendEvent(name: 'switch', value: value,
+      descriptionText: "Physical input ${inputId} is ${value}")
+  } else {
+    logDebug("No physical input child for input ${inputId}; relay state unchanged")
   }
 }
 

@@ -1303,10 +1303,20 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
 
     // Create device label (user-friendly name)
     String deviceLabel = deviceInfo.name ?: "Shelly ${ipKey}"
+    Map deviceStatus = deviceInfo.deviceStatus ?: [:]
 
     // Check if device already exists
     def existingDevice = getChildDeviceHelper(dni)
     if (existingDevice) {
+        if (isShelly1MiniGen4Info(deviceInfo) && deviceStatus.keySet().any { it.toString().startsWith('input:') }) {
+            String inputIds = deviceStatus.keySet().collect { it.toString() }
+                .findAll { String comp -> comp.startsWith('input:') }
+                .collect { String comp -> comp.split(':')[1] }.join(',')
+            fetchAndInstallComponentDriver('ShellyInputSwitchComponent.groovy', 'Shelly Autoconf Input Switch')
+            existingDevice.updateDataValue('detachedInputIds', inputIds)
+            try { existingDevice.initialize() }
+            catch (Exception e) { logWarn("Could not initialize detached input child: ${e.message}") }
+        }
         logWarn("Device already exists: ${existingDevice.displayName} (${dni})")
         appendLog('warn', "Device already exists: ${existingDevice.displayName}")
         return
@@ -1318,7 +1328,6 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     // Pre-detect UI components from deviceStatus so we can:
     // 1. Install component drivers BEFORE creating the device
     // 2. Include flags in dataMap so installed() can create UI children immediately
-    Map deviceStatus = deviceInfo.deviceStatus ?: [:]
     Boolean hasPlugsUi = deviceStatus.keySet().any { it.toString().startsWith('plugs_ui') }
     Boolean hasPowerstripUi = deviceStatus.keySet().any { it.toString().startsWith('powerstrip_ui') }
 
@@ -1336,6 +1345,11 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
             shellyMac: deviceInfo.mac ?: '',
             shellyGen: shellyGen
     ]
+    if (isShelly1MiniGen4Info(deviceInfo)) {
+        dataMap.detachedInputIds = deviceStatus.keySet().collect { it.toString() }
+            .findAll { String comp -> comp.startsWith('input:') }
+            .collect { String comp -> comp.split(':')[1] }.join(',')
+    }
     if (deviceInfo.gen1Type) {
         dataMap.gen1Type = deviceInfo.gen1Type.toString()
     }
@@ -1364,6 +1378,9 @@ private void createMonolithicDevice(String ipKey, Map deviceInfo, String driverN
     if (hasPowerstripUi) { logInfo("  POWERSTRIP_UI detected — LED strip child will be created during install") }
 
     // Ensure the driver is installed on the hub before attempting to create the device
+    if (dataMap.detachedInputIds) {
+        fetchAndInstallComponentDriver('ShellyInputSwitchComponent.groovy', 'Shelly Autoconf Input Switch')
+    }
     if (!ensureDriverInstalled(driverName, deviceInfo)) {
         logError("Cannot create device '${deviceLabel}': driver '${driverName}' is not installed on the hub")
         appendLog('error', "Failed to create ${deviceLabel}: driver not installed")
@@ -11916,6 +11933,11 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
         new LinkedHashMap(discovered[ipKey] as Map) : null
     if (discoveredDevice) {
         discoveredDevice.needsParentChild = needsParentChild
+        if (isShelly1MiniGen4Info(discoveredDevice) && inputCount > 0) {
+            discoveredDevice.detachedInputIds = components.findAll { String comp ->
+                comp.startsWith('input:')
+            }.collect { String comp -> comp.split(':')[1] }
+        }
         discoveredDevice.actuatorCounts = actuatorCounts
         discoveredDevice.components = components
         discoveredDevice.componentPowerMonitoring = componentPowerMonitoring
@@ -12033,6 +12055,13 @@ private void determineDeviceDriver(Map deviceStatus, String ipKey = null) {
     } else {
         logDebug("Device has an unexpected combination of switches and inputs, manual review may be needed")
     }
+}
+
+private Boolean isShelly1MiniGen4Info(Map info) {
+    String deviceId = (info?.deviceInfo as Map)?.id?.toString() ?: info?.id?.toString() ?: ''
+    String identity = "${info?.deviceApp ?: ''} ${info?.model ?: ''} ${info?.name ?: ''} ${deviceId}".toLowerCase()
+    return identity.contains('shelly1minig4') || identity.contains('shelly 1 mini gen4') ||
+        (identity.contains('s3sw') && identity.contains('001x16'))
 }
 
 /**
@@ -12982,13 +13011,14 @@ private void installComponentDriversForDevice(Map deviceInfo) {
         if (!['switch', 'cover', 'light', 'input', 'em', 'adc', 'temperature', 'humidity', 'rgb', 'rgbw', 'cct', 'blutrv', 'presencezone', 'voltmeter'].contains(baseType)) { return }
 
         Boolean hasPM = componentPowerMonitoring[key] ?: false
-        String driverName = getComponentDriverName(baseType, hasPM)
+        Boolean isSwitchInput = baseType == 'input' && isShelly1MiniGen4Info(deviceInfo)
+        String driverName = isSwitchInput ? 'Shelly Autoconf Input Switch' : getComponentDriverName(baseType, hasPM)
         if (!driverName || installedDrivers.contains(driverName)) { return }
 
         installedDrivers.add(driverName)
 
         if (!isComponentDriverInstalled(driverName)) {
-            String fileName = getComponentDriverFileName(baseType, hasPM)
+            String fileName = isSwitchInput ? 'ShellyInputSwitchComponent.groovy' : getComponentDriverFileName(baseType, hasPM)
             if (fileName) {
                 fetchAndInstallComponentDriver(fileName, driverName)
             }
@@ -23279,7 +23309,7 @@ private List<Map> buildWebhookEvents(String dst, Map params) {
             break
         case 'input_toggle':  // legacy
             if (params.state != null) {
-                String toggleState = params.state as String
+                String toggleState = params.state.toString() == 'true' ? 'on' : 'off'
                 events.add([name: 'switch', value: toggleState, isStateChange: true,
                     descriptionText: "Input toggled ${toggleState}"])
             }
@@ -23722,6 +23752,20 @@ void componentRefresh(def childDevice) {
         if (!deviceStatus) {
             logWarn("componentRefresh: Could not query device status for ${ipAddress}")
             return
+        }
+
+        // Standalone Mini Gen4 relay keeps its established DNI and switch
+        // capability; synchronize detached input children from input:N state.
+        String detachedInputIds = genericDeviceDataValueHelper(childDevice, 'detachedInputIds') ?: ''
+        if (detachedInputIds && !isParent) {
+            detachedInputIds.split(',').collect { it.trim() }.findAll { it }.each { String inputId ->
+                String inputDni = "${childDni}-input-switch-${inputId}"
+                def inputChild = getCachedComponentChild(childDni, inputDni)
+                Map inputStatus = deviceStatus["input:${inputId}"] as Map
+                if (inputChild && inputStatus) {
+                    updateChildFromStatus(inputChild, 'input', inputStatus)
+                }
+            }
         }
 
         if (isParent) {
@@ -26240,7 +26284,13 @@ private void updateChildFromStatus(def child, String componentType, Map statusDa
             break
 
         case 'input':
-            // Input components don't have persistent state to refresh
+            // The Mini Gen4 input child is a Switch capability. Its status is
+            // independent from switch:0 and must be refreshed from input:0.state.
+            if ((deviceTypeNameHelper(child)?.contains('Input Switch')) && statusData.state != null) {
+                String inputState = statusData.state.toString() == 'true' ? 'on' : 'off'
+                events.add([name: 'switch', value: inputState,
+                    descriptionText: "Physical input is ${inputState}"])
+            }
             break
     }
 

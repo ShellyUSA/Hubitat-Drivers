@@ -298,22 +298,15 @@ private void routeWebhookParams(Map params) {
 
     // New discrete input toggle webhooks — state is encoded in the dst name
     case 'input_toggle_on':
-      sendEvent(name: 'switch', value: 'on', descriptionText: 'Switch turned on (input toggle)')
-      logInfo('Switch state changed to: on (input toggle)')
+      logDebug('Ignoring physical input ON notification for relay state')
       break
     case 'input_toggle_off':
-      sendEvent(name: 'switch', value: 'off', descriptionText: 'Switch turned off (input toggle)')
-      logInfo('Switch state changed to: off (input toggle)')
+      logDebug('Ignoring physical input OFF notification for relay state')
       break
 
     // Legacy combined input toggle webhook — state is in params.state
     case 'input_toggle':
-      if (params.state != null) {
-        String switchState = params.state == 'true' ? 'on' : 'off'
-        sendEvent(name: 'switch', value: switchState,
-          descriptionText: "Switch turned ${switchState} (input toggle)")
-        logInfo("Switch state changed to: ${switchState} (input toggle)")
-      }
+      logDebug('Ignoring physical input notification for relay state')
       break
 
     // Power monitoring via GET (from powermonitoring.js)
