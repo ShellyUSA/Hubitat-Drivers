@@ -56,9 +56,9 @@ void updated() {
   relaySwitchSettings()
 }
 
-/** Creates the read-only Hubitat input child for a detached physical switch. */
+/** Creates the read-only Hubitat input child for a switch-type physical input. */
 void initialize() {
-  String ids = device.getDataValue('detachedInputIds') ?: ''
+  String ids = device.getDataValue('inputSwitchIds') ?: ''
   ids.split(',').collect { it.trim() }.findAll { it }.each { String inputId ->
     String childDni = "${device.deviceNetworkId}-input-switch-${inputId}"
     if (getChildDevice(childDni)) { return }

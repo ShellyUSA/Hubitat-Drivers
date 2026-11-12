@@ -79,6 +79,7 @@ preferences {
  */
 void installed() {
   logDebug('installed() called')
+  initializePhysicalInputChildren()
   initializeDaliMetadata()
 }
 
@@ -88,8 +89,25 @@ void installed() {
  */
 void updated() {
   logDebug("updated() called with settings: ${settings}")
+  initializePhysicalInputChildren()
   initializeDaliMetadata()
   relayLightSettings()
+}
+
+private void initializePhysicalInputChildren() {
+  String ids = device.getDataValue('inputSwitchIds') ?: ''
+  ids.split(',').collect { it.trim() }.findAll { it }.each { String inputId ->
+    String childDni = "${device.deviceNetworkId}-input-switch-${inputId}"
+    if (getChildDevice(childDni)) { return }
+    try {
+      def child = addChildDevice('ShellyDeviceManager', 'Shelly Autoconf Input Switch', childDni,
+        [name: 'Shelly Autoconf Input Switch', label: "${device.displayName} Input ${inputId}"])
+      child.updateDataValue('inputId', inputId)
+      child.updateDataValue('componentType', 'input')
+    } catch (Exception e) {
+      logError("Could not create physical input child ${childDni}: ${e.message}")
+    }
+  }
 }
 
 /**
@@ -333,20 +351,16 @@ private void routeWebhookParams(Map params) {
       break
 
     case 'input_toggle_on':
-      sendEvent(name: 'switch', value: 'on', descriptionText: 'Light turned on (input toggle)')
-      logInfo('Light state changed to: on (input toggle)')
+      updatePhysicalInput(params, 'on')
       break
 
     case 'input_toggle_off':
-      sendEvent(name: 'switch', value: 'off', descriptionText: 'Light turned off (input toggle)')
-      logInfo('Light state changed to: off (input toggle)')
+      updatePhysicalInput(params, 'off')
       break
 
     case 'input_toggle':
-      if (params.state != null) {
-        String switchState = params.state == 'true' ? 'on' : 'off'
-        sendEvent(name: 'switch', value: switchState, descriptionText: "Light turned ${switchState} (input toggle)")
-        logInfo("Light state changed to: ${switchState} (input toggle)")
+      if (params.state?.toString() in ['true', 'false']) {
+        updatePhysicalInput(params, params.state.toString() == 'true' ? 'on' : 'off')
       }
       break
 
@@ -401,6 +415,19 @@ private void sendInputButtonEvent(Map params, String eventName, String actionLab
 private static Integer extractButtonNumber(Map params) {
   Integer componentId = params?.cid != null ? params.cid as Integer : 0
   return componentId + 1
+}
+
+private void updatePhysicalInput(Map params, String value) {
+  String inputId = params.cid?.toString() ?: '0'
+  String childDni = "${device.deviceNetworkId}-input-switch-${inputId}"
+  def child = getChildDevice(childDni)
+  if (!child) {
+    initializePhysicalInputChildren()
+    child = getChildDevice(childDni)
+  }
+  if (child) { child.sendEvent(name: 'switch', value: value,
+    descriptionText: "Physical input ${inputId} is ${value}") }
+  else { logDebug("No physical switch input child for input ${inputId}; dimmer state unchanged") }
 }
 
 // ============================================================

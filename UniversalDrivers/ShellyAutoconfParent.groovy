@@ -228,7 +228,10 @@ private void reconcileChildDevices() {
         break
 
       case 'input':
-        driverName = 'Shelly Autoconf Input Button'
+        Set<String> switchInputIds = (device.getDataValue('inputSwitchIds') ?: '').split(',')
+          .collect { it.trim() }.findAll { it } as Set<String>
+        driverName = switchInputIds.contains(compId.toString()) ?
+          'Shelly Autoconf Input Switch' : 'Shelly Autoconf Input Button'
         childData.inputId = compId.toString()
         break
 

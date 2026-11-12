@@ -112,6 +112,8 @@ void reconcileChildDevices() {
   }
 
   Integer inputCount = componentCounts['input'] ?: 0
+  Set<String> switchInputIds = (device.getDataValue('inputSwitchIds') ?: '').split(',')
+    .collect { it.trim() }.findAll { it } as Set<String>
 
   // Build set of DNIs that SHOULD exist
   Set<String> desiredDnis = [] as Set
@@ -119,7 +121,7 @@ void reconcileChildDevices() {
     if (!comp.contains(':')) { return }
     String baseType = comp.split(':')[0]
     Integer compId = comp.split(':')[1] as Integer
-    if (baseType == 'input' && inputCount <= 1) { return }
+    if (baseType == 'input' && inputCount <= 1 && !switchInputIds.contains(compId.toString())) { return }
     if (!['switch', 'input'].contains(baseType)) { return }
     desiredDnis.add("${device.deviceNetworkId}-${baseType}-${compId}".toString())
   }
@@ -147,13 +149,14 @@ void reconcileChildDevices() {
     String baseType = comp.split(':')[0]
     Integer compId = comp.split(':')[1] as Integer
 
-    if (baseType == 'input' && inputCount <= 1) { return }
+    if (baseType == 'input' && inputCount <= 1 && !switchInputIds.contains(compId.toString())) { return }
     if (!['switch', 'input'].contains(baseType)) { return }
 
     String childDni = "${device.deviceNetworkId}-${baseType}-${compId}"
     if (getChildDevice(childDni)) { return } // already exists, leave it alone
 
-    String driverName = (baseType == 'switch') ? 'Shelly Autoconf Switch' : 'Shelly Autoconf Input Button'
+    String driverName = (baseType == 'switch') ? 'Shelly Autoconf Switch' :
+      (switchInputIds.contains(compId.toString()) ? 'Shelly Autoconf Input Switch' : 'Shelly Autoconf Input Button')
     String label = "${device.displayName} ${baseType.capitalize()} ${compId}"
 
     try {
@@ -274,7 +277,7 @@ private void routeScriptNotification(String dst, Map result) {
     } else if (baseType == 'input') {
       String componentStr = device.getDataValue('components') ?: ''
       Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
-      routeToChild = (inputCount > 1)
+      routeToChild = (inputCount > 1 || isSwitchInput(componentId))
     }
 
     if (routeToChild) {
@@ -310,7 +313,7 @@ private void routeWebhookNotification(Map params) {
   } else if (baseType == 'input') {
     String componentStr = device.getDataValue('components') ?: ''
     Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
-    routeToChild = (inputCount > 1)
+    routeToChild = (inputCount > 1 || isSwitchInput(componentId))
   }
 
   if (routeToChild) {
@@ -339,6 +342,12 @@ private String dstToComponentType(String dst) {
     case 'covermon': return 'cover'    // legacy
     default: return dst
   }
+}
+
+private Boolean isSwitchInput(Integer inputId) {
+  Set<String> ids = (device.getDataValue('inputSwitchIds') ?: '').split(',')
+    .collect { it.trim() }.findAll { it } as Set<String>
+  return ids.contains(inputId?.toString())
 }
 
 /**
@@ -680,6 +689,9 @@ void distributeStatus(Map deviceStatus) {
     Integer componentId = key.split(':')[1] as Integer
 
     List<Map> events = buildStatusEvents(baseType, v as Map)
+    if (baseType == 'input' && isSwitchInput(componentId) && v.state != null) {
+      events = [[name: 'switch', value: v.state ? 'on' : 'off']]
+    }
     if (!events) { return }
 
     boolean routeToChild = false
@@ -688,7 +700,7 @@ void distributeStatus(Map deviceStatus) {
     } else if (baseType == 'input') {
       String componentStr = device.getDataValue('components') ?: ''
       Integer inputCount = componentStr.split(',').findAll { it.startsWith('input:') }.size()
-      routeToChild = (inputCount > 1)
+      routeToChild = (inputCount > 1 || isSwitchInput(componentId))
     }
 
     if (routeToChild) {
