@@ -2,8 +2,17 @@
  * Shelly Autoconf Input Button - Component Driver
  *
  * Self-contained component driver for Shelly input/button components.
- * No commands (input is event-only). Events are sent by the parent app.
+ * Physical events are sent by the parent; the button commands below only
+ * emit the matching event locally (virtual press from Hubitat rules/dashboards).
  * Used as a child device in multi-component parent-child architecture.
+ *
+ * Authors: Daniel Winks (original), Ricardo Nogueira Garcia (button commands)
+ *
+ * Changelog:
+ *   1.1.0 (2026-10-02) - Ricardo Nogueira Garcia
+ *     - Implement push/doubleTap/hold/release commands (previously declared by the
+ *       capabilities but missing, causing MissingMethodException from the device
+ *       page and Maker API); add ReleasableButton
  */
 import groovy.transform.Field
 
@@ -12,6 +21,7 @@ metadata {
     capability 'PushableButton' //numberOfButtons - NUMBER, pushed - NUMBER
     capability 'DoubleTapableButton' //doubleTapped - NUMBER
     capability 'HoldableButton' //held - NUMBER
+    capability 'ReleasableButton' //released - NUMBER
     capability 'Refresh'
     command 'tripleTap'
     attribute 'tripleTapped', 'number'
@@ -48,10 +58,22 @@ void refresh() {
   parent?.componentRefresh(device)
 }
 
-void tripleTap() {
-  logDebug('tripleTap() called')
-  sendEvent(name: 'tripleTapped', value: 1, isStateChange: true,
-    descriptionText: 'Button 1 was triple-tapped')
+void push(BigDecimal button = 1) { emitButton('pushed', 'pushed', button) }
+void doubleTap(BigDecimal button = 1) { emitButton('doubleTapped', 'double-tapped', button) }
+void hold(BigDecimal button = 1) { emitButton('held', 'held', button) }
+void release(BigDecimal button = 1) { emitButton('released', 'released', button) }
+void tripleTap(BigDecimal button = 1) { emitButton('tripleTapped', 'triple-tapped', button) }
+
+/**
+ * Emits a virtual button event (always button 1: each child is one input).
+ *
+ * @param eventName Attribute name (pushed, doubleTapped, held, released, tripleTapped)
+ * @param verb Text used in the event description
+ * @param button Requested button number (ignored; children expose a single button)
+ */
+private void emitButton(String eventName, String verb, BigDecimal button) {
+  logDebug("${eventName} (button ${button}) called")
+  sendEvent(name: eventName, value: 1, isStateChange: true, descriptionText: "Button 1 was ${verb}")
 }
 
 // ═══════════════════════════════════════════════════════════════

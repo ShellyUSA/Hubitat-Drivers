@@ -2498,6 +2498,39 @@
         "urlParams": "",
         "shellyComponent": "input"
       },
+      "input.touch_swipe_up": {
+        "dst": "touch_swipe_up",
+        "name": "hubitat_sdm_touch_swipe_up",
+        "urlParams": "",
+        "shellyComponent": "input",
+        "cids": [0]
+      },
+      "input.touch_swipe_down": {
+        "dst": "touch_swipe_down",
+        "name": "hubitat_sdm_touch_swipe_down",
+        "urlParams": "",
+        "shellyComponent": "input",
+        "cids": [0]
+      },
+      "input.touch_multi_touch": {
+        "dst": "touch_multi_touch",
+        "name": "hubitat_sdm_touch_multi_touch",
+        "urlParams": "",
+        "shellyComponent": "input",
+        "cids": [0]
+      },
+      "motion.motion_start": {
+        "dst": "motion_start",
+        "name": "hubitat_sdm_motion_start",
+        "urlParams": "",
+        "shellyComponent": "motion"
+      },
+      "motion.motion_end": {
+        "dst": "motion_end",
+        "name": "hubitat_sdm_motion_end",
+        "urlParams": "",
+        "shellyComponent": "motion"
+      },
       "input.button_triplepush": {
         "dst": "input_triple",
         "name": "hubitat_sdm_input_triple",
@@ -2616,6 +2649,7 @@
     "supplementalTokenGroups": {
       "battery": {
         "requiredComponent": "devicepower",
+        "requiredStatusPath": "devicepower:0.battery",
         "urlParams": "battPct/${status[\"devicepower:0\"].battery.percent}/battV/${status[\"devicepower:0\"].battery.V}"
       }
     },
@@ -2660,7 +2694,16 @@
       "boolean.change",
       "number.change",
       "enum.change",
-      "service.status_change"
+      "service.status_change",
+      "occupancy.object_enter",
+      "occupancy.object_leave",
+      "button.single_push",
+      "button.double_push",
+      "button.triple_push",
+      "button.long_push",
+      "temperature.measurement",
+      "humidity.measurement",
+      "illuminance.measurement"
     ]
   }
 }
