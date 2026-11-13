@@ -64,6 +64,7 @@ let MAX_PENDING_BYTES = 1024;
 let MAX_REPORT_BYTES = 768;
 let MAX_POST_BYTES = 1024;   // Includes envelope and commas
 let droppedReports = 0;
+let heartbeatSequence = 0;
 
 function queueStorageAvailable() {
   return typeof Script !== "undefined" && Script.storage &&
@@ -152,6 +153,19 @@ function onHTTPResponse(result, error_code, error_message) {
   // The drain timer sends after this callback and its response have unwound.
 }
 
+// Queue the heartbeat with BLE reports so liveness traffic preserves the
+// helper's one-HTTP-request limit and uses the existing byte-bounded queue.
+function sendWatchdogHeartbeat() {
+  sendBleReport({
+    kind: "scriptwatchdog",
+    script: "HubitatBLEHelper",
+    scriptId: Script.id,
+    intervalSeconds: 300,
+    sequence: ++heartbeatSequence,
+    uptimeMs: getNowMs(),
+  });
+}
+
 // === KVS URL Lookup (same pattern as switchstatus.js) ===
 function buildRemoteUrlFromRaw(raw) {
   if (!raw || typeof raw !== "string")
@@ -177,6 +191,7 @@ function fetchRemoteUrlFromKVS() {
     Shelly.call("KVS.Get", { key: HUBITAT_KVS_KEY }, function (res, err, msg) {
       if (err !== 0 || res === undefined || res === null) {
         print("KVS.Get did not return a value; using REMOTE_URL=" + REMOTE_URL);
+        sendWatchdogHeartbeat();
         return;
       }
       let ipVal = null;
@@ -190,9 +205,11 @@ function fetchRemoteUrlFromKVS() {
       } else {
         print("KVS hubitat_sdm_ip empty; using REMOTE_URL=" + REMOTE_URL);
       }
+      sendWatchdogHeartbeat();
     });
   } catch (e) {
     print("KVS.Get failed; using REMOTE_URL=" + REMOTE_URL + " (" + e + ")");
+    sendWatchdogHeartbeat();
   }
 }
 
@@ -377,7 +394,8 @@ function isNewPid(mac, pid, now) {
 function drainPendingBatch() {
   if (httpInFlight) return;
   if (pendingReportCount() === 0) return;
-  let body = '{"dst":"ble","messages":[';
+  let body = '{"dst":"ble","script":"HubitatBLEHelper","scriptId":' + Script.id +
+    ',"intervalSeconds":300,"sequence":' + (++heartbeatSequence) + ',"messages":[';
   let count = 0;
   while (count < MAX_PENDING) {
     let report = readPendingReport(count);
@@ -598,6 +616,7 @@ function init() {
     return;
   }
   Timer.set(100, true, drainPendingBatch);
+  Timer.set(300000, true, sendWatchdogHeartbeat);
 }
 
 // Initialize hub URL from KVS

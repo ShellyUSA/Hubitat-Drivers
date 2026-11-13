@@ -245,6 +245,11 @@ private void checkAndUpdateSourceIp(Map msg) {
  * @param params The parsed parameters including dst and power monitoring fields
  */
 private void routeWebhookParams(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   switch (params.dst) {
     // Power monitoring via GET/POST (from powermonitoring.js)
     case 'powermon':

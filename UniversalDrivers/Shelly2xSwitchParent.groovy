@@ -294,6 +294,12 @@ private void routeScriptNotification(String dst, Map result) {
 }
 
 private void routeWebhookNotification(Map params) {
+
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   String dst = params.dst
   if (!dst || params.cid == null) {
     logTrace("routeWebhookNotification: missing dst or cid (dst=${dst}, cid=${params.cid})")

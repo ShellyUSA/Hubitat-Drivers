@@ -360,6 +360,11 @@ private void handleGetWebhook(Map msg) {
  * @param params Parsed webhook parameters including dst, cid, and data fields
  */
 private void routeWebhookParams(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   String dst = params.dst
   if (!dst || params.cid == null) {
     logTrace("routeWebhookParams: missing dst or cid")

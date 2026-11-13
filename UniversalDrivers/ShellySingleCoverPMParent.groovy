@@ -498,6 +498,11 @@ private void routeScriptNotification(String dst, Map json) {
  * @param params The parsed query parameters including dst and optional state/pos fields
  */
 private void routeWebhookParams(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   logDebug("routeWebhookParams: dst=${params.dst}")
 
   switch (params.dst) {

@@ -16,6 +16,8 @@ let HUBITAT_PROTO = "http://";
 let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 let MIN_INTERVAL = 300;
 let MAX_INTERVAL = 420;
+let SCRIPT_NAME = "presencestatus";
+let heartbeatSequence = 0;
 
 // === Internal state ===
 let timerHandle = null;
@@ -115,6 +117,9 @@ function sendZoneReport(cid, zone) {
   let body = {
     dst: "presencezone",
     cid: cid,
+    script: SCRIPT_NAME,
+    scriptId: Script.id,
+    intervalSeconds: MAX_INTERVAL,
   };
 
   if (zone.state !== undefined && zone.state !== null) body.state = zone.state;
@@ -135,6 +140,9 @@ function sendIlluminanceReport() {
   let body = {
     dst: "illuminance",
     cid: 0,
+    script: SCRIPT_NAME,
+    scriptId: Script.id,
+    intervalSeconds: MAX_INTERVAL,
   };
 
   if (knownIlluminance.lux !== undefined && knownIlluminance.lux !== null)

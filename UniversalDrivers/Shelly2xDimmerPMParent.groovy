@@ -344,6 +344,11 @@ private void handleGetWebhook(Map msg) {
  * @param params The parsed webhook parameters including dst, cid, and event data
  */
 private void routeWebhookNotification(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   String dst = params.dst
   if (!dst || params.cid == null) {
     logTrace("routeWebhookNotification: missing dst or cid (dst=${dst}, cid=${params.cid})")

@@ -239,6 +239,10 @@
 
 /** The IP-change watchdog runs infrequently and shifts by seven minutes each cycle. */
 @Field static final int WATCHDOG_INTERVAL_SECONDS = 247 * 60
+@Field static final int SCRIPT_WATCHDOG_CHECK_SECONDS = 30
+@Field static final int SCRIPT_WATCHDOG_GRACE_SECONDS = 10
+@Field static final long SCRIPT_WATCHDOG_RESTART_COOLDOWN_MS = 15 * 60 * 1000L
+@Field static final int SCRIPT_WATCHDOG_MAX_RESTARTS = 3
 
 // Keep discovery probes bounded so a slow hub/network cannot accumulate an
 // unbounded backlog of asynchronous HTTP requests.
@@ -262,7 +266,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.102"
+@Field static final String APP_VERSION = "1.0.104"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -4839,6 +4843,7 @@ void installNextScript(Map data) {
                 } else {
                     installed++
                     if (isUpdate) { updated++ }
+                    armScriptWatchdog(ipAddress, scriptName, scriptId)
                     String action = isUpdate ? 'Updated' : 'Installed'
                     logInfo("Successfully ${action.toLowerCase()} and started '${scriptName}' (id: ${scriptId})")
                     appendLog('info', "${action} ${scriptName} on ${deviceDisplayName}")
@@ -5229,6 +5234,7 @@ private void enableAndStartRequiredScriptsForIp(String ipAddress) {
 
         if (!requiredNames.contains(name)) { return }
         if (scriptId == null) { return }
+        armScriptWatchdog(ipAddress, name, scriptId)
         if (enabled && running) { return }
 
         logInfo("Enabling and starting script '${name}' (id: ${scriptId}) on ${ipAddress}...")
@@ -8222,6 +8228,9 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
 
     // Schedule the watchdog only when there are installed LAN devices to monitor.
     reconcileWatchdogSchedule()
+    unscheduleHelper('scriptWatchdogScan')
+    state.scriptWatchdogScheduled = false
+    reconcileScriptWatchdogSchedule()
 
     // Reconcile configured timers during initialization. Ordinary settings
     // updates call these helpers selectively through reconcileChangedSettings.
@@ -14491,6 +14500,7 @@ private void restartPowerMonitoringScripts(String ipAddress) {
                 logWarn("Script.Start failed for '${name}' on ${ipAddress}: ${startResult?.error ?: 'no response'}")
                 return
             }
+            armScriptWatchdog(ipAddress, name, scriptId)
             logInfo("Restarted power-monitoring script '${name}' on ${ipAddress}; new KVS preferences will be loaded")
         } catch (Exception ex) {
             logWarn("Could not restart power-monitoring script '${name}' on ${ipAddress}: ${ex.message}")
@@ -16182,6 +16192,10 @@ void shellyCommandCallback(AsyncResponse response, Map data = null) {
 @CompileStatic
 void handleBleRelay(Object gatewayDevice, Map bleData) {
     String gatewayName = deviceDisplayNameHelper(gatewayDevice) ?: 'Unknown gateway'
+    if (bleData?.script != null && bleData?.scriptId != null && bleData?.intervalSeconds != null) {
+        logTrace("BLE relay watchdog heartbeat received from ${bleData.script} id=${bleData.scriptId} via ${gatewayName}")
+        recordScriptWatchdogHeartbeat(gatewayDevice, bleData)
+    }
 
     // Envelope format: unpack messages list
     Object rawMessages = bleData?.messages
@@ -16190,7 +16204,12 @@ void handleBleRelay(Object gatewayDevice, Map bleData) {
         bleLogTrace("handleBleRelay: processing ${messages.size()} messages from ${gatewayName}")
         messages.each { Object item ->
             if (item instanceof Map) {
-                processBleReport(gatewayName, (Map) item)
+                Map report = (Map) item
+                if (report.kind?.toString() == 'scriptwatchdog') {
+                    return
+                } else {
+                    processBleReport(gatewayName, report)
+                }
             }
         }
     } else if (bleData?.mac) {
@@ -17407,6 +17426,7 @@ void enableBleGatewayComplete(Map data) {
 
     // Step 6: Write hub IP to KVS
     writeHubitatIpToKVS(ip)
+    armScriptWatchdog(ip, 'HubitatBLEHelper', scriptId)
 
     // Update gateway list (was previously done in toggleBleGateway)
     List bleGateways = getBleGatewayState()
@@ -17461,6 +17481,7 @@ private void disableBleGateway(String ip) {
         LinkedHashMap deleteCmd = scriptDeleteCommand(scriptId)
         postCommandSync(deleteCmd, uri)
     }
+    forgetScriptWatchdog(ip, 'HubitatBLEHelper')
 
     // Disable BLE observer but keep BLE enabled for RPC
     bleLogInfo("Disabling BLE observer on ${ip}...")
@@ -22761,6 +22782,32 @@ void componentSenseRemoveIRCode(def childDevice, Integer codeId) {
 
 /* #endregion Component Device Command Handlers */
 
+/** Starts a watchdog baseline immediately after SDM successfully starts a script. */
+private void armScriptWatchdog(String ip, String scriptName, Integer scriptId) {
+    String name = stripJsExtension(scriptName ?: '')
+    if (!ip || scriptId == null || !MANAGED_SCRIPT_NAMES.contains(name)) { return }
+    Integer interval = name in ['powermonitoring', 'powermonitoring_pm', 'powermonitoring_em'] ? 60 :
+        name == 'HubitatBLEHelper' ? 300 : 420
+    if (name in ['powermonitoring', 'powermonitoring_pm', 'powermonitoring_em']) {
+        def device = findChildDeviceByIp(ip)
+        Object configured = device?.getSetting('pmReportingInterval')
+        Integer preferenceInterval = toIntegerSafe(configured)
+        if (preferenceInterval != null && preferenceInterval >= 5 && preferenceInterval <= 3600) {
+            interval = preferenceInterval
+        }
+    }
+
+    Map allRecords = new LinkedHashMap((atomicState.scriptWatchdogRecords ?: [:]) as Map)
+    Map deviceRecords = new LinkedHashMap((allRecords[ip] ?: [:]) as Map)
+    deviceRecords[name] = [scriptId: scriptId, intervalSeconds: interval,
+        lastHeartbeatAt: now(), sequence: null,
+        restartCount: 0, lastRestartAt: null]
+    allRecords[ip] = deviceRecords
+    atomicState.scriptWatchdogRecords = allRecords
+    logTrace("Script watchdog armed for ${name} on ${ip}: id=${scriptId}, interval=${interval}s, timeout=${interval + SCRIPT_WATCHDOG_GRACE_SECONDS}s")
+    reconcileScriptWatchdogSchedule()
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Parent-Child Parse Routing & Refresh
 // ═══════════════════════════════════════════════════════════════
@@ -22794,6 +22841,190 @@ void componentParse(Object parentDevice, String description) {
     }
 }
 
+/** Receives an explicit liveness heartbeat from a managed Shelly script. */
+void componentScriptWatchdogHeartbeat(Object parentDevice, Map params) {
+    recordScriptWatchdogHeartbeat(parentDevice, params)
+}
+
+private void recordScriptWatchdogHeartbeat(Object parentDevice, Map params) {
+    String ip = genericDeviceDataValueHelper(parentDevice, 'ipAddress')
+    String scriptName = stripJsExtension((params?.script ?: '').toString())
+    if (!ip || !MANAGED_SCRIPT_NAMES.contains(scriptName)) {
+        logTrace("Script watchdog ignored heartbeat: ip=${ip ?: 'missing'}, script=${scriptName ?: 'missing'}")
+        return
+    }
+
+    Integer scriptId = toIntegerSafe(params.scriptId)
+    Integer interval = toIntegerSafe(params.intervalSeconds)
+    if (scriptId == null || interval == null || interval < 1 || interval > 3600) {
+        logDebug("Ignoring malformed script watchdog heartbeat from ${scriptName} on ${ip}")
+        return
+    }
+
+    Map allRecords = new LinkedHashMap((atomicState.scriptWatchdogRecords ?: [:]) as Map)
+    Map deviceRecords = new LinkedHashMap((allRecords[ip] ?: [:]) as Map)
+    Map previous = new LinkedHashMap((deviceRecords[scriptName] ?: [:]) as Map)
+    Long previousHeartbeat = (previous.lastHeartbeatAt ?: 0L) as Long
+    if (previousHeartbeat > 0L && now() - previousHeartbeat < 30000L &&
+            previous.intervalSeconds == interval && previous.scriptId == scriptId &&
+            (previous.restartCount ?: 0) == 0) {
+        logTrace("Script watchdog heartbeat rate-limited for ${scriptName} on ${ip}: id=${scriptId}, sequence=${params.sequence}")
+        return
+    }
+    Boolean recovering = (((previous.restartCount ?: 0) as Integer) > 0)
+    deviceRecords[scriptName] = [
+        scriptId: scriptId,
+        intervalSeconds: interval,
+        lastHeartbeatAt: now(),
+        sequence: toIntegerSafe(params.sequence),
+        restartCount: 0,
+        lastRestartAt: previous.lastRestartAt as Long
+    ]
+    allRecords[ip] = deviceRecords
+    atomicState.scriptWatchdogRecords = allRecords
+    logTrace("Script watchdog heartbeat accepted for ${scriptName} on ${ip}: id=${scriptId}, interval=${interval}s, sequence=${params.sequence}, recovered=${recovering}")
+    reconcileScriptWatchdogSchedule()
+}
+
+/** Reconcile one app-level poller for all per-device script heartbeat records. */
+private void reconcileScriptWatchdogSchedule() {
+    Integer tracked = ((atomicState.scriptWatchdogRecords ?: [:]) as Map).values().sum { Object records ->
+        (records as Map).size()
+    } as Integer ?: 0
+    if (tracked == 0) {
+        logTrace('Script watchdog scheduler idle: no managed scripts are tracked')
+        return
+    }
+    if (state.scriptWatchdogScheduled == true) {
+        logTrace("Script watchdog scan already scheduled; tracked=${tracked}")
+        return
+    }
+    state.scriptWatchdogScheduled = true
+    runInHelper(SCRIPT_WATCHDOG_CHECK_SECONDS as Long, 'scriptWatchdogScan', [overwrite: false])
+    logTrace("Script watchdog scan scheduled in ${SCRIPT_WATCHDOG_CHECK_SECONDS}s for ${tracked} tracked script(s)")
+}
+
+/** Checks one overdue script per pass to keep LAN RPC work bounded. */
+void scriptWatchdogScan() {
+    state.scriptWatchdogScheduled = false
+    try {
+        Map allRecords = new LinkedHashMap((atomicState.scriptWatchdogRecords ?: [:]) as Map)
+        Long currentTime = now()
+        logTrace("Script watchdog scan started: devices=${allRecords.size()}, tracked=${allRecords.values().sum { Object records -> (records as Map).size() } ?: 0}")
+        String overdueIp = null
+        String overdueName = null
+        Map overdue = null
+
+        allRecords.each { Object ipKey, Object rawDeviceRecords ->
+            if (overdue != null) { return }
+            String ip = ipKey.toString()
+            Map deviceRecords = rawDeviceRecords as Map
+            deviceRecords.each { Object nameKey, Object rawRecord ->
+                if (overdue != null) { return }
+                String name = nameKey.toString()
+                Map record = rawRecord as Map
+                Integer interval = (record.intervalSeconds ?: 60) as Integer
+                Long lastHeartbeatAt = (record.lastHeartbeatAt ?: currentTime) as Long
+                Long timeoutMs = (interval + SCRIPT_WATCHDOG_GRACE_SECONDS) * 1000L
+                Long lastRestartAt = (record.lastRestartAt ?: 0L) as Long
+                Integer restartCount = (record.restartCount ?: 0) as Integer
+                Long elapsedMs = currentTime - lastHeartbeatAt
+                Boolean cooldownReady = currentTime - lastRestartAt >= SCRIPT_WATCHDOG_RESTART_COOLDOWN_MS
+                logTrace("Script watchdog evaluated ${name} on ${ip}: elapsed=${(elapsedMs / 1000L)}s, timeout=${interval + SCRIPT_WATCHDOG_GRACE_SECONDS}s, restarts=${restartCount}/${SCRIPT_WATCHDOG_MAX_RESTARTS}, cooldownReady=${cooldownReady}")
+                if (elapsedMs > timeoutMs && cooldownReady &&
+                        restartCount < SCRIPT_WATCHDOG_MAX_RESTARTS) {
+                    overdueIp = ip
+                    overdueName = name
+                    overdue = new LinkedHashMap(record)
+                }
+            }
+        }
+
+        if (overdueIp && overdueName && overdue) {
+            logTrace("Script watchdog selected overdue script ${overdueName} on ${overdueIp} for recovery")
+            recoverOverdueScript(overdueIp, overdueName, overdue)
+        } else {
+            logTrace('Script watchdog scan complete: no restart candidate')
+        }
+    } catch (Exception ex) {
+        logWarn("Script watchdog scan failed: ${ex.message}")
+        logTrace("Script watchdog scan exception detail: ${ex.class.name}: ${ex.message}")
+    } finally {
+        reconcileScriptWatchdogSchedule()
+    }
+}
+
+private void recoverOverdueScript(String ip, String scriptName, Map record) {
+    if (hasProvisioningOperation(ip)) {
+        logDebug("Deferring script watchdog recovery for ${scriptName} on ${ip}: device provisioning is active")
+        logTrace("Script watchdog recovery deferred: provisioning operation is active for ${ip}")
+        return
+    }
+
+    logTrace("Script watchdog querying Script.List on ${ip} before recovery of ${scriptName}")
+    List<Map> scripts = listDeviceScripts(ip)
+    if (scripts == null) {
+        logWarn("Script watchdog could not reach ${ip}; leaving ${scriptName} unchanged")
+        return
+    }
+    Map script = scripts.find { Map item -> stripJsExtension((item.name ?: '').toString()) == scriptName } as Map
+    logTrace("Script watchdog Script.List returned ${scripts.size()} script(s) on ${ip}; target=${script ? "id=${script.id}, enabled=${script.enable}, running=${script.running}" : 'not found'}")
+    if (!script || !(script.enable as Boolean)) {
+        logWarn("Script watchdog found ${scriptName} missing or disabled on ${ip}; no restart issued")
+        forgetScriptWatchdog(ip, scriptName)
+        return
+    }
+
+    Integer scriptId = (script.id ?: record.scriptId) as Integer
+    if (scriptId == null) {
+        logWarn("Script watchdog cannot restart ${scriptName} on ${ip}: missing script id")
+        return
+    }
+
+    String uri = "http://${ip}/rpc"
+    try {
+        if (script.running as Boolean) {
+            logTrace("Script watchdog sending Script.Stop for ${scriptName} id=${scriptId} to ${ip}")
+            LinkedHashMap stopResult = postCommandSync(scriptStopCommand(scriptId), uri)
+            logTrace("Script watchdog Script.Stop result for ${scriptName} id=${scriptId} on ${ip}: ${stopResult}")
+            if (stopResult == null || stopResult.error) {
+                logWarn("Script watchdog stop failed for ${scriptName} on ${ip}: ${stopResult?.error ?: 'no response'}")
+                return
+            }
+        }
+        logTrace("Script watchdog sending Script.Start for ${scriptName} id=${scriptId} to ${ip}")
+        LinkedHashMap startResult = postCommandSync(scriptStartCommand(scriptId), uri)
+        logTrace("Script watchdog Script.Start result for ${scriptName} id=${scriptId} on ${ip}: ${startResult}")
+        if (startResult == null || startResult.error) {
+            logWarn("Script watchdog start failed for ${scriptName} on ${ip}: ${startResult?.error ?: 'no response'}")
+            return
+        }
+
+        Map allRecords = new LinkedHashMap((atomicState.scriptWatchdogRecords ?: [:]) as Map)
+        Map deviceRecords = new LinkedHashMap((allRecords[ip] ?: [:]) as Map)
+        Map current = new LinkedHashMap((deviceRecords[scriptName] ?: record) as Map)
+        current.restartCount = ((current.restartCount ?: 0) as Integer) + 1
+        current.lastRestartAt = now()
+        deviceRecords[scriptName] = current
+        allRecords[ip] = deviceRecords
+        atomicState.scriptWatchdogRecords = allRecords
+        logWarn("Restarted overdue Shelly script ${scriptName} on ${ip}; waiting for its next heartbeat")
+        logTrace("Script watchdog restart recorded for ${scriptName} on ${ip}: restartCount=${current.restartCount}, lastRestartAt=${current.lastRestartAt}")
+    } catch (Exception ex) {
+        logWarn("Script watchdog could not restart ${scriptName} on ${ip}: ${ex.message}")
+        logTrace("Script watchdog RPC exception for ${scriptName} on ${ip}: ${ex.class.name}: ${ex.message}")
+    }
+}
+
+private void forgetScriptWatchdog(String ip, String scriptName) {
+    Map allRecords = new LinkedHashMap((atomicState.scriptWatchdogRecords ?: [:]) as Map)
+    Map deviceRecords = new LinkedHashMap((allRecords[ip] ?: [:]) as Map)
+    deviceRecords.remove(scriptName)
+    if (deviceRecords.isEmpty()) { allRecords.remove(ip) }
+    else { allRecords[ip] = deviceRecords }
+    atomicState.scriptWatchdogRecords = allRecords
+}
+
 /**
  * Handles POST webhook notifications from Shelly scripts.
  * Parses JSON body and routes to webhook params handler.
@@ -22808,6 +23039,14 @@ private void handlePostWebhook(String parentDni, Map msg) {
         String dst = json?.dst?.toString()
         logTrace("componentParse: parsed POST JSON=${msg.body}")
         if (!dst) { logDebug('componentParse: POST webhook has no dst in body'); return }
+        if (json.script != null && json.scriptId != null && json.intervalSeconds != null) {
+            logTrace("Script watchdog metadata received in POST webhook: dst=${dst}, script=${json.script}, id=${json.scriptId}, interval=${json.intervalSeconds}s, sequence=${json.sequence}")
+            recordScriptWatchdogHeartbeat(getChildDeviceHelper(parentDni), json)
+        }
+        if (dst == 'scriptwatchdog') {
+            logTrace("Consumed scriptwatchdog POST webhook for script=${json.script}, id=${json.scriptId}")
+            return
+        }
 
         Map params = [:]
         json.each { k, v -> if (v != null) { params[k.toString()] = v.toString() } }

@@ -223,6 +223,11 @@ private void checkAndUpdateSourceIp(Map msg) {
  * @param params The parsed path segment parameters including dst and sensor value fields
  */
 private void routeWebhookParams(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   switch (params.dst) {
     case 'temperature':
       String scale = location.temperatureScale ?: 'F'

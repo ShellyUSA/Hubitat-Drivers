@@ -18,6 +18,8 @@ let HUBITAT_PROTO = "http://";
 let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 let MIN_INTERVAL = 300; // Minimum heartbeat interval (seconds)
 let MAX_INTERVAL = 420; // Maximum heartbeat interval (seconds)
+let SCRIPT_NAME = "bluetrvstatus";
+let heartbeatSequence = 0;
 
 // === Internal state ===
 let timerHandle = null;
@@ -28,6 +30,23 @@ function onHTTPResponse(result, error_code, error_message) {
   if (error_code !== 0) {
     print("HTTP error:", error_code, error_message);
   }
+}
+
+function sendWatchdogHeartbeat() {
+  let body = {
+    dst: "scriptwatchdog",
+    script: SCRIPT_NAME,
+    scriptId: Script.id,
+    intervalSeconds: MAX_INTERVAL,
+    sequence: ++heartbeatSequence,
+    uptimeMs: typeof Shelly.getUptimeMs === "function" ? Shelly.getUptimeMs() : Date.now(),
+  };
+  Shelly.call("HTTP.POST", {
+    url: REMOTE_URL + "/webhook/scriptwatchdog/" + Script.id,
+    body: JSON.stringify(body),
+    content_type: "application/json",
+    timeout: 10,
+  }, onHTTPResponse);
 }
 
 // Random integer between min and max (inclusive)
@@ -99,6 +118,9 @@ function sendTrvReport(cid, data) {
   let body = {
     dst: "blutrv_status_change",
     cid: cid,
+    script: SCRIPT_NAME,
+    scriptId: Script.id,
+    intervalSeconds: MAX_INTERVAL,
   };
 
   // Map BluTrv status fields to the driver's expected param names
@@ -150,6 +172,7 @@ function resetTimer() {
 
 function sendHeartbeat() {
   timerHandle = null;
+  sendWatchdogHeartbeat();
   discoverAndPollTrvs();
 }
 

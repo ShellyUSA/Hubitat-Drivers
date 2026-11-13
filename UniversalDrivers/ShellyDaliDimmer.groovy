@@ -312,6 +312,11 @@ private void checkAndUpdateSourceIp(Map msg) {
  * @param params The parsed parameters including dst and cid
  */
 private void routeWebhookParams(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   switch (params.dst) {
     case 'light_on':
       sendEvent(name: 'switch', value: 'on', descriptionText: 'Light turned on')

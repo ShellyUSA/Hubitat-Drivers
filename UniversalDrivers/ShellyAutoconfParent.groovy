@@ -491,6 +491,11 @@ private void routeScriptNotification(String dst, Map json) {
  * @param params The parsed query parameters including dst, cid, and optionally comp/phase
  */
 private void routeWebhookParams(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   String dst = params.dst as String
   if (!dst || params.cid == null) {
     logTrace("routeWebhookParams: missing dst or cid (dst=${dst}, cid=${params.cid})")

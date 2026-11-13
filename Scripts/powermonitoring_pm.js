@@ -1,7 +1,10 @@
 // Shelly PM collector for PM-capable switch, pm1, and cover components.
 // Collects status-event readings, averages them, and posts them to Hubitat.
 
-let VERSION = "3.0.1";
+let VERSION = "3.0.2";
+// Version: 3.0.2 — report script liveness independently of thresholded metrics.
+let SCRIPT_NAME = "powermonitoring_pm";
+let heartbeatSequence = 0;
 let REPORT_SECONDS = 60;
 let REPORT_INTERVAL_KEY = "hubitat_sdm_pm_ri";
 let HUBITAT_KVS_KEY = "hubitat_sdm_ip";
@@ -36,6 +39,7 @@ let drainTimer = null;
 let reportTimer = null;
 let reportInFlight = false;
 let inFlightRecord = null;
+let heartbeatPending = false;
 let checkpointTimer = null;
 let checkpointDirty = false;
 let settingsIndex = 0;
@@ -273,7 +277,8 @@ function reportBody(entry) {
       !changed(p, d[SENT_P], THRESH_P) && !changed(f, d[SENT_F], THRESH_F) &&
       !changed(e, d[SENT_E], THRESH_E)) return null;
   let body = "{\"dst\":\"powermon\",\"cid\":" + entry.id +
-    ",\"comp\":\"" + entry.type + "\"";
+    ",\"comp\":\"" + entry.type + "\",\"script\":\"" + SCRIPT_NAME +
+    "\",\"scriptId\":" + Script.id + ",\"intervalSeconds\":" + REPORT_SECONDS;
   if (v !== null) body += ",\"voltage\":" + v;
   if (c !== null) body += ",\"current\":" + c;
   if (p !== null) body += ",\"apower\":" + p;
@@ -283,6 +288,7 @@ function reportBody(entry) {
 }
 
 function sendReports() {
+  sendWatchdogHeartbeat();
   refreshStatus();
   let queued = 0;
   for (let i = 0; i < components.length; i++) {
@@ -301,6 +307,28 @@ function sendReports() {
   reportTimer = Timer.set(REPORT_SECONDS * 1000, false, sendReports);
 }
 
+function sendWatchdogHeartbeat() {
+  heartbeatPending = true;
+  drainQueue();
+}
+
+function sendWatchdogHeartbeatRequest() {
+  let body = {
+    dst: "scriptwatchdog",
+    script: SCRIPT_NAME,
+    scriptId: Script.id,
+    intervalSeconds: REPORT_SECONDS,
+    sequence: ++heartbeatSequence,
+    uptimeMs: typeof Shelly.getUptimeMs === "function" ? Shelly.getUptimeMs() : Date.now(),
+  };
+  Shelly.call("HTTP.POST", {
+    url: REMOTE_URL + "/webhook/scriptwatchdog/" + Script.id,
+    body: JSON.stringify(body),
+    content_type: "application/json",
+    timeout: 10,
+  }, httpDone);
+}
+
 function retryDrain() {
   drainTimer = null;
   drainQueue();
@@ -317,7 +345,19 @@ function httpDone(result, errorCode, errorMessage) {
 }
 
 function drainQueue() {
-  if (!storageAvailable() || reportInFlight || queueCount() === 0) return;
+  if (!storageAvailable() || reportInFlight) return;
+  if (heartbeatPending) {
+    heartbeatPending = false;
+    inFlightRecord = null;
+    reportInFlight = true;
+    try {
+      sendWatchdogHeartbeatRequest();
+    } catch (e) {
+      httpDone(null, -1, e);
+    }
+    return;
+  }
+  if (queueCount() === 0) return;
   let record = takeQueue();
   if (record === null) return;
   let first = record.indexOf("|");
@@ -393,6 +433,7 @@ function nextSetting() {
       THRESH_V + "," + THRESH_C + "," + THRESH_P + "," + THRESH_E + "," + THRESH_F);
     if (settingsInitial) {
       settingsInitial = false;
+      sendWatchdogHeartbeat();
       seed();
     }
     return;

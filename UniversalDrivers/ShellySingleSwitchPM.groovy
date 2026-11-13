@@ -295,6 +295,11 @@ private void checkAndUpdateSourceIp(Map msg) {
  * @param params The parsed query parameters including dst and optional output/state fields
  */
 private void routeWebhookParams(Map params) {
+  if (params?.script?.toString() && params?.scriptId != null && params?.intervalSeconds != null) {
+    parent?.componentScriptWatchdogHeartbeat(device, params)
+    if (params.dst?.toString() == 'scriptwatchdog') { return }
+  }
+
   switch (params.dst) {
     // New discrete switch webhooks — state is encoded in the dst name
     case 'switch_on':

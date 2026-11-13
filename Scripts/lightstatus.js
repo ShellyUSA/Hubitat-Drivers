@@ -17,6 +17,8 @@ let HUBITAT_PROTO = "http://";
 let REMOTE_URL = HUBITAT_PROTO + HUBITAT_DEFAULT_IP + ":" + HUBITAT_PORT;
 let MIN_INTERVAL = 300; // Minimum heartbeat interval (seconds)
 let MAX_INTERVAL = 420; // Maximum heartbeat interval (seconds)
+let SCRIPT_NAME = "lightstatus";
+let heartbeatSequence = 0;
 
 // === Internal state ===
 let timerHandle = null;
@@ -95,7 +97,8 @@ function getLightId(comp, fallbackId) {
 // Send light state for a single component via POST with JSON body
 function sendLightReport(id, output, brightness) {
   let url = REMOTE_URL + "/webhook/lightmon/" + JSON.stringify(id);
-  let body = { dst: "lightmon", cid: id, comp: "light" };
+  let body = { dst: "lightmon", cid: id, comp: "light",
+    script: SCRIPT_NAME, scriptId: Script.id, intervalSeconds: MAX_INTERVAL };
   if (output !== undefined && output !== null) body.output = output;
   if (brightness !== undefined && brightness !== null)
     body.brightness = brightness;
