@@ -243,6 +243,7 @@
 @Field static final int SCRIPT_WATCHDOG_GRACE_SECONDS = 10
 @Field static final long SCRIPT_WATCHDOG_RESTART_COOLDOWN_MS = 15 * 60 * 1000L
 @Field static final int SCRIPT_WATCHDOG_MAX_RESTARTS = 3
+@Field static final List<Integer> SCRIPT_RESTART_INTERVAL_HOURS = [0, 1, 2, 3, 4, 6, 7, 8, 12, 17, 24, 36, 37, 72, 168]
 
 // Keep discovery probes bounded so a slow hub/network cannot accumulate an
 // unbounded backlog of asynchronous HTTP requests.
@@ -266,7 +267,7 @@
 // App version — single source of truth. The CI pipeline automatically syncs this value
 // into the definition() block's version field on release. Do NOT manually edit the
 // version in definition() — it will be overwritten on the next release.
-@Field static final String APP_VERSION = "1.0.104"
+@Field static final String APP_VERSION = "1.0.107"
 
 // GitHub repository and branch used for fetching resources (scripts, component definitions, auto-updates).
 @Field static final String GITHUB_REPO = 'ShellyUSA/Hubitat-Drivers'
@@ -752,6 +753,30 @@ Map mainPage() {
             input name: 'enableWatchdog', type: 'bool', title: 'Enable IP address watchdog',
                 description: 'Periodically scans for device IP changes via mDNS and automatically updates child devices. Also triggers a scan when a device command fails.',
                 defaultValue: true, submitOnChange: true
+            Map<String, String> scriptRestartOptions = [
+                'Never': '0',
+                'Every 1 hour': '1',
+                'Every 2 hours': '2',
+                'Every 3 hours': '3',
+                'Every 4 hours': '4',
+                'Every 6 hours': '6',
+                'Every 7 hours (shifts 7 hours each day)': '7',
+                'Every 8 hours': '8',
+                'Every 12 hours': '12',
+                'Every 17 hours (shifts 17 hours each day)': '17',
+                'Every 24 hours': '24',
+                'Every 36 hours': '36',
+                'Every 37 hours (shifts 13 hours each day)': '37',
+                'Every 72 hours': '72',
+                'Every 168 hours': '168'
+            ]
+            String configuredRestartInterval = settings?.scriptRestartIntervalHours?.toString() ?: '0'
+            if (!(configuredRestartInterval in SCRIPT_RESTART_INTERVAL_HOURS.collect { it.toString() })) {
+                configuredRestartInterval = '0'
+            }
+            input name: 'scriptRestartIntervalHours', type: 'enum', title: 'Restart managed Shelly scripts on a timer',
+                description: 'Restarts enabled SDM-managed scripts on all installed Shelly devices at the selected interval. Irregular intervals shift restart time across the day.',
+                options: scriptRestartOptions, defaultValue: configuredRestartInterval, submitOnChange: true
             input 'btnScanSubnet', 'button', title: 'Scan subnet now', submitOnChange: true
             input name: 'devicePassword', type: 'password', title: 'Device password',
                 description: 'Password for Shelly devices with authentication enabled. Used for Gen 2/3 digest auth and Gen 1 Basic Auth (username is always "admin").',
@@ -1734,7 +1759,8 @@ private Map buildSettingsLifecycleSnapshot() {
         appUpdateTime: settings?.appUpdateTime?.toString() ?: '',
         logLevel: (settings?.logLevel ?: state.logLevel ?: 'debug').toString(),
         displayLogLevel: (settings?.displayLogLevel ?: state.displayLogLevel ?: settings?.logLevel ?: 'debug').toString(),
-        bleLogLevel: (settings?.bleLogLevel ?: 'info').toString()
+        bleLogLevel: (settings?.bleLogLevel ?: 'info').toString(),
+        scriptRestartIntervalHours: (settings?.scriptRestartIntervalHours ?: '0').toString()
     ]
 }
 
@@ -1787,6 +1813,122 @@ private void reconcileAppAutoUpdateSchedule() {
     }
 }
 
+/** Reconciles the optional recurring restart of enabled SDM-managed Shelly scripts. */
+private Integer configuredScriptRestartIntervalHours() {
+    String raw = settings?.scriptRestartIntervalHours?.toString()?.trim()
+    if (!raw || raw.equalsIgnoreCase('never')) { return 0 }
+
+    Integer intervalHours = toIntegerSafe(raw)
+    if (intervalHours == null) {
+        def matcher = raw =~ /(?i)(?:every\s+)?(\d+)\s+hours?/
+        if (matcher.find()) { intervalHours = toIntegerSafe(matcher.group(1)) }
+    }
+    return intervalHours != null && SCRIPT_RESTART_INTERVAL_HOURS.contains(intervalHours) ? intervalHours : null
+}
+
+private void reconcileScriptRestartSchedule() {
+    unscheduleHelper('scheduledScriptRestart')
+    Integer intervalHours = configuredScriptRestartIntervalHours()
+    Boolean validInterval = intervalHours != null && SCRIPT_RESTART_INTERVAL_HOURS.contains(intervalHours)
+    logTrace("Scheduled script restart preference: raw=${settings?.scriptRestartIntervalHours}, parsed=${intervalHours}, valid=${validInterval}")
+    if (!validInterval || intervalHours == 0) {
+        state.remove('nextScriptRestartAt')
+        logTrace('Scheduled script restart disabled')
+        return
+    }
+
+    Long intervalSeconds = intervalHours * 3600L
+    Long nextRunAt = nowHelper() + intervalSeconds * 1000L
+    state.nextScriptRestartAt = nextRunAt
+    runInHelper(intervalSeconds, 'scheduledScriptRestart', [overwrite: true])
+    logInfo("Scheduled restart of managed Shelly scripts every ${intervalHours} hour(s); next run in ${intervalHours} hour(s)")
+    logTrace("Scheduled script restart reconciled: interval=${intervalHours}h, nextRunAt=${nextRunAt}")
+}
+
+/** Periodically restarts enabled SDM-managed scripts on each installed LAN Shelly device. */
+void scheduledScriptRestart() {
+    Integer intervalHours = configuredScriptRestartIntervalHours()
+    if (intervalHours == null || !(intervalHours in SCRIPT_RESTART_INTERVAL_HOURS) || intervalHours == 0) {
+        state.remove('nextScriptRestartAt')
+        logTrace('Scheduled script restart callback ignored because the option is disabled')
+        return
+    }
+
+    Integer restarted = 0
+    Integer skipped = 0
+    Set<String> visitedIps = [] as Set<String>
+    logInfo("Starting scheduled restart of enabled managed Shelly scripts (${intervalHours} hour interval)")
+    try {
+        (getCachedDirectChildDevices() ?: []).each { child ->
+            String ip = child?.getDataValue('ipAddress')?.toString()
+            if (!ip || !visitedIps.add(ip)) { return }
+            if (hasProvisioningOperation(ip)) {
+                skipped++
+                logTrace("Scheduled script restart skipped ${ip}: provisioning is active")
+                return
+            }
+
+            List<Map> scripts = listDeviceScripts(ip)
+            if (scripts == null) {
+                skipped++
+                logWarn("Scheduled script restart could not read the script list from ${ip}")
+                return
+            }
+
+            scripts.each { Map script ->
+                String name = stripJsExtension((script?.name ?: '').toString())
+                if (!MANAGED_SCRIPT_NAMES.contains(name)) { return }
+                if (!(script?.enable as Boolean)) {
+                    skipped++
+                    logTrace("Scheduled script restart skipped disabled ${name} on ${ip}")
+                    return
+                }
+
+                Integer scriptId = toIntegerSafe(script?.id)
+                if (scriptId == null) {
+                    skipped++
+                    logWarn("Scheduled script restart skipped ${name} on ${ip}: script id is missing")
+                    return
+                }
+
+                String uri = "http://${ip}/rpc"
+                try {
+                    if (script?.running as Boolean) {
+                        logTrace("Scheduled script restart sending Script.Stop for ${name} id=${scriptId} to ${ip}")
+                        LinkedHashMap stopResult = postCommandSync(scriptStopCommand(scriptId), uri)
+                        logTrace("Scheduled script restart Script.Stop result for ${name} id=${scriptId} on ${ip}: ${stopResult}")
+                        if (stopResult == null || stopResult.error) {
+                            skipped++
+                            logWarn("Scheduled script restart could not stop ${name} on ${ip}: ${stopResult?.error ?: 'no response'}")
+                            return
+                        }
+                    }
+
+                    logTrace("Scheduled script restart sending Script.Start for ${name} id=${scriptId} to ${ip}")
+                    LinkedHashMap startResult = postCommandSync(scriptStartCommand(scriptId), uri)
+                    logTrace("Scheduled script restart Script.Start result for ${name} id=${scriptId} on ${ip}: ${startResult}")
+                    if (startResult == null || startResult.error) {
+                        skipped++
+                        logWarn("Scheduled script restart could not start ${name} on ${ip}: ${startResult?.error ?: 'no response'}")
+                        return
+                    }
+
+                    restarted++
+                    armScriptWatchdog(ip, name, scriptId)
+                    logTrace("Scheduled script restart completed for ${name} id=${scriptId} on ${ip}")
+                } catch (Exception ex) {
+                    skipped++
+                    logWarn("Scheduled script restart failed for ${name} on ${ip}: ${ex.message}")
+                    logTrace("Scheduled script restart exception for ${name} on ${ip}: ${ex.class.name}: ${ex.message}")
+                }
+            }
+        }
+    } finally {
+        logInfo("Scheduled script restart finished: restarted=${restarted}, skipped=${skipped}")
+        reconcileScriptRestartSchedule()
+    }
+}
+
 /** Reconciles BLE timers without touching subscriptions or unrelated schedules. */
 private void reconcileBleSchedules() {
     unscheduleHelper('checkBlePresence')
@@ -1809,6 +1951,9 @@ private void reconcileChangedSettings(Map previous, Map current) {
     if (lifecycleSettingChanged(previous, current, 'enableAutoUpdate') ||
             lifecycleSettingChanged(previous, current, 'appUpdateTime')) {
         reconcileAppAutoUpdateSchedule()
+    }
+    if (lifecycleSettingChanged(previous, current, 'scriptRestartIntervalHours')) {
+        reconcileScriptRestartSchedule()
     }
 }
 
@@ -8236,6 +8381,7 @@ void initialize(Boolean performMaintenance = false, Boolean registerStartupSubsc
     // updates call these helpers selectively through reconcileChangedSettings.
     reconcileDriverAutoUpdateSchedule()
     reconcileAppAutoUpdateSchedule()
+    reconcileScriptRestartSchedule()
 
     // BLE presence and persistence are separate jobs. Presence is scheduled
     // only for created children with presence enabled; persistence starts only
