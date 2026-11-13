@@ -632,7 +632,7 @@ definition(
     iconX2Url: "",
     singleInstance: true,
     singleThreaded: false,
-    version: "1.0.102"
+    version: "1.0.107"
 )
 
 preferences {
