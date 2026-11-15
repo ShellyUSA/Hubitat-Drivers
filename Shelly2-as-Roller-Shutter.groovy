@@ -190,7 +190,7 @@ try {
     } else
         if ( state.current_pos > openif ) {
         if (txtEnable) log.info "CreateEvent open"
-        sendEvent(name: "windowShade", value: "on")
+        sendEvent(name: "windowShade", value: "open")
         sendEvent(name: "switch", value: "on")
     } else {
         if (txtEnable) log.info "CreateEvent Partially open"
