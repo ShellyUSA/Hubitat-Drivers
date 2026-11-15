@@ -5,7 +5,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-APP = (ROOT / "Apps/ShellyDeviceManager.groovy").read_text()
+APP = (ROOT / "Apps/ShellyDeviceManager.groovy").read_text(encoding="utf-8")
+ROLLER_SHUTTER = (ROOT / "Shelly2-as-Roller-Shutter.groovy").read_text(encoding="utf-8")
 
 
 class DetachedInputRegressionTests(unittest.TestCase):
@@ -36,7 +37,7 @@ class DetachedInputRegressionTests(unittest.TestCase):
         )
         for filename in drivers:
             with self.subTest(driver=filename):
-                source = (ROOT / "UniversalDrivers" / filename).read_text()
+                source = (ROOT / "UniversalDrivers" / filename).read_text(encoding="utf-8")
                 self.assertIn("inputSwitchIds", source)
                 self.assertIn("updatePhysicalInput", source)
                 self.assertIn("input_toggle_on", source)
@@ -44,17 +45,23 @@ class DetachedInputRegressionTests(unittest.TestCase):
                 self.assertIn("input_toggle", source)
 
     def test_autoconf_parent_creates_switch_children_for_switch_inputs(self):
-        parent = (ROOT / "UniversalDrivers/ShellyAutoconfParent.groovy").read_text()
+        parent = (ROOT / "UniversalDrivers/ShellyAutoconfParent.groovy").read_text(encoding="utf-8")
         self.assertIn("inputSwitchIds", parent)
         self.assertIn("Shelly Autoconf Input Switch", parent)
 
     def test_multi_switch_parents_route_configured_switch_inputs_to_children(self):
         for filename in ("Shelly2xSwitchParent.groovy", "Shelly3xSwitchParent.groovy"):
             with self.subTest(driver=filename):
-                source = (ROOT / "UniversalDrivers" / filename).read_text()
+                source = (ROOT / "UniversalDrivers" / filename).read_text(encoding="utf-8")
                 self.assertIn("isSwitchInput(componentId)", source)
                 self.assertIn("Shelly Autoconf Input Switch", source)
                 self.assertIn("v.state", source)
+
+
+class RollerShutterRegressionTests(unittest.TestCase):
+    def test_refresh_reports_open_window_shade_capability_value(self):
+        self.assertIn('sendEvent(name: "windowShade", value: "open")', ROLLER_SHUTTER)
+        self.assertNotIn('sendEvent(name: "windowShade", value: "on")', ROLLER_SHUTTER)
 
 
 if __name__ == "__main__":
